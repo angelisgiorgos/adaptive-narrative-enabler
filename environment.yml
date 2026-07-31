@@ -1,0 +1,17 @@
+name: adaptive-narrative-enabler
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pyyaml
+  - numpy
+  - scikit-learn
+  - matplotlib
+  - networkx
+  - pip:
+      - torch
+      - transformers
+      - accelerate
+      - sentence-transformers
+      - bitsandbytes

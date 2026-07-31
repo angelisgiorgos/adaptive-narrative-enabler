@@ -1,0 +1,253 @@
+# Evolution Configuration
+evolution:
+  pop_size: 400
+  generations: 200
+  episodes_per_genome: 6
+  max_steps: 60
+  evaluation_threads: 8
+  parallel_backend: processes
+  mutation_rate: 0.22
+  mutation_step: 0.14
+
+simulation:
+  verbose: true
+  interactive: true
+  mutation_rate: 0.2
+
+reproducibility:
+  # Set to an integer for repeatable evolution and simulation runs.
+  # Set to null to allow fresh random behavior on each execution.
+  seed: 42
+
+# Genome Random Initialization Bounds
+genome_bounds:
+  threat_prob: [0.1, 0.5]
+  spawn_prob: [0.25, 0.75]
+  setup_prob: [0.1, 0.45]
+  success_bias: [0.5, 0.9]
+  guard_bias: [0.1, 0.5]
+  voyage_bias: [0.45, 0.9]
+  discovery_bias: [0.3, 0.9]
+  recovery_bias: [0.2, 0.8]
+  lead_bias: [0.3, 0.9]
+
+# Game State Configuration
+game_state:
+  initial_health: 8
+  initial_coins: 10
+  low_health_threshold: 4
+  auto_travel_on_spawn_chance: 0.4
+  auto_travel_commit_threshold: 1.2
+
+narrative_end:
+  max_actions: 12
+  max_consecutive_steps_in_location: 5
+  end_on_dungeon: false
+
+scene:
+  max_visible_npcs: 3
+  max_visible_objects: 2
+
+spawn_selection:
+  contrast_weight: 2.5
+  character_alignment_weight: 2.0
+  repeat_visit_penalty: 3.0
+  immediate_repeat_penalty: 10.0
+
+action_selection:
+  base_weight: 0.15
+  threat_weight: 1.0
+  spawn_weight: 1.5
+  setup_weight: 1.15
+  discovery_weight: 1.3
+  movement_weight: 1.5
+  recovery_weight: 1.25
+  stay_penalty_power: 2.2
+
+outcome_scoring:
+  spawn_bonus: 1.7
+  movement_bonus: 1.7
+  discovery_bonus: 1.4
+  lead_bonus: 1.4
+  recovery_bonus: 1.2
+  setup_bonus: 1.1
+  payoff_bonus: 1.2
+
+outcome_resolution:
+  success_bias_weight: 0.3
+  discovery_weight: 0.16
+  lead_weight: 0.16
+  voyage_weight: 0.18
+  recovery_weight: 0.12
+  low_health_recovery_bonus: 0.08
+  stagnation_threshold: 2
+  stagnation_movement_bonus: 0.1
+  early_setup_bonus: 0.05
+  severe_risk_penalty: 0.08
+  navigation_floor: 0.98
+  tag_weights:
+    threat: -0.18
+    spawn: 0.18
+    social: 0.12
+    stealth: 0.12
+    urban: 0.08
+    maritime: 0.08
+    luxury: 0.08
+    setup: 0.12
+
+combat_resolution:
+  attack_success_weight: 0.08
+  defense_success_weight: 0.04
+  power_success_weight: 0.05
+  attack_failure_weight: 0.06
+  defense_failure_weight: 0.08
+  power_failure_weight: 0.04
+  attack_outcome_weight: 0.6
+  defense_outcome_weight: 0.25
+  power_outcome_weight: 0.4
+  attack_lose_weight: 0.35
+  defense_lose_weight: 0.5
+  power_lose_weight: 0.25
+  attack_damage_mitigation: 0.15
+  defense_damage_mitigation: 0.5
+  failure_defense_mitigation: 0.5
+  attack_tags:
+    weapon: 1.0
+    combat: 0.5
+    fight: 0.75
+    dagger: 0.75
+    sword: 1.0
+  defense_tags:
+    defense: 1.0
+    shield: 1.0
+    armor: 1.0
+    guarded: 0.4
+    protection: 0.8
+
+power_model:
+  base_power: 0.0
+  health_weight: 1.5
+  attack_weight: 1.0
+  defense_weight: 0.8
+  low_health_penalty: 0.5
+  min_power: 0.0
+  max_power: 5.0
+
+# Fitness Scoring Parameters
+fitness:
+  base:
+    zero_step_penalty: -100
+    death_penalty: 35
+    completion_bonus: 10
+    stall_penalty: 20
+    dungeon_penalty: 10
+    max_action_completion_bonus: 8
+  dramatic_arc:
+    intro_end: 0.25
+    middle_end: 0.75
+    intro_tags: [exploration, urban, nature, spawn, maritime, port, trade]
+    middle_tags: [threat, guards, social, sleazy, prison, dark, guarded]
+    climax_tags: [payoff_, palace, vault, grand, success, luxury]
+    intro_bonus: 2
+    middle_bonus: 3
+    climax_bonus: 5
+  story_length:
+    min: 20
+    max: 60
+    target: 35
+    bonus: 25
+    penalty_per_unit: 2
+  threat_balance:
+    min: 5
+    max: 15
+    target: 10
+    bonus: 20
+    penalty_per_unit: 2
+  health_balance:
+    min: 2
+    max: 6
+    target: 3
+    bonus: 30
+    penalty_per_unit: 4
+  setup_payoff:
+    target_count: 2
+    pair_bonus: 15
+    early_setup_bonus: 10
+    late_payoff_bonus: 10
+    clue_variants: 3
+    min_gap_fraction: 0.33
+    gap_step_bonus: 2
+    short_gap_bonus: 5
+    target_count_bonus: 2
+    unmatched_setup_penalty: 4
+    unmatched_payoff_penalty: 3
+  volatility:
+    pair_weight: 10
+    threat_patterns: [threat, combat]
+    recovery_patterns: [neutral, success]
+  payoff_match_score: 10
+  max_location_visits: 3
+  visit_penalty: 5
+  contrast_weight: 10
+  volatility_pair_weight: 10
+  tone_variety:
+    density_weight: 30
+    unique_tag_bonus: 1.5
+    ignore_patterns: [spawn, failure, success, neutral, setup_, payoff_]
+  path_variety:
+    unique_location_bonus: 6
+    revisit_penalty: 2
+    repeat_penalty_power: 2
+    repeat_penalty_weight: 10
+  character_interaction_bonus: 5
+  character_spawn_bonus: 15
+  npc_similarity_weight: 20
+  npc_repeat_weight: 10
+  combat_success_bonus: 25
+  discovery:
+    location_bonus: 4
+    inventory_bonus: 2
+    character_bonus: 3
+
+# LLM Narrative Evaluator Configuration
+llm_evaluator:
+  enabled: true
+  model_name: "meta-llama/Llama-3.2-1B-Instruct"
+  max_new_tokens: 2048
+  temperature: 0.3
+
+# If the configured Llama model is gated or unavailable to the current
+# Hugging Face user, LLM features automatically fall back to this public model.
+llm_fallback:
+  enabled: true
+  model_name: "Qwen/Qwen2.5-0.5B-Instruct"
+  local_files_only: false
+  trust_remote_code: false
+
+# Interactive Config Editor Configuration
+config_editor:
+  enabled: true
+  show_story_browser_on_startup: true
+  guided_mode: true
+  show_json_path_examples: true
+
+# LLM Suggestion Configuration For Config Editor
+editor_suggester:
+  enabled: true
+  max_new_tokens: 256
+  temperature: 0.7
+
+# World Definition Settings
+world_definition:
+  spawn_strategy: "similarity"
+  similarity_threshold: 0.5
+
+# Augmentation Configuration
+augmentation:
+  enabled: true
+  min_locations: 12
+  min_items: 20
+  min_npcs: 15
+  min_outcomes: 60
+  output_dir: "augmentations"
+  save_to_source: true # Whether to update files in config/

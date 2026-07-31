@@ -1,0 +1,111 @@
+world_definition:
+  objects:
+  - name: Ancient Map
+    associated_tags:
+    - urban
+    - alley
+    interact_prompts:
+    - Examine the map
+    - Study the faded markings
+    goals:
+    - Discovery
+    - Navigation
+    descriptions:
+    - A brittle, yellowed map showing secret city tunnels.
+    - The ink is faded, but you can see a route to the Palace.
+    actions:
+    - id: ancient_map_study
+      name: Study the map
+      outcomes:
+      - id: ancient_map_route_to_palace
+        desc: The traveler discovers a hidden route to the Palace.
+        tags:
+        - spawn
+        spawn: true
+        linked_location: Palace
+  - name: Vintage Wine
+    collectible: true
+    associated_tags:
+    - social
+    - urban
+    - alcohol
+    interact_prompts:
+    - Grab the bottle
+    - Pick up the wine
+    goals:
+    - Collection
+    - Bribe
+    descriptions:
+    - A dusty bottle of vintage red wine.
+    - The labeling is in a prestigious script; a perfect bribe.
+    actions:
+    - id: vintage_wine_collect
+      name: Collect the wine
+      collects_object: Vintage Wine
+      outcomes:
+      - id: vintage_wine_collect_success
+        desc: The traveler pockets a bottle of fine wine.
+        tags:
+        - stealth
+  - name: Steel Dagger
+    collectible: true
+    associated_tags:
+    - urban
+    - alley
+    - weapon
+    - combat
+    - fight
+    interact_prompts:
+    - Pick up the dagger
+    - Arm yourself
+    goals:
+    - Self-defense
+    - Combat
+    descriptions:
+    - A sharp, well-balanced steel blade.
+    - The edge is keen and ready for a fight.
+    actions:
+    - name: Collect the dagger
+      collects_object: Steel Dagger
+      outcomes:
+      - desc: The traveler arms themselves with the steel dagger.
+        tags:
+        - neutral
+        - success
+  - name: Heavy Shield
+    collectible: true
+    associated_tags:
+    - guarded
+    - palace
+    - defense
+    - combat
+    interact_prompts:
+    - Take the shield
+    - Heave the shield onto your arm
+    goals:
+    - Protection
+    descriptions:
+    - A sturdy oak shield reinforced with iron bands.
+    - It's heavy, but it offers excellent protection.
+    actions:
+    - name: Collect the shield
+      collects_object: Heavy Shield
+      outcomes:
+      - desc: The traveler takes up the heavy shield.
+        tags:
+        - neutral
+        - success
+  - name: Gold Coins
+    collectible: false
+    associated_tags:
+    - trade
+    - poverty
+    descriptions:
+    - A few clinking gold coins.
+    - Hard currency for hard places.
+  - name: Antique Statue
+    associated_tags:
+    - nature
+  - name: Rusty Sword
+    associated_tags:
+    - damp

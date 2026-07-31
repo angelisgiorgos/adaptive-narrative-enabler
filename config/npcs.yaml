@@ -1,0 +1,207 @@
+world_definition:
+  characters:
+  - name: Priest
+    associated_tags: [urban, palace, religion, social, discovery]
+    known_locations: [Abandoned Church, Palace]
+    known_objects: [Vintage Wine]
+    goals:
+    - Save souls
+    - Heal the sick
+    descriptions:
+    - He's always helping lost souls.
+    - He's always worrying about saving others.
+    - He's got a good heart looking out for others.
+    - A true believer.
+    actions:
+    - name: Seek a blessing
+      outcomes:
+      - desc: The priest offers a prayer that restores your spirit.
+        health_change: 2
+        tags:
+        - neutral
+      - desc: He offers to lead you to a quiet place of prayer.
+        lead_to_known: true
+        tags:
+        - social
+  - name: Gate Guard
+    associated_tags: [guarded, urban, palace, vault, dungeon]
+    known_locations: [Vault, Dungeon, Palace]
+    known_objects: [Heavy Shield, Gold Coins]
+    goals:
+    - Maintain order
+    - Collect bribes
+    descriptions:
+    - A tired-looking guard leaning on a pike.
+    - He looks like he'd rather be anywhere else but here.
+    - He's always watching for troublemakers with a cynical eye.
+    - He's secretly hoping for a quiet shift so he can nap.
+    actions:
+    - id: gate_guard_give_drink
+      name: Give him the {alcohol_desc}
+      required_tag: alcohol
+      consumes_object: true
+      outcomes:
+      - id: gate_guard_bribe_pass
+        desc: The guard takes the bottle with a wink and lets you pass.
+        tags:
+        - neutral
+        - success
+        lead_to_known: true
+        linked_location: Palace
+      - id: gate_guard_drunk_sluggish
+        desc: He drinks the whole thing, gets sluggish, and forgets your face.
+        tags:
+        - stealth
+        health_change: 1
+    - id: gate_guard_bribe_coins
+      name: Bribe with coins
+      required_coins: 15
+      outcomes:
+      - id: gate_guard_bribe_success
+        desc: He pockets the coins and looks the other way.
+        tags:
+        - neutral
+        lead_to_known: true
+        linked_location: Vault
+      - id: gate_guard_bribe_warning
+        desc: He takes the coins but warns you not to get caught inside.
+        tags:
+        - threat
+        - failure
+        move_to: Vault
+    - id: gate_guard_approach
+      name: Approach the guard
+      outcomes:
+      - id: gate_guard_friendly
+        desc: The guard is unexpectedly friendly and gives you directions.
+        tags:
+        - neutral
+      - id: gate_guard_rude
+        desc: The guard is incredibly rude and pushes you back.
+        health_change: -1
+        tags:
+        - threat
+        - failure
+      - id: gate_guard_debt_secret
+        desc: The guard whispers for help; he's trapped in a debt he can't pay.
+        tags:
+        - setup_clue
+    - id: gate_guard_fight
+      name: Fight the guard
+      required_tag: weapon
+      consumes_object: false
+      outcomes:
+      - id: gate_guard_fight_win
+        desc: You overpower the guard and force your way inside!
+        tags:
+        - combat
+        - success
+        move_to: Palace
+      - id: gate_guard_fight_lose
+        desc: The guard is stronger than he looks; you take a heavy blow before retreating.
+        tags:
+        - combat
+        - threat
+        - failure
+        health_change: -3
+  - name: Bandit
+    associated_tags: [dark, alley, threat, urban, discovery]
+    known_locations: [Sewers, Vault]
+    known_objects: [Steel Dagger, Ancient Map]
+    goals:
+    - Rob travelers
+    - Survive the streets
+    descriptions:
+    - A hooded figure with a scarred face and a jagged blade.
+    - They move with the predatory grace of someone who has lived in the shadows too
+      long.
+    - A desperate-looking thief with hungry eyes.
+    - He stalks the alleyways, looking for an easy mark.
+    actions:
+    - name: Fight for your life
+      required_tag: weapon
+      consumes_object: false
+      outcomes:
+      - desc: With a swift strike, you drive the bandit away.
+        tags:
+        - combat
+        - success
+      - desc: The bandit is skilled; they leave you bleeding in the gutter.
+        tags:
+        - combat
+        - threat
+        - failure
+        health_change: -4
+    - name: Plead for mercy
+      outcomes:
+      - desc: They take your coins and leave you bruised but alive.
+        tags:
+        - threat
+        coin_change: -20
+        health_change: -1
+      - desc: The bandit has no mercy; they strike you down where you stand.
+        tags:
+        - threat
+        health_change: -5
+  - name: Dock Worker
+    associated_tags:
+    - maritime
+    - harbor
+    goals:
+    - Earn a living
+    - Avoid the storm
+    descriptions:
+    - A burly man covered in salt and sweat.
+    - He has a rough voice from years of shouting over the crashing waves.
+    - He moves with a weary but steady strength, hauling crates older than himself.
+    - His eyes are constantly fixed on the horizon, searching for a ship that never
+      arrives.
+    actions:
+    - name: Speak to the dockworker
+      outcomes:
+      - desc: They offer to show you a shortcut to a nearby hub.
+        lead_to_known: true
+        tags:
+        - social
+      - desc: They offer the traveler wine.
+        tags:
+        - neutral
+        health_change: 1
+  - name: Aurora
+    associated_tags:
+    - palace
+    - luxury
+    goals:
+    - Seek the truth
+    - Protect the legacy
+    descriptions:
+    - A mysterious figure draped in flowing silk and secrets.
+    - She speaks in melodic riddles that seem to vibrate in the air.
+    - She carries the faint scent of jasmine and ancient parchment.
+    - Her presence is both haunting and regal, as if she belongs to another era.
+    actions:
+    - name: Ask about the crown
+      outcomes:
+      - desc: She cryptically mentions it's hidden in the Vault.
+        tags:
+        - spawn
+        spawn: true
+  - name: Gardener
+    associated_tags:
+    - nature
+    - palace
+    - secret_garden
+  - name: Guard
+    associated_tags:
+    - damp
+    - palace
+    - dungeon
+    - protect
+  - name: Merchant
+    associated_tags:
+    - commercial
+    - market
+    - buy
+    - sell
+    - guidance
+    - information

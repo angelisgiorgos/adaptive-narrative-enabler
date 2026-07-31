@@ -1,0 +1,447 @@
+world_definition:
+  locations:
+    Harbor:
+      tags:
+      - urban
+      - maritime
+      - port
+      - bustling
+      - salty
+      - district_docks
+      - sea
+      - dockworkers
+      - ship
+      - rum
+      interact_prompts:
+      - Walk to the docks
+      - Approach the harbor
+      - Head towards the sea
+      - Check for available ships
+      goals:
+      - Find a ship
+      - Hire a crew
+      - Escape the navy
+      distant_descriptions:
+      - You hear the cries of seagulls and dockworkers in the distance.
+      - Sails bob up and down on the waterfront.
+      - 'There is a tang on the air: salt, fish, and sweat.'
+      entered_descriptions:
+      - You approach the harbor.
+      - You enter the harbor.
+      - The harbor is a flurry of activity.
+      - There are drunk dockworkers everywhere in the place, trying to figure out
+        how to leave the place
+      interaction_points:
+      - id: harbor_waterfront
+        label: Waterfront
+        prompt: Explore harbor
+        linked_action: harbor_explore
+        linked_location: Market
+        notes: Sailors, gossip, and distant movement on the piers can open new routes.
+      - id: harbor_crates
+        label: Cargo crates
+        prompt: Inspect the cargo crates
+        linked_action: harbor_inspect_crates
+        linked_outcome: harbor_crates_ledger
+        linked_location: Palace
+        linked_npc: Gate Guard
+        notes: Manifests and contraband connect the harbor to the palace security
+          story.
+      actions:
+      - id: harbor_explore
+        name: Explore harbor
+        outcomes:
+        - id: harbor_explore_rest
+          desc: The traveler relaxes by the sea, watching the ships roll in.
+          tags:
+          - neutral
+        - id: harbor_explore_brawl
+          desc: A brawl breaks out in a nearby tavern!
+          tags:
+          - threat
+          health_change: -1
+        - id: harbor_explore_market_rumor
+          desc: The traveler overhears a sailor talking about a secret market.
+          tags:
+          - spawn
+          spawn: true
+          linked_location: Market
+        - id: harbor_explore_compass
+          desc: A discarded compass is found in the sand.
+          tags:
+          - setup_clue
+      - id: harbor_inspect_crates
+        name: Inspect the cargo crates
+        outcomes:
+        - id: harbor_crates_ledger
+          desc: You find a ledger containing shipping routes to the Palace.
+          tags:
+          - setup_clue
+          reveal_npc: Gate Guard
+          linked_location: Palace
+        - id: harbor_crates_contraband
+          desc: A crate breaks, revealing illegal contraband!
+          tags:
+          - threat
+          - guards
+          health_change: -1
+      - id: speak_to_the_dockworkers
+        name: Join the dockworkers' discussion
+        outcomes:
+        - id: dockworkers_drunk
+          desc: The dockworkers press a cup of rum into your hand and point out a faster route through the waterfront.
+          tags:
+          - social
+          - spawn
+          - success
+          health_change: 1
+          spawn: true
+          linked_location: Market
+        - id: dockworkers_warning
+          desc: Between swigs, the dockworkers warn you that patrols have tightened around the palace road.
+          tags:
+          - social
+          - setup_clue
+          reveal_location: Palace
+    Market:
+      tags:
+      - urban
+      - trade
+      - vibrant
+      - crowded
+      - cluttered
+      - district_citadel
+      interact_prompts:
+      - Enter the market
+      - Mingle with the shoppers
+      - Approach the stalls
+      goals:
+      - Buy supplies
+      - Gather information
+      descriptions:
+      - A sprawling labyrinth of stalls and vendors selling exotic wares from across
+        the seven seas.
+      - The market is a sensory overload; every corner reveals a new treasure or a
+        new scam.
+      actions:
+      - name: Browse various stalls
+        outcomes:
+        - desc: A mysterious, glowing artifact is discovered.
+          tags:
+          - setup_clue
+          reveal_object: Ancient Map
+        - desc: A pickpocket tries to snatch your purse!
+          tags:
+          - threat
+          health_change: -1
+        - desc: A merchant offers you a map of the Palace.
+          tags:
+          - spawn
+          spawn: true
+        - desc: High-quality supplies are acquired.
+          tags:
+          - neutral
+          - success
+          health_change: 1
+      - name: Investigate a strange commotion
+        outcomes:
+        - desc: A crowd is gathered around a street performer who is actually a scout
+            for the Bandit.
+          tags:
+          - social
+          reveal_npc: Bandit
+        - desc: You find a dropped pouch of Gold Coins.
+          tags:
+          - neutral
+          coin_change: 15
+    Alley:
+      tags:
+      - urban
+      - sleazy
+      - dark
+      - dangerous
+      - narrow
+      - district_slums
+      interact_prompts:
+      - Slip into the alley
+      - Enter the narrow passage
+      - Head into the shadows
+      goals:
+      - Find a contact
+      - Avoid the guards
+      descriptions:
+      - A narrow, dimly lit passage between decaying buildings where shadows seem
+        to move on their own.
+      - The alley is damp and smells of rot; it's the perfect place for a meeting
+        or an ambush.
+      actions:
+      - name: Sneak through the darkness
+        outcomes:
+        - desc: An abandoned hideout is located.
+          tags:
+          - neutral
+        - desc: The traveler is ambushed by a group of thugs!
+          tags:
+          - threat
+          health_change: -2
+        - desc: A hidden tunnel leading out of the city is discovered.
+          tags:
+          - spawn
+          spawn: true
+    Palace:
+      tags:
+      - urban
+      - palace
+      - grand
+      - guarded
+      - luxury
+      - district_citadel
+      interact_prompts:
+      - Approach the palace gates
+      - Enter the royal halls
+      - Ascend the marble stairs
+      goals:
+      - Steal the crown
+      - Bribe a noble
+      descriptions:
+      - The magnificent seat of power, adorned with gold and guarded by elite sentinels.
+      - The air inside is thick with incense and the sound of hushed whispers.
+      actions:
+      - name: Attempt to infiltrate
+        outcomes:
+        - desc: The traveler slips past the outer guards unnoticed.
+          tags:
+          - stealth
+          - success
+          reveal_object: Heavy Shield
+        - desc: A sentinel spots you and raises the alarm!
+          tags:
+          - threat
+          health_change: -2
+        - desc: Whispers of a prisoner in the Dungeon are heard.
+          tags:
+          - spawn
+          spawn: true
+          reveal_location: Dungeon
+        - desc: A room filled with ancient records is discovered.
+          tags:
+          - setup_clue
+      - name: Eavesdrop on Nobles
+        outcomes:
+        - desc: You hear about Aurora's frequent visits to the Secret Garden.
+          tags:
+          - social
+          reveal_npc: Aurora
+          reveal_location: Secret Garden
+    Dungeon:
+      tags:
+      - prison
+      - dark
+      - cold
+      - damp
+      - hopeless
+      - district_slums
+      interact_prompts:
+      - Enter the cell
+      - Descending into the dungeon
+      - Head into the depths
+      goals:
+      - Escape
+      - Free a prisoner
+      descriptions:
+      - A cold, damp subterranean prison carved into the very bedrock of the city.
+      - The dungeon is pitch black, save for the occasional flickering torch.
+      actions:
+      - name: Search for an exit
+        outcomes:
+        - desc: The traveler finds a weakening in the cell bars.
+          tags:
+          - stealth
+        - desc: The jailer beats you during a regular inspection.
+          tags:
+          - threat
+          health_change: -1
+        - desc: A ghost appears, offering advice on how to escape.
+          tags:
+          - neutral
+      - name: Talk to a nearby prisoner
+        outcomes:
+        - desc: An old man whispers about a secret tunnel in the Sewers.
+          tags:
+          - social
+          reveal_location: Sewers
+        - desc: The prisoner is too far gone to speak coherently.
+          tags:
+          - neutral
+    Tavern:
+      tags:
+      - urban
+      - social
+      - noisy
+      - information
+      - district_docks
+      interact_prompts:
+      - Enter the tavern
+      - Join the revelry
+      - Push through the swing doors
+      goals:
+      - Hear rumors
+      - Find a job
+      descriptions:
+      - A lively, smoke-filled establishment where tales are traded as freely as ale.
+      - The tavern is packed with people from all walks of life, each with a story
+        to tell.
+      actions:
+      - name: Listen to rumors
+        outcomes:
+        - desc: A drunkard mentions a hidden tunnel in the Alley.
+          tags:
+          - spawn
+          spawn: true
+          reveal_location: Alley
+        - desc: You hear about an artifact being moved to the Vault.
+          tags:
+          - setup_clue
+          reveal_location: Vault
+        - desc: Only standard gossip and tall tales are heard.
+          tags:
+          - social
+      - name: Participate in a drinking contest
+        outcomes:
+        - desc: You win! The patrons cheer and buy you a drink.
+          tags:
+          - social
+          - success
+          health_change: 1
+          coin_change: 5
+        - desc: You pass out and someone steals your coins.
+          tags:
+          - threat
+          - failure
+          coin_change: -10
+    Vault:
+      tags:
+      - maritime
+      - urban
+      - sleazy
+      - guarded
+      - district_citadel
+      interact_prompts:
+      - Enter the vault
+      - Creep into the vault
+      - Approach the vault
+      goals:
+      - Steal
+      - Plant evidence
+      descriptions:
+      - You are inside the vault, the heavy iron door sealing shut behind you.
+      - The vault is cold and silent, save for the faint sound of dripping water.
+      actions:
+      - name: Search for loot
+        outcomes:
+        - desc: A bag of gold coins is found hidden in a corner.
+          tags:
+          - neutral
+          - success
+          coin_change: 20
+        - desc: A trap is triggered! Poisonous needles fly from the walls.
+          tags:
+          - threat
+          health_change: -2
+      - name: Crack the main safe
+        outcomes:
+        - desc: You successfully open the safe! It contains the Crown Jewels.
+          tags:
+          - stealth
+          - success
+          reveal_object: Gold Coins
+        - desc: The mechanism jams, sounding a silent alarm.
+          tags:
+          - threat
+          - guards
+          reveal_npc: Gate Guard
+    Secret Garden:
+      tags:
+      - nature
+      - serene
+      - hidden
+      - beautiful
+      interact_prompts:
+      - Enter the garden
+      - Step into the oasis
+      - Approach the fountain
+      goals:
+      - Meditate
+      - Find rare herbs
+      distant_descriptions:
+      - The scent of blooming jasmine fills the air, seemingly coming from behind
+        a high wall.
+      - A hidden opening reveals a glimpse of lush greenery.
+      entered_descriptions:
+      - A hidden oasis of lush greenery and rare flowers, tucked away from the prying
+        eyes of the city.
+      - The garden is a masterpiece of landscape design, a tranquil escape from the
+        bustling streets.
+      actions:
+      - name: Meditate by the fountain
+        outcomes:
+        - desc: Peace and clarity are found in the tranquility.
+          health_change: 1
+          tags:
+          - neutral
+    Sewers:
+      tags:
+      - dark
+      - foul
+      - underground
+      - labyrinthine
+      - district_slums
+      interact_prompts:
+      - Descend into the sewers
+      - Enter the foul tunnels
+      - Head into the darkness
+      goals:
+      - Navigate the waste
+      - Find a hidden passage
+      descriptions:
+      - A dark, foul-smelling network of tunnels that run beneath the city streets.
+      - The sewers are a labyrinth of dripping pipes and murky water.
+      actions:
+      - name: Search for a shortcut
+        outcomes:
+        - desc: You find a path that leads directly into the Palace basement.
+          tags:
+          - spawn
+          spawn: true
+          reveal_location: Palace
+        - desc: You get lost in the muck for hours.
+          tags:
+          - threat
+          health_change: -1
+      - name: Confront the shadows
+        outcomes:
+        - desc: A bandit jumps from the darkness!
+          tags:
+          - threat
+          - combat
+          reveal_npc: Bandit
+    Abandoned Church:
+      tags:
+      - abandoned
+      - damp
+      - narrow
+      actions:
+      - name: Explore Church
+        outcomes:
+        - desc: The Priest mentions a Guard.
+          reveal_npc: Guard
+    Market of the Ancients:
+      tags:
+      - crowded
+      - commercial
+      - luxury
+      actions:
+      - name: Shop for Antiques
+        outcomes:
+        - desc: The Merchant offers a rare artifact.
+          reveal_npc: Merchant
