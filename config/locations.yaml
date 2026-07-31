@@ -36,14 +36,14 @@ world_definition:
         label: Waterfront
         prompt: Explore harbor
         linked_action: harbor_explore
-        linked_location: Market
+        target_tags: [urban, trade, crowded]
         notes: Sailors, gossip, and distant movement on the piers can open new routes.
       - id: harbor_crates
         label: Cargo crates
         prompt: Inspect the cargo crates
         linked_action: harbor_inspect_crates
         linked_outcome: harbor_crates_ledger
-        linked_location: Palace
+        target_tags: [palace, guarded, luxury]
         linked_npc: Gate Guard
         notes: Manifests and contraband connect the harbor to the palace security
           story.
@@ -65,7 +65,7 @@ world_definition:
           tags:
           - spawn
           spawn: true
-          linked_location: Market
+          target_tags: [urban, trade, crowded]
         - id: harbor_explore_compass
           desc: A discarded compass is found in the sand.
           tags:
@@ -77,8 +77,9 @@ world_definition:
           desc: You find a ledger containing shipping routes to the Palace.
           tags:
           - setup_clue
+          setup_id: shipping_ledger
           reveal_npc: Gate Guard
-          linked_location: Palace
+          target_tags: [palace, guarded, luxury]
         - id: harbor_crates_contraband
           desc: A crate breaks, revealing illegal contraband!
           tags:
@@ -96,13 +97,14 @@ world_definition:
           - success
           health_change: 1
           spawn: true
-          linked_location: Market
+          target_tags: [urban, trade, crowded]
         - id: dockworkers_warning
           desc: Between swigs, the dockworkers warn you that patrols have tightened around the palace road.
           tags:
           - social
           - setup_clue
-          reveal_location: Palace
+          target_tags: [palace, guarded, luxury]
+          spawn: true
     Market:
       tags:
       - urban
@@ -222,7 +224,7 @@ world_definition:
           tags:
           - spawn
           spawn: true
-          reveal_location: Dungeon
+          target_tags: [prison, dark, guarded]
         - desc: A room filled with ancient records is discovered.
           tags:
           - setup_clue
@@ -232,8 +234,27 @@ world_definition:
           tags:
           - social
           reveal_npc: Aurora
-          reveal_location: Secret Garden
+          target_tags: [nature, serene, hidden]
+          spawn: true
+      - name: Use the discovered palace route
+        outcomes:
+        - desc: The map's markings guide you through the inner halls without retracing
+            the palace entrance.
+          tags:
+          - stealth
+          - success
+          requires_setup: palace_route
+          payoff_id: palace_route
+      - name: Follow the shipping ledger
+        outcomes:
+        - desc: The ledger reveals a service passage that bypasses the outer sentinels.
+          tags:
+          - discovery
+          - success
+          requires_setup: shipping_ledger
+          payoff_id: shipping_ledger
     Dungeon:
+      exit_locked: true
       tags:
       - prison
       - dark
@@ -257,6 +278,9 @@ world_definition:
         - desc: The traveler finds a weakening in the cell bars.
           tags:
           - stealth
+          target_tags: [dark, underground, labyrinthine]
+          spawn: true
+          unlock_exit: true
         - desc: The jailer beats you during a regular inspection.
           tags:
           - threat
@@ -269,7 +293,9 @@ world_definition:
         - desc: An old man whispers about a secret tunnel in the Sewers.
           tags:
           - social
-          reveal_location: Sewers
+          target_tags: [dark, underground, labyrinthine]
+          spawn: true
+          unlock_exit: true
         - desc: The prisoner is too far gone to speak coherently.
           tags:
           - neutral
@@ -298,11 +324,12 @@ world_definition:
           tags:
           - spawn
           spawn: true
-          reveal_location: Alley
+          target_tags: [urban, dark, dangerous]
         - desc: You hear about an artifact being moved to the Vault.
           tags:
           - setup_clue
-          reveal_location: Vault
+          target_tags: [guarded, district_citadel, maritime]
+          spawn: true
         - desc: Only standard gossip and tall tales are heard.
           tags:
           - social
@@ -413,7 +440,7 @@ world_definition:
           tags:
           - spawn
           spawn: true
-          reveal_location: Palace
+          target_tags: [palace, guarded, luxury]
         - desc: You get lost in the muck for hours.
           tags:
           - threat

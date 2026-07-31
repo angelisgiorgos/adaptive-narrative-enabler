@@ -11,7 +11,5 @@ dependencies:
   - networkx
   - pip:
       - torch
-      - transformers
-      - accelerate
+      - vllm>=0.25.0
       - sentence-transformers
-      - bitsandbytes

@@ -30,14 +30,32 @@ genome_bounds:
   discovery_bias: [0.3, 0.9]
   recovery_bias: [0.2, 0.8]
   lead_bias: [0.3, 0.9]
+  extension_bias: [0.35, 0.9]
+  tag_coherence: [0.25, 0.8]
+  tag_novelty: [0.25, 0.8]
+
+# Tag-driven world evolution. Named reveal targets are interpreted as tag hints
+# unless force_named_target is set on a specific outcome.
+world_evolution:
+  named_transition_policy: tag_hint
+  evolvable_tags:
+    [urban, maritime, social, threat, combat, stealth, luxury, guarded,
+     trade, nature, prison, discovery, mystery, religion]
+  intent_weight: 4.0
+  coherence_weight: 1.5
+  novelty_weight: 1.25
+  genome_tag_weight: 2.0
+  character_alignment_weight: 1.5
+  visited_node_penalty: 2.0
+  connected_node_penalty: 3.0
+  immediate_repeat_penalty: 10.0
+  authored_transition_weight: 0.15
 
 # Game State Configuration
 game_state:
   initial_health: 8
   initial_coins: 10
   low_health_threshold: 4
-  auto_travel_on_spawn_chance: 0.4
-  auto_travel_commit_threshold: 1.2
 
 narrative_end:
   max_actions: 12
@@ -47,6 +65,13 @@ narrative_end:
 scene:
   max_visible_npcs: 3
   max_visible_objects: 2
+  # 0 shows every valid player action. A positive value intentionally caps the list.
+  max_interactive_choices: 0
+
+npc_goals:
+  # Goals affect which NPCs appear and how their actions rank.
+  visibility_weight: 0.4
+  action_weight: 0.5
 
 spawn_selection:
   contrast_weight: 2.5
@@ -85,6 +110,7 @@ outcome_resolution:
   early_setup_bonus: 0.05
   severe_risk_penalty: 0.08
   navigation_floor: 0.98
+  generic_tag_weight: 0.1
   tag_weights:
     threat: -0.18
     spawn: 0.18
@@ -209,20 +235,56 @@ fitness:
     inventory_bonus: 2
     character_bonus: 3
 
+# These are minimized and subtracted from the reward-style fitness terms above.
+# They replace dependence on a fixed transition sequence with tag intent,
+# parameterized extension, and duplicate-scenario control.
+objective_losses:
+  tag_transition:
+    target_similarity: 0.45
+    weight: 25.0
+    missing_transition_penalty: 5.0
+  tag_coverage:
+    target_ratio: 0.35
+    weight: 40.0
+  named_transition_dependence:
+    allowed_ratio: 0.15
+    weight: 60.0
+  scenario_duplication:
+    weight: 80.0
+    power: 2.0
+  world_extension:
+    target_discovery_ratio: 0.45
+    discovery_weight: 45.0
+    target_branching: 1.5
+    branching_weight: 8.0
+
+# Shared Gemma runtime. Embedded mode initializes one vLLM engine reused by
+# augmentation, evaluation, and editor suggestions. Server mode instead calls a
+# separately started OpenAI-compatible `vllm serve` process.
+vllm:
+  mode: embedded
+  model_name: "google/gemma-4-E2B-it"
+  dtype: auto
+  gpu_memory_utilization: 0.55
+  max_model_len: 4096
+  max_num_seqs: 1
+  enforce_eager: true
+  enable_prefix_caching: true
+  limit_mm_per_prompt:
+    image: 0
+    audio: 0
+  quantization: null
+  cpu_offload_gb: 0
+  trust_remote_code: false
+  base_url: "http://127.0.0.1:8000/v1"
+  api_key: "local-vllm"
+  timeout_seconds: 180
+
 # LLM Narrative Evaluator Configuration
 llm_evaluator:
   enabled: true
-  model_name: "meta-llama/Llama-3.2-1B-Instruct"
-  max_new_tokens: 2048
+  max_new_tokens: 1024
   temperature: 0.3
-
-# If the configured Llama model is gated or unavailable to the current
-# Hugging Face user, LLM features automatically fall back to this public model.
-llm_fallback:
-  enabled: true
-  model_name: "Qwen/Qwen2.5-0.5B-Instruct"
-  local_files_only: false
-  trust_remote_code: false
 
 # Interactive Config Editor Configuration
 config_editor:
@@ -239,8 +301,9 @@ editor_suggester:
 
 # World Definition Settings
 world_definition:
-  spawn_strategy: "similarity"
-  similarity_threshold: 0.5
+  # Optional authored candidates are a weak prior only; the runtime scores all
+  # locations from tag intent and genome parameters.
+  spawn_strategy: "tags"
 
 # Augmentation Configuration
 augmentation:
