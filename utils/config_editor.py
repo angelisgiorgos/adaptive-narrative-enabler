@@ -354,6 +354,14 @@ class ConfigEditor:
             requirements.append(f"collects '{action['collects_object']}'")
         if action.get("consumes_object"):
             requirements.append("consumes the used object")
+        if action.get("check"):
+            requirements.append(f"check {action['check']}")
+        if action.get("mandatory"):
+            requirements.append("mandatory")
+        if action.get("encounter"):
+            requirements.append("encounter")
+        if action.get("return_to_previous"):
+            requirements.append("returns to the previous location")
 
         req_text = f" Requirements: {', '.join(requirements)}." if requirements else ""
         outcome_count = len(action.get("outcomes", []))
@@ -388,7 +396,17 @@ class ConfigEditor:
         if outcome.get("spawn"):
             effects.append("can open a new path")
         if outcome.get("lead_to_known"):
-            effects.append("can lead the traveler to a known place")
+            effects.append("reveals a route to a known place")
+        if outcome.get("check"):
+            effects.append(f"check {outcome['check']}")
+        if outcome.get("setup_id"):
+            effects.append(f"establishes setup {outcome['setup_id']}")
+        if outcome.get("requires_setup"):
+            effects.append(f"requires setup {outcome['requires_setup']}")
+        if outcome.get("payoff_id"):
+            effects.append(f"pays off setup {outcome['payoff_id']}")
+        if outcome.get("unlock_exit"):
+            effects.append("unlocks this location's exits")
 
         effect_text = "; ".join(effects) if effects else "no extra gameplay effects"
         return f"{outcome.get('desc', 'No description')} [{effect_text}]"
@@ -425,6 +443,7 @@ class ConfigEditor:
             print("  4. Edit actions")
             if kind == "locations":
                 print("  5. Edit interaction points")
+                print("  6. Toggle special-location exit lock")
             print("  b. back")
             choice = input("Selection: ").strip().lower()
 
@@ -455,7 +474,14 @@ class ConfigEditor:
                 if self._edit_interaction_points(entry):
                     changed = True
                 continue
-            prompt = "Please choose 1, 2, 3, 4, 5, or b." if kind == "locations" else "Please choose 1, 2, 3, 4, or b."
+            if kind == "locations" and choice == "6":
+                entry["exit_locked"] = self._ask_yes_no(
+                    "Should navigation be locked until an outcome unlocks the exits?",
+                    entry.get("exit_locked", False),
+                )
+                changed = True
+                continue
+            prompt = "Please choose 1, 2, 3, 4, 5, 6, or b." if kind == "locations" else "Please choose 1, 2, 3, 4, or b."
             print(prompt)
 
     def _edit_core_text(self, kind, entry):
@@ -467,6 +493,7 @@ class ConfigEditor:
                 ("interact_prompts", "Interaction prompts"),
                 ("distant_descriptions", "Distant descriptions"),
                 ("entered_descriptions", "Entered descriptions"),
+                ("connections", "Initial connected locations"),
             ]
         elif kind == "npcs":
             fields = [
@@ -860,7 +887,11 @@ class ConfigEditor:
             print(f"  required_coins: {action.get('required_coins', 0)}")
             print(f"  collects_object: {action.get('collects_object')}")
             print(f"  consumes_object: {action.get('consumes_object', False)}")
-            print("Options: required_tag, required_object, required_coins, collects_object, consumes_object, back")
+            print(f"  check: {action.get('check')}")
+            print(f"  mandatory: {action.get('mandatory', False)}")
+            print(f"  encounter: {action.get('encounter', False)}")
+            print(f"  return_to_previous: {action.get('return_to_previous', False)}")
+            print("Options: required_tag, required_object, required_coins, collects_object, consumes_object, check, mandatory, encounter, return_to_previous, back")
 
             choice = input("Selection: ").strip().lower()
             if choice in {"back", "b", ""}:
@@ -880,6 +911,28 @@ class ConfigEditor:
                 continue
             if choice == "consumes_object":
                 action["consumes_object"] = self._ask_yes_no("Should this action consume the used object?", action.get("consumes_object", False))
+                changed = True
+                continue
+            if choice == "check":
+                raw = input(
+                    "Check mapping, e.g. {skill: stealth, base_success: 0.7} "
+                    "(Enter to clear): "
+                ).strip()
+                if raw:
+                    value = yaml.safe_load(raw)
+                    if not isinstance(value, dict):
+                        print("A check must be a YAML mapping.")
+                        continue
+                    action["check"] = value
+                else:
+                    action.pop("check", None)
+                changed = True
+                continue
+            if choice in {"mandatory", "encounter", "return_to_previous"}:
+                action[choice] = self._ask_yes_no(
+                    f"Set {choice}?",
+                    action.get(choice, False),
+                )
                 changed = True
                 continue
             print("Unknown option.")
@@ -1062,6 +1115,11 @@ class ConfigEditor:
             ("linked_npc", "text"),
             ("linked_item", "text"),
             ("lead_to_known", "bool"),
+            ("check", "yaml"),
+            ("setup_id", "text"),
+            ("requires_setup", "text"),
+            ("payoff_id", "text"),
+            ("unlock_exit", "bool"),
         ]
         changed = False
 

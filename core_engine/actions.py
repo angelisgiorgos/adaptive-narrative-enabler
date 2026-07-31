@@ -43,10 +43,18 @@ class Outcome:
                  spawn=False,
                  move_to=None,
                  move_to_tags=None,
+                 target_tags=None,
+                 force_named_target=False,
                  reveal_npc=None,
                  reveal_object=None,
                  reveal_location=None,
-                 lead_to_known=False):
+                 lead_to_known=False,
+                 check=None,
+                 requires_roll=False,
+                 setup_id=None,
+                 requires_setup=None,
+                 payoff_id=None,
+                 unlock_exit=False):
         self.desc = desc
         self.tags = tags or []
         self.success_prob = success_prob
@@ -55,10 +63,25 @@ class Outcome:
         self.spawn = spawn
         self.move_to = move_to
         self.move_to_tags = move_to_tags or []
+        self.target_tags = target_tags or []
+        self.force_named_target = bool(force_named_target)
         self.reveal_npc = reveal_npc
         self.reveal_object = reveal_object
         self.reveal_location = reveal_location
         self.lead_to_known = lead_to_known
+        self.check = check or None
+        self.requires_roll = bool(requires_roll or check)
+        self.setup_id = setup_id
+        self.requires_setup = requires_setup
+        self.payoff_id = payoff_id
+        self.unlock_exit = bool(unlock_exit)
+
+    def is_available(self, state=None):
+        if not self.requires_setup:
+            return True
+        if state is None:
+            return False
+        return state.has_setup(self.requires_setup)
 
     def _clamp(self, value, low=0.05, high=0.95):
         return max(low, min(high, value))
@@ -78,7 +101,13 @@ class Outcome:
         # Encourage movement and discovery when the story stagnates in one place.
         stagnation_threshold = resolution_cfg.get("stagnation_threshold", 2)
         if state.consecutive_steps_in_location >= stagnation_threshold:
-            if self.move_to or self.move_to_tags or self.spawn or self.reveal_location:
+            if (
+                self.move_to
+                or self.move_to_tags
+                or self.spawn
+                or self.reveal_location
+                or self.target_tags
+            ):
                 adjustment += resolution_cfg.get("stagnation_movement_bonus", 0.1)
 
         # Reward clue/setup generation early enough in the story to matter later.
@@ -103,8 +132,12 @@ class Outcome:
 
         adjustment += (genome.success_bias - 0.5) * resolution_cfg.get("success_bias_weight", 0.3)
 
+        generic_tag_weight = resolution_cfg.get("generic_tag_weight", 0.1)
         for tag in self.tags:
             tag_lower = tag.lower()
+            adjustment += (
+                genome.tag_preference(tag_lower) - 0.5
+            ) * generic_tag_weight
             if "threat" in tag_lower or "combat" in tag_lower:
                 adjustment += (genome.threat_prob - 0.5) * tag_weights.get("threat", -0.18)
             if "spawn" in tag_lower:
@@ -122,7 +155,12 @@ class Outcome:
             if tag_lower.startswith("setup_") or tag_lower == "setup_clue":
                 adjustment += (genome.setup_prob - 0.5) * tag_weights.get("setup", 0.12)
 
-        if self.reveal_npc or self.reveal_object or self.reveal_location:
+        if (
+            self.reveal_npc
+            or self.reveal_object
+            or self.reveal_location
+            or self.target_tags
+        ):
             adjustment += (genome.discovery_bias - 0.5) * resolution_cfg.get("discovery_weight", 0.16)
         if self.lead_to_known:
             adjustment += (genome.lead_bias - 0.5) * resolution_cfg.get("lead_weight", 0.16)
@@ -134,7 +172,19 @@ class Outcome:
         return adjustment
 
     def success_probability(self, genome=None, state=None, action=None):
+        check = self.check or (getattr(action, "check", None) if action else None)
+        requires_roll = self.requires_roll or bool(check) or (
+            self.success_prob is not None and self.success_prob < 1.0
+        )
+        if not requires_roll:
+            return 1.0
+
         probability = self.success_prob
+        if check:
+            if "base_success" in check:
+                probability = float(check["base_success"])
+            elif "difficulty" in check:
+                probability = 1.0 - float(check["difficulty"])
         probability += self._genome_adjustment(genome)
         probability += self._fitness_constraint_adjustment(state)
 
@@ -149,6 +199,7 @@ class Outcome:
             or self.spawn
             or self.move_to is not None
             or self.reveal_location is not None
+            or bool(self.target_tags)
             or self.reveal_npc is not None
             or self.reveal_object is not None
         )
@@ -176,6 +227,14 @@ class Outcome:
 
         return self._clamp(probability)
 
+    def check_name(self, action=None):
+        check = self.check or (getattr(action, "check", None) if action else None)
+        if check:
+            return str(check.get("skill") or check.get("name") or "general")
+        if self.requires_roll or self.success_prob < 1.0:
+            return "general"
+        return None
+
     def success(self, genome=None, state=None, action=None):
         probability = self.success_probability(genome=genome, state=state, action=action)
         rng = getattr(state, "rng", random)
@@ -185,7 +244,10 @@ class Outcome:
 class Action:
     def __init__(self, name, outcomes, character_name=None, 
                  required_object=None, required_tag=None, required_coins=0,
-                 collects_object=None, consumes_object=False):
+                 collects_object=None, consumes_object=False,
+                 check=None, mandatory=False, encounter=False,
+                 return_to_previous=False, source_type=None, source_name=None,
+                 npc_goals=None):
         self.name = name
         self.outcomes = outcomes
         self.character_name = character_name
@@ -195,18 +257,31 @@ class Action:
         self.collects_object = collects_object
         self.consumes_object = consumes_object
         self.active_item = None # Track the specific item used during a step
+        self.check = check or None
+        self.mandatory = bool(mandatory)
+        self.encounter = bool(encounter)
+        self.return_to_previous = bool(return_to_previous)
+        self.source_type = source_type
+        self.source_name = source_name
+        self.npc_goals = list(npc_goals or [])
+
+    def available_outcomes(self, state=None):
+        return [outcome for outcome in self.outcomes if outcome.is_available(state)]
 
     def choose_outcome(self, genome=None, state=None):
-        if not self.outcomes: return None
+        outcomes = self.available_outcomes(state)
+        if not outcomes:
+            return None
         rng = getattr(state, "rng", random)
-        if not genome: return rng.choice(self.outcomes)
+        if not genome:
+            return rng.choice(outcomes)
 
         # AI Decision Logic: Calculate 'Desirability' of each outcome for this specific genome
         weights = []
         scoring_cfg = config.get("outcome_scoring", {})
         attack_bonus, defense_bonus = _inventory_combat_profile(state)
         power = _state_power(state)
-        for o in self.outcomes:
+        for o in outcomes:
             # 1. Mechanical Utility
             # Positive health/coins are weighted by success_bias
             # Negative health/coins are penalized by success_bias but tolerated by threat_prob
@@ -216,22 +291,10 @@ class Action:
             
             # 2. Thematic Alignment
             # Match outcome tags against genome biases
-            thematic_utility = 0
-            tag_bias_map = {
-                "urban": genome.bias_urban,
-                "maritime": genome.bias_maritime,
-                "social": genome.bias_social,
-                "threat": genome.bias_threat,
-                "combat": genome.bias_threat,
-                "stealth": genome.bias_stealth,
-                "luxury": genome.bias_luxury,
-                "palace": genome.bias_luxury
-            }
-            
-            for tag in o.tags:
-                for match_tag, bias_val in tag_bias_map.items():
-                    if match_tag in tag.lower():
-                        thematic_utility += bias_val
+            thematic_utility = sum(
+                genome.tag_preference(tag)
+                for tag in o.tags
+            )
             
             # Add thematic weighting
             w += thematic_utility * 1.5
@@ -244,7 +307,7 @@ class Action:
             # 4. Discovery, Movement, and Story Progression
             if o.spawn:
                 w += scoring_cfg.get("spawn_bonus", 1.5) * (0.5 + genome.spawn_prob)
-            if o.reveal_location or o.move_to or o.move_to_tags:
+            if o.reveal_location or o.target_tags or o.move_to or o.move_to_tags:
                 w += scoring_cfg.get("movement_bonus", 1.5) * (0.5 + genome.voyage_bias)
             if o.reveal_npc or o.reveal_object:
                 w += scoring_cfg.get("discovery_bonus", 1.25) * (0.5 + genome.discovery_bias)
@@ -275,4 +338,4 @@ class Action:
 
             weights.append(max(0.1, w))
 
-        return rng.choices(self.outcomes, weights=weights, k=1)[0]
+        return rng.choices(outcomes, weights=weights, k=1)[0]

@@ -2,6 +2,7 @@ import os
 import json
 import yaml
 import datetime
+import copy
 from utils.config_loader import config
 from evaluator.llm_eval import LLMNarrativeEvaluator
 
@@ -23,9 +24,7 @@ class WorldAugmenter:
     @property
     def llm(self):
         if self._llm is None:
-            import torch
-            torch.cuda.empty_cache() # Clear cache before loading
-            print("Initializing LLM for augmentation...")
+            print("Initializing shared Gemma/vLLM runtime for augmentation...")
             self._llm = LLMNarrativeEvaluator()
         return self._llm
 
@@ -77,10 +76,29 @@ class WorldAugmenter:
 1. **NPCS AS HUB**: Every NEW character MUST have exactly one `known_locations` (list of location names) and one `known_objects` (list of object names) key.
 2. **TAG REUSE**: Give NPCs broad tags (e.g. "urban", "guarded") so they appear in multiple locations. Give new locations at least 2 tags from the TAG CLOUD.
 3. **ONLY NEW NODES**: Return ONLY new characters, items, and locations. Do NOT re-define Harbor or other existing items.
-4. **FORMAT**:
+4. **PARAMETERIZED LOCATIONS**: Every location must include `template_id` and a `parameters` object. Reuse a template for variants, but never repeat the same template with the same parameters.
+5. **TAG-DRIVEN LINKS**: Outcomes that reveal a route must use `target_tags`; do not create `linked_location`, `reveal_location`, or a predefined transition unless it is an unavoidable forced move.
+6. **FORMAT**:
 {{
   "locations": {{
-    "Alchemy Lab": {{ "tags": ["urban", "research"], "actions": [...] }}
+    "Alchemy Lab": {{
+      "template_id": "specialist_workspace",
+      "parameters": {{"discipline": "alchemy", "district": "citadel"}},
+      "tags": ["urban", "research"],
+      "actions": [
+        {{
+          "name": "Study the restricted shelves",
+          "outcomes": [
+            {{
+              "desc": "A clue points toward a secluded garden.",
+              "tags": ["discovery", "nature"],
+              "spawn": true,
+              "target_tags": ["nature", "secluded"]
+            }}
+          ]
+        }}
+      ]
+    }}
   }},
   "objects": [
     {{ "name": "Rare Herb", "associated_tags": ["nature", "research"] }}
@@ -117,13 +135,17 @@ class WorldAugmenter:
         raw_locs = new_data.get('locations', new_data.get('new_locations', {}))
         raw_objs = new_data.get('objects', new_data.get('new_objects', []))
         raw_chars = new_data.get('characters', new_data.get('new_characters', []))
+        raw_locs = self._deduplicate_parameterized_locations(
+            current_world.get("locations", {}),
+            raw_locs,
+        )
 
         if not raw_locs and not raw_objs and not raw_chars:
             print("  WARNING: Augmented data is empty. Skipping file update to prevent corruption.")
             return None
 
         # Deep merge
-        final_world = current_world.copy()
+        final_world = copy.deepcopy(current_world)
         final_world['locations'] = {**current_world.get('locations', {}), **raw_locs}
         final_world['objects'] = current_world.get('objects', []) + raw_objs
         final_world['characters'] = current_world.get('characters', []) + raw_chars
@@ -135,10 +157,48 @@ class WorldAugmenter:
             print("Updating config in memory with augmented world.")
             config.set_world_definition(final_world)
         
-        import torch
-        torch.cuda.empty_cache() # Clear cache after generation
-        
         return final_world, filepath
+
+    @staticmethod
+    def _scenario_key(name, data):
+        template_id = data.get("template_id") or "_".join(
+            str(name).strip().casefold().split()
+        )
+        parameters = tuple(sorted(
+            (str(key), repr(value))
+            for key, value in (data.get("parameters") or {}).items()
+        ))
+        return str(template_id), parameters
+
+    def _deduplicate_parameterized_locations(self, existing, generated):
+        """Drop duplicate names and duplicate template/parameter instances."""
+        if not isinstance(generated, dict):
+            return {}
+
+        seen_names = {
+            " ".join(str(name).strip().casefold().split())
+            for name in existing
+        }
+        seen_scenarios = {
+            self._scenario_key(name, data)
+            for name, data in existing.items()
+        }
+        accepted = {}
+        for name, data in generated.items():
+            if not isinstance(data, dict):
+                continue
+            normalized_name = " ".join(str(name).strip().casefold().split())
+            scenario_key = self._scenario_key(name, data)
+            if normalized_name in seen_names or scenario_key in seen_scenarios:
+                print(f"Skipping duplicate generated scenario: {name}")
+                continue
+            if not data.get("template_id") or not isinstance(data.get("parameters"), dict):
+                print(f"Skipping non-parameterized generated location: {name}")
+                continue
+            seen_names.add(normalized_name)
+            seen_scenarios.add(scenario_key)
+            accepted[name] = data
+        return accepted
 
     def save_augmentation(self, data):
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -22,7 +22,8 @@ world_definition:
         tags:
         - spawn
         spawn: true
-        linked_location: Palace
+        target_tags: [palace, guarded, luxury]
+        setup_id: palace_route
   - name: Vintage Wine
     collectible: true
     associated_tags:
@@ -42,6 +43,9 @@ world_definition:
     - id: vintage_wine_collect
       name: Collect the wine
       collects_object: Vintage Wine
+      check:
+        skill: stealth
+        base_success: 0.7
       outcomes:
       - id: vintage_wine_collect_success
         desc: The traveler pockets a bottle of fine wine.

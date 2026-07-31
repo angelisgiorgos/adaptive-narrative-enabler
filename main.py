@@ -4,6 +4,7 @@ import os
 import datetime
 import sys
 import threading
+import multiprocessing
 import yaml
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from utils.config_loader import config
@@ -22,6 +23,14 @@ MAX_STEPS = config.get("evolution.max_steps", 60)
 EVALUATION_THREADS = config.get("evolution.evaluation_threads", 8)
 PARALLEL_BACKEND = config.get("evolution.parallel_backend", "processes")
 _SPAWN_RULES_CACHE = {}
+
+
+def _new_process_pool(max_workers):
+    # Spawn avoids inheriting an initialized vLLM/CUDA context into CPU workers.
+    return ProcessPoolExecutor(
+        max_workers=max_workers,
+        mp_context=multiprocessing.get_context("spawn"),
+    )
 
 
 class GenerationStopper:
@@ -379,8 +388,119 @@ def _fitness_breakdown(state):
             if "action limit" in reason_text:
                 end_score += base_cfg.get("max_action_completion_bonus", 0)
     breakdown["ending"] = end_score
+    for name, loss in _objective_loss_breakdown(state).items():
+        breakdown[f"loss.{name}"] = -float(loss)
 
     return breakdown
+
+
+def _scenario_event_key(event):
+    if not isinstance(event, dict):
+        return repr(event)
+    return (
+        event.get("scenario_key"),
+        event.get("action"),
+        tuple(sorted(event.get("tags", []))),
+        tuple(sorted(
+            (str(key), repr(value))
+            for key, value in event.get("parameters", {}).items()
+        )),
+    )
+
+
+def _objective_loss_breakdown(state):
+    """Losses for tag-driven, extensible, non-duplicating world evolution.
+
+    Evolution still maximizes fitness, so each loss is subtracted by
+    `_fitness_breakdown`. Keeping the losses explicit makes their effects
+    inspectable in saved/evaluated runs.
+    """
+    loss_cfg = config.get("objective_losses", {})
+    losses = {}
+
+    transitions = getattr(state, "transition_records", [])
+    tag_cfg = loss_cfg.get("tag_transition", {})
+    target_similarity = float(tag_cfg.get("target_similarity", 0.45))
+    similarities = [
+        float(record.get("tag_similarity", 0.0))
+        for record in transitions
+        if record.get("tag_similarity") is not None
+    ]
+    if similarities:
+        mean_error = sum(
+            (value - target_similarity) ** 2 for value in similarities
+        ) / len(similarities)
+        losses["tag_transition"] = mean_error * tag_cfg.get("weight", 25.0)
+    else:
+        losses["tag_transition"] = tag_cfg.get("missing_transition_penalty", 5.0)
+
+    all_tags = _flatten_seen_tags(state.tags_seen)
+    coverage_cfg = loss_cfg.get("tag_coverage", {})
+    world_tags = {
+        str(tag).lower()
+        for location in state.world.locations.values()
+        for tag in location.tags
+    }
+    seen_tags = {str(tag).lower() for tag in all_tags}
+    coverage = len(seen_tags & world_tags) / max(1, len(world_tags))
+    coverage_target = float(coverage_cfg.get("target_ratio", 0.35))
+    losses["tag_coverage"] = (
+        max(0.0, coverage_target - coverage) ** 2
+        * coverage_cfg.get("weight", 40.0)
+    )
+
+    named_cfg = loss_cfg.get("named_transition_dependence", {})
+    if transitions:
+        named_count = sum(
+            1 for record in transitions
+            if record.get("resolution") == "named"
+        )
+        named_ratio = named_count / len(transitions)
+    else:
+        named_ratio = 0.0
+    allowed_ratio = float(named_cfg.get("allowed_ratio", 0.15))
+    losses["named_transition_dependence"] = (
+        max(0.0, named_ratio - allowed_ratio) ** 2
+        * named_cfg.get("weight", 60.0)
+    )
+
+    duplicate_cfg = loss_cfg.get("scenario_duplication", {})
+    event_keys = [
+        _scenario_event_key(event)
+        for event in getattr(state, "scenario_events", [])
+    ]
+    duplicate_count = len(event_keys) - len(set(event_keys))
+    duplicate_ratio = duplicate_count / max(1, len(event_keys))
+    losses["scenario_duplication"] = (
+        duplicate_ratio ** duplicate_cfg.get("power", 2.0)
+        * duplicate_cfg.get("weight", 80.0)
+    )
+
+    extension_cfg = loss_cfg.get("world_extension", {})
+    discovered_ratio = len(state.discovered_locations) / max(
+        1, len(state.world.locations)
+    )
+    target_discovery = float(extension_cfg.get("target_discovery_ratio", 0.45))
+    discovery_shortfall = max(0.0, target_discovery - discovered_ratio)
+
+    discovered_edges = set()
+    for origin_name in state.discovered_locations:
+        location = state.world.locations.get(origin_name)
+        if not location:
+            continue
+        for destination in location.connected:
+            discovered_edges.add(tuple(sorted((origin_name, destination))))
+    branching = (
+        (2.0 * len(discovered_edges)) / max(1, len(state.discovered_locations))
+    )
+    target_branching = float(extension_cfg.get("target_branching", 1.5))
+    branching_shortfall = max(0.0, target_branching - branching)
+    losses["world_extension"] = (
+        discovery_shortfall ** 2 * extension_cfg.get("discovery_weight", 45.0)
+        + branching_shortfall ** 2 * extension_cfg.get("branching_weight", 8.0)
+    )
+
+    return losses
 
 
 # ============================
@@ -396,6 +516,64 @@ def _next_setup_tag(action_index, outcome_index):
     clue_variants = max(1, int(setup_cfg.get("clue_variants", 3)))
     clue_index = ((action_index + outcome_index) % clue_variants) + 1
     return f"setup_{clue_index}"
+
+
+def _build_outcome(o_data, action_data, genome, fallback_setup_tag=None):
+    move_to, reveal_location, reveal_npc, reveal_object = _resolve_outcome_links(o_data)
+    success_prob = 1.0
+    if o_data.get("use_genome_bias"):
+        success_prob = genome.success_bias
+    elif "success_prob" in o_data:
+        success_prob = float(o_data["success_prob"])
+
+    tags = copy.copy(o_data.get("tags", []))
+    setup_id = o_data.get("setup_id")
+    if "setup_clue" in tags:
+        tags.remove("setup_clue")
+        if not setup_id and fallback_setup_tag:
+            setup_id = fallback_setup_tag.removeprefix("setup_")
+    if setup_id:
+        setup_tag = f"setup_{setup_id}"
+        if setup_tag not in tags:
+            tags.append(setup_tag)
+
+    payoff_id = o_data.get("payoff_id")
+    if payoff_id:
+        payoff_tag = f"payoff_{payoff_id}"
+        if payoff_tag not in tags:
+            tags.append(payoff_tag)
+
+    check = o_data.get("check") or action_data.get("check")
+    return Outcome(
+        desc=o_data.get("desc", ""),
+        tags=tags,
+        success_prob=success_prob,
+        health_change=o_data.get("health_change", 0),
+        coin_change=o_data.get("coin_change", 0),
+        spawn=o_data.get("spawn", False),
+        move_to=move_to,
+        move_to_tags=o_data.get("move_to_tags", []),
+        target_tags=(
+            o_data.get("target_tags")
+            or o_data.get("reveal_location_tags")
+            or []
+        ),
+        force_named_target=o_data.get("force_named_target", False),
+        reveal_location=reveal_location,
+        reveal_npc=reveal_npc,
+        reveal_object=reveal_object,
+        lead_to_known=o_data.get("lead_to_known", False),
+        check=o_data.get("check"),
+        requires_roll=bool(
+            check
+            or o_data.get("use_genome_bias")
+            or "success_prob" in o_data
+        ),
+        setup_id=setup_id,
+        requires_setup=o_data.get("requires_setup"),
+        payoff_id=payoff_id,
+        unlock_exit=o_data.get("unlock_exit", False),
+    )
 
 
 def _location_signature(locations_cfg):
@@ -455,7 +633,10 @@ def build_world(genome):
             interact_prompts=_interaction_prompts(data),
             goals=data.get("goals", []),
             distant_descriptions=_location_distant_descriptions(data),
-            entered_descriptions=_location_entered_descriptions(data)
+            entered_descriptions=_location_entered_descriptions(data),
+            exit_locked=data.get("exit_locked", False),
+            template_id=data.get("template_id"),
+            parameters=data.get("parameters", {}),
         )
         
         # 2. Actions/Outcomes
@@ -463,31 +644,11 @@ def build_world(genome):
         for action_index, a_data in enumerate(data.get("actions", [])):
             outcomes_list = []
             for outcome_index, o_data in enumerate(a_data.get("outcomes", [])):
-                move_to, reveal_location, reveal_npc, reveal_object = _resolve_outcome_links(o_data)
-                success_prob = 1.0
-                if o_data.get("use_genome_bias"):
-                    success_prob = genome.success_bias
-                elif "success_prob" in o_data:
-                    success_prob = o_data["success_prob"]
-                
-                # Clue Handling
-                tags = copy.copy(o_data.get("tags", []))
-                if "setup_clue" in tags:
-                    tags.remove("setup_clue")
-                    tags.append(_next_setup_tag(action_index, outcome_index))
-
-                outcomes_list.append(Outcome(
-                    desc=o_data.get("desc", ""),
-                    tags=tags,
-                    success_prob=success_prob,
-                    health_change=o_data.get("health_change", 0),
-                    coin_change=o_data.get("coin_change", 0),
-                    spawn=o_data.get("spawn", False),
-                    move_to=move_to,
-                    reveal_location=reveal_location,
-                    reveal_npc=reveal_npc,
-                    reveal_object=reveal_object,
-                    lead_to_known=o_data.get("lead_to_known", False)
+                outcomes_list.append(_build_outcome(
+                    o_data,
+                    a_data,
+                    genome,
+                    fallback_setup_tag=_next_setup_tag(action_index, outcome_index),
                 ))
             actions_list.append(Action(
                 name=a_data.get("name", "Action"), 
@@ -496,7 +657,13 @@ def build_world(genome):
                 required_tag=a_data.get("required_tag"),
                 required_coins=a_data.get("required_coins", 0),
                 collects_object=a_data.get("collects_object"),
-                consumes_object=a_data.get("consumes_object", False)
+                consumes_object=a_data.get("consumes_object", False),
+                check=a_data.get("check"),
+                mandatory=a_data.get("mandatory", False),
+                encounter=a_data.get("encounter", False),
+                return_to_previous=a_data.get("return_to_previous", False),
+                source_type="location",
+                source_name=name,
             ))
         loc.actions = actions_list
         world.add_location(loc)
@@ -506,32 +673,26 @@ def build_world(genome):
         for child in children:
             world.allow_spawn(parent, child)
 
+    # Explicitly discovered/initial connections are separate from spawn candidates.
+    for parent, children in config_wd.get("connections", {}).items():
+        for child in children:
+            world.connect(parent, child)
+    for parent, data in locations_cfg.items():
+        for child in data.get("connections", []):
+            world.connect(parent, child)
+
     # 4. Characters
     characters_cfg = config_wd.get("characters", [])
     for char_data in characters_cfg:
         char_actions_list = []
-        for a_data in char_data.get("actions", []):
+        for action_index, a_data in enumerate(char_data.get("actions", [])):
             char_outcomes_list = []
-            for o_data in a_data.get("outcomes", []):
-                move_to, reveal_location, reveal_npc, reveal_object = _resolve_outcome_links(o_data)
-                success_prob = 1.0
-                if o_data.get("use_genome_bias"):
-                    success_prob = genome.success_bias
-                elif "success_prob" in o_data:
-                    success_prob = o_data["success_prob"]
-                
-                char_outcomes_list.append(Outcome(
-                    desc=o_data.get("desc", ""),
-                    tags=o_data.get("tags", []),
-                    success_prob=success_prob,
-                    health_change=o_data.get("health_change", 0),
-                    coin_change=o_data.get("coin_change", 0),
-                    spawn=o_data.get("spawn", False),
-                    move_to=move_to,
-                    reveal_location=reveal_location,
-                    reveal_npc=reveal_npc,
-                    reveal_object=reveal_object,
-                    lead_to_known=o_data.get("lead_to_known", False)
+            for outcome_index, o_data in enumerate(a_data.get("outcomes", [])):
+                char_outcomes_list.append(_build_outcome(
+                    o_data,
+                    a_data,
+                    genome,
+                    fallback_setup_tag=_next_setup_tag(action_index, outcome_index),
                 ))
             char_actions_list.append(Action(
                 name=f"({char_data['name']}) {a_data.get('name', 'Action')}", 
@@ -541,7 +702,14 @@ def build_world(genome):
                 required_tag=a_data.get("required_tag"),
                 required_coins=a_data.get("required_coins", 0),
                 collects_object=a_data.get("collects_object"),
-                consumes_object=a_data.get("consumes_object", False)
+                consumes_object=a_data.get("consumes_object", False),
+                check=a_data.get("check"),
+                mandatory=a_data.get("mandatory", False),
+                encounter=a_data.get("encounter", False),
+                return_to_previous=a_data.get("return_to_previous", False),
+                source_type="npc",
+                source_name=char_data["name"],
+                npc_goals=char_data.get("goals", []),
             ))
         
         char = Character(
@@ -559,27 +727,14 @@ def build_world(genome):
     objects_cfg = config_wd.get("objects", [])
     for obj_data in objects_cfg:
         obj_actions_list = []
-        for a_data in obj_data.get("actions", []):
+        for action_index, a_data in enumerate(obj_data.get("actions", [])):
             obj_outcomes_list = []
-            for o_data in a_data.get("outcomes", []):
-                move_to, reveal_location, reveal_npc, reveal_object = _resolve_outcome_links(o_data)
-                success_prob = 1.0
-                if o_data.get("use_genome_bias"):
-                    success_prob = genome.success_bias
-                elif "success_prob" in o_data:
-                    success_prob = o_data["success_prob"]
-                
-                obj_outcomes_list.append(Outcome(
-                    desc=o_data.get("desc", ""),
-                    tags=o_data.get("tags", []),
-                    success_prob=success_prob,
-                    health_change=o_data.get("health_change", 0),
-                    coin_change=o_data.get("coin_change", 0),
-                    spawn=o_data.get("spawn", False),
-                    move_to=move_to,
-                    reveal_location=reveal_location,
-                    reveal_npc=reveal_npc,
-                    reveal_object=reveal_object
+            for outcome_index, o_data in enumerate(a_data.get("outcomes", [])):
+                obj_outcomes_list.append(_build_outcome(
+                    o_data,
+                    a_data,
+                    genome,
+                    fallback_setup_tag=_next_setup_tag(action_index, outcome_index),
                 ))
             obj_actions_list.append(Action(
                 name=f"[{obj_data['name']}] {a_data.get('name', 'Action')}", 
@@ -588,7 +743,13 @@ def build_world(genome):
                 required_tag=a_data.get("required_tag"),
                 required_coins=a_data.get("required_coins", 0),
                 collects_object=a_data.get("collects_object"),
-                consumes_object=a_data.get("consumes_object", False)
+                consumes_object=a_data.get("consumes_object", False),
+                check=a_data.get("check"),
+                mandatory=a_data.get("mandatory", False),
+                encounter=a_data.get("encounter", False),
+                return_to_previous=a_data.get("return_to_previous", False),
+                source_type="item",
+                source_name=obj_data["name"],
             ))
         
         obj = Object(
@@ -721,7 +882,7 @@ def evaluate_population(population, generation, base_seed, stop_event=None, exec
             for index, genome in enumerate(population)
         ]
         local_executor = executor is None
-        process_executor = executor or ProcessPoolExecutor(max_workers=max_workers)
+        process_executor = executor or _new_process_pool(max_workers)
         futures = {
             process_executor.submit(_worker_evaluate_genome, task): task[0]
             for task in tasks
@@ -777,7 +938,7 @@ def evolve(stop_event=None):
     process_executor = None
 
     if max_workers > 1 and PARALLEL_BACKEND == "processes":
-        process_executor = ProcessPoolExecutor(max_workers=max_workers)
+        process_executor = _new_process_pool(max_workers)
 
     try:
         for gen in range(GENERATIONS):
@@ -859,15 +1020,15 @@ def _run_archive_dir(timestamp):
 
 def _world_definition_with_runtime_connections(state):
     world_definition = copy.deepcopy(config.get("world_definition", {}))
-    spawn_rules = copy.deepcopy(world_definition.get("spawn_rules", {}))
+    connections = copy.deepcopy(world_definition.get("connections", {}))
 
     for name, loc in state.world.locations.items():
         connected = sorted(loc.connected)
         if connected:
-            existing = set(spawn_rules.get(name, []))
-            spawn_rules[name] = sorted(existing | set(connected))
+            existing = set(connections.get(name, []))
+            connections[name] = sorted(existing | set(connected))
 
-    world_definition["spawn_rules"] = spawn_rules
+    world_definition["connections"] = connections
     return world_definition
 
 
@@ -933,7 +1094,7 @@ def save_best_artifacts(score, genome, state, run_dir=None, timestamp=None, reas
         "saved_at": timestamp,
         "score": float(score),
         "reason": reason,
-        "best_genome": {k: float(v) for k, v in vars(genome).items()},
+        "best_genome": genome.to_dict(),
         "path": state.path,
         "world_definition": _world_definition_with_runtime_connections(state),
     }
@@ -959,47 +1120,53 @@ def prompt_story_setup_editor():
     editor = ConfigEditor(os.path.dirname(__file__))
 
     print("\nStartup options:")
-    print("  1. Run the story generator")
-    print("  2. Show the existing story setup")
-    print("  3. Edit story setup, then run")
-    print("  4. Edit story setup only")
-    print("  5. Load a world YAML path, then run")
+    print("  1. Generate and save a new genome/world (do not play)")
+    print("  2. Play the latest saved genome/world")
+    print("  3. Generate a new genome/world, then play it")
+    print("  4. Show the existing story setup")
+    print("  5. Edit story setup only")
+    print("  6. Load a saved world YAML path and play it")
 
     while True:
-        choice = input("Selection [1/2/3/4/5]: ").strip() or "1"
+        choice = input("Selection [1/2/3/4/5/6]: ").strip() or "1"
         if choice == "1":
-            return True, None
+            return "generate", None
         if choice == "2":
+            return "play", None
+        if choice == "3":
+            return "run", None
+        if choice == "4":
             editor.browse_story()
             continue
-        if choice == "3":
-            should_run = editor.run()
-            config.reload()
-            return should_run, None
-        if choice == "4":
+        if choice == "5":
             editor.run()
             config.reload()
-            return False, None
-        if choice == "5":
-            world_path = input("World YAML path: ").strip()
+            return "none", None
+        if choice == "6":
+            world_path = input("Saved world YAML path: ").strip()
             if world_path:
-                return True, world_path
+                return "play", world_path
             print("Please enter a path, or choose another option.")
             continue
-        print("Please choose 1, 2, 3, 4, or 5.")
+        print("Please choose 1, 2, 3, 4, 5, or 6.")
 
 
-def run_story(world_path=None):
+def _prepare_runtime(world_path=None, load_latest=False):
     config.reload()
     refresh_runtime_settings()
     apply_random_seed()
     if world_path:
-        load_world_from_path(world_path)
-    else:
-        load_best_world_if_available()
+        resolved = load_world_from_path(world_path)
+        if not resolved:
+            return None
+        return resolved
+    if load_latest:
+        return load_best_world_if_available()
+    return None
 
+
+def _augment_world_if_enabled():
     # Check for World Augmentation
-    # Ensure the output directory exists as per user request
     output_dir = config.get("augmentation.output_dir", "augmentations")
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -1016,15 +1183,40 @@ def run_story(world_path=None):
         else:
             print("Augmentation skipped or failed.")
 
-    # Print world locations after potential augmentation
+
+def _print_world_summary(genome):
     print("\n--- World Locations (Active Configuration) ---")
-    dummy_world = build_world(Genome())
+    dummy_world = build_world(genome)
     for name, loc in dummy_world.locations.items():
         print(f"Location: {name:<15} | Tags: {', '.join(loc.tags)}")
     print("-" * 30)
     for obj in dummy_world.objects:
         print(f"Object:   {obj.name:<15} | Tags: {', '.join(obj.associated_tags)}")
     print("-" * 30 + "\n")
+
+
+def _read_saved_genome(world_path):
+    resolved_path = _resolve_project_path(world_path)
+    with open(resolved_path, "r") as handle:
+        payload = yaml.safe_load(handle) or {}
+    genome_data = payload.get("best_genome")
+    if not genome_data:
+        raise ValueError(
+            f"The saved world has no best_genome entry: {resolved_path}. "
+            "Run generation once before playing it."
+        )
+    return Genome.from_dict(genome_data)
+
+
+def generate_story_world(world_path=None):
+    """Evolution step: generate and save a reusable genome/world without playing."""
+    if world_path and not _prepare_runtime(world_path=world_path):
+        return None
+    if not world_path:
+        _prepare_runtime()
+
+    _augment_world_if_enabled()
+    _print_world_summary(Genome())
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = _run_archive_dir(timestamp)
@@ -1052,16 +1244,51 @@ def run_story(world_path=None):
         print(f"[ARCHIVE] Best score world saved to: {best_world_file}")
         print(f"[ARCHIVE] Best score story saved to: {best_story_file}")
 
-    print("\nSimulating detailed best story...")
-    final_world = build_world(best_genome)
+    print("\n[GENERATION] Complete. Use the play command to run this saved genome.")
+    return {
+        "genome": best_genome,
+        "score": best_score,
+        "episode_score": best_episode_score,
+        "world_file": best_world_file,
+        "story_file": best_story_file,
+        "run_dir": run_dir,
+    }
+
+
+def play_story(world_path=None, genome=None):
+    """Play step: load a saved genome/world and run it without evolution."""
+    source_path = world_path
+    if genome is None:
+        source_path = _prepare_runtime(world_path=world_path, load_latest=not world_path)
+        if not source_path:
+            print("[PLAY] No saved world is available. Run generation first.")
+            return None
+        try:
+            genome = _read_saved_genome(source_path)
+        except (OSError, ValueError) as exc:
+            print(f"[PLAY] {exc}")
+            return None
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = _run_archive_dir(timestamp)
+    timestamp = os.path.basename(run_dir)
+    print(f"[PLAY] Running saved genome without evolution.")
+    if source_path:
+        print(f"[PLAY] Source: {source_path}")
+    print(f"[ARCHIVE] This playthrough will be saved in: {run_dir}")
+
+    final_world = build_world(genome)
     
     # Obtain simulation parameters from config
     sim_verbose = config.get("simulation.verbose", True)
     sim_interactive = config.get("simulation.interactive", True)
     
-    final_state = GameState(final_world, best_genome, 
-                            verbose=True, 
-                            interactive=sim_interactive)
+    final_state = GameState(
+        final_world,
+        genome,
+        verbose=sim_verbose,
+        interactive=sim_interactive,
+    )
     for _ in range(MAX_STEPS):
         if final_state.health <= 0: break
         if not final_state.step(): break
@@ -1098,7 +1325,7 @@ def run_story(world_path=None):
         f.write("="*60 + "\n\n")
         
         f.write("--- EVOLUTION PARAMETERS (Best Genome) ---\n")
-        for k, v in vars(best_genome).items():
+        for k, v in vars(genome).items():
             f.write(f"{k}: {v:.4f}\n")
         f.write("\n")
         
@@ -1113,9 +1340,45 @@ def run_story(world_path=None):
         f.write("\n\n" + "="*60 + "\n")
 
     print(f"\n[ARCHIVE] Story successfully saved to: {run_file}")
+    return final_state
+
+
+def run_story(world_path=None):
+    """Compatibility workflow: generate first, then play the generated genome."""
+    result = generate_story_world(world_path=world_path)
+    if not result:
+        return None
+    return play_story(genome=result["genome"])
+
+
+def _parse_cli():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Adaptive Narrative Enabler")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=("generate", "play", "run", "menu"),
+        default="menu",
+        help="Generate only, play a saved genome, or do both.",
+    )
+    parser.add_argument(
+        "--world",
+        help="World/run YAML path. For play, it must contain best_genome.",
+    )
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
-    should_run, world_path = prompt_story_setup_editor()
-    if should_run:
+    args = _parse_cli()
+    command = args.command
+    world_path = args.world
+    if command == "menu":
+        command, world_path = prompt_story_setup_editor()
+
+    if command == "generate":
+        generate_story_world(world_path=world_path)
+    elif command == "play":
+        play_story(world_path=world_path)
+    elif command == "run":
         run_story(world_path=world_path)

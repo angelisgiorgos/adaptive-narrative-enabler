@@ -47,7 +47,7 @@ world_definition:
         - neutral
         - success
         lead_to_known: true
-        linked_location: Palace
+        target_tags: [palace, guarded, luxury]
       - id: gate_guard_drunk_sluggish
         desc: He drinks the whole thing, gets sluggish, and forgets your face.
         tags:
@@ -62,7 +62,7 @@ world_definition:
         tags:
         - neutral
         lead_to_known: true
-        linked_location: Vault
+        target_tags: [guarded, district_citadel, maritime]
       - id: gate_guard_bribe_warning
         desc: He takes the coins but warns you not to get caught inside.
         tags:

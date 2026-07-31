@@ -1,123 +1,156 @@
+"""Shared Gemma runtime backed by vLLM.
+
+The singleton prevents the evaluator, augmenter, and editor suggester from loading
+separate model copies. It supports an embedded vLLM engine and an optional
+OpenAI-compatible vLLM server.
+"""
+
+import json
+import threading
+import urllib.error
+import urllib.request
+
 from utils.config_loader import config
 
 
-ACCESS_ERROR_MARKERS = (
-    "401",
-    "403",
-    "gated",
-    "restricted",
-    "not authorized",
-    "unauthorized",
-    "access token",
-    "authentication",
-    "permission",
-)
+class VLLMRuntime:
+    def __init__(self, model_name=None):
+        self.model_name = model_name or config.get(
+            "vllm.model_name",
+            "google/gemma-4-E2B-it",
+        )
+        self.mode = config.get("vllm.mode", "embedded")
+        self._engine = None
+        self._sampling_params_class = None
+        self._lock = threading.Lock()
 
-
-def is_access_error(exc):
-    text = str(exc).lower()
-    return any(marker in text for marker in ACCESS_ERROR_MARKERS)
-
-
-def candidate_model_names(primary_model):
-    fallback_enabled = config.get("llm_fallback.enabled", True)
-    fallback_model = config.get("llm_fallback.model_name", "Qwen/Qwen2.5-0.5B-Instruct")
-
-    names = []
-    if primary_model:
-        names.append(primary_model)
-    if fallback_enabled and fallback_model and fallback_model not in names:
-        names.append(fallback_model)
-    return names
-
-
-def load_causal_lm_with_fallback(primary_model, *, purpose="LLM", prefer_quantized=True):
-    try:
-        import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-    except ImportError as exc:
-        raise RuntimeError("Transformers and torch are required for local LLM features.") from exc
-
-    last_error = None
-    local_files_only = config.get("llm_fallback.local_files_only", False)
-    trust_remote_code = config.get("llm_fallback.trust_remote_code", False)
-
-    for index, model_name in enumerate(candidate_model_names(primary_model)):
-        is_fallback = index > 0
-        if is_fallback:
-            print(f"[{purpose}] Falling back to public model: {model_name}")
-        else:
-            print(f"[{purpose}] Loading model: {model_name}")
+    def _ensure_embedded_engine(self):
+        if self._engine is not None:
+            return
 
         try:
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_name,
-                local_files_only=local_files_only,
-                trust_remote_code=trust_remote_code,
-            )
-        except Exception as exc:
-            last_error = exc
-            if is_access_error(exc) and not is_fallback:
-                print(f"[{purpose}] Access denied for {model_name}; trying configured fallback.")
-                continue
-            print(f"[{purpose}] Tokenizer load failed for {model_name}: {exc}")
-            continue
+            from vllm import LLM, SamplingParams
+        except ImportError as exc:
+            raise RuntimeError(
+                "vLLM is required for LLM features. Install the environment or "
+                "set vllm.mode to 'server' and start a vLLM server."
+            ) from exc
 
-        load_attempts = []
-        if prefer_quantized and torch.cuda.is_available():
-            try:
-                from transformers import BitsAndBytesConfig
-                load_attempts.append({
-                    "label": "4-bit GPU",
-                    "kwargs": {
-                        "quantization_config": BitsAndBytesConfig(
-                            load_in_4bit=True,
-                            bnb_4bit_compute_dtype=torch.float16,
-                            bnb_4bit_quant_type="nf4",
-                        ),
-                        "device_map": "auto",
-                    },
-                })
-            except Exception:
-                pass
+        engine_kwargs = {
+            "model": self.model_name,
+            "dtype": config.get("vllm.dtype", "auto"),
+            "trust_remote_code": config.get("vllm.trust_remote_code", False),
+            "gpu_memory_utilization": float(
+                config.get("vllm.gpu_memory_utilization", 0.55)
+            ),
+            "max_model_len": int(config.get("vllm.max_model_len", 4096)),
+            "max_num_seqs": int(config.get("vllm.max_num_seqs", 1)),
+            "enforce_eager": bool(config.get("vllm.enforce_eager", True)),
+            "enable_prefix_caching": bool(
+                config.get("vllm.enable_prefix_caching", True)
+            ),
+        }
+        cpu_offload_gb = float(config.get("vllm.cpu_offload_gb", 0) or 0)
+        if cpu_offload_gb > 0:
+            engine_kwargs["cpu_offload_gb"] = cpu_offload_gb
+        limit_mm = config.get("vllm.limit_mm_per_prompt", {})
+        if limit_mm:
+            engine_kwargs["limit_mm_per_prompt"] = {
+                str(modality): int(limit)
+                for modality, limit in limit_mm.items()
+            }
+        quantization = config.get("vllm.quantization")
+        if quantization:
+            engine_kwargs["quantization"] = quantization
 
-        if torch.cuda.is_available():
-            load_attempts.append({
-                "label": "GPU/auto",
-                "kwargs": {
-                    "torch_dtype": torch.float16,
-                    "low_cpu_mem_usage": True,
-                    "device_map": "auto",
-                },
-            })
+        print(f"[vLLM] Initializing shared model: {self.model_name}")
+        self._engine = LLM(**engine_kwargs)
+        self._sampling_params_class = SamplingParams
+        print(f"[vLLM] Active model: {self.model_name}")
 
-        load_attempts.append({
-            "label": "CPU",
-            "kwargs": {
-                "torch_dtype": torch.float32,
-                "low_cpu_mem_usage": True,
-                "device_map": {"": "cpu"},
-            },
-        })
+    def _generate_embedded(self, prompt, max_new_tokens, temperature, **kwargs):
+        self._ensure_embedded_engine()
+        params = self._sampling_params_class(
+            max_tokens=int(max_new_tokens),
+            temperature=float(temperature),
+            top_p=float(kwargs.get("top_p", 0.95)),
+        )
+        messages = [{"role": "user", "content": prompt}]
 
-        for attempt in load_attempts:
-            try:
-                print(f"[{purpose}] Attempting {attempt['label']} load...")
-                model = AutoModelForCausalLM.from_pretrained(
-                    model_name,
-                    local_files_only=local_files_only,
-                    trust_remote_code=trust_remote_code,
-                    **attempt["kwargs"],
+        with self._lock:
+            if hasattr(self._engine, "chat"):
+                outputs = self._engine.chat(
+                    messages,
+                    sampling_params=params,
+                    use_tqdm=False,
                 )
-                if tokenizer.pad_token_id is None:
-                    tokenizer.pad_token = tokenizer.eos_token
-                print(f"[{purpose}] Active model: {model_name}")
-                return tokenizer, model, model_name
-            except Exception as exc:
-                last_error = exc
-                if is_access_error(exc) and not is_fallback:
-                    print(f"[{purpose}] Access denied for {model_name}; trying configured fallback.")
-                    break
-                print(f"[{purpose}] {attempt['label']} load failed for {model_name}: {exc}")
+            else:
+                outputs = self._engine.generate(
+                    [prompt],
+                    sampling_params=params,
+                    use_tqdm=False,
+                )
+        return outputs[0].outputs[0].text
 
-    raise RuntimeError(f"{purpose} model loading failed. Last error: {last_error}")
+    def _generate_server(self, prompt, max_new_tokens, temperature, **kwargs):
+        base_url = config.get("vllm.base_url", "http://127.0.0.1:8000/v1").rstrip("/")
+        request_body = json.dumps({
+            "model": self.model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": int(max_new_tokens),
+            "temperature": float(temperature),
+            "top_p": float(kwargs.get("top_p", 0.95)),
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            f"{base_url}/chat/completions",
+            data=request_body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {config.get('vllm.api_key', 'local-vllm')}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(
+                request,
+                timeout=float(config.get("vllm.timeout_seconds", 180)),
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise RuntimeError(
+                f"Could not reach the vLLM server at {base_url}: {exc}"
+            ) from exc
+        return payload["choices"][0]["message"]["content"]
+
+    def generate(self, prompt, max_new_tokens=512, temperature=0.3, **kwargs):
+        if self.mode == "server":
+            return self._generate_server(
+                prompt,
+                max_new_tokens,
+                temperature,
+                **kwargs,
+            )
+        if self.mode != "embedded":
+            raise ValueError("vllm.mode must be either 'embedded' or 'server'.")
+        return self._generate_embedded(
+            prompt,
+            max_new_tokens,
+            temperature,
+            **kwargs,
+        )
+
+
+_RUNTIMES = {}
+_RUNTIMES_LOCK = threading.Lock()
+
+
+def get_llm_runtime(model_name=None):
+    active_model = model_name or config.get(
+        "vllm.model_name",
+        "google/gemma-4-E2B-it",
+    )
+    key = (config.get("vllm.mode", "embedded"), active_model)
+    with _RUNTIMES_LOCK:
+        if key not in _RUNTIMES:
+            _RUNTIMES[key] = VLLMRuntime(model_name=active_model)
+        return _RUNTIMES[key]
