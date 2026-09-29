@@ -109,3 +109,26 @@ that introduces them.
   encounter events.
 - `auto_travel_on_spawn_chance` is replaced by `auto_travel_on_spawn` and its
   threshold.
+
+### Studio, REST API and Docker
+
+#### Added
+- Gradio studio (`app.py`) and REST API (`api.py`), with configuration
+  overrides in `utils/config_loader.py`, `ui_authoring.py`, `requirements.txt`,
+  a `Dockerfile` and `compose.yaml`.
+- World editor: Events as a content type; Unique NPC, Encounter event and
+  Repeat-on-every-visit for NPCs.
+- Simulation settings: Maximum health, and a **Story messages** YAML editor
+  that validates and keeps comments.
+- API: `unique`, `encounter_event` and `encounter_repeat` on NPC entities;
+  `event`, `mission` and `won` on play sessions; `max_health` on settings;
+  `GET|PUT /v1/messages`.
+- `docker-entrypoint.sh` adds default config files missing from an existing
+  config volume on every start, without overwriting edits.
+
+#### Changed
+- Uploaded configurations and saved bundles from before these features still
+  load. New keys are optional, and missing genome parameters (`goal_bias`,
+  `novelty_bias`) take the midpoint of their bounds.
+- Scene view shows the active event, the mission, `health/max`, and "Mission
+  complete".

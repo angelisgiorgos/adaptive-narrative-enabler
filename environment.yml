@@ -10,6 +10,7 @@ dependencies:
   - matplotlib
   - networkx
   - pip:
+      - gradio>=6.0
       - torch
       - transformers
       - accelerate

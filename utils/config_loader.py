@@ -1,27 +1,51 @@
 import yaml
 import os
+import copy
 
 class Config:
     def __init__(self, config_dir="config"):
         self._config = {}
         self._config_dir = config_dir
+        self._override = None
         self.reload()
 
     def reload(self):
-        self._config = {}
+        loaded = {}
         config_dir = self._config_dir
         if os.path.isdir(config_dir):
-            for filename in os.listdir(config_dir):
+            for filename in sorted(os.listdir(config_dir)):
                 if filename.endswith(".yaml"):
                     path = os.path.join(config_dir, filename)
-                    with open(path, "r") as f:
+                    with open(path, "r", encoding="utf-8") as f:
                         new_config = yaml.safe_load(f)
                         if new_config:
-                            self._deep_merge(self._config, new_config)
+                            self._deep_merge(loaded, new_config)
         elif os.path.isfile(config_dir):
             # Fallback for single file
-            with open(config_dir, "r") as f:
-                self._config = yaml.safe_load(f)
+            with open(config_dir, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f) or {}
+        self._default_config = loaded
+        self._config = copy.deepcopy(self._override if self._override is not None else loaded)
+
+    def use_override(self, new_config):
+        """Use a complete, already validated configuration until it is cleared."""
+        self._override = copy.deepcopy(new_config)
+        self._config = copy.deepcopy(new_config)
+
+    def clear_override(self):
+        self._override = None
+        self.reload()
+
+    def default_config(self):
+        return copy.deepcopy(self._default_config)
+
+    def as_dict(self):
+        """Return a safe copy of the currently active merged configuration."""
+        return copy.deepcopy(self._config)
+
+    @property
+    def using_override(self):
+        return self._override is not None
 
     def _deep_merge(self, base, update):
         for k, v in update.items():
