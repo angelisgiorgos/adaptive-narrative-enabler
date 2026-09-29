@@ -62,6 +62,7 @@ genome_bounds:
 game_state:
   initial_health: 8
   max_health: 10      # healing never raises health above this
+  arrest_location: Dungeon  # where losing to guards sends the player (one way)
   initial_coins: 10
   low_health_threshold: 4
   auto_transfer_when_stuck: true
@@ -122,6 +123,9 @@ scene:
 location_constraints:
   Dungeon:
     requires_escape: true
+    # sent: only a player SENT here (send_to, e.g. an arrest) is confined until an
+    # escape; one who found a normal route may walk back. always: everyone.
+    lock_when: sent
     escape_tags: [escape]
 mission_settings:
   enabled: true

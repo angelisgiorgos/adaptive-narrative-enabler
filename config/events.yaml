@@ -18,7 +18,11 @@
 #   actions[].triggers_event
 #                         Chain into another event after a successful choice.
 #   outcomes[].remove_npc true removes the NPC who triggered the event; a name
-#                         removes that NPC. Removed NPCs never reappear.
+#                         removes that NPC. A removed unique NPC never
+#                         reappears; a generic one only leaves this visit.
+#   actions[].repeat / exclusive_group
+#                         How often an option is offered, and one-choice groups
+#                         (see "Repeatable and one-time options" in the README).
 # Actions and outcomes otherwise use the same fields as location actions.
 world_definition:
   events:

@@ -81,3 +81,31 @@ that introduces them.
 - A removed NPC could still give leads.
 - One escape unlocked the Dungeon for the rest of the game.
 - Stalling in the Dungeon was penalised twice.
+
+### World content (`config/`)
+
+#### Added
+- `events.yaml`: `confront_thief` (fight, interrogate or steal from the
+  Market thief), `bandit_ambush` and `memory_theft`.
+- `missions.yaml`: five missions (expose the fence, break into the Vault,
+  find a shield, reach the Palace with 20 coins, rid the market of the
+  thief).
+- `messages.yaml`: every story message, ready to rewrite.
+- A Thief NPC at the Market, an explicit `unique` flag on every NPC, and
+  encounter events for the Bandit (every visit) and the Memory Thief (first
+  meeting).
+- The Gate Guard's wine, coins and fight options form one exclusive choice;
+  "Study the map" is `repeat: once`.
+- `hyperparameters.yaml`: `mission_settings`, `authored_events`,
+  `action_rules`, `max_health`, `arrest_location`, `lock_when`, the goal and
+  novelty genome bounds, repetition penalties, and the `variety` and
+  mission-win fitness terms.
+
+#### Changed
+- NPC tags now match each unique NPC's thematic home. Stray tags such as
+  `guarded`, `luxury` and `maritime` pulled NPCs into the Palace or the
+  Harbor.
+- The Bandit's and Memory Thief's confrontation actions moved into their
+  encounter events.
+- `auto_travel_on_spawn_chance` is replaced by `auto_travel_on_spawn` and its
+  threshold.
