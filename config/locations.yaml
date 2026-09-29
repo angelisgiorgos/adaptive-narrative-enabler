@@ -257,6 +257,9 @@ world_definition:
         - desc: The traveler finds a weakening in the cell bars.
           tags:
           - stealth
+          - escape
+          - success
+          move_to: Sewers
         - desc: The jailer beats you during a regular inspection.
           tags:
           - threat
@@ -440,8 +443,179 @@ world_definition:
       - crowded
       - commercial
       - luxury
+      - arcane
+      interact_prompts:
+      - Enter the lantern-lit antique market
+      - Follow the sound of chiming relics
+      goals:
+      - Find a forbidden relic
+      - Learn who is buying royal secrets
+      descriptions:
+      - Stalls assembled from shipwreck timber display objects that seem older than
+        the city itself.
       actions:
       - name: Shop for Antiques
         outcomes:
         - desc: The Merchant offers a rare artifact.
+          tags: [social, discovery]
           reveal_npc: Merchant
+        - desc: A mirror shows tomorrow's palace guard rotation instead of your reflection.
+          tags: [setup_clue, unexpected]
+          reveal_location: Palace
+        - desc: A counterfeit idol cracks open and releases a cloud of sleeping dust.
+          tags: [threat, arcane]
+          health_change: -1
+      - name: Bid at the midnight auction
+        outcomes:
+        - desc: You win a sealed navigator's cylinder for a suspiciously low price.
+          tags: [success, discovery]
+          reveal_object: Ancient Map
+          coin_change: -5
+        - desc: The auctioneer recognizes you and quietly calls for the Gate Guard.
+          tags: [threat, guards]
+          reveal_npc: Gate Guard
+    Storm Observatory:
+      tags: [science, storm, heights, arcane, discovery, district_citadel]
+      interact_prompts:
+      - Climb the lightning-scarred observatory
+      - Follow the brass cables uphill
+      goals:
+      - Predict the supernatural storm
+      - Decode the celestial machine
+      distant_descriptions:
+      - Copper vanes turn against the wind atop a tower webbed with blue lightning.
+      entered_descriptions:
+      - An enormous brass orrery maps stars that do not belong to this sky.
+      actions:
+      - name: Align the impossible constellations
+        outcomes:
+        - desc: The mechanism projects a route to an island hidden inside the storm.
+          tags: [setup_clue, discovery, maritime]
+          reveal_location: Drowned Archive
+        - desc: A false star falls from the mechanism and burns your hand.
+          tags: [unexpected, threat, arcane]
+          health_change: -1
+      - name: Ring the weather bell
+        outcomes:
+        - desc: The storm parts, exposing a bridge of rain toward the palace roofs.
+          tags: [spawn, unexpected, success]
+          spawn: true
+          reveal_location: Palace
+        - desc: Thunder answers in a human voice and demands a secret.
+          tags: [social, threat, arcane]
+          reveal_npc: Storm Cartographer
+    Drowned Archive:
+      tags: [maritime, underwater, ancient, mystery, discovery]
+      interact_prompts:
+      - Descend the flooded library stairs
+      - Enter through the cracked tide gate
+      goals:
+      - Recover the erased city history
+      - Escape before the tide returns
+      entered_descriptions:
+      - Books drift like pale fish between submerged shelves while waterproof lanterns
+        burn beneath the water.
+      actions:
+      - name: Read the breathing manuscript
+        outcomes:
+        - desc: The pages inhale and whisper the true name of the royal bloodline.
+          tags: [setup_clue, arcane, discovery]
+          reveal_npc: Exiled Archivist
+        - desc: The book bites down on your hand and drinks a memory.
+          tags: [threat, unexpected]
+          health_change: -2
+      - name: Open the pressure-sealed stacks
+        outcomes:
+        - desc: A hidden current carries you into the forgotten catacombs.
+          tags: [spawn, discovery]
+          reveal_location: Bone Orchard
+          spawn: true
+        - desc: The returning tide scatters silver coins from a collapsed strongbox.
+          tags: [success, maritime]
+          coin_change: 12
+    Bone Orchard:
+      tags: [nature, eerie, underground, ancient, payoff_clue]
+      interact_prompts:
+      - Walk between the ivory trees
+      - Follow the roots beneath the city
+      goals:
+      - Discover what feeds the orchard
+      - Find the missing royal witnesses
+      entered_descriptions:
+      - White trees grow from old helmets, and their leaves repeat the final words
+        of the dead.
+      actions:
+      - name: Ask the whispering leaves a question
+        outcomes:
+        - desc: The orchard confirms that the crown jewels are elaborate decoys.
+          tags: [payoff_1, discovery, social]
+          reveal_location: Vault
+        - desc: Every tree repeats your own voice confessing a crime you never committed.
+          tags: [unexpected, threat]
+          reveal_npc: Memory Thief
+      - name: Follow the youngest roots
+        outcomes:
+        - desc: The roots break through into a forgotten railway platform.
+          tags: [spawn, exploration]
+          reveal_location: Ghostline Station
+          spawn: true
+        - desc: A medicinal white fruit restores your strength but changes your shadow.
+          tags: [recovery, unexpected]
+          health_change: 2
+    Ghostline Station:
+      tags: [underground, travel, spectral, industrial, district_slums]
+      interact_prompts:
+      - Step onto the abandoned platform
+      - Follow the whistle beneath the streets
+      goals:
+      - Board the train that has no timetable
+      - Learn where the missing passengers went
+      entered_descriptions:
+      - A transparent locomotive waits beneath stopped clocks, its windows full of
+        passengers who cast no reflections.
+      actions:
+      - name: Board the ghostline
+        outcomes:
+        - desc: The train crosses the city in a heartbeat and leaves you beneath the palace.
+          tags: [voyage, unexpected, success]
+          move_to: Palace
+        - desc: The conductor demands a memory instead of a ticket.
+          tags: [social, threat, spectral]
+          reveal_npc: Pale Conductor
+      - name: Inspect the lost-property office
+        outcomes:
+        - desc: You recover a dagger tagged with tomorrow's date.
+          tags: [discovery, setup_clue]
+          reveal_object: Steel Dagger
+        - desc: A suitcase begins knocking from the inside.
+          tags: [unexpected, threat]
+          reveal_npc: Memory Thief
+    Festival of Masks:
+      tags: [urban, social, celebration, deception, district_docks]
+      interact_prompts:
+      - Join the midnight masquerade
+      - Follow the procession of candle masks
+      goals:
+      - Discover who organized the forbidden festival
+      - Trade identities with a stranger
+      entered_descriptions:
+      - Thousands dance beneath paper moons, and no two people appear to be wearing
+        their own face.
+      actions:
+      - name: Trade masks with a stranger
+        outcomes:
+        - desc: Your new mask convinces the guards that you are a visiting noble.
+          tags: [stealth, success, social]
+          reveal_location: Palace
+        - desc: The mask whispers the private fears of everyone nearby.
+          tags: [unexpected, discovery, arcane]
+          reveal_npc: Maskwright
+      - name: Follow the procession
+        outcomes:
+        - desc: The dancers vanish through a doorway into the Market of the Ancients.
+          tags: [spawn, social]
+          reveal_location: Market of the Ancients
+          spawn: true
+        - desc: The parade suddenly becomes a hunt, and you are named as its quarry.
+          tags: [threat, unexpected]
+          health_change: -1

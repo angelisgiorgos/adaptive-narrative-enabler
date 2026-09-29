@@ -1,59 +1,204 @@
-# Evolution Configuration
 evolution:
   pop_size: 400
   generations: 200
   episodes_per_genome: 6
   max_steps: 60
-  evaluation_threads: 8
+  evaluation_threads: auto
+  max_evaluation_processes: 16
   parallel_backend: processes
   mutation_rate: 0.22
   mutation_step: 0.14
-
+  elitism_rate: 0.08
+  crossover_rate: 0.75
+  blend_crossover_chance: 0.55
+  random_immigrant_rate: 0.08
 simulation:
   verbose: true
   interactive: true
   mutation_rate: 0.2
-
 reproducibility:
-  # Set to an integer for repeatable evolution and simulation runs.
-  # Set to null to allow fresh random behavior on each execution.
+  deterministic: true
   seed: 42
-
-# Genome Random Initialization Bounds
 genome_bounds:
-  threat_prob: [0.1, 0.5]
-  spawn_prob: [0.25, 0.75]
-  setup_prob: [0.1, 0.45]
-  success_bias: [0.5, 0.9]
-  guard_bias: [0.1, 0.5]
-  voyage_bias: [0.45, 0.9]
-  discovery_bias: [0.3, 0.9]
-  recovery_bias: [0.2, 0.8]
-  lead_bias: [0.3, 0.9]
-
-# Game State Configuration
+  threat_prob:
+  - 0.1
+  - 0.5
+  spawn_prob:
+  - 0.25
+  - 0.75
+  setup_prob:
+  - 0.1
+  - 0.45
+  success_bias:
+  - 0.5
+  - 0.9
+  guard_bias:
+  - 0.1
+  - 0.5
+  voyage_bias:
+  - 0.45
+  - 0.9
+  discovery_bias:
+  - 0.3
+  - 0.9
+  recovery_bias:
+  - 0.2
+  - 0.8
+  lead_bias:
+  - 0.3
+  - 0.9
+  event_prob:
+  - 0.08
+  - 0.4
+  chaos_bias:
+  - 0.1
+  - 0.75
+  goal_bias:
+  - 0.3
+  - 1.0
+  novelty_bias:
+  - 0.2
+  - 0.9
 game_state:
   initial_health: 8
+  max_health: 10      # healing never raises health above this
   initial_coins: 10
   low_health_threshold: 4
-  auto_travel_on_spawn_chance: 0.4
+  auto_transfer_when_stuck: true
+  # Follow a newly found path when the genome's commitment score reaches this
+  # threshold (deterministic: no dice roll).
+  auto_travel_on_spawn: true
+  auto_travel_on_spawn_threshold: 1.5
   auto_travel_commit_threshold: 1.2
-
+transition_objective:
+  intent_similarity_weight: 4.0
+  exact_intent_weight: 2.0
+  novelty_weight: 2.0
+  available_action_weight: 0.2
+  revisit_penalty: 2.5
+  story_phase_weight: 0.8
+  voyage_weight: 1.0
+  discovery_weight: 0.8
+  character_goal_weight: 2.0
+  known_location_bonus: 3.0
+outcome_objective:
+  success_threshold: 0.5
+  health_weight: 1.5
+  repetition_penalty: 1.5  # per earlier showing of the same outcome text (x genome.novelty_bias)
+  coin_weight: 0.15
+  success_probability_weight: 2.0
+  discovery_weight: 2.0
+  movement_weight: 2.5
+  threat_interest_weight: 1.0
+  low_health_risk_penalty: 3.0
+  success_tag_bonus: 1.0
+  setup_weight: 1.5
+  payoff_weight: 2.0
 narrative_end:
-  max_actions: 12
+  max_actions: 100
   max_consecutive_steps_in_location: 5
   end_on_dungeon: false
-
 scene:
   max_visible_npcs: 3
   max_visible_objects: 2
-
+  npc_similarity_threshold: 0.68
+  npc_exact_tag_weight: 1.25
+  npc_semantic_weight: 1.0
+  npc_known_location_bonus: 3.0
+  npc_generic_tag_weight: 0.05
+  location_tag_match_bonus: 4.0
+  location_npc_tags:
+    Harbor: [harbor, maritime]
+    Market: [market, commercial, trade]
+    Palace: [palace, luxury, guarded]
+    Dungeon: [dungeon, prison, guard, prisoner]
+  generic_npc_tags:
+  - urban
+  - social
+  - discovery
+  - threat
+  - success
+  - neutral
+location_constraints:
+  Dungeon:
+    requires_escape: true
+    escape_tags: [escape]
+mission_settings:
+  enabled: true
+  end_on_goal: true
+  route_weight: 6.0
+  discovery_route_cost: 2
+  pursuit_start_step: 12
+  pursuit_full_step: 30
+action_rules:
+  # How often an action is offered unless it sets `repeat` itself:
+  #   once (per game), per_visit (again on the next visit), always.
+  default_repeat:
+    location: per_visit
+    npc: per_visit
+    item: once
+    event: always
+authored_events:
+  enabled: true
+  fallback_action: Step away from the situation
+  fallback_description: You step back and let the moment pass.
+unexpected_events:
+  enabled: true
+  base_chance: 0.08
+  genome_weight: 0.3
+  chaos_weight: 0.18
+  objective_threshold: 0.24
+  stagnation_pressure: 0.04
+  cooldown_steps: 2
+  max_per_story: 5
+  actors:
+  - a masked courier
+  - a runaway apprentice
+  - an off-duty guard
+  - a fortune teller
+  - a wounded smuggler
+  - a clockwork raven
+  omens:
+  - a bell rings backwards
+  - every flame turns blue
+  - a sudden fog swallows the street
+  - the ground trembles beneath the city
+  - a shower of torn wanted posters fills the air
+  - distant music stops mid-note
+  twists:
+  - offers a dangerous bargain
+  - names you as the subject of a prophecy
+  - drops a key before vanishing
+  - claims the city has changed rulers overnight
+  - reveals that someone in your party is being followed
+  - points toward a route that should not exist
+  effects:
+  - tags:
+    - unexpected
+    - social
+    - setup_clue
+  - tags:
+    - unexpected
+    - threat
+    health_change: -1
+  - tags:
+    - unexpected
+    - discovery
+    - spawn
+    spawn: true
+  - tags:
+    - unexpected
+    - success
+    coin_change: 8
+  - tags:
+    - unexpected
+    - recovery
+    health_change: 1
 spawn_selection:
   contrast_weight: 2.5
   character_alignment_weight: 2.0
   repeat_visit_penalty: 3.0
   immediate_repeat_penalty: 10.0
-
 action_selection:
   base_weight: 0.15
   threat_weight: 1.0
@@ -63,7 +208,18 @@ action_selection:
   movement_weight: 1.5
   recovery_weight: 1.25
   stay_penalty_power: 2.2
-
+  consistency_penalty_weight: 1.0
+  event_trigger_weight: 1.5
+  mission_goal_weight: 6.0
+  repetition_penalty: 1.0  # per earlier use of the same choice (x genome.novelty_bias)
+  location_penalties:
+    Dungeon:
+      action_terms:
+        royal halls: 12.0
+      destination_tags:
+        palace: 10.0
+        luxury: 6.0
+        grand: 4.0
 outcome_scoring:
   spawn_bonus: 1.7
   movement_bonus: 1.7
@@ -72,7 +228,6 @@ outcome_scoring:
   recovery_bonus: 1.2
   setup_bonus: 1.1
   payoff_bonus: 1.2
-
 outcome_resolution:
   success_bias_weight: 0.3
   discovery_weight: 0.16
@@ -94,7 +249,6 @@ outcome_resolution:
     maritime: 0.08
     luxury: 0.08
     setup: 0.12
-
 combat_resolution:
   attack_success_weight: 0.08
   defense_success_weight: 0.04
@@ -123,7 +277,6 @@ combat_resolution:
     armor: 1.0
     guarded: 0.4
     protection: 0.8
-
 power_model:
   base_power: 0.0
   health_weight: 1.5
@@ -132,9 +285,10 @@ power_model:
   low_health_penalty: 0.5
   min_power: 0.0
   max_power: 5.0
-
-# Fitness Scoring Parameters
 fitness:
+  variety:
+    distinct_choice_weight: 30   # x share of choices that were distinct
+    repeated_outcome_penalty: 2  # per outcome text shown again
   base:
     zero_step_penalty: -100
     death_penalty: 35
@@ -142,12 +296,34 @@ fitness:
     stall_penalty: 20
     dungeon_penalty: 10
     max_action_completion_bonus: 8
+    mission_win_bonus: 60
+    mission_win_min_steps: 20
   dramatic_arc:
     intro_end: 0.25
     middle_end: 0.75
-    intro_tags: [exploration, urban, nature, spawn, maritime, port, trade]
-    middle_tags: [threat, guards, social, sleazy, prison, dark, guarded]
-    climax_tags: [payoff_, palace, vault, grand, success, luxury]
+    intro_tags:
+    - exploration
+    - urban
+    - nature
+    - spawn
+    - maritime
+    - port
+    - trade
+    middle_tags:
+    - threat
+    - guards
+    - social
+    - sleazy
+    - prison
+    - dark
+    - guarded
+    climax_tags:
+    - payoff_
+    - palace
+    - vault
+    - grand
+    - success
+    - luxury
     intro_bonus: 2
     middle_bonus: 3
     climax_bonus: 5
@@ -183,8 +359,12 @@ fitness:
     unmatched_payoff_penalty: 3
   volatility:
     pair_weight: 10
-    threat_patterns: [threat, combat]
-    recovery_patterns: [neutral, success]
+    threat_patterns:
+    - threat
+    - combat
+    recovery_patterns:
+    - neutral
+    - success
   payoff_match_score: 10
   max_location_visits: 3
   visit_penalty: 5
@@ -193,7 +373,13 @@ fitness:
   tone_variety:
     density_weight: 30
     unique_tag_bonus: 1.5
-    ignore_patterns: [spawn, failure, success, neutral, setup_, payoff_]
+    ignore_patterns:
+    - spawn
+    - failure
+    - success
+    - neutral
+    - setup_
+    - payoff_
   path_variety:
     unique_location_bonus: 6
     revisit_penalty: 2
@@ -208,46 +394,37 @@ fitness:
     location_bonus: 4
     inventory_bonus: 2
     character_bonus: 3
-
-# LLM Narrative Evaluator Configuration
+  unexpected_events:
+    target: 3
+    variety_bonus: 6
+    excess_penalty: 4
 llm_evaluator:
   enabled: true
-  model_name: "meta-llama/Llama-3.2-1B-Instruct"
+  model_name: meta-llama/Llama-3.2-1B-Instruct
   max_new_tokens: 2048
   temperature: 0.3
-
-# If the configured Llama model is gated or unavailable to the current
-# Hugging Face user, LLM features automatically fall back to this public model.
 llm_fallback:
   enabled: true
-  model_name: "Qwen/Qwen2.5-0.5B-Instruct"
+  model_name: Qwen/Qwen2.5-0.5B-Instruct
   local_files_only: false
   trust_remote_code: false
-
-# Interactive Config Editor Configuration
 config_editor:
   enabled: true
   show_story_browser_on_startup: true
   guided_mode: true
   show_json_path_examples: true
-
-# LLM Suggestion Configuration For Config Editor
 editor_suggester:
   enabled: true
   max_new_tokens: 256
   temperature: 0.7
-
-# World Definition Settings
 world_definition:
-  spawn_strategy: "similarity"
+  spawn_strategy: similarity
   similarity_threshold: 0.5
-
-# Augmentation Configuration
 augmentation:
   enabled: true
   min_locations: 12
   min_items: 20
   min_npcs: 15
   min_outcomes: 60
-  output_dir: "augmentations"
-  save_to_source: true # Whether to update files in config/
+  output_dir: augmentations
+  save_to_source: true

@@ -159,3 +159,6 @@ runs/
 augmentations/
 .codex
 useful_material/
+
+# Studio source-editor backup
+core_engine/actions.py.bak

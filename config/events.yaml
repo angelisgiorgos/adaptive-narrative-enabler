@@ -1,0 +1,117 @@
+# Events are self-contained situations entered by taking an action that declares
+# `triggers_event: <event id>` (on a location, NPC, or item action).
+#
+# While an event is active, only its actions are available: no travel, NPC,
+# item, or conversation actions, and no NPCs or items spawn. Choosing any event
+# action ends the event and returns the player to the location where it began,
+# unless the outcome moves them (move_to, move_to_tags, lead_to_known).
+#
+# An NPC can also start an event by itself: give it `encounter_event: <event id>`
+# in npcs.yaml and the event starts as soon as the NPC is present in the scene,
+# before the player can do anything else (including leave). It happens once per
+# game, or on every visit to a location with `encounter_repeat: true`.
+#
+# Event-specific fields:
+#   title                 Name shown while the event is active.
+#   descriptions          Text shown when the event starts (one is picked).
+#   tags                  Added to the narrative tags of every event outcome.
+#   actions[].triggers_event
+#                         Chain into another event after a successful choice.
+#   outcomes[].remove_npc true removes the NPC who triggered the event; a name
+#                         removes that NPC. Removed NPCs never reappear.
+# Actions and outcomes otherwise use the same fields as location actions.
+world_definition:
+  events:
+    confront_thief:
+      title: Confronting the thief
+      tags: [threat, market, confrontation]
+      descriptions:
+      - You grab the thief by the collar before they can slip into the crowd.
+      - The thief freezes as you block the only gap between two stalls.
+      actions:
+      - name: Fight the thief
+        outcomes:
+        - desc: A short scuffle ends with the thief fleeing empty-handed, leaving a purse behind.
+          tags: [combat, success]
+          coin_change: 10
+          remove_npc: true
+        - desc: The thief lands a quick jab and escapes into the crowd.
+          tags: [combat, threat, failure]
+          health_change: -2
+          remove_npc: true
+      - name: Interrogate the thief
+        outcomes:
+        - desc: Cornered, the thief admits they sell stolen goods to someone in the sewers.
+          tags: [social, setup_clue]
+          reveal_location: Sewers
+        - desc: In exchange for their freedom, the thief leads you down to their hideout in the sewers.
+          tags: [social, discovery]
+          move_to: Sewers
+          remove_npc: true
+      - name: Steal from the thief
+        outcomes:
+        - desc: While they protest their innocence, you lift a stolen pouch from their belt.
+          tags: [stealth, success]
+          coin_change: 15
+        - desc: A market guard sees you rummaging through the thief's pockets and drives you both off.
+          tags: [stealth, threat, failure]
+          health_change: -1
+          move_to: Alley
+    bandit_ambush:
+      title: Ambushed by a bandit
+      tags: [threat, ambush]
+      descriptions:
+      - A hooded figure steps out of the shadows, blade first. "Your purse or your life."
+      - A jagged knife presses against your ribs before you even hear footsteps.
+      actions:
+      - name: Fight for your life
+        required_tag: weapon
+        outcomes:
+        - desc: With a swift strike, you drive the bandit away.
+          tags: [combat, success]
+          remove_npc: true
+        - desc: The bandit is skilled; they leave you bleeding in the gutter.
+          tags: [combat, threat, failure]
+          health_change: -4
+      - name: Hand over your coins
+        outcomes:
+        - desc: The bandit snatches your purse and melts back into the dark.
+          tags: [threat]
+          coin_change: -10
+          remove_npc: true
+      - name: Plead for mercy
+        outcomes:
+        - desc: They take your coins and leave you bruised but alive.
+          tags: [threat]
+          coin_change: -20
+          health_change: -1
+          remove_npc: true
+        - desc: The bandit has no mercy; they strike you down where you stand.
+          tags: [threat]
+          health_change: -5
+      - name: Make a run for it
+        outcomes:
+        - desc: You duck under the blade and lose the bandit in the crowd.
+          tags: [stealth, success]
+        - desc: The bandit catches your cloak and slashes before you break free.
+          tags: [threat, failure]
+          health_change: -2
+    memory_theft:
+      title: The Memory Thief strikes
+      tags: [spectral, threat]
+      descriptions:
+      - Mirrored eyes find yours, and a memory you have not made yet starts to slip away.
+      actions:
+      - name: Defend your memories
+        outcomes:
+        - desc: You trap the thief inside a borrowed recollection.
+          tags: [combat, success, payoff_2]
+          remove_npc: true
+        - desc: The thief steals the memory of how you arrived here.
+          tags: [threat, failure, unexpected]
+          health_change: -2
+      - name: Offer a false memory
+        outcomes:
+        - desc: The forgery satisfies the thief, who reveals the ghostline entrance.
+          tags: [stealth, social, success]
+          reveal_location: Ghostline Station
