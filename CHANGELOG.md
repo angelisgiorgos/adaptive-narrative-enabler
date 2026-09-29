@@ -132,3 +132,10 @@ that introduces them.
   `novelty_bias`) take the midpoint of their bounds.
 - Scene view shows the active event, the mission, `health/max`, and "Mission
   complete".
+
+### Tests (`tests/`)
+
+- `test_events`, `test_missions` (including route planning and pacing),
+  `test_npcs`, `test_encounters`, `test_health`, `test_choices_and_messages`,
+  `test_one_way`, together with the existing studio and API suites: 88 tests.
+  Run with `python -m unittest tests/test_<name>.py`.
