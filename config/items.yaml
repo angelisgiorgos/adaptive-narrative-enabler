@@ -16,6 +16,7 @@ world_definition:
     actions:
     - id: ancient_map_study
       name: Study the map
+      repeat: once  # a map only reveals its secrets once
       outcomes:
       - id: ancient_map_route_to_palace
         desc: The traveler discovers a hidden route to the Palace.

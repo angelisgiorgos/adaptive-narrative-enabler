@@ -1,0 +1,8 @@
+.git
+.gradio
+__pycache__
+*.py[cod]
+*.log
+.venv
+runs
+augmentations

@@ -1,0 +1,78 @@
+# Every sentence the engine writes into a story. Rewrite any of them.
+#
+# - Keep the {placeholders} you need; each entry lists the ones available.
+#   Python format syntax works, e.g. {health:+d} shows +2 / -1.
+# - A message can also be a list of variants. They are used in turn, so the
+#   story does not repeat the same wording twice in a row (no random choice):
+#       voyage:
+#       - "You head towards the {location}."
+#       - "The {location} beckons."
+# - Remove an entry to use the built-in default. Unknown keys or placeholders
+#   are rejected when saving from the studio or the API.
+# - Option names (travel_new, travel_return, talk_action) must stay stable
+#   within a turn; their variant is chosen from the location or NPC name.
+messages:
+
+  # --- Missions and endings
+  mission_start: "[MISSION] {title}: {description}"  # {description}, {title}
+  mission_start_brief: "[MISSION] {title}"  # {title}
+  mission_complete: "[MISSION COMPLETE] {title}"  # {title}
+  end_line: "[END] {reason}"  # {reason}
+  end_death: "The traveler can no longer continue."
+  end_mission: "Mission complete: {title}."  # {title}
+  end_action_limit: "The story reached its action limit of {limit} steps."  # {limit}
+  end_stalled: "The story stalled in {location} for too long."  # {location}
+  end_dungeon: "The traveler was thrown into the {location}."  # {location}
+
+  # --- Arriving and staying
+  arrival: "\nYou are in the {location}. {description}"  # {description}, {location}
+  arrival_npc: "Met a {npc}: {description}"  # {description}, {npc}
+  arrival_item: "Nearby you see: {description}"  # {description}, {item}
+  continue_here: "\nContinuing your activities in the {location}..."  # {location}
+
+  # --- Choices and results
+  action_taken: "> {action}"  # {action}
+  result: "RESULT: {description}"  # {description}
+  failure: "[FAILURE] {action} failed."  # {action}
+  failure_arrest: "[FAILURE] The traveler lost the encounter and was dragged to the {location}."  # {action}, {location}
+
+  # --- Travel (travel_new / travel_return are the names of travel options)
+  travel_new: "Move to {location}"  # {location}
+  travel_return: "Return to {location}"  # {location}
+  travel_result: "You travel to {location}."  # {location}
+  location_current: "[LOCATION] Current location: {location}"  # {location}
+  location_moved: "[LOCATION] Transferred from {origin} to {destination}"  # {destination}, {origin}
+  location_stayed: "[LOCATION] Still at {location}"  # {location}
+  auto_transfer: "[AUTO TRANSFER] No actions remained in {origin}, so a new route carried you to {destination}."  # {destination}, {origin}
+  spawn: "[SPAWN] New path discovered: {location}"  # {location}
+  spawn_forced: "[SPAWN] A situational path opens to: {location}"  # {location}
+  voyage: "[VOYAGE] The opening draws you toward {location}."  # {location}
+  escape: "[ESCAPE] You found a way out of {location}."  # {location}
+  sent: "[SENT] You are taken to the {location}. There is no way back the way you came."  # {location}
+
+  # --- People and things (talk_action is the name of the conversation option)
+  talk_action: "Talk with {npc}"  # {npc}
+  talk_default: "{npc} shares a few thoughts with you."  # {npc}
+  talk_goal: " They speak about their goal: {goal}."  # {goal}, {npc}
+  reveal_npc: "[DISCOVERY] You noticed {npc} in the scene."  # {npc}
+  reveal_item: "[DISCOVERY] You spotted the {item} nearby."  # {item}
+  lead_path: "[LEAD] {npc} told you about the way to: {location}"  # {location}, {npc}
+  lead_move: "\n >>> [LEAD] {npc} led you to: {location}"  # {location}, {npc}
+  npc_removed: "[NPC REMOVED] {npc} is no longer part of the story."  # {npc}
+  npc_removed_scene: "[NPC REMOVED] {npc} leaves the {location}."  # {location}, {npc}
+  encounter: "[ENCOUNTER] {npc} confronts you!"  # {npc}
+  item_collected: "You collected the {item}."  # {item}
+  item_used: "You have utilized the {item}."  # {item}
+  paid: "[RESOURCES] Paid: {coins} coins (Balance: {balance})"  # {balance}, {coins}
+  health_capped: "[HEALTH] Already at {health}/{max_health}; healing is capped at the maximum."  # {health}, {max_health}
+
+  # --- Events
+  event_start: "[EVENT] {title}: {description}"  # {description}, {title}
+  event_trigger_result: "{title} begins."  # {title}
+  event_chain: "[EVENT END] {title} gives way to a new situation."  # {title}
+  event_end_return: "[EVENT END] {title} is over. You are back in the {location}."  # {location}, {title}
+  event_end_moved: "[EVENT END] {title} is over. The outcome carried you to {location}."  # {location}, {title}
+  event_unknown: "[EVENT] Unknown event '{event}' was ignored."  # {event}
+  unexpected_event: "[UNEXPECTED EVENT] {description}"  # {description}
+  unexpected_effect: "[EVENT EFFECT] Health {health:+d}, coins {coins:+d}."  # {coins}, {health}
+  unexpected_discovery: "[EVENT DISCOVERY] A path opens to {location}."  # {location}

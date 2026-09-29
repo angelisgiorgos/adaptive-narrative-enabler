@@ -296,7 +296,8 @@ class ConfigEditor:
                 action_count = len(entry.get("actions", []))
                 tag_key = "associated_tags"
                 tags = ", ".join(entry.get(tag_key, [])) or "no tags"
-                print(f"  - {name}: {action_count} action(s), tags: {tags}")
+                npc_type = f", {self._unique_label(entry)}" if kind == "npcs" else ""
+                print(f"  - {name}: {action_count} action(s), tags: {tags}{npc_type}")
 
     def _print_entry_details(self, kind, entry_name, entry):
         print("\n" + "=" * 60)
@@ -322,6 +323,9 @@ class ConfigEditor:
                     print(f"  - {self._describe_interaction_point(point)}")
         else:
             print(f"Associated tags: {', '.join(entry.get('associated_tags', [])) or 'none'}")
+            if kind == "npcs":
+                print(f"NPC type: {self._unique_label(entry)}")
+                print(f"Encounter event: {self._encounter_label(entry)}")
             print(f"Goals: {', '.join(entry.get('goals', [])) or 'none'}")
             descriptions = entry.get("descriptions", [])
             if descriptions:
@@ -354,6 +358,10 @@ class ConfigEditor:
             requirements.append(f"collects '{action['collects_object']}'")
         if action.get("consumes_object"):
             requirements.append("consumes the used object")
+        if action.get("repeat"):
+            requirements.append(f"offered {action['repeat'].replace('_', ' ')}")
+        if action.get("exclusive_group"):
+            requirements.append(f"one choice of group '{action['exclusive_group']}'")
 
         req_text = f" Requirements: {', '.join(requirements)}." if requirements else ""
         outcome_count = len(action.get("outcomes", []))
@@ -425,6 +433,9 @@ class ConfigEditor:
             print("  4. Edit actions")
             if kind == "locations":
                 print("  5. Edit interaction points")
+            if kind == "npcs":
+                print(f"  5. Unique NPC (currently: {self._unique_label(entry)})")
+                print(f"  6. Encounter event (currently: {self._encounter_label(entry)})")
             print("  b. back")
             choice = input("Selection: ").strip().lower()
 
@@ -455,7 +466,24 @@ class ConfigEditor:
                 if self._edit_interaction_points(entry):
                     changed = True
                 continue
-            prompt = "Please choose 1, 2, 3, 4, 5, or b." if kind == "locations" else "Please choose 1, 2, 3, 4, or b."
+            if kind == "npcs" and choice == "5":
+                unique = self._ask_yes_no(
+                    "Unique NPC? (yes: lives in one location for the whole game; "
+                    "no: generic, may appear wherever it fits, e.g. guards)",
+                    default=bool(entry.get("unique", False)),
+                )
+                if entry.get("unique") != unique:
+                    entry["unique"] = unique
+                    changed = True
+                continue
+            if kind == "npcs" and choice == "6":
+                if self._edit_encounter(entry):
+                    changed = True
+                continue
+            prompt = {
+                "locations": "Please choose 1, 2, 3, 4, 5, or b.",
+                "npcs": "Please choose 1, 2, 3, 4, 5, 6, or b.",
+            }.get(kind, "Please choose 1, 2, 3, 4, or b.")
             print(prompt)
 
     def _edit_core_text(self, kind, entry):
@@ -813,6 +841,8 @@ class ConfigEditor:
             print("  3. Edit requirements and rewards")
             print("  4. Edit outcomes")
             print("  5. Show full action")
+            print(f"  6. Repeat rule (currently: {action.get('repeat') or 'default for its source'})")
+            print(f"  7. Exclusive group (currently: {action.get('exclusive_group') or 'none'})")
             print("  b. back")
             choice = input("Selection: ").strip().lower()
 
@@ -849,7 +879,32 @@ class ConfigEditor:
             if choice == "5":
                 print(yaml.safe_dump(action, sort_keys=False, allow_unicode=False).strip())
                 continue
-            print("Please choose 1, 2, 3, 4, 5, or b.")
+            if choice == "6":
+                print("How often is this option offered?")
+                print("  once       only once per game")
+                print("  per_visit  again on each visit to the location")
+                print("  always     every turn")
+                print("  default    use action_rules.default_repeat for its source")
+                value = input("Repeat rule: ").strip().lower()
+                if value == "default":
+                    changed = action.pop("repeat", None) is not None or changed
+                elif value in {"once", "per_visit", "always"}:
+                    changed = action.get("repeat") != value or changed
+                    action["repeat"] = value
+                elif value:
+                    print("Please enter once, per_visit, always, or default.")
+                continue
+            if choice == "7":
+                print("Actions with the same exclusive group are one choice: once one succeeds, the others disappear.")
+                value = input("Exclusive group name (Enter to remove): ").strip()
+                if value:
+                    changed = action.get("exclusive_group") != self._slugify(value) or changed
+                    action["exclusive_group"] = self._slugify(value)
+                elif "exclusive_group" in action:
+                    action.pop("exclusive_group")
+                    changed = True
+                continue
+            print("Please choose 1, 2, 3, 4, 5, 6, 7, or b.")
 
     def _edit_action_requirements(self, action):
         changed = False
@@ -1053,6 +1108,7 @@ class ConfigEditor:
             ("success_prob", "float"),
             ("spawn", "bool"),
             ("move_to", "text"),
+            ("send_to", "text"),  # one-way: the player cannot walk back
             ("move_to_tags", "yaml"),
             ("reveal_npc", "text"),
             ("reveal_object", "text"),
@@ -1347,6 +1403,45 @@ class ConfigEditor:
             return index
         print("That number is out of range.")
         return None
+
+    def _unique_label(self, entry):
+        return "unique" if entry.get("unique", False) else "generic"
+
+    def _encounter_label(self, entry):
+        event = entry.get("encounter_event")
+        if not event:
+            return "none"
+        return f"{event} ({'every visit' if entry.get('encounter_repeat') else 'first meeting only'})"
+
+    def _edit_encounter(self, entry):
+        """Choose the event a hostile NPC starts by itself when it is in the scene."""
+        events_file = os.path.join(self.project_root, "config", "events.yaml")
+        events = list(
+            (self._load_yaml(events_file) if os.path.exists(events_file) else {})
+            .get("world_definition", {}).get("events", {}) or {}
+        )
+        print("\nEncounter event (starts by itself when this NPC is in the scene):")
+        print("  0. none")
+        for index, name in enumerate(events, start=1):
+            print(f"  {index}. {name}")
+        choice = input("Selection (b to cancel): ").strip().lower()
+        if choice in {"b", "back", ""}:
+            return False
+        if choice == "0":
+            changed = "encounter_event" in entry or "encounter_repeat" in entry
+            entry.pop("encounter_event", None)
+            entry.pop("encounter_repeat", None)
+            return changed
+        if not choice.isdigit() or not 1 <= int(choice) <= len(events):
+            print("Please choose one of the listed events.")
+            return False
+        before = (entry.get("encounter_event"), entry.get("encounter_repeat"))
+        entry["encounter_event"] = events[int(choice) - 1]
+        entry["encounter_repeat"] = self._ask_yes_no(
+            "Repeat on every visit? (no: only the first encounter in a game)",
+            default=bool(entry.get("encounter_repeat", False)),
+        )
+        return before != (entry["encounter_event"], entry["encounter_repeat"])
 
     def _ask_yes_no(self, prompt, default=False):
         suffix = " [Y/n]: " if default else " [y/N]: "

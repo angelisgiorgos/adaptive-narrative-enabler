@@ -1,0 +1,65 @@
+name: hamlet-ane
+
+x-studio-volumes: &studio-volumes
+  - ${ANE_CONFIG_VOLUME:-narrative-config}:/app/config
+  - narrative-artifacts:/app/artifacts
+  - model-cache:/var/cache/huggingface
+
+services:
+  ui:
+    build:
+      context: .
+    image: hamlet-ane:latest
+    init: true
+    command: ["python", "app.py"]
+    ports:
+      - "${ANE_UI_BIND_ADDRESS:-0.0.0.0}:${ANE_UI_PORT:-8003}:8003"
+    environment:
+      ANE_UI_HOST: 0.0.0.0
+      ANE_UI_PORT: 8003
+      ANE_UI_SHARE: ${ANE_UI_SHARE:-false}
+    volumes: *studio-volumes
+    networks:
+      hamlet-shared-network:
+        aliases:
+          - hamlet-ane-ui
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/gradio_api/startup-events')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  api:
+    build:
+      context: .
+    image: hamlet-ane:latest
+    init: true
+    command: ["python", "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8004", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips=*"]
+    ports:
+      - "${ANE_API_BIND_ADDRESS:-0.0.0.0}:${ANE_API_PORT:-8004}:8004"
+    environment:
+      ANE_CORS_ORIGINS: ${ANE_CORS_ORIGINS:-}
+      ANE_AUTHORING_TOKEN: ${ANE_AUTHORING_TOKEN:-}
+    volumes: *studio-volumes
+    networks:
+      hamlet-shared-network:
+        aliases:
+          - hamlet-ane-api
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  narrative-config:
+  narrative-artifacts:
+  model-cache:
+
+networks:
+  hamlet-shared-network:
+    external: true

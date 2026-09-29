@@ -8,10 +8,20 @@ from utils.tag_similarity import semantic_tag_similarity
 # ============================
 
 class Character:
+    """An NPC. A unique NPC lives in a single location for the whole game;
+    a generic NPC (e.g. a guard) may appear in every location it fits.
+
+    ``encounter_event`` names an Event that starts by itself when the NPC is
+    present in the scene (e.g. a bandit ambush), once per game, or on every
+    visit to a location when ``encounter_repeat`` is set."""
     def __init__(self, name, associated_tags, goals=None, 
                  descriptions=None, actions=None, 
-                 known_locations=None, known_objects=None):
+                 known_locations=None, known_objects=None, unique=False,
+                 encounter_event=None, encounter_repeat=False):
         self.name = name
+        self.unique = bool(unique)
+        self.encounter_event = encounter_event or None
+        self.encounter_repeat = bool(encounter_repeat)
         self.associated_tags = set(associated_tags)
         self.goals = goals or []
         self.descriptions = descriptions or []
@@ -44,6 +54,48 @@ class Location:
 
     def connect(self, other):
         self.connected.add(other.name)
+        other.connected.add(self.name)
+
+    def connect_one_way(self, other):
+        """A route from here to ``other`` only; ``other`` does not lead back."""
+        self.connected.add(other.name)
+
+
+class Event:
+    """A self-contained situation entered by taking an action that triggers it.
+
+    While an event is active its actions replace every location, NPC, item and
+    travel action. NPCs and items never spawn inside an event. When the player
+    picks one of its actions the event ends and the player is back at the
+    location where it began, unless that action's outcome moved them elsewhere.
+    """
+    def __init__(self, name, title=None, tags=None, descriptions=None, actions=None):
+        self.name = name
+        self.title = title or name
+        self.tags = set(tags or [])
+        self.descriptions = descriptions or []
+        self.actions = actions or []
+
+
+class Mission:
+    """A goal the player must achieve to win. One mission is chosen per story.
+
+    Every condition in ``goal`` must hold for the mission to be complete.
+    """
+    GOAL_KEYS = ("action", "location", "item", "event", "npc_removed", "outcome_tag", "coins")
+
+    def __init__(self, name, goal, title=None, description="", weight=1.0):
+        unknown = sorted(set(goal or {}) - set(self.GOAL_KEYS))
+        if not goal or unknown:
+            raise ValueError(
+                f"Mission '{name}' needs a goal using only: {', '.join(self.GOAL_KEYS)}"
+                + (f" (unknown: {', '.join(unknown)})" if unknown else "")
+            )
+        self.name = name
+        self.goal = dict(goal)
+        self.title = title or name
+        self.description = description
+        self.weight = float(weight)
 
 
 class WorldGraph:
@@ -51,6 +103,8 @@ class WorldGraph:
         self.locations = {}
         self.characters = []
         self.objects = []
+        self.events = {}
+        self.missions = {}
         self.spawn_rules = defaultdict(list)
 
     def add_location(self, loc):
@@ -62,13 +116,19 @@ class WorldGraph:
     def add_object(self, obj):
         self.objects.append(obj)
 
+    def add_event(self, event):
+        self.events[event.name] = event
+
+    def add_mission(self, mission):
+        self.missions[mission.name] = mission
+
     def allow_spawn(self, parent, child):
         self.spawn_rules[parent].append(child)
 
     def _story_progress(self, state):
         if state is None:
             return 0.0
-        max_actions = max(1, config.get("narrative_end.max_actions", config.get("fitness.story_length.target", 12)))
+        max_actions = max(100, config.get("narrative_end.max_actions", 100))
         return min(1.0, state.actions_taken / max_actions)
 
     def _phase_alignment_score(self, loc, state):
@@ -94,6 +154,8 @@ class WorldGraph:
             score += semantic_tag_similarity(character.associated_tags, loc.tags) * config.get("spawn_selection.character_alignment_weight", 2.0)
 
         if state is not None:
+            # Discovered paths lean toward the mission goal.
+            score += state._goal_route_pull(loc.name)
             prior_visits = state.location_counts.get(loc.name, 0)
             score -= prior_visits * config.get("spawn_selection.repeat_visit_penalty", 3.0)
             if state.path and state.path[-1] == loc.name:

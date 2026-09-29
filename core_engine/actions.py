@@ -35,6 +35,9 @@ def _state_power(state):
 # ACTIONS / OUTCOMES
 # ============================
 
+# Action.repeat values: once per game, again on each visit, or every turn.
+REPEAT_RULES = ("once", "per_visit", "always")
+
 class Outcome:
     def __init__(self, desc, tags=None,
                  success_prob=1.0,
@@ -46,7 +49,9 @@ class Outcome:
                  reveal_npc=None,
                  reveal_object=None,
                  reveal_location=None,
-                 lead_to_known=False):
+                 lead_to_known=False,
+                 remove_npc=None,
+                 send_to=None):
         self.desc = desc
         self.tags = tags or []
         self.success_prob = success_prob
@@ -59,6 +64,11 @@ class Outcome:
         self.reveal_object = reveal_object
         self.reveal_location = reveal_location
         self.lead_to_known = lead_to_known
+        # True removes the acting/event NPC; a name removes that NPC from the story.
+        self.remove_npc = remove_npc
+        # One-way move: the player is taken to this location and cannot simply
+        # walk back (e.g. arrested and thrown into the Dungeon).
+        self.send_to = send_to
 
     def _clamp(self, value, low=0.05, high=0.95):
         return max(low, min(high, value))
@@ -171,7 +181,7 @@ class Outcome:
                 probability -= power * combat_cfg.get("power_failure_weight", 0.04)
 
         # Certain mandatory travel/navigation outcomes should remain reliable.
-        if action and action.name.startswith("Move to"):
+        if action and action.source == "navigation":
             probability = max(probability, config.get("outcome_resolution.navigation_floor", 0.98))
 
         return self._clamp(probability)
@@ -185,7 +195,9 @@ class Outcome:
 class Action:
     def __init__(self, name, outcomes, character_name=None, 
                  required_object=None, required_tag=None, required_coins=0,
-                 collects_object=None, consumes_object=False):
+                 collects_object=None, consumes_object=False,
+                 triggers_event=None, repeat=None, exclusive_group=None,
+                 source=None, owner=None):
         self.name = name
         self.outcomes = outcomes
         self.character_name = character_name
@@ -194,6 +206,15 @@ class Action:
         self.required_coins = required_coins
         self.collects_object = collects_object
         self.consumes_object = consumes_object
+        self.triggers_event = triggers_event # Name of the Event entered after this action succeeds
+        # How often the action is offered: "once" (per game), "per_visit", or
+        # "always"; None uses action_rules.default_repeat for its source.
+        self.repeat = repeat
+        # Actions sharing a group form one choice: once one succeeds, the rest disappear.
+        self.exclusive_group = exclusive_group
+        # What offers the action: location, npc, item, event, navigation, conversation.
+        self.source = source
+        self.owner = owner # Name of the location, NPC, item, or event offering it
         self.active_item = None # Track the specific item used during a step
 
     def choose_outcome(self, genome=None, state=None):

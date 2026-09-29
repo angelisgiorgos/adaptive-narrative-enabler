@@ -1,7 +1,8 @@
 world_definition:
   characters:
   - name: Priest
-    associated_tags: [urban, palace, religion, social, discovery]
+    unique: true
+    associated_tags: [religion, abandoned, social, discovery]
     known_locations: [Abandoned Church, Palace]
     known_objects: [Vintage Wine]
     goals:
@@ -24,6 +25,7 @@ world_definition:
         tags:
         - social
   - name: Gate Guard
+    unique: false
     associated_tags: [guarded, urban, palace, vault, dungeon]
     known_locations: [Vault, Dungeon, Palace]
     known_objects: [Heavy Shield, Gold Coins]
@@ -38,6 +40,8 @@ world_definition:
     actions:
     - id: gate_guard_give_drink
       name: Give him the {alcohol_desc}
+      # One way past the guard: once any of these succeeds, the others disappear.
+      exclusive_group: get_past_gate_guard
       required_tag: alcohol
       consumes_object: true
       outcomes:
@@ -55,6 +59,7 @@ world_definition:
         health_change: 1
     - id: gate_guard_bribe_coins
       name: Bribe with coins
+      exclusive_group: get_past_gate_guard
       required_coins: 15
       outcomes:
       - id: gate_guard_bribe_success
@@ -71,6 +76,7 @@ world_definition:
         move_to: Vault
     - id: gate_guard_approach
       name: Approach the guard
+      repeat: always
       outcomes:
       - id: gate_guard_friendly
         desc: The guard is unexpectedly friendly and gives you directions.
@@ -88,6 +94,7 @@ world_definition:
         - setup_clue
     - id: gate_guard_fight
       name: Fight the guard
+      exclusive_group: get_past_gate_guard
       required_tag: weapon
       consumes_object: false
       outcomes:
@@ -105,6 +112,10 @@ world_definition:
         - failure
         health_change: -3
   - name: Bandit
+    unique: false
+    # Hostile: ambushes the player on every visit to a location where a bandit lurks.
+    encounter_event: bandit_ambush
+    encounter_repeat: true
     associated_tags: [dark, alley, threat, urban, discovery]
     known_locations: [Sewers, Vault]
     known_objects: [Steel Dagger, Ancient Map]
@@ -117,36 +128,13 @@ world_definition:
       long.
     - A desperate-looking thief with hungry eyes.
     - He stalks the alleyways, looking for an easy mark.
-    actions:
-    - name: Fight for your life
-      required_tag: weapon
-      consumes_object: false
-      outcomes:
-      - desc: With a swift strike, you drive the bandit away.
-        tags:
-        - combat
-        - success
-      - desc: The bandit is skilled; they leave you bleeding in the gutter.
-        tags:
-        - combat
-        - threat
-        - failure
-        health_change: -4
-    - name: Plead for mercy
-      outcomes:
-      - desc: They take your coins and leave you bruised but alive.
-        tags:
-        - threat
-        coin_change: -20
-        health_change: -1
-      - desc: The bandit has no mercy; they strike you down where you stand.
-        tags:
-        - threat
-        health_change: -5
+    actions: []  # the confrontation lives in events.yaml (bandit_ambush)
   - name: Dock Worker
+    unique: false
     associated_tags:
-    - maritime
     - harbor
+    - dockworkers
+    - port
     goals:
     - Earn a living
     - Avoid the storm
@@ -168,12 +156,14 @@ world_definition:
         - neutral
         health_change: 1
   - name: Aurora
+    unique: true
     associated_tags:
     - palace
     - luxury
     goals:
     - Seek the truth
     - Protect the legacy
+    known_locations: [Palace, Secret Garden]
     descriptions:
     - A mysterious figure draped in flowing silk and secrets.
     - She speaks in melodic riddles that seem to vibrate in the air.
@@ -187,17 +177,21 @@ world_definition:
         - spawn
         spawn: true
   - name: Gardener
+    unique: true
     associated_tags:
     - nature
-    - palace
+    - serene
+    - hidden
     - secret_garden
   - name: Guard
+    unique: false
     associated_tags:
-    - damp
+    - prison
     - palace
     - dungeon
     - protect
   - name: Merchant
+    unique: false
     associated_tags:
     - commercial
     - market
@@ -205,3 +199,126 @@ world_definition:
     - sell
     - guidance
     - information
+    known_locations: [Market, Market of the Ancients, Festival of Masks]
+    known_objects: [Ancient Map, Vintage Wine, Gold Coins]
+    descriptions:
+    - A many-ringed dealer who prices every object in coins, favors, and secrets.
+    actions:
+    - name: Ask about forbidden merchandise
+      outcomes:
+      - desc: The merchant produces a map whose coastline changes whenever you blink.
+        tags: [social, discovery, setup_clue]
+        reveal_object: Ancient Map
+      - desc: The merchant loudly accuses you of theft to distract the guards.
+        tags: [unexpected, threat, guards]
+        coin_change: -3
+  - name: Storm Cartographer
+    unique: true
+    associated_tags: [science, storm, arcane, heights, discovery]
+    known_locations: [Storm Observatory, Drowned Archive, Harbor]
+    known_objects: [Ancient Map]
+    goals: [Map the storm's interior, Find the vanished island]
+    descriptions:
+    - A rain-soaked scholar tattoos new coastlines onto their arms as the weather changes.
+    actions:
+    - name: Compare maps of the storm
+      outcomes:
+      - desc: The cartographer identifies a safe current leading to the Drowned Archive.
+        tags: [social, success, discovery]
+        reveal_location: Drowned Archive
+        lead_to_known: true
+      - desc: Both maps redraw themselves to place you at the center of the storm.
+        tags: [unexpected, setup_clue, arcane]
+  - name: Exiled Archivist
+    unique: true
+    associated_tags: [ancient, underwater, mystery, social, discovery]
+    known_locations: [Drowned Archive, Bone Orchard, Vault]
+    known_objects: [Ancient Map, Gold Coins]
+    goals: [Restore the erased history, Expose the false royal lineage]
+    descriptions:
+    - Their robes are stitched from waterproof pages covered in censored names.
+    actions:
+    - name: Request the forbidden chapter
+      outcomes:
+      - desc: The archivist reveals that the orchard remembers every royal betrayal.
+        tags: [social, setup_clue, discovery]
+        reveal_location: Bone Orchard
+      - desc: The chapter erases the last sentence spoken aloud.
+        tags: [unexpected, arcane]
+        health_change: -1
+  - name: Memory Thief
+    unique: true
+    # Hostile: confronts the player the first time they meet.
+    encounter_event: memory_theft
+    associated_tags: [eerie, ancient, stealth, threat, underground, discovery]
+    known_locations: [Bone Orchard, Ghostline Station, Alley]
+    known_objects: [Steel Dagger]
+    goals: [Steal a royal memory, Escape their own forgotten identity]
+    descriptions:
+    - A figure with mirrored eyes who remembers meeting you in futures that never happened.
+    actions: []  # the confrontation lives in events.yaml (memory_theft)
+  - name: Pale Conductor
+    unique: true
+    associated_tags: [spectral, travel, industrial, underground, social]
+    known_locations: [Ghostline Station, Palace, Harbor]
+    known_objects: [Vintage Wine, Gold Coins]
+    goals: [Keep the impossible timetable, Find one living passenger]
+    descriptions:
+    - A translucent conductor checks a watch whose hands move in opposite directions.
+    actions:
+    - name: Ask for a destination not on the map
+      outcomes:
+      - desc: The conductor punches a ticket to the palace's forgotten platform.
+        tags: [voyage, success, unexpected]
+        move_to: Palace
+      - desc: The conductor says your destination was demolished tomorrow.
+        tags: [setup_clue, spectral]
+        reveal_location: Storm Observatory
+  - name: Maskwright
+    unique: true
+    associated_tags: [social, deception, celebration, masks, arcane]
+    known_locations: [Festival of Masks, Palace, Market of the Ancients]
+    known_objects: [Heavy Shield, Vintage Wine]
+    goals: [Craft the face of a perfect ruler, Unmask the festival patron]
+    descriptions:
+    - The artisan wears a blank porcelain face and speaks through nearby masks.
+    actions:
+    - name: Commission a new identity
+      outcomes:
+      - desc: The maskwright gives you the face of a minor palace official.
+        tags: [stealth, social, success]
+        reveal_location: Palace
+      - desc: Your unfinished mask begins answering questions before you can.
+        tags: [unexpected, arcane, discovery]
+        reveal_location: Market of the Ancients
+  - name: Runaway Apprentice
+    unique: true
+    associated_tags: [urban, science, social, discovery, threat]
+    known_locations: [Storm Observatory, Sewers, Market]
+    known_objects: [Ancient Map, Rusty Sword]
+    goals: [Undo a disastrous experiment, Avoid the cartographer]
+    descriptions:
+    - A soot-covered teenager carries a jar containing a tiny, furious thundercloud.
+    actions:
+    - name: Help contain the bottled storm
+      outcomes:
+      - desc: The cloud calms and illuminates a hidden route through the sewers.
+        tags: [success, discovery, social]
+        reveal_location: Sewers
+      - desc: Lightning escapes the jar and animates every metal object nearby.
+        tags: [unexpected, threat, science]
+        health_change: -1
+  - name: Thief
+    unique: true
+    associated_tags: [market, trade, urban, stealth, threat]
+    known_locations: [Market]
+    known_objects: [Gold Coins]
+    goals:
+    - Lift a purse without being seen
+    - Sell stolen goods in the sewers
+    descriptions:
+    - A wiry figure drifts between the stalls, fingers never far from other people's purses.
+    - Someone in a patched cloak watches the crowd a little too carefully.
+    actions:
+    - name: Confront the thief
+      triggers_event: confront_thief

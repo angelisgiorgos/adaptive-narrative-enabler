@@ -1,0 +1,43 @@
+# Missions are the story's win conditions. When a story starts, one mission is
+# chosen at random (weighted by `weight`, default 1). When its goal is achieved,
+# the player wins and the story ends (see mission_settings in hyperparameters).
+#
+# A goal combines one or more conditions; ALL of them must hold:
+#   action:       an action was taken successfully. Match its full name
+#                 ("(Priest) Seek a blessing") or its name without the
+#                 "(NPC) " / "[Item] " prefix ("Seek a blessing").
+#   location:     the player has reached this location.
+#   item:         this item is in the inventory.
+#   event:        this event was entered and resolved.
+#   npc_removed:  this NPC was removed from the story (outcome `remove_npc`).
+#   outcome_tag:  an outcome with this tag succeeded (e.g. escape).
+#   coins:        the player holds at least this many coins.
+# Missions whose goal already holds at the start of the story are never chosen.
+world_definition:
+  missions:
+    expose_the_fence:
+      title: Expose the fence
+      description: Find out who buys the goods stolen at the market.
+      goal:
+        action: Interrogate the thief
+    break_into_the_vault:
+      title: Break into the Vault
+      description: Find a way past the guards and into the Vault.
+      goal:
+        location: Vault
+    shield_bearer:
+      title: Find a shield
+      description: Get hold of a heavy shield before the real trouble starts.
+      goal:
+        item: Heavy Shield
+    royal_audience:
+      title: Buy your way into the Palace
+      description: Reach the Palace with at least 20 coins to your name.
+      goal:
+        location: Palace
+        coins: 20
+    rid_the_market_of_the_thief:
+      title: Rid the market of the thief
+      description: Drive the thief out of the market for good.
+      goal:
+        npc_removed: Thief
