@@ -139,3 +139,9 @@ that introduces them.
   `test_npcs`, `test_encounters`, `test_health`, `test_choices_and_messages`,
   `test_one_way`, together with the existing studio and API suites: 88 tests.
   Run with `python -m unittest tests/test_<name>.py`.
+
+### Documentation
+
+- README sections for every feature above, with configuration examples and
+  measured effects; `docs/API.md` covers the new fields and endpoints. This
+  changelog was added.

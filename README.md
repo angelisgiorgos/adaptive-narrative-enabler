@@ -18,6 +18,9 @@ The main entry point is [`main.py`](main.py). Content and tuning live in [`confi
 - Missions: randomly chosen goals that give every story a win condition and end it when achieved.
 - Unique NPCs live in a single location for the whole game; generic NPCs (e.g. guards) appear wherever they fit.
 - Hostile NPCs (e.g. bandits) confront the player with an encounter event the moment they are in the scene.
+- One-time, per-visit, and always-available options, plus exclusive choices (bribe *or* fight the guard).
+- Every sentence the engine writes is customisable, with variants that rotate instead of repeating.
+- Play decisions are deterministic and genome-driven; evolution also learns to avoid repetitive stories.
 
 ## Repository Layout
 
@@ -27,6 +30,7 @@ adaptive-narrative-enabler/
 |-- config/
 |   |-- hyperparameters.yaml        # Evolution, fitness, LLM, editor, augmentation settings
 |   |-- events.yaml                 # Event definitions (self-contained situations)
+|   |-- messages.yaml               # Every sentence the engine writes, customisable
 |   |-- missions.yaml               # Mission goals / win conditions
 |   |-- locations.yaml              # Location definitions and location actions
 |   |-- items.yaml                  # Object/item definitions and item actions
@@ -36,6 +40,7 @@ adaptive-narrative-enabler/
 |   |-- augmenter.py                # Optional LLM world augmentation
 |   |-- game_state.py               # Runtime story state and simulation loop
 |   |-- health.py                   # HealthPlayer: bounded health and power of the player
+|   |-- narration.py                # Default story messages and the message formatter
 |   |-- genome.py                   # Evolvable narrative parameters
 |   `-- world.py                    # World graph, spawn rules, entities
 |-- evaluator/
@@ -263,6 +268,7 @@ Augmented worlds are written under [`augmentations/`](augmentations/). If `augme
 - [`config/items.yaml`](config/items.yaml): objects, tags, descriptions, collectibility, item actions.
 - [`config/npcs.yaml`](config/npcs.yaml): characters, tags, descriptions, known locations/objects, NPC actions, and the `unique` flag. See [Unique and generic NPCs](#unique-and-generic-npcs).
 - [`config/events.yaml`](config/events.yaml): events, their exclusive actions, and outcomes. See [Events](#events).
+- [`config/messages.yaml`](config/messages.yaml): every sentence the engine writes into a story. See [Story messages](#story-messages).
 - [`config/missions.yaml`](config/missions.yaml): missions and their goals, which are the story's win conditions. See [Missions and winning](#missions-and-winning).
 - [`config/hyperparameters.yaml`](config/hyperparameters.yaml): evolution, simulation, fitness, LLM, editor, and augmentation settings.
 
@@ -294,11 +300,50 @@ or destination tags without adding location names to Python code. Return travel
 uses neutral **Return to…** wording instead of reusing a destination's entrance
 prompt.
 
-Locations can be locked behind narrative outcomes with
-`location_constraints.<location>.requires_escape` and `escape_tags`. While a
-location is locked, normal navigation, automatic transfer, and NPC-led movement
-cannot leave it. The Dungeon uses this mechanism and unlocks only after a
-successful `escape` outcome.
+### One-way moves and prisons
+
+An outcome can **send** the player somewhere instead of moving them:
+
+```yaml
+- desc: The guards seize you and throw you in a cell.
+  send_to: Dungeon      # one way: the Dungeon does not lead back here
+```
+
+`move_to` travels along a two-way route, so the player can come back. With
+`send_to`, the origin learns the way to the destination, but the destination
+gets no route back. Losing a fight against guards now uses `send_to` to the
+`game_state.arrest_location` (default `Dungeon`), followed by
+`[SENT] You are taken to the Dungeon. There is no way back the way you came.`
+(message `sent`).
+
+Prisons are set up with `location_constraints`:
+
+```yaml
+location_constraints:
+  Dungeon:
+    requires_escape: true
+    lock_when: sent       # or: always
+    escape_tags: [escape]
+```
+
+- `lock_when: sent` (the default): only a player who was **sent** to the
+  Dungeon is confined. Travel, automatic transfer, and NPC-led moves cannot
+  leave until an outcome tagged `escape` succeeds. A player who **found a route**
+  to the Dungeon, e.g. through "Whispers of a prisoner in the Dungeon", can
+  walk back as usual.
+- `lock_when: always`: the old behaviour. Everyone is confined until they
+  escape.
+- Every arrest needs a new escape. Previously, one escape unlocked the Dungeon
+  for the rest of the game, so a second arrest could simply walk out.
+- After escaping, the way the player was brought in still does not lead back.
+  They leave by the escape outcome's `move_to` or by routes found since.
+- The mission planner treats a confined location as a dead end and otherwise
+  as an ordinary place.
+
+Across 300 simulated games, players walked into the Dungeon by normal routes
+178 times and back out 177 times. Before this change, each of those visits
+trapped them until an escape. `send_to` can be set in YAML or in the terminal
+editor's outcome effects.
 
 ### Events
 
@@ -660,6 +705,136 @@ Set **Maximum health** in the studio's **Simulation settings** tab next to
 `hyperparameters.yaml`. Configurations without `max_health` stay valid and use
 10.
 
+### Repeatable and one-time options
+
+Every action (location, NPC, item, or event) can say how often it is offered,
+and actions can form one exclusive choice:
+
+```yaml
+# config/npcs.yaml — Gate Guard
+- name: Give him the {alcohol_desc}
+  exclusive_group: get_past_gate_guard  # one way past the guard...
+- name: Bribe with coins
+  exclusive_group: get_past_gate_guard
+- name: Fight the guard
+  exclusive_group: get_past_gate_guard  # ...once one succeeds, the others disappear
+- name: Approach the guard
+  repeat: always
+# config/items.yaml — Ancient Map
+- name: Study the map
+  repeat: once
+```
+
+- `repeat: once`: offered until it is taken once, then never again in this
+  game, whatever the outcome.
+- `repeat: per_visit`: gone for the rest of the visit, offered again on the
+  next visit.
+- `repeat: always`: offered every turn.
+- **Defaults.** Without `repeat`, `action_rules.default_repeat` in
+  `hyperparameters.yaml` decides by source: `location: per_visit`,
+  `npc: per_visit`, `item: once`, `event: always`. Travel and conversation
+  options are always available.
+- **Exclusive groups.** `exclusive_group: <name>` makes the actions with the
+  same name one choice. When one of them **succeeds**, the whole group
+  disappears for the rest of the game. After a failed attempt the other options
+  stay (a failed bribe still lets you fight), while the failed option itself
+  follows its `repeat` rule.
+- **Scope.** One-time options and groups belong to their owner: a location, a
+  unique NPC, an item, or an event. A generic NPC is a different person in each
+  location, so bribing the Palace gate guard does not open the Vault's.
+- The mission planner respects these rules. A goal option that is used up no
+  longer counts as a way to the goal.
+- Set them in YAML, or in the terminal editor: edit an action → **6. Repeat
+  rule** and **7. Exclusive group**. An invalid `repeat` value stops the world
+  build with a clear error.
+
+The old name-based rules are gone. Actions starting with "Approach" used to
+be always available, and "Move to" was how travel was recognised. Actions
+now carry their `source` (location, npc, item, event, navigation,
+conversation), so renaming anything, including travel options, is safe.
+
+### Story messages
+
+Every sentence the engine adds to a story lives in
+[`config/messages.yaml`](config/messages.yaml), 51 messages in all: travel,
+arrivals, discoveries, leads, events, encounters, failures, missions, and
+endings. Rewrite any of them:
+
+```yaml
+messages:
+  voyage: "You head towards the {location}."   # was "[VOYAGE] The opening draws you toward {location}."
+  travel_return: "Go back to the {location}"   # the name of the travel option
+  end_stalled:                                  # a list of variants...
+  - "Nothing more happens in the {location}."
+  - "The {location} has nothing left to offer."  # ...used in turn, never randomly
+```
+
+- Each entry lists its available `{placeholders}`, and Python format syntax
+  works (`{health:+d}`). Leave an entry out to get the built-in default from
+  [`core_engine/narration.py`](core_engine/narration.py).
+- **Variants rotate** each time the message is used, so a story never repeats
+  the same wording twice in a row, and the result is reproducible. Option
+  names (`travel_new`, `travel_return`, `talk_action`) pick their variant from
+  the location or NPC name instead, so an option keeps its name between turns.
+- **Editing:** the studio's **Simulation settings** tab → **Story messages**
+  (a YAML editor that keeps your comments), or `GET|PUT /v1/messages`. The
+  `GET` returns every message with its default and allowed placeholders.
+  Unknown messages, unknown placeholders, and empty lists are rejected before
+  anything is saved. A malformed text found at run time falls back to the
+  default instead of breaking the story.
+- **Scoring ignores the wording.** Endings carry an `end_kind` (`death`,
+  `mission`, `action_limit`, `stalled`, `dungeon`) that fitness uses instead of
+  parsing `end_reason`. Previously, stalling *in* the Dungeon was penalised
+  twice because the text contained both "stalled" and "Dungeon".
+
+### Genome-driven decisions and learning
+
+Play involves no dice rolls. Every decision comes from the configuration, the
+current state, and the evolved genome, so a genome's story is reproducible
+and evolution can learn what makes stories engaging:
+
+- **Following a newly found path.** This used to be a 40% chance
+  (`auto_travel_on_spawn_chance`), which produced "The opening draws you
+  toward the Dungeon." at random. The player now follows the path when the
+  genome's commitment score reaches `game_state.auto_travel_on_spawn_threshold`
+  (`1.5`). The score combines `voyage_bias`, `discovery_bias`, tag
+  similarity, earlier visits, and the pull of the mission goal. The threshold
+  was tuned to the old rate: 29% of new paths are followed, against 28%.
+- **Novelty (`genome.novelty_bias`, bounds `[0.2, 0.9]`).** Each earlier use of
+  the same choice lowers its ranking by `novelty_bias ×
+  action_selection.repetition_penalty`. Travel counts per destination, so
+  Harbor → Market → Harbor loops wear out. Each earlier showing of the same
+  outcome text lowers that outcome by `novelty_bias ×
+  outcome_objective.repetition_penalty`.
+- **Variety fitness (`fitness.variety`).** Stories earn
+  `distinct_choice_weight` (30) × the share of choices that were distinct,
+  minus `repeated_outcome_penalty` (2) per outcome shown again. Evolution
+  therefore learns the right `novelty_bias`.
+
+In a small evolution run (24 genomes, 10 generations, 60 test stories with
+the best genome), novelty changed the evolved stories as follows:
+
+| | Without novelty | With novelty |
+| --- | --- | --- |
+| Distinct choices | 44% | 75% |
+| Repeated outcomes per story | 30.2 | 6.1 |
+| Back-and-forth moves (A → B → A) | 13.3 | 1.7 |
+| Median length | 52 steps | 22 steps |
+| Won | 88% | 80% |
+
+Without novelty, evolution padded stories with repetition. The cost of novelty
+is a slightly lower win rate. Lower the two `repetition_penalty` weights to
+trade some variety for more wins.
+
+What remains random is where randomness is the point. The mission is drawn
+at the start of a story, as requested, and weighted by `weight`; a mission
+passed to `GameState(..., mission=...)` uses no randomness. Evolution itself
+also uses randomness to create, cross, and mutate genomes. Saved bundles
+without `novelty_bias` still load and take the midpoint of its bounds.
+`Action.choose_outcome` and `Outcome.success` in `actions.py` still contain
+random code but are not used; outcomes are chosen by the deterministic
+objective.
+
 ### Coins and arrival text
 
 - A purse cannot go below 0 coins. A loss larger than the purse, for example
@@ -716,6 +891,8 @@ python -m utils.generate_presentation
 The presentation conversion path expects LibreOffice's `soffice` command if PPTX output is needed.
 
 ## Development Notes
+
+- Record every change in [`CHANGELOG.md`](CHANGELOG.md) under **Unreleased**, in the section of the area it touches, in the same commit.
 
 - Keep version control active when using augmentation, especially with `augmentation.save_to_source: true`.
 - For reproducible runs, set `reproducibility.seed` in `config/hyperparameters.yaml`.
