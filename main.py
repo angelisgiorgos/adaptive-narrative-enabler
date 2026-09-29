@@ -9,7 +9,9 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 from utils.config_loader import config
 from utils.config_editor import ConfigEditor
 from utils.tag_similarity import semantic_tag_similarity
-from core_engine import Genome, Location, WorldGraph, Action, Outcome, GameState, Character, Object
+from core_engine import Genome, Location, WorldGraph, Action, Outcome, GameState, Character, Object, Event, Mission
+from core_engine.actions import REPEAT_RULES
+from core_engine.narration import message
 
 # ============================
 # CONFIG (loaded from config.yaml)
@@ -86,7 +88,9 @@ def refresh_runtime_settings():
     PARALLEL_BACKEND = config.get("evolution.parallel_backend", "processes")
 
 
-def apply_random_seed():
+def apply_random_seed(force=False):
+    if not force and not config.get("reproducibility.deterministic", True):
+        return None
     seed = config.get("reproducibility.seed", config.get("simulation.seed"))
     if seed is None:
         return None
@@ -105,6 +109,10 @@ def apply_random_seed():
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        if hasattr(torch.backends, "cudnn"):
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cudnn.deterministic = True
     except ImportError:
         pass
 
@@ -274,6 +282,8 @@ def _fitness_breakdown(state):
             if gap > min_gap:
                 pair_bonus += setup_cfg.get("pair_bonus", 20)
                 pair_bonus += gap * setup_cfg.get("gap_step_bonus", 2)
+                if p_idx >= total_steps * 0.66:
+                    pair_bonus += setup_cfg.get("late_payoff_bonus", 0)
             else:
                 pair_bonus += setup_cfg.get("short_gap_bonus", 5)
 
@@ -363,21 +373,43 @@ def _fitness_breakdown(state):
         + len(state.inventory) * discovery_cfg.get("inventory_bonus", 0)
         + len(state.character_interactions) * discovery_cfg.get("character_bonus", 0)
     )
+    # Variety: many distinct choices and no repeated outcomes keep a story engaging.
+    variety_cfg = fitness_cfg.get("variety", {})
+    choice_counts = getattr(state, "choice_counts", {})
+    outcome_counts = getattr(state, "outcome_counts", {})
+    chosen = sum(choice_counts.values())
+    breakdown["variety"] = (
+        (len(choice_counts) / chosen if chosen else 0.0) * variety_cfg.get("distinct_choice_weight", 30)
+        - sum(count - 1 for count in outcome_counts.values() if count > 1)
+        * variety_cfg.get("repeated_outcome_penalty", 2)
+    )
+
+    event_cfg = fitness_cfg.get("unexpected_events", {})
+    event_count = len(getattr(state, "unexpected_events", []))
+    event_target = int(event_cfg.get("target", 3))
+    breakdown["unexpected_events"] = (
+        min(event_count, event_target) * event_cfg.get("variety_bonus", 5)
+        - max(0, event_count - event_target) * event_cfg.get("excess_penalty", 3)
+    )
 
     end_score = 0.0
+    if getattr(state, "won", False):
+        # A rushed win is worth less than a win after a full story.
+        min_steps = max(1, base_cfg.get("mission_win_min_steps", 20))
+        end_score += base_cfg.get("mission_win_bonus", 60) * min(1.0, total_steps / min_steps)
     if state.ended:
         if state.health <= 0:
             end_score -= base_cfg.get("death_penalty", 0)
         else:
             end_score += base_cfg.get("completion_bonus", 0)
-        if state.end_reason:
-            reason_text = state.end_reason.lower()
-            if "stalled" in reason_text:
-                end_score -= base_cfg.get("stall_penalty", 0)
-            if "dungeon" in reason_text:
-                end_score -= base_cfg.get("dungeon_penalty", 0)
-            if "action limit" in reason_text:
-                end_score += base_cfg.get("max_action_completion_bonus", 0)
+        # end_kind, not the (customisable) end_reason text, identifies the ending.
+        end_kind = getattr(state, "end_kind", None)
+        if end_kind == "stalled":
+            end_score -= base_cfg.get("stall_penalty", 0)
+        if end_kind == "dungeon":
+            end_score -= base_cfg.get("dungeon_penalty", 0)
+        if end_kind == "action_limit":
+            end_score += base_cfg.get("max_action_completion_bonus", 0)
     breakdown["ending"] = end_score
 
     return breakdown
@@ -442,9 +474,65 @@ def _build_spawn_rules(locations, locations_cfg, config_wd):
 # WORLD CREATION
 # ============================
 
+def _build_outcome(o_data, genome, tags=None):
+    move_to, reveal_location, reveal_npc, reveal_object = _resolve_outcome_links(o_data)
+    success_prob = 1.0
+    if o_data.get("use_genome_bias"):
+        success_prob = genome.success_bias
+    elif "success_prob" in o_data:
+        success_prob = o_data["success_prob"]
+
+    return Outcome(
+        desc=o_data.get("desc", ""),
+        tags=o_data.get("tags", []) if tags is None else tags,
+        success_prob=success_prob,
+        health_change=o_data.get("health_change", 0),
+        coin_change=o_data.get("coin_change", 0),
+        spawn=o_data.get("spawn", False),
+        move_to=move_to,
+        reveal_location=reveal_location,
+        reveal_npc=reveal_npc,
+        reveal_object=reveal_object,
+        lead_to_known=o_data.get("lead_to_known", False),
+        remove_npc=o_data.get("remove_npc"),
+        send_to=o_data.get("send_to"),
+    )
+
+
+def _build_action(a_data, outcomes, events_cfg, name=None, character_name=None, source=None, owner=None):
+    repeat = a_data.get("repeat")
+    if repeat is not None and repeat not in REPEAT_RULES:
+        raise ValueError(
+            f"Action '{a_data.get('name', 'Action')}' of {owner}: repeat must be one of "
+            f"{', '.join(REPEAT_RULES)}, not {repeat!r}."
+        )
+    triggers_event = a_data.get("triggers_event")
+    if triggers_event and not outcomes:
+        # A trigger action needs no outcomes of its own; the event carries the story.
+        title = events_cfg.get(triggers_event, {}).get("title", triggers_event)
+        outcomes = [Outcome(desc=message("event_trigger_result", title=title), tags=["event"])]
+
+    return Action(
+        name=name or a_data.get("name", "Action"),
+        outcomes=outcomes,
+        character_name=character_name,
+        required_object=a_data.get("required_object"),
+        required_tag=a_data.get("required_tag"),
+        required_coins=a_data.get("required_coins", 0),
+        collects_object=a_data.get("collects_object"),
+        consumes_object=a_data.get("consumes_object", False),
+        triggers_event=triggers_event,
+        repeat=repeat,
+        exclusive_group=a_data.get("exclusive_group"),
+        source=source,
+        owner=owner,
+    )
+
+
 def build_world(genome):
     world = WorldGraph()
     config_wd = config.get("world_definition", {})
+    events_cfg = config_wd.get("events") or {}
     
     # 1. Locations
     locations_cfg = config_wd.get("locations", {})
@@ -463,41 +551,13 @@ def build_world(genome):
         for action_index, a_data in enumerate(data.get("actions", [])):
             outcomes_list = []
             for outcome_index, o_data in enumerate(a_data.get("outcomes", [])):
-                move_to, reveal_location, reveal_npc, reveal_object = _resolve_outcome_links(o_data)
-                success_prob = 1.0
-                if o_data.get("use_genome_bias"):
-                    success_prob = genome.success_bias
-                elif "success_prob" in o_data:
-                    success_prob = o_data["success_prob"]
-                
                 # Clue Handling
                 tags = copy.copy(o_data.get("tags", []))
                 if "setup_clue" in tags:
                     tags.remove("setup_clue")
                     tags.append(_next_setup_tag(action_index, outcome_index))
-
-                outcomes_list.append(Outcome(
-                    desc=o_data.get("desc", ""),
-                    tags=tags,
-                    success_prob=success_prob,
-                    health_change=o_data.get("health_change", 0),
-                    coin_change=o_data.get("coin_change", 0),
-                    spawn=o_data.get("spawn", False),
-                    move_to=move_to,
-                    reveal_location=reveal_location,
-                    reveal_npc=reveal_npc,
-                    reveal_object=reveal_object,
-                    lead_to_known=o_data.get("lead_to_known", False)
-                ))
-            actions_list.append(Action(
-                name=a_data.get("name", "Action"), 
-                outcomes=outcomes_list,
-                required_object=a_data.get("required_object"),
-                required_tag=a_data.get("required_tag"),
-                required_coins=a_data.get("required_coins", 0),
-                collects_object=a_data.get("collects_object"),
-                consumes_object=a_data.get("consumes_object", False)
-            ))
+                outcomes_list.append(_build_outcome(o_data, genome, tags=tags))
+            actions_list.append(_build_action(a_data, outcomes_list, events_cfg, source="location", owner=name))
         loc.actions = actions_list
         world.add_location(loc)
 
@@ -511,37 +571,17 @@ def build_world(genome):
     for char_data in characters_cfg:
         char_actions_list = []
         for a_data in char_data.get("actions", []):
-            char_outcomes_list = []
-            for o_data in a_data.get("outcomes", []):
-                move_to, reveal_location, reveal_npc, reveal_object = _resolve_outcome_links(o_data)
-                success_prob = 1.0
-                if o_data.get("use_genome_bias"):
-                    success_prob = genome.success_bias
-                elif "success_prob" in o_data:
-                    success_prob = o_data["success_prob"]
-                
-                char_outcomes_list.append(Outcome(
-                    desc=o_data.get("desc", ""),
-                    tags=o_data.get("tags", []),
-                    success_prob=success_prob,
-                    health_change=o_data.get("health_change", 0),
-                    coin_change=o_data.get("coin_change", 0),
-                    spawn=o_data.get("spawn", False),
-                    move_to=move_to,
-                    reveal_location=reveal_location,
-                    reveal_npc=reveal_npc,
-                    reveal_object=reveal_object,
-                    lead_to_known=o_data.get("lead_to_known", False)
-                ))
-            char_actions_list.append(Action(
-                name=f"({char_data['name']}) {a_data.get('name', 'Action')}", 
-                outcomes=char_outcomes_list,
+            char_outcomes_list = [
+                _build_outcome(o_data, genome) for o_data in a_data.get("outcomes", [])
+            ]
+            char_actions_list.append(_build_action(
+                a_data,
+                char_outcomes_list,
+                events_cfg,
+                name=f"({char_data['name']}) {a_data.get('name', 'Action')}",
                 character_name=char_data['name'],
-                required_object=a_data.get("required_object"),
-                required_tag=a_data.get("required_tag"),
-                required_coins=a_data.get("required_coins", 0),
-                collects_object=a_data.get("collects_object"),
-                consumes_object=a_data.get("consumes_object", False)
+                source="npc",
+                owner=char_data['name'],
             ))
         
         char = Character(
@@ -551,7 +591,10 @@ def build_world(genome):
             descriptions=char_data.get("descriptions", []),
             actions=char_actions_list,
             known_locations=char_data.get("known_locations", []),
-            known_objects=char_data.get("known_objects", [])
+            known_objects=char_data.get("known_objects", []),
+            unique=char_data.get("unique", False),
+            encounter_event=char_data.get("encounter_event"),
+            encounter_repeat=char_data.get("encounter_repeat", False),
         )
         world.add_character(char)
 
@@ -560,35 +603,16 @@ def build_world(genome):
     for obj_data in objects_cfg:
         obj_actions_list = []
         for a_data in obj_data.get("actions", []):
-            obj_outcomes_list = []
-            for o_data in a_data.get("outcomes", []):
-                move_to, reveal_location, reveal_npc, reveal_object = _resolve_outcome_links(o_data)
-                success_prob = 1.0
-                if o_data.get("use_genome_bias"):
-                    success_prob = genome.success_bias
-                elif "success_prob" in o_data:
-                    success_prob = o_data["success_prob"]
-                
-                obj_outcomes_list.append(Outcome(
-                    desc=o_data.get("desc", ""),
-                    tags=o_data.get("tags", []),
-                    success_prob=success_prob,
-                    health_change=o_data.get("health_change", 0),
-                    coin_change=o_data.get("coin_change", 0),
-                    spawn=o_data.get("spawn", False),
-                    move_to=move_to,
-                    reveal_location=reveal_location,
-                    reveal_npc=reveal_npc,
-                    reveal_object=reveal_object
-                ))
-            obj_actions_list.append(Action(
-                name=f"[{obj_data['name']}] {a_data.get('name', 'Action')}", 
-                outcomes=obj_outcomes_list,
-                required_object=a_data.get("required_object"),
-                required_tag=a_data.get("required_tag"),
-                required_coins=a_data.get("required_coins", 0),
-                collects_object=a_data.get("collects_object"),
-                consumes_object=a_data.get("consumes_object", False)
+            obj_outcomes_list = [
+                _build_outcome(o_data, genome) for o_data in a_data.get("outcomes", [])
+            ]
+            obj_actions_list.append(_build_action(
+                a_data,
+                obj_outcomes_list,
+                events_cfg,
+                name=f"[{obj_data['name']}] {a_data.get('name', 'Action')}",
+                source="item",
+                owner=obj_data['name'],
             ))
         
         obj = Object(
@@ -601,6 +625,36 @@ def build_world(genome):
             collectible=obj_data.get("collectible", False)
         )
         world.add_object(obj)
+
+    # 6. Events (entered through actions with `triggers_event`)
+    for event_name, event_data in events_cfg.items():
+        event_actions = [
+            _build_action(
+                a_data,
+                [_build_outcome(o_data, genome) for o_data in a_data.get("outcomes", [])],
+                events_cfg,
+                source="event",
+                owner=event_name,
+            )
+            for a_data in event_data.get("actions", [])
+        ]
+        world.add_event(Event(
+            event_name,
+            title=event_data.get("title"),
+            tags=event_data.get("tags", []),
+            descriptions=_location_entered_descriptions(event_data),
+            actions=event_actions,
+        ))
+
+    # 7. Missions (one is chosen at random as the story's win condition)
+    for mission_name, mission_data in (config_wd.get("missions") or {}).items():
+        world.add_mission(Mission(
+            mission_name,
+            mission_data.get("goal"),
+            title=mission_data.get("title"),
+            description=mission_data.get("description", ""),
+            weight=mission_data.get("weight", 1.0),
+        ))
 
     return world
 
@@ -699,8 +753,16 @@ def _worker_evaluate_genome(args):
     return index, score, episode_score
 
 
+def _evaluation_worker_count(population_size):
+    configured = EVALUATION_THREADS
+    if isinstance(configured, str) and configured.lower() == "auto":
+        configured = os.cpu_count() or 1
+    maximum = int(config.get("evolution.max_evaluation_processes", 16))
+    return max(1, min(int(configured), maximum, population_size))
+
+
 def evaluate_population(population, generation, base_seed, stop_event=None, executor=None):
-    max_workers = max(1, min(int(EVALUATION_THREADS), len(population)))
+    max_workers = _evaluation_worker_count(len(population))
     if max_workers == 1:
         results = []
         for index, genome in enumerate(population):
@@ -773,7 +835,7 @@ def evolve(stop_event=None):
     population = [Genome() for _ in range(POP_SIZE)]
     base_seed = _base_evaluation_seed()
     best_run = None
-    max_workers = max(1, min(int(EVALUATION_THREADS), len(population)))
+    max_workers = _evaluation_worker_count(len(population))
     process_executor = None
 
     if max_workers > 1 and PARALLEL_BACKEND == "processes":
@@ -810,11 +872,22 @@ def evolve(stop_event=None):
             # Select top 25% (at least 1)
             survivors = [g for _, g, _, _ in scored[:max(1, POP_SIZE // 4)]]
 
-            # Reproduce
-            new_population = []
+            # Reproduce with elites, blended crossover, mutation, and random
+            # immigrants. This avoids converging every run on one narrow story.
+            elite_count = max(1, int(POP_SIZE * config.get("evolution.elitism_rate", 0.08)))
+            immigrant_count = int(POP_SIZE * config.get("evolution.random_immigrant_rate", 0.08))
+            crossover_rate = config.get("evolution.crossover_rate", 0.75)
+            new_population = [copy.deepcopy(g) for g in survivors[:elite_count]]
             while len(new_population) < POP_SIZE:
+                if len(new_population) >= POP_SIZE - immigrant_count:
+                    new_population.append(Genome())
+                    continue
                 parent = random.choice(survivors)
-                child = copy.deepcopy(parent)
+                if len(survivors) > 1 and random.random() < crossover_rate:
+                    second_parent = random.choice(survivors)
+                    child = Genome.crossover(parent, second_parent)
+                else:
+                    child = copy.deepcopy(parent)
                 child.mutate()
                 new_population.append(child)
 
@@ -1069,6 +1142,7 @@ def run_story(world_path=None):
     # (Transcript moved to evaluation section below for visibility)
 
     print(f"\nTraveler's Path: {' -> '.join(final_state.path)}")
+    print(f"Mission: {final_state.mission_status}")
 
     # print_action_graph(final_world)
 
@@ -1108,6 +1182,8 @@ def run_story(world_path=None):
         
         f.write("--- TRAVELER'S PATH ---\n")
         f.write(" -> ".join(final_state.path) + "\n\n")
+        f.write("--- MISSION ---\n")
+        f.write(f"{final_state.mission_status}\n\n")
         f.write("--- FULL STORY TRANSCRIPT ---\n")
         f.write(final_state.get_full_story())
         f.write("\n\n" + "="*60 + "\n")

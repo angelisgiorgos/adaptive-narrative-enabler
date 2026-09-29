@@ -42,6 +42,7 @@ DEFAULT_MESSAGES = {
     "spawn_forced": "[SPAWN] A situational path opens to: {location}",
     "voyage": "[VOYAGE] The opening draws you toward {location}.",
     "escape": "[ESCAPE] You found a way out of {location}.",
+    "sent": "[SENT] You are taken to the {location}. There is no way back the way you came.",
     # People and things
     "talk_action": "Talk with {npc}",
     "talk_default": "{npc} shares a few thoughts with you.",
