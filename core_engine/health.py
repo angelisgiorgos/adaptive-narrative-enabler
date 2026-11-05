@@ -10,12 +10,12 @@ class HealthPlayer:
 
     Health is an integer between 0 and ``max_health``: healing never raises it
     above the maximum and damage never takes it below 0. Power is derived from
-    the health ratio and the combat bonuses of the inventory, and is clamped to
-    ``power_model.min_power`` .. ``power_model.max_power``.
+    the health ratio and the player's average skill, and is clamped to
+    ``power_model.min_power`` .. ``power_model.max_power``. Combat itself
+    (checks, damage mitigation) is resolved by core_engine.combat.CombatSystem.
 
     Settings come from ``game_state`` (initial_health, max_health,
-    low_health_threshold), ``combat_resolution`` (damage mitigation) and
-    ``power_model``; explicit arguments override them.
+    low_health_threshold) and ``power_model``; explicit arguments override them.
     """
 
     def __init__(self, initial=None, maximum=None, low_threshold=None):
@@ -103,42 +103,14 @@ class HealthPlayer:
     def restore_full(self):
         return self.heal(self.missing)
 
-    # ---- combat ------------------------------------------------------------
-
-    @staticmethod
-    def mitigated_combat_change(delta, attack_bonus, defense_bonus):
-        """Reduce combat damage by the inventory's attack and defense bonuses.
-
-        Only negative changes are mitigated, and mitigation never turns damage
-        into healing.
-        """
-        if delta >= 0:
-            return delta
-        combat_cfg = config.get("combat_resolution", {})
-        mitigation = int(round(
-            attack_bonus * combat_cfg.get("attack_damage_mitigation", 0.15)
-            + defense_bonus * combat_cfg.get("defense_damage_mitigation", 0.5)
-        ))
-        return min(0, delta + mitigation)
-
-    @staticmethod
-    def failure_penalty(defense_bonus, dangerous):
-        """Health lost when an action fails; armour softens failures in fights or against guards."""
-        penalty = 1
-        if dangerous:
-            mitigation = config.get("combat_resolution.failure_defense_mitigation", 0.5)
-            penalty = max(0, penalty - int(defense_bonus * mitigation))
-        return penalty
-
     # ---- power -------------------------------------------------------------
 
-    def calculate_power(self, attack_bonus=0.0, defense_bonus=0.0):
-        """Recompute power from health and the inventory's combat bonuses, clamped to its bounds."""
+    def calculate_power(self, stat_average=0.0):
+        """Recompute power from health and the average skill value (1-100), clamped to its bounds."""
         power_cfg = config.get("power_model", {})
         power = power_cfg.get("base_power", 0.0)
         power += self.ratio * power_cfg.get("health_weight", 1.5)
-        power += attack_bonus * power_cfg.get("attack_weight", 1.0)
-        power += defense_bonus * power_cfg.get("defense_weight", 0.8)
+        power += stat_average / 100 * power_cfg.get("stat_weight", 1.5)
         if self.is_low:
             power -= power_cfg.get("low_health_penalty", 0.5)
         self.power = min(power_cfg.get("max_power", 5.0), max(power_cfg.get("min_power", 0.0), power))

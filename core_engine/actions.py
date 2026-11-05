@@ -1,35 +1,5 @@
-import random
 from utils.config_loader import config
 
-
-def _inventory_combat_profile(state):
-    if state is None or not getattr(state, "world", None):
-        return 0.0, 0.0
-
-    attack = 0.0
-    defense = 0.0
-    combat_cfg = config.get("combat_resolution", {})
-    attack_values = combat_cfg.get("attack_tags", {})
-    defense_values = combat_cfg.get("defense_tags", {})
-
-    for obj in state.world.objects:
-        if obj.name not in state.inventory:
-            continue
-        tags = {tag.lower() for tag in obj.associated_tags}
-        for tag, value in attack_values.items():
-            if tag in tags:
-                attack += value
-        for tag, value in defense_values.items():
-            if tag in tags:
-                defense += value
-
-    return attack, defense
-
-
-def _state_power(state):
-    if state is None:
-        return 0.0
-    return getattr(state, "power", 0.0)
 
 # ============================
 # ACTIONS / OUTCOMES
@@ -51,7 +21,11 @@ class Outcome:
                  reveal_location=None,
                  lead_to_known=False,
                  remove_npc=None,
-                 send_to=None):
+                 send_to=None,
+                 set_variables=None,
+                 change_variables=None,
+                 on_check=None,
+                 change_stats=None):
         self.desc = desc
         self.tags = tags or []
         self.success_prob = success_prob
@@ -69,8 +43,17 @@ class Outcome:
         # One-way move: the player is taken to this location and cannot simply
         # walk back (e.g. arrested and thrown into the Dungeon).
         self.send_to = send_to
+        # Persistent variables: set to a value, or change a number by a delta.
+        self.set_variables = dict(set_variables or {})
+        self.change_variables = dict(change_variables or {})
+        # Skill checks: "pass" / "fail" limits the outcome to that check result
+        # (None: either); change_stats raises or lowers stats for the playthrough.
+        self.on_check = on_check
+        self.change_stats = dict(change_stats or {})
 
-    def _clamp(self, value, low=0.05, high=0.95):
+    def _clamp(self, value, low=None, high=None):
+        low = config.get("outcome_resolution.probability_floor", 0.05) if low is None else low
+        high = config.get("outcome_resolution.probability_ceiling", 0.95) if high is None else high
         return max(low, min(high, value))
 
     def _fitness_constraint_adjustment(self, state):
@@ -148,37 +131,8 @@ class Outcome:
         probability += self._genome_adjustment(genome)
         probability += self._fitness_constraint_adjustment(state)
 
-        attack_bonus, defense_bonus = _inventory_combat_profile(state)
-        power = _state_power(state)
-        outcome_tags = {tag.lower() for tag in self.tags}
-        is_combat = "combat" in outcome_tags or "threat" in outcome_tags
-        is_positive = (
-            "success" in outcome_tags
-            or self.health_change > 0
-            or self.coin_change > 0
-            or self.spawn
-            or self.move_to is not None
-            or self.reveal_location is not None
-            or self.reveal_npc is not None
-            or self.reveal_object is not None
-        )
-        is_negative = (
-            "failure" in outcome_tags
-            or "threat" in outcome_tags
-            or self.health_change < 0
-            or self.coin_change < 0
-        )
-
-        if is_combat:
-            combat_cfg = config.get("combat_resolution", {})
-            if is_positive:
-                probability += attack_bonus * combat_cfg.get("attack_success_weight", 0.08)
-                probability += defense_bonus * combat_cfg.get("defense_success_weight", 0.04)
-                probability += power * combat_cfg.get("power_success_weight", 0.05)
-            if is_negative:
-                probability -= attack_bonus * combat_cfg.get("attack_failure_weight", 0.06)
-                probability -= defense_bonus * combat_cfg.get("defense_failure_weight", 0.08)
-                probability -= power * combat_cfg.get("power_failure_weight", 0.04)
+        # Fights and other risky moves are decided by a skill check instead
+        # (core_engine/combat.py); this probability covers everything else.
 
         # Certain mandatory travel/navigation outcomes should remain reliable.
         if action and action.source == "navigation":
@@ -186,18 +140,13 @@ class Outcome:
 
         return self._clamp(probability)
 
-    def success(self, genome=None, state=None, action=None):
-        probability = self.success_probability(genome=genome, state=state, action=action)
-        rng = getattr(state, "rng", random)
-        return rng.random() < probability
-
 
 class Action:
     def __init__(self, name, outcomes, character_name=None, 
                  required_object=None, required_tag=None, required_coins=0,
                  collects_object=None, consumes_object=False,
                  triggers_event=None, repeat=None, exclusive_group=None,
-                 source=None, owner=None):
+                 source=None, owner=None, skill_check=None):
         self.name = name
         self.outcomes = outcomes
         self.character_name = character_name
@@ -215,85 +164,6 @@ class Action:
         # What offers the action: location, npc, item, event, navigation, conversation.
         self.source = source
         self.owner = owner # Name of the location, NPC, item, or event offering it
+        # {stat, modifier}: taking the action rolls a check of that character stat.
+        self.skill_check = dict(skill_check) if skill_check else None
         self.active_item = None # Track the specific item used during a step
-
-    def choose_outcome(self, genome=None, state=None):
-        if not self.outcomes: return None
-        rng = getattr(state, "rng", random)
-        if not genome: return rng.choice(self.outcomes)
-
-        # AI Decision Logic: Calculate 'Desirability' of each outcome for this specific genome
-        weights = []
-        scoring_cfg = config.get("outcome_scoring", {})
-        attack_bonus, defense_bonus = _inventory_combat_profile(state)
-        power = _state_power(state)
-        for o in self.outcomes:
-            # 1. Mechanical Utility
-            # Positive health/coins are weighted by success_bias
-            # Negative health/coins are penalized by success_bias but tolerated by threat_prob
-            mechanical_utility = (o.health_change * 2.0) + (o.coin_change * 0.5)
-            # High success_bias genome wants positive utility
-            w = 1.0 + (mechanical_utility * (genome.success_bias * 2.0))
-            
-            # 2. Thematic Alignment
-            # Match outcome tags against genome biases
-            thematic_utility = 0
-            tag_bias_map = {
-                "urban": genome.bias_urban,
-                "maritime": genome.bias_maritime,
-                "social": genome.bias_social,
-                "threat": genome.bias_threat,
-                "combat": genome.bias_threat,
-                "stealth": genome.bias_stealth,
-                "luxury": genome.bias_luxury,
-                "palace": genome.bias_luxury
-            }
-            
-            for tag in o.tags:
-                for match_tag, bias_val in tag_bias_map.items():
-                    if match_tag in tag.lower():
-                        thematic_utility += bias_val
-            
-            # Add thematic weighting
-            w += thematic_utility * 1.5
-            
-            # 3. Risk Tolerance
-            # High threat_prob genomes actually "prefer" threat outcomes (it fits their narrative)
-            if "threat" in o.tags or "combat" in o.tags:
-                w += genome.threat_prob * 2.0
-
-            # 4. Discovery, Movement, and Story Progression
-            if o.spawn:
-                w += scoring_cfg.get("spawn_bonus", 1.5) * (0.5 + genome.spawn_prob)
-            if o.reveal_location or o.move_to or o.move_to_tags:
-                w += scoring_cfg.get("movement_bonus", 1.5) * (0.5 + genome.voyage_bias)
-            if o.reveal_npc or o.reveal_object:
-                w += scoring_cfg.get("discovery_bonus", 1.25) * (0.5 + genome.discovery_bias)
-            if o.lead_to_known:
-                w += scoring_cfg.get("lead_bonus", 1.25) * (0.5 + genome.lead_bias)
-
-            # 5. Recovery and payoff weighting
-            if o.health_change > 0 or o.coin_change > 0:
-                w += scoring_cfg.get("recovery_bonus", 1.0) * (0.5 + genome.recovery_bias)
-            if any(tag.startswith("setup_") for tag in o.tags):
-                w += scoring_cfg.get("setup_bonus", 1.0) * (0.5 + genome.setup_prob)
-            if any(tag.startswith("payoff_") for tag in o.tags) or "success" in o.tags:
-                w += scoring_cfg.get("payoff_bonus", 1.0) * (0.5 + genome.success_bias)
-
-            # 6. Inventory-informed combat weighting
-            lower_tags = {tag.lower() for tag in o.tags}
-            is_combat = "combat" in lower_tags or "threat" in lower_tags
-            if is_combat:
-                combat_cfg = config.get("combat_resolution", {})
-                if "success" in lower_tags:
-                    w += attack_bonus * combat_cfg.get("attack_outcome_weight", 0.6)
-                    w += defense_bonus * combat_cfg.get("defense_outcome_weight", 0.25)
-                    w += power * combat_cfg.get("power_outcome_weight", 0.4)
-                if "failure" in lower_tags or "threat" in lower_tags:
-                    w -= attack_bonus * combat_cfg.get("attack_lose_weight", 0.35)
-                    w -= defense_bonus * combat_cfg.get("defense_lose_weight", 0.5)
-                    w -= power * combat_cfg.get("power_lose_weight", 0.25)
-
-            weights.append(max(0.1, w))
-
-        return rng.choices(self.outcomes, weights=weights, k=1)[0]

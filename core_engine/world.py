@@ -17,8 +17,9 @@ class Character:
     def __init__(self, name, associated_tags, goals=None, 
                  descriptions=None, actions=None, 
                  known_locations=None, known_objects=None, unique=False,
-                 encounter_event=None, encounter_repeat=False):
+                 encounter_event=None, encounter_repeat=False, enabled_if=None):
         self.name = name
+        self.enabled_if = enabled_if or None  # persistent-variable conditions
         self.unique = bool(unique)
         self.encounter_event = encounter_event or None
         self.encounter_repeat = bool(encounter_repeat)
@@ -31,8 +32,11 @@ class Character:
 
 class Object:
     def __init__(self, name, associated_tags, interact_prompts=None, 
-                 goals=None, descriptions=None, actions=None, collectible=False):
+                 goals=None, descriptions=None, actions=None, collectible=False,
+                 enabled_if=None, stat_bonus=None):
         self.name = name
+        self.stat_bonus = dict(stat_bonus or {})  # stat -> bonus while the item is held
+        self.enabled_if = enabled_if or None
         self.associated_tags = set(associated_tags)
         self.interact_prompts = interact_prompts or []
         self.goals = goals or []
@@ -42,8 +46,9 @@ class Object:
 
 class Location:
     def __init__(self, name, tags, interact_prompts=None, goals=None, 
-                 distant_descriptions=None, entered_descriptions=None):
+                 distant_descriptions=None, entered_descriptions=None, enabled_if=None):
         self.name = name
+        self.enabled_if = enabled_if or None
         self.tags = set(tags)
         self.interact_prompts = interact_prompts or []
         self.goals = goals or []
@@ -82,9 +87,9 @@ class Mission:
 
     Every condition in ``goal`` must hold for the mission to be complete.
     """
-    GOAL_KEYS = ("action", "location", "item", "event", "npc_removed", "outcome_tag", "coins")
+    GOAL_KEYS = ("action", "location", "item", "event", "npc_removed", "outcome_tag", "coins", "variables")
 
-    def __init__(self, name, goal, title=None, description="", weight=1.0):
+    def __init__(self, name, goal, title=None, description="", weight=1.0, enabled_if=None):
         unknown = sorted(set(goal or {}) - set(self.GOAL_KEYS))
         if not goal or unknown:
             raise ValueError(
@@ -96,6 +101,7 @@ class Mission:
         self.title = title or name
         self.description = description
         self.weight = float(weight)
+        self.enabled_if = enabled_if or None  # offered only when these conditions hold
 
 
 class WorldGraph:
@@ -133,16 +139,17 @@ class WorldGraph:
 
     def _phase_alignment_score(self, loc, state):
         progress = self._story_progress(state)
-        intro_tags = {"exploration", "urban", "nature", "spawn", "maritime", "port", "trade"}
-        middle_tags = {"threat", "guards", "social", "sleazy", "prison", "dark", "guarded"}
-        climax_tags = {"palace", "vault", "grand", "success", "payoff", "luxury"}
+        phases = config.get("spawn_selection.story_phases") or {}
+        intro_tags = set(phases.get("intro_tags", ["exploration", "urban", "nature", "spawn", "maritime", "port", "trade"]))
+        middle_tags = set(phases.get("middle_tags", ["threat", "guards", "social", "sleazy", "prison", "dark", "guarded"]))
+        climax_tags = set(phases.get("climax_tags", ["palace", "vault", "grand", "success", "payoff", "luxury"]))
         loc_tags = {tag.lower() for tag in loc.tags}
 
-        if progress < 0.25:
-            return sum(1 for tag in loc_tags if tag in intro_tags) * 1.5
-        if progress < 0.75:
-            return sum(1 for tag in loc_tags if tag in middle_tags) * 1.75
-        return sum(1 for tag in loc_tags if tag in climax_tags) * 2.0
+        if progress < phases.get("intro_end", 0.25):
+            return sum(1 for tag in loc_tags if tag in intro_tags) * phases.get("intro_weight", 1.5)
+        if progress < phases.get("climax_start", 0.75):
+            return sum(1 for tag in loc_tags if tag in middle_tags) * phases.get("middle_weight", 1.75)
+        return sum(1 for tag in loc_tags if tag in climax_tags) * phases.get("climax_weight", 2.0)
 
     def _score_spawn_candidate(self, current, loc, character=None, state=None):
         similarity = semantic_tag_similarity(current.tags, loc.tags)
@@ -168,6 +175,8 @@ class WorldGraph:
             if force_target in self.locations:
                 if force_target == "Dungeon" and not allow_special:
                     return None
+                if state is not None and not state.is_enabled(self.locations[force_target]):
+                    return None
                 return self.locations[force_target]
             return None
 
@@ -177,6 +186,9 @@ class WorldGraph:
             options = list(self.locations.keys())
         else:
             options = self.spawn_rules.get(current.name, [])
+        if state is not None:
+            # Locations switched off by persistent variables cannot be discovered.
+            options = [o for o in options if o in self.locations and state.is_enabled(self.locations[o])]
 
         # 2. FALLBACK: Tag Similarity (Ensures graph is never disconnected)
         if not options or all(o in current.connected for o in options):
@@ -187,15 +199,17 @@ class WorldGraph:
                 if name in current.connected: continue
                 if name == "Dungeon" and not allow_special:
                     continue
+                if state is not None and not state.is_enabled(loc):
+                    continue
 
                 similarity = semantic_tag_similarity(current.tags, loc.tags)
-                if similarity > 0.2:
+                if similarity > config.get("spawn_selection.fallback_similarity_threshold", 0.2):
                     fallback_options.append((similarity, name))
             
             if fallback_options:
                 # Sort by overlap DESC
                 fallback_options.sort(key=lambda x: x[0], reverse=True)
-                options = [o[1] for o in fallback_options[:5]] # Top 5 similar
+                options = [o[1] for o in fallback_options[:int(config.get("spawn_selection.fallback_candidates", 5))]]
 
         if not options:
             return None

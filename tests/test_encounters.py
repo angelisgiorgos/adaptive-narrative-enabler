@@ -10,7 +10,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 import api
-import app as studio
+from backend import content, store
 import main as engine
 from core_engine import Action, Character, Event, GameState, Genome, Location, Outcome, WorldGraph
 from utils.config_loader import config
@@ -124,8 +124,8 @@ class EncounterEditingTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.path = Path(directory.name) / "npcs.yaml"
-        shutil.copy(studio.CONFIG_DIR / "npcs.yaml", self.path)
-        patcher = patch.dict(studio.ENTITY_FILES, {"NPCs": (self.path, "characters", "list")})
+        shutil.copy(store.CONFIG_DIR / "npcs.yaml", self.path)
+        patcher = patch.dict(content.ENTITY_FILES, {"NPCs": (self.path, "characters", "list")})
         patcher.start()
         self.addCleanup(patcher.stop)
         self.client = TestClient(api.api)
@@ -135,16 +135,16 @@ class EncounterEditingTests(unittest.TestCase):
         return next(r for r in records if r["name"] == name)
 
     def test_editor_sets_keeps_and_clears_encounters(self):
-        name, tags, descriptions, goals, *_ = studio.load_entity("NPCs", "Gate Guard")
-        studio.save_entity("NPCs", name, name, tags, descriptions, goals, None, "bandit_ambush", True)
-        self.assertEqual(studio.load_entity("NPCs", "Gate Guard")[5:], ("bandit_ambush", True))
-        studio.save_entity("NPCs", name, name, tags, descriptions, goals)
+        name, tags, descriptions, goals, *_ = content.load_entity("NPCs", "Gate Guard")
+        content.save_entity("NPCs", name, name, tags, descriptions, goals, None, "bandit_ambush", True)
+        self.assertEqual(content.load_entity("NPCs", "Gate Guard")[5:7], ("bandit_ambush", True))
+        content.save_entity("NPCs", name, name, tags, descriptions, goals)
         self.assertEqual(self._stored("Gate Guard")["encounter_event"], "bandit_ambush")
-        studio.save_entity("NPCs", name, name, tags, descriptions, goals, None, "", True)
+        content.save_entity("NPCs", name, name, tags, descriptions, goals, None, "", True)
         self.assertNotIn("encounter_event", self._stored("Gate Guard"))
         self.assertNotIn("encounter_repeat", self._stored("Gate Guard"))
         with self.assertRaises(Exception):
-            studio.save_entity("NPCs", name, name, tags, descriptions, goals, None, "no_such_event")
+            content.save_entity("NPCs", name, name, tags, descriptions, goals, None, "no_such_event")
 
     def test_api_round_trip(self):
         bandit = self.client.get("/v1/entities/NPCs/Bandit").json()
@@ -157,7 +157,7 @@ class EncounterEditingTests(unittest.TestCase):
     def test_upload_rejects_bad_encounter_types(self):
         candidate = config.default_config()
         candidate["world_definition"]["characters"][0]["encounter_repeat"] = "often"
-        errors = studio._validate_complete_config(candidate, config.default_config())
+        errors = store._validate_complete_config(candidate, config.default_config())
         self.assertTrue(any("encounter_repeat" in error for error in errors))
 
 

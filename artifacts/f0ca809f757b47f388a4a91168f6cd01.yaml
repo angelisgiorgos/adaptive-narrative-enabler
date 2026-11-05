@@ -1,0 +1,2472 @@
+world_definition:
+  events:
+    confront_thief:
+      title: Confronting the thief
+      tags:
+      - threat
+      - market
+      - confrontation
+      descriptions:
+      - You grab the thief by the collar before they can slip into the crowd.
+      - The thief freezes as you block the only gap between two stalls.
+      actions:
+      - name: Fight the thief
+        outcomes:
+        - desc: A short scuffle ends with the thief fleeing empty-handed, leaving
+            a purse behind.
+          tags:
+          - combat
+          - success
+          coin_change: 10
+          remove_npc: true
+          set_variables:
+            thief_caught: true
+          change_variables:
+            reputation: -1
+        - desc: The thief lands a quick jab and escapes into the crowd.
+          tags:
+          - combat
+          - threat
+          - failure
+          health_change: -2
+          remove_npc: true
+      - name: Interrogate the thief
+        skill_check:
+          stat: persuasion
+          modifier: -10
+        outcomes:
+        - desc: Cornered, the thief admits they sell stolen goods to someone in the
+            sewers.
+          on_check: pass
+          tags:
+          - social
+          - setup_clue
+          reveal_location: Sewers
+          set_variables:
+            fence_exposed: true
+        - desc: In exchange for their freedom, the thief leads you down to their hideout
+            in the sewers.
+          on_check: pass
+          tags:
+          - social
+          - discovery
+          move_to: Sewers
+          remove_npc: true
+          set_variables:
+            fence_exposed: true
+        - desc: The thief laughs in your face, slips your grip and vanishes into the
+            crowd.
+          on_check: fail
+          tags:
+          - social
+          - failure
+          remove_npc: true
+      - name: Steal from the thief
+        outcomes:
+        - desc: While they protest their innocence, you lift a stolen pouch from their
+            belt.
+          tags:
+          - stealth
+          - success
+          coin_change: 15
+          change_variables:
+            reputation: -1
+        - desc: A market guard sees you rummaging through the thief's pockets and
+            drives you both off.
+          tags:
+          - stealth
+          - threat
+          - failure
+          health_change: -1
+          move_to: Alley
+    bandit_ambush:
+      title: Ambushed by a bandit
+      tags:
+      - threat
+      - ambush
+      descriptions:
+      - A hooded figure steps out of the shadows, blade first. "Your purse or your
+        life."
+      - A jagged knife presses against your ribs before you even hear footsteps.
+      actions:
+      - name: Fight for your life
+        required_tag: weapon
+        outcomes:
+        - desc: With a swift strike, you drive the bandit away.
+          tags:
+          - combat
+          - success
+          remove_npc: true
+        - desc: The bandit is skilled; they leave you bleeding in the gutter.
+          tags:
+          - combat
+          - threat
+          - failure
+          health_change: -4
+      - name: Hand over your coins
+        outcomes:
+        - desc: The bandit snatches your purse and melts back into the dark.
+          tags:
+          - threat
+          coin_change: -10
+          remove_npc: true
+      - name: Plead for mercy
+        outcomes:
+        - desc: They take your coins and leave you bruised but alive.
+          tags:
+          - threat
+          coin_change: -20
+          health_change: -1
+          remove_npc: true
+        - desc: The bandit has no mercy; they strike you down where you stand.
+          tags:
+          - threat
+          health_change: -5
+      - name: Make a run for it
+        skill_check:
+          stat: stealth
+        outcomes:
+        - desc: You duck under the blade and lose the bandit in the crowd.
+          on_check: pass
+          tags:
+          - stealth
+          - success
+        - desc: The bandit catches your cloak and slashes before you break free.
+          on_check: fail
+          tags:
+          - threat
+          - failure
+          health_change: -2
+    memory_theft:
+      title: The Memory Thief strikes
+      tags:
+      - spectral
+      - threat
+      descriptions:
+      - Mirrored eyes find yours, and a memory you have not made yet starts to slip
+        away.
+      actions:
+      - name: Defend your memories
+        outcomes:
+        - desc: You trap the thief inside a borrowed recollection.
+          tags:
+          - combat
+          - success
+          - payoff_2
+          remove_npc: true
+        - desc: The thief steals the memory of how you arrived here.
+          tags:
+          - threat
+          - failure
+          - unexpected
+          health_change: -2
+      - name: Offer a false memory
+        outcomes:
+        - desc: The forgery satisfies the thief, who reveals the ghostline entrance.
+          tags:
+          - stealth
+          - social
+          - success
+          reveal_location: Ghostline Station
+  spawn_strategy: similarity
+  similarity_threshold: 0.5
+  objects:
+  - name: Ancient Map
+    associated_tags:
+    - urban
+    - alley
+    interact_prompts:
+    - Examine the map
+    - Study the faded markings
+    goals:
+    - Discovery
+    - Navigation
+    descriptions:
+    - A brittle, yellowed map showing secret city tunnels.
+    - The ink is faded, but you can see a route to the Palace.
+    actions:
+    - id: ancient_map_study
+      name: Study the map
+      repeat: once
+      outcomes:
+      - id: ancient_map_route_to_palace
+        desc: The traveler discovers a hidden route to the Palace.
+        tags:
+        - spawn
+        spawn: true
+        linked_location: Palace
+  - name: Vintage Wine
+    stat_bonus:
+      persuasion: 5
+    collectible: true
+    associated_tags:
+    - social
+    - urban
+    - alcohol
+    interact_prompts:
+    - Grab the bottle
+    - Pick up the wine
+    goals:
+    - Collection
+    - Bribe
+    descriptions:
+    - A dusty bottle of vintage red wine.
+    - The labeling is in a prestigious script; a perfect bribe.
+    actions:
+    - id: vintage_wine_collect
+      name: Collect the wine
+      collects_object: Vintage Wine
+      outcomes:
+      - id: vintage_wine_collect_success
+        desc: The traveler pockets a bottle of fine wine.
+        tags:
+        - stealth
+  - name: Steel Dagger
+    stat_bonus:
+      attack: 15
+    collectible: true
+    associated_tags:
+    - urban
+    - alley
+    - weapon
+    - combat
+    - fight
+    interact_prompts:
+    - Pick up the dagger
+    - Arm yourself
+    goals:
+    - Self-defense
+    - Combat
+    descriptions:
+    - A sharp, well-balanced steel blade.
+    - The edge is keen and ready for a fight.
+    actions:
+    - name: Collect the dagger
+      collects_object: Steel Dagger
+      outcomes:
+      - desc: The traveler arms themselves with the steel dagger.
+        tags:
+        - neutral
+        - success
+  - name: Heavy Shield
+    stat_bonus:
+      defence: 20
+    collectible: true
+    associated_tags:
+    - guarded
+    - palace
+    - defense
+    - combat
+    interact_prompts:
+    - Take the shield
+    - Heave the shield onto your arm
+    goals:
+    - Protection
+    descriptions:
+    - A sturdy oak shield reinforced with iron bands.
+    - It's heavy, but it offers excellent protection.
+    actions:
+    - name: Collect the shield
+      collects_object: Heavy Shield
+      outcomes:
+      - desc: The traveler takes up the heavy shield.
+        tags:
+        - neutral
+        - success
+  - name: Gold Coins
+    collectible: false
+    associated_tags:
+    - trade
+    - poverty
+    descriptions:
+    - A few clinking gold coins.
+    - Hard currency for hard places.
+  - name: Antique Statue
+    associated_tags:
+    - nature
+  - name: Rusty Sword
+    stat_bonus:
+      attack: 5
+    associated_tags:
+    - damp
+  - name: Fence's Ledger
+    stat_bonus:
+      persuasion: 10
+    enabled_if:
+      fence_exposed: true
+    collectible: true
+    associated_tags:
+    - underground
+    - foul
+    descriptions:
+    - A water-stained ledger listing every stolen treasure and who paid for it.
+    actions:
+    - name: Read the ledger
+      outcomes:
+      - desc: One buyer appears on every page, with a key to a strongroom in the Vault.
+        tags:
+        - discovery
+        - payoff_1
+        reveal_location: Vault
+        change_variables:
+          reputation: 1
+    - name: Take the ledger
+      collects_object: Fence's Ledger
+      outcomes:
+      - desc: You tuck the ledger under your cloak. Someone will pay dearly for it.
+        tags:
+        - neutral
+        - success
+  locations:
+    Harbor:
+      tags:
+      - urban
+      - maritime
+      - port
+      - bustling
+      - salty
+      - district_docks
+      - sea
+      - dockworkers
+      - ship
+      - rum
+      interact_prompts:
+      - Walk to the docks
+      - Approach the harbor
+      - Head towards the sea
+      - Check for available ships
+      goals:
+      - Find a ship
+      - Hire a crew
+      - Escape the navy
+      distant_descriptions:
+      - You hear the cries of seagulls and dockworkers in the distance.
+      - Sails bob up and down on the waterfront.
+      - 'There is a tang on the air: salt, fish, and sweat.'
+      entered_descriptions:
+      - You approach the harbor.
+      - You enter the harbor.
+      - The harbor is a flurry of activity.
+      - There are drunk dockworkers everywhere in the place, trying to figure out
+        how to leave the place
+      interaction_points:
+      - id: harbor_waterfront
+        label: Waterfront
+        prompt: Explore harbor
+        linked_action: harbor_explore
+        linked_location: Market
+        notes: Sailors, gossip, and distant movement on the piers can open new routes.
+      - id: harbor_crates
+        label: Cargo crates
+        prompt: Inspect the cargo crates
+        linked_action: harbor_inspect_crates
+        linked_outcome: harbor_crates_ledger
+        linked_location: Palace
+        linked_npc: Gate Guard
+        notes: Manifests and contraband connect the harbor to the palace security
+          story.
+      actions:
+      - id: harbor_explore
+        name: Explore harbor
+        outcomes:
+        - id: harbor_explore_rest
+          desc: The traveler relaxes by the sea, watching the ships roll in.
+          tags:
+          - neutral
+        - id: harbor_explore_brawl
+          desc: A brawl breaks out in a nearby tavern!
+          tags:
+          - threat
+          health_change: -1
+        - id: harbor_explore_market_rumor
+          desc: The traveler overhears a sailor talking about a secret market.
+          tags:
+          - spawn
+          spawn: true
+          linked_location: Market
+        - id: harbor_explore_compass
+          desc: A discarded compass is found in the sand.
+          tags:
+          - setup_clue
+      - id: harbor_inspect_crates
+        name: Inspect the cargo crates
+        outcomes:
+        - id: harbor_crates_ledger
+          desc: You find a ledger containing shipping routes to the Palace.
+          tags:
+          - setup_clue
+          reveal_npc: Gate Guard
+          linked_location: Palace
+        - id: harbor_crates_contraband
+          desc: A crate breaks, revealing illegal contraband!
+          tags:
+          - threat
+          - guards
+          health_change: -1
+      - id: speak_to_the_dockworkers
+        name: Join the dockworkers' discussion
+        outcomes:
+        - id: dockworkers_drunk
+          desc: The dockworkers press a cup of rum into your hand and point out a
+            faster route through the waterfront.
+          tags:
+          - social
+          - spawn
+          - success
+          health_change: 1
+          spawn: true
+          linked_location: Market
+        - id: dockworkers_warning
+          desc: Between swigs, the dockworkers warn you that patrols have tightened
+            around the palace road.
+          tags:
+          - social
+          - setup_clue
+          reveal_location: Palace
+    Market:
+      tags:
+      - urban
+      - trade
+      - vibrant
+      - crowded
+      - cluttered
+      - district_citadel
+      interact_prompts:
+      - Enter the market
+      - Mingle with the shoppers
+      - Approach the stalls
+      goals:
+      - Buy supplies
+      - Gather information
+      descriptions:
+      - A sprawling labyrinth of stalls and vendors selling exotic wares from across
+        the seven seas.
+      - The market is a sensory overload; every corner reveals a new treasure or a
+        new scam.
+      actions:
+      - name: Browse various stalls
+        outcomes:
+        - desc: A mysterious, glowing artifact is discovered.
+          tags:
+          - setup_clue
+          reveal_object: Ancient Map
+        - desc: A pickpocket tries to snatch your purse!
+          tags:
+          - threat
+          health_change: -1
+        - desc: A merchant offers you a map of the Palace.
+          tags:
+          - spawn
+          spawn: true
+        - desc: High-quality supplies are acquired.
+          tags:
+          - neutral
+          - success
+          health_change: 1
+      - name: Investigate a strange commotion
+        outcomes:
+        - desc: A crowd is gathered around a street performer who is actually a scout
+            for the Bandit.
+          tags:
+          - social
+          reveal_npc: Bandit
+        - desc: You find a dropped pouch of Gold Coins.
+          tags:
+          - neutral
+          coin_change: 15
+    Alley:
+      tags:
+      - urban
+      - sleazy
+      - dark
+      - dangerous
+      - narrow
+      - district_slums
+      interact_prompts:
+      - Slip into the alley
+      - Enter the narrow passage
+      - Head into the shadows
+      goals:
+      - Find a contact
+      - Avoid the guards
+      descriptions:
+      - A narrow, dimly lit passage between decaying buildings where shadows seem
+        to move on their own.
+      - The alley is damp and smells of rot; it's the perfect place for a meeting
+        or an ambush.
+      actions:
+      - name: Sneak through the darkness
+        outcomes:
+        - desc: An abandoned hideout is located.
+          tags:
+          - neutral
+        - desc: The traveler is ambushed by a group of thugs!
+          tags:
+          - threat
+          health_change: -2
+        - desc: A hidden tunnel leading out of the city is discovered.
+          tags:
+          - spawn
+          spawn: true
+    Palace:
+      tags:
+      - urban
+      - palace
+      - grand
+      - guarded
+      - luxury
+      - district_citadel
+      interact_prompts:
+      - Approach the palace gates
+      - Enter the royal halls
+      - Ascend the marble stairs
+      goals:
+      - Steal the crown
+      - Bribe a noble
+      descriptions:
+      - The magnificent seat of power, adorned with gold and guarded by elite sentinels.
+      - The air inside is thick with incense and the sound of hushed whispers.
+      actions:
+      - name: Attempt to infiltrate
+        outcomes:
+        - desc: The traveler slips past the outer guards unnoticed.
+          tags:
+          - stealth
+          - success
+          reveal_object: Heavy Shield
+        - desc: A sentinel spots you and raises the alarm!
+          tags:
+          - threat
+          health_change: -2
+        - desc: Whispers of a prisoner in the Dungeon are heard.
+          tags:
+          - spawn
+          spawn: true
+          reveal_location: Dungeon
+        - desc: A room filled with ancient records is discovered.
+          tags:
+          - setup_clue
+      - name: Eavesdrop on Nobles
+        outcomes:
+        - desc: You hear about Aurora's frequent visits to the Secret Garden.
+          tags:
+          - social
+          reveal_npc: Aurora
+          reveal_location: Secret Garden
+    Dungeon:
+      tags:
+      - prison
+      - dark
+      - cold
+      - damp
+      - hopeless
+      - district_slums
+      interact_prompts:
+      - Enter the cell
+      - Descending into the dungeon
+      - Head into the depths
+      goals:
+      - Escape
+      - Free a prisoner
+      descriptions:
+      - A cold, damp subterranean prison carved into the very bedrock of the city.
+      - The dungeon is pitch black, save for the occasional flickering torch.
+      actions:
+      - name: Search for an exit
+        outcomes:
+        - desc: The traveler finds a weakening in the cell bars.
+          tags:
+          - stealth
+          - escape
+          - success
+          move_to: Sewers
+        - desc: The jailer beats you during a regular inspection.
+          tags:
+          - threat
+          health_change: -1
+        - desc: A ghost appears, offering advice on how to escape.
+          tags:
+          - neutral
+      - name: Talk to a nearby prisoner
+        outcomes:
+        - desc: An old man whispers about a secret tunnel in the Sewers.
+          tags:
+          - social
+          reveal_location: Sewers
+        - desc: The prisoner is too far gone to speak coherently.
+          tags:
+          - neutral
+    Tavern:
+      tags:
+      - urban
+      - social
+      - noisy
+      - information
+      - district_docks
+      interact_prompts:
+      - Enter the tavern
+      - Join the revelry
+      - Push through the swing doors
+      goals:
+      - Hear rumors
+      - Find a job
+      descriptions:
+      - A lively, smoke-filled establishment where tales are traded as freely as ale.
+      - The tavern is packed with people from all walks of life, each with a story
+        to tell.
+      actions:
+      - name: Listen to rumors
+        outcomes:
+        - desc: A drunkard mentions a hidden tunnel in the Alley.
+          tags:
+          - spawn
+          spawn: true
+          reveal_location: Alley
+        - desc: You hear about an artifact being moved to the Vault.
+          tags:
+          - setup_clue
+          reveal_location: Vault
+        - desc: Only standard gossip and tall tales are heard.
+          tags:
+          - social
+      - name: Participate in a drinking contest
+        outcomes:
+        - desc: You win! The patrons cheer and buy you a drink.
+          tags:
+          - social
+          - success
+          health_change: 1
+          coin_change: 5
+        - desc: You pass out and someone steals your coins.
+          tags:
+          - threat
+          - failure
+          coin_change: -10
+    Vault:
+      tags:
+      - maritime
+      - urban
+      - sleazy
+      - guarded
+      - district_citadel
+      interact_prompts:
+      - Enter the vault
+      - Creep into the vault
+      - Approach the vault
+      goals:
+      - Steal
+      - Plant evidence
+      descriptions:
+      - You are inside the vault, the heavy iron door sealing shut behind you.
+      - The vault is cold and silent, save for the faint sound of dripping water.
+      actions:
+      - name: Search for loot
+        outcomes:
+        - desc: A bag of gold coins is found hidden in a corner.
+          tags:
+          - neutral
+          - success
+          coin_change: 20
+        - desc: A trap is triggered! Poisonous needles fly from the walls.
+          tags:
+          - threat
+          health_change: -2
+      - name: Crack the main safe
+        outcomes:
+        - desc: You successfully open the safe! It contains the Crown Jewels.
+          tags:
+          - stealth
+          - success
+          reveal_object: Gold Coins
+        - desc: The mechanism jams, sounding a silent alarm.
+          tags:
+          - threat
+          - guards
+          reveal_npc: Gate Guard
+    Secret Garden:
+      tags:
+      - nature
+      - serene
+      - hidden
+      - beautiful
+      interact_prompts:
+      - Enter the garden
+      - Step into the oasis
+      - Approach the fountain
+      goals:
+      - Meditate
+      - Find rare herbs
+      distant_descriptions:
+      - The scent of blooming jasmine fills the air, seemingly coming from behind
+        a high wall.
+      - A hidden opening reveals a glimpse of lush greenery.
+      entered_descriptions:
+      - A hidden oasis of lush greenery and rare flowers, tucked away from the prying
+        eyes of the city.
+      - The garden is a masterpiece of landscape design, a tranquil escape from the
+        bustling streets.
+      actions:
+      - name: Meditate by the fountain
+        outcomes:
+        - desc: Peace and clarity are found in the tranquility.
+          health_change: 1
+          tags:
+          - neutral
+    Sewers:
+      tags:
+      - dark
+      - foul
+      - underground
+      - labyrinthine
+      - district_slums
+      interact_prompts:
+      - Descend into the sewers
+      - Enter the foul tunnels
+      - Head into the darkness
+      goals:
+      - Navigate the waste
+      - Find a hidden passage
+      descriptions:
+      - A dark, foul-smelling network of tunnels that run beneath the city streets.
+      - The sewers are a labyrinth of dripping pipes and murky water.
+      actions:
+      - name: Search for a shortcut
+        outcomes:
+        - desc: You find a path that leads directly into the Palace basement.
+          tags:
+          - spawn
+          spawn: true
+          reveal_location: Palace
+        - desc: You get lost in the muck for hours.
+          tags:
+          - threat
+          health_change: -1
+      - name: Confront the shadows
+        outcomes:
+        - desc: A bandit jumps from the darkness!
+          tags:
+          - threat
+          - combat
+          reveal_npc: Bandit
+    Abandoned Church:
+      tags:
+      - abandoned
+      - damp
+      - narrow
+      actions:
+      - name: Explore Church
+        outcomes:
+        - desc: The Priest mentions a Guard.
+          reveal_npc: Guard
+    Market of the Ancients:
+      tags:
+      - crowded
+      - commercial
+      - luxury
+      - arcane
+      interact_prompts:
+      - Enter the lantern-lit antique market
+      - Follow the sound of chiming relics
+      goals:
+      - Find a forbidden relic
+      - Learn who is buying royal secrets
+      descriptions:
+      - Stalls assembled from shipwreck timber display objects that seem older than
+        the city itself.
+      actions:
+      - name: Shop for Antiques
+        outcomes:
+        - desc: The Merchant offers a rare artifact.
+          tags:
+          - social
+          - discovery
+          reveal_npc: Merchant
+        - desc: A mirror shows tomorrow's palace guard rotation instead of your reflection.
+          tags:
+          - setup_clue
+          - unexpected
+          reveal_location: Palace
+        - desc: A counterfeit idol cracks open and releases a cloud of sleeping dust.
+          tags:
+          - threat
+          - arcane
+          health_change: -1
+      - name: Bid at the midnight auction
+        outcomes:
+        - desc: You win a sealed navigator's cylinder for a suspiciously low price.
+          tags:
+          - success
+          - discovery
+          reveal_object: Ancient Map
+          coin_change: -5
+        - desc: The auctioneer recognizes you and quietly calls for the Gate Guard.
+          tags:
+          - threat
+          - guards
+          reveal_npc: Gate Guard
+    Storm Observatory:
+      tags:
+      - science
+      - storm
+      - heights
+      - arcane
+      - discovery
+      - district_citadel
+      interact_prompts:
+      - Climb the lightning-scarred observatory
+      - Follow the brass cables uphill
+      goals:
+      - Predict the supernatural storm
+      - Decode the celestial machine
+      distant_descriptions:
+      - Copper vanes turn against the wind atop a tower webbed with blue lightning.
+      entered_descriptions:
+      - An enormous brass orrery maps stars that do not belong to this sky.
+      actions:
+      - name: Align the impossible constellations
+        outcomes:
+        - desc: The mechanism projects a route to an island hidden inside the storm.
+          tags:
+          - setup_clue
+          - discovery
+          - maritime
+          reveal_location: Drowned Archive
+        - desc: A false star falls from the mechanism and burns your hand.
+          tags:
+          - unexpected
+          - threat
+          - arcane
+          health_change: -1
+      - name: Ring the weather bell
+        outcomes:
+        - desc: The storm parts, exposing a bridge of rain toward the palace roofs.
+          tags:
+          - spawn
+          - unexpected
+          - success
+          spawn: true
+          reveal_location: Palace
+        - desc: Thunder answers in a human voice and demands a secret.
+          tags:
+          - social
+          - threat
+          - arcane
+          reveal_npc: Storm Cartographer
+    Drowned Archive:
+      tags:
+      - maritime
+      - underwater
+      - ancient
+      - mystery
+      - discovery
+      interact_prompts:
+      - Descend the flooded library stairs
+      - Enter through the cracked tide gate
+      goals:
+      - Recover the erased city history
+      - Escape before the tide returns
+      entered_descriptions:
+      - Books drift like pale fish between submerged shelves while waterproof lanterns
+        burn beneath the water.
+      actions:
+      - name: Read the breathing manuscript
+        outcomes:
+        - desc: The pages inhale and whisper the true name of the royal bloodline.
+          tags:
+          - setup_clue
+          - arcane
+          - discovery
+          reveal_npc: Exiled Archivist
+        - desc: The book bites down on your hand and drinks a memory.
+          tags:
+          - threat
+          - unexpected
+          health_change: -2
+      - name: Open the pressure-sealed stacks
+        outcomes:
+        - desc: A hidden current carries you into the forgotten catacombs.
+          tags:
+          - spawn
+          - discovery
+          reveal_location: Bone Orchard
+          spawn: true
+        - desc: The returning tide scatters silver coins from a collapsed strongbox.
+          tags:
+          - success
+          - maritime
+          coin_change: 12
+    Bone Orchard:
+      tags:
+      - nature
+      - eerie
+      - underground
+      - ancient
+      - payoff_clue
+      interact_prompts:
+      - Walk between the ivory trees
+      - Follow the roots beneath the city
+      goals:
+      - Discover what feeds the orchard
+      - Find the missing royal witnesses
+      entered_descriptions:
+      - White trees grow from old helmets, and their leaves repeat the final words
+        of the dead.
+      actions:
+      - name: Ask the whispering leaves a question
+        outcomes:
+        - desc: The orchard confirms that the crown jewels are elaborate decoys.
+          tags:
+          - payoff_1
+          - discovery
+          - social
+          reveal_location: Vault
+        - desc: Every tree repeats your own voice confessing a crime you never committed.
+          tags:
+          - unexpected
+          - threat
+          reveal_npc: Memory Thief
+      - name: Follow the youngest roots
+        outcomes:
+        - desc: The roots break through into a forgotten railway platform.
+          tags:
+          - spawn
+          - exploration
+          reveal_location: Ghostline Station
+          spawn: true
+        - desc: A medicinal white fruit restores your strength but changes your shadow.
+          tags:
+          - recovery
+          - unexpected
+          health_change: 2
+    Ghostline Station:
+      tags:
+      - underground
+      - travel
+      - spectral
+      - industrial
+      - district_slums
+      interact_prompts:
+      - Step onto the abandoned platform
+      - Follow the whistle beneath the streets
+      goals:
+      - Board the train that has no timetable
+      - Learn where the missing passengers went
+      entered_descriptions:
+      - A transparent locomotive waits beneath stopped clocks, its windows full of
+        passengers who cast no reflections.
+      actions:
+      - name: Board the ghostline
+        outcomes:
+        - desc: The train crosses the city in a heartbeat and leaves you beneath the
+            palace.
+          tags:
+          - voyage
+          - unexpected
+          - success
+          move_to: Palace
+        - desc: The conductor demands a memory instead of a ticket.
+          tags:
+          - social
+          - threat
+          - spectral
+          reveal_npc: Pale Conductor
+      - name: Inspect the lost-property office
+        outcomes:
+        - desc: You recover a dagger tagged with tomorrow's date.
+          tags:
+          - discovery
+          - setup_clue
+          reveal_object: Steel Dagger
+        - desc: A suitcase begins knocking from the inside.
+          tags:
+          - unexpected
+          - threat
+          reveal_npc: Memory Thief
+    Festival of Masks:
+      enabled_if:
+        reputation:
+          gte: -2
+      tags:
+      - urban
+      - social
+      - celebration
+      - deception
+      - district_docks
+      interact_prompts:
+      - Join the midnight masquerade
+      - Follow the procession of candle masks
+      goals:
+      - Discover who organized the forbidden festival
+      - Trade identities with a stranger
+      entered_descriptions:
+      - Thousands dance beneath paper moons, and no two people appear to be wearing
+        their own face.
+      actions:
+      - name: Trade masks with a stranger
+        outcomes:
+        - desc: Your new mask convinces the guards that you are a visiting noble.
+          tags:
+          - stealth
+          - success
+          - social
+          reveal_location: Palace
+        - desc: The mask whispers the private fears of everyone nearby.
+          tags:
+          - unexpected
+          - discovery
+          - arcane
+          reveal_npc: Maskwright
+      - name: Follow the procession
+        outcomes:
+        - desc: The dancers vanish through a doorway into the Market of the Ancients.
+          tags:
+          - spawn
+          - social
+          reveal_location: Market of the Ancients
+          spawn: true
+        - desc: The parade suddenly becomes a hunt, and you are named as its quarry.
+          tags:
+          - threat
+          - unexpected
+          health_change: -1
+  missions:
+    expose_the_fence:
+      enabled_if:
+        thief_caught: false
+        fence_exposed: false
+      title: Expose the fence
+      description: Find out who buys the goods stolen at the market.
+      goal:
+        action: Interrogate the thief
+    break_into_the_vault:
+      title: Break into the Vault
+      description: Find a way past the guards and into the Vault.
+      goal:
+        location: Vault
+    shield_bearer:
+      title: Find a shield
+      description: Get hold of a heavy shield before the real trouble starts.
+      goal:
+        item: Heavy Shield
+    royal_audience:
+      title: Buy your way into the Palace
+      description: Reach the Palace with at least 20 coins to your name.
+      goal:
+        location: Palace
+        coins: 20
+    rid_the_market_of_the_thief:
+      enabled_if:
+        thief_caught: false
+      title: Rid the market of the thief
+      description: Drive the thief out of the market for good.
+      goal:
+        npc_removed: Thief
+    clear_your_name:
+      title: Clear your name
+      description: Your reputation precedes you. Earn back the city's trust.
+      enabled_if:
+        reputation:
+          lt: 0
+      goal:
+        variables:
+          reputation:
+            gte: 1
+  characters:
+  - name: Priest
+    unique: true
+    associated_tags:
+    - religion
+    - abandoned
+    - social
+    - discovery
+    known_locations:
+    - Abandoned Church
+    - Palace
+    known_objects:
+    - Vintage Wine
+    goals:
+    - Save souls
+    - Heal the sick
+    descriptions:
+    - He's always helping lost souls.
+    - He's always worrying about saving others.
+    - He's got a good heart looking out for others.
+    - A true believer.
+    actions:
+    - name: Seek a blessing
+      outcomes:
+      - desc: The priest offers a prayer that restores your spirit.
+        health_change: 2
+        change_variables:
+          reputation: 1
+        change_stats:
+          persuasion: 5
+        tags:
+        - neutral
+      - desc: He offers to lead you to a quiet place of prayer.
+        lead_to_known: true
+        tags:
+        - social
+  - name: Gate Guard
+    unique: false
+    associated_tags:
+    - guarded
+    - urban
+    - palace
+    - vault
+    - dungeon
+    known_locations:
+    - Vault
+    - Dungeon
+    - Palace
+    known_objects:
+    - Heavy Shield
+    - Gold Coins
+    goals:
+    - Maintain order
+    - Collect bribes
+    descriptions:
+    - A tired-looking guard leaning on a pike.
+    - He looks like he'd rather be anywhere else but here.
+    - He's always watching for troublemakers with a cynical eye.
+    - He's secretly hoping for a quiet shift so he can nap.
+    actions:
+    - id: gate_guard_give_drink
+      name: Give him the {alcohol_desc}
+      exclusive_group: get_past_gate_guard
+      required_tag: alcohol
+      consumes_object: true
+      outcomes:
+      - id: gate_guard_bribe_pass
+        desc: The guard takes the bottle with a wink and lets you pass.
+        tags:
+        - neutral
+        - success
+        lead_to_known: true
+        linked_location: Palace
+      - id: gate_guard_drunk_sluggish
+        desc: He drinks the whole thing, gets sluggish, and forgets your face.
+        tags:
+        - stealth
+        health_change: 1
+    - id: gate_guard_bribe_coins
+      name: Bribe with coins
+      exclusive_group: get_past_gate_guard
+      required_coins: 15
+      skill_check:
+        stat: persuasion
+      outcomes:
+      - id: gate_guard_bribe_success
+        on_check: pass
+        desc: He pockets the coins and looks the other way.
+        change_variables:
+          reputation: -1
+        tags:
+        - neutral
+        lead_to_known: true
+        linked_location: Vault
+      - id: gate_guard_bribe_warning
+        on_check: fail
+        desc: He takes the coins but warns you not to get caught inside.
+        tags:
+        - threat
+        - failure
+        move_to: Vault
+    - id: gate_guard_approach
+      name: Approach the guard
+      repeat: always
+      outcomes:
+      - id: gate_guard_friendly
+        desc: The guard is unexpectedly friendly and gives you directions.
+        tags:
+        - neutral
+      - id: gate_guard_rude
+        desc: The guard is incredibly rude and pushes you back.
+        health_change: -1
+        tags:
+        - threat
+        - failure
+      - id: gate_guard_debt_secret
+        desc: The guard whispers for help; he's trapped in a debt he can't pay.
+        tags:
+        - setup_clue
+    - id: gate_guard_fight
+      name: Fight the guard
+      exclusive_group: get_past_gate_guard
+      required_tag: weapon
+      consumes_object: false
+      outcomes:
+      - id: gate_guard_fight_win
+        desc: You overpower the guard and force your way inside!
+        change_variables:
+          reputation: -2
+        tags:
+        - combat
+        - success
+        move_to: Palace
+      - id: gate_guard_fight_lose
+        desc: The guard is stronger than he looks; you take a heavy blow before retreating.
+        tags:
+        - combat
+        - threat
+        - failure
+        health_change: -3
+  - name: Bandit
+    unique: false
+    encounter_event: bandit_ambush
+    encounter_repeat: true
+    associated_tags:
+    - dark
+    - alley
+    - threat
+    - urban
+    - discovery
+    known_locations:
+    - Sewers
+    - Vault
+    known_objects:
+    - Steel Dagger
+    - Ancient Map
+    goals:
+    - Rob travelers
+    - Survive the streets
+    descriptions:
+    - A hooded figure with a scarred face and a jagged blade.
+    - They move with the predatory grace of someone who has lived in the shadows too
+      long.
+    - A desperate-looking thief with hungry eyes.
+    - He stalks the alleyways, looking for an easy mark.
+    actions: []
+  - name: Dock Worker
+    unique: false
+    associated_tags:
+    - harbor
+    - dockworkers
+    - port
+    goals:
+    - Earn a living
+    - Avoid the storm
+    descriptions:
+    - A burly man covered in salt and sweat.
+    - He has a rough voice from years of shouting over the crashing waves.
+    - He moves with a weary but steady strength, hauling crates older than himself.
+    - His eyes are constantly fixed on the horizon, searching for a ship that never
+      arrives.
+    actions:
+    - name: Speak to the dockworker
+      outcomes:
+      - desc: They offer to show you a shortcut to a nearby hub.
+        lead_to_known: true
+        tags:
+        - social
+      - desc: They offer the traveler wine.
+        tags:
+        - neutral
+        health_change: 1
+  - name: Aurora
+    unique: true
+    associated_tags:
+    - palace
+    - luxury
+    goals:
+    - Seek the truth
+    - Protect the legacy
+    known_locations:
+    - Palace
+    - Secret Garden
+    descriptions:
+    - A mysterious figure draped in flowing silk and secrets.
+    - She speaks in melodic riddles that seem to vibrate in the air.
+    - She carries the faint scent of jasmine and ancient parchment.
+    - Her presence is both haunting and regal, as if she belongs to another era.
+    actions:
+    - name: Ask about the crown
+      outcomes:
+      - desc: She cryptically mentions it's hidden in the Vault.
+        tags:
+        - spawn
+        spawn: true
+  - name: Gardener
+    unique: true
+    associated_tags:
+    - nature
+    - serene
+    - hidden
+    - secret_garden
+  - name: Guard
+    unique: false
+    associated_tags:
+    - prison
+    - palace
+    - dungeon
+    - protect
+  - name: Merchant
+    unique: false
+    associated_tags:
+    - commercial
+    - market
+    - buy
+    - sell
+    - guidance
+    - information
+    known_locations:
+    - Market
+    - Market of the Ancients
+    - Festival of Masks
+    known_objects:
+    - Ancient Map
+    - Vintage Wine
+    - Gold Coins
+    descriptions:
+    - A many-ringed dealer who prices every object in coins, favors, and secrets.
+    actions:
+    - name: Ask about forbidden merchandise
+      outcomes:
+      - desc: The merchant produces a map whose coastline changes whenever you blink.
+        tags:
+        - social
+        - discovery
+        - setup_clue
+        reveal_object: Ancient Map
+      - desc: The merchant loudly accuses you of theft to distract the guards.
+        tags:
+        - unexpected
+        - threat
+        - guards
+        coin_change: -3
+  - name: Storm Cartographer
+    unique: true
+    associated_tags:
+    - science
+    - storm
+    - arcane
+    - heights
+    - discovery
+    known_locations:
+    - Storm Observatory
+    - Drowned Archive
+    - Harbor
+    known_objects:
+    - Ancient Map
+    goals:
+    - Map the storm's interior
+    - Find the vanished island
+    descriptions:
+    - A rain-soaked scholar tattoos new coastlines onto their arms as the weather
+      changes.
+    actions:
+    - name: Compare maps of the storm
+      outcomes:
+      - desc: The cartographer identifies a safe current leading to the Drowned Archive.
+        tags:
+        - social
+        - success
+        - discovery
+        reveal_location: Drowned Archive
+        lead_to_known: true
+      - desc: Both maps redraw themselves to place you at the center of the storm.
+        tags:
+        - unexpected
+        - setup_clue
+        - arcane
+  - name: Exiled Archivist
+    unique: true
+    associated_tags:
+    - ancient
+    - underwater
+    - mystery
+    - social
+    - discovery
+    known_locations:
+    - Drowned Archive
+    - Bone Orchard
+    - Vault
+    known_objects:
+    - Ancient Map
+    - Gold Coins
+    goals:
+    - Restore the erased history
+    - Expose the false royal lineage
+    descriptions:
+    - Their robes are stitched from waterproof pages covered in censored names.
+    actions:
+    - name: Request the forbidden chapter
+      outcomes:
+      - desc: The archivist reveals that the orchard remembers every royal betrayal.
+        tags:
+        - social
+        - setup_clue
+        - discovery
+        reveal_location: Bone Orchard
+      - desc: The chapter erases the last sentence spoken aloud.
+        tags:
+        - unexpected
+        - arcane
+        health_change: -1
+  - name: Memory Thief
+    unique: true
+    enabled_if:
+      playthroughs:
+        gte: 1
+    encounter_event: memory_theft
+    associated_tags:
+    - eerie
+    - ancient
+    - stealth
+    - threat
+    - underground
+    - discovery
+    known_locations:
+    - Bone Orchard
+    - Ghostline Station
+    - Alley
+    known_objects:
+    - Steel Dagger
+    goals:
+    - Steal a royal memory
+    - Escape their own forgotten identity
+    descriptions:
+    - A figure with mirrored eyes who remembers meeting you in futures that never
+      happened.
+    actions: []
+  - name: Pale Conductor
+    unique: true
+    associated_tags:
+    - spectral
+    - travel
+    - industrial
+    - underground
+    - social
+    known_locations:
+    - Ghostline Station
+    - Palace
+    - Harbor
+    known_objects:
+    - Vintage Wine
+    - Gold Coins
+    goals:
+    - Keep the impossible timetable
+    - Find one living passenger
+    descriptions:
+    - A translucent conductor checks a watch whose hands move in opposite directions.
+    actions:
+    - name: Ask for a destination not on the map
+      outcomes:
+      - desc: The conductor punches a ticket to the palace's forgotten platform.
+        tags:
+        - voyage
+        - success
+        - unexpected
+        move_to: Palace
+      - desc: The conductor says your destination was demolished tomorrow.
+        tags:
+        - setup_clue
+        - spectral
+        reveal_location: Storm Observatory
+  - name: Maskwright
+    unique: true
+    associated_tags:
+    - social
+    - deception
+    - celebration
+    - masks
+    - arcane
+    known_locations:
+    - Festival of Masks
+    - Palace
+    - Market of the Ancients
+    known_objects:
+    - Heavy Shield
+    - Vintage Wine
+    goals:
+    - Craft the face of a perfect ruler
+    - Unmask the festival patron
+    descriptions:
+    - The artisan wears a blank porcelain face and speaks through nearby masks.
+    actions:
+    - name: Commission a new identity
+      outcomes:
+      - desc: The maskwright gives you the face of a minor palace official.
+        tags:
+        - stealth
+        - social
+        - success
+        reveal_location: Palace
+      - desc: Your unfinished mask begins answering questions before you can.
+        tags:
+        - unexpected
+        - arcane
+        - discovery
+        reveal_location: Market of the Ancients
+  - name: Runaway Apprentice
+    unique: true
+    associated_tags:
+    - urban
+    - science
+    - social
+    - discovery
+    - threat
+    known_locations:
+    - Storm Observatory
+    - Sewers
+    - Market
+    known_objects:
+    - Ancient Map
+    - Rusty Sword
+    goals:
+    - Undo a disastrous experiment
+    - Avoid the cartographer
+    descriptions:
+    - A soot-covered teenager carries a jar containing a tiny, furious thundercloud.
+    actions:
+    - name: Help contain the bottled storm
+      outcomes:
+      - desc: The cloud calms and illuminates a hidden route through the sewers.
+        tags:
+        - success
+        - discovery
+        - social
+        reveal_location: Sewers
+      - desc: Lightning escapes the jar and animates every metal object nearby.
+        tags:
+        - unexpected
+        - threat
+        - science
+        health_change: -1
+  - name: Thief
+    unique: true
+    enabled_if:
+      thief_caught: false
+    associated_tags:
+    - market
+    - trade
+    - urban
+    - stealth
+    - threat
+    known_locations:
+    - Market
+    known_objects:
+    - Gold Coins
+    goals:
+    - Lift a purse without being seen
+    - Sell stolen goods in the sewers
+    descriptions:
+    - A wiry figure drifts between the stalls, fingers never far from other people's
+      purses.
+    - Someone in a patched cloak watches the crowd a little too carefully.
+    actions:
+    - name: Confront the thief
+      triggers_event: confront_thief
+  character_stats:
+    stats:
+      attack:
+        description: Landing blows and winning fights.
+      defence:
+        description: Taking a hit and staying on your feet; softens combat damage.
+      stealth:
+        description: Moving unseen
+        picking pockets and locks.: null
+      persuasion:
+        description: Talking
+        bribing and bargaining your way through.: null
+    allocation:
+      total_points: 50
+      min_points: 5
+      max_points: 20
+      value_per_point: 5
+    mode: random
+    defined_points:
+      attack: 13
+      defence: 13
+      stealth: 12
+      persuasion: 12
+    tag_checks:
+      combat: attack
+      stealth: stealth
+    damage_reduction_stat: defence
+  variables:
+    thief_caught:
+      type: bool
+      default: false
+      description: The Market thief was beaten in a fight and is gone for good.
+    fence_exposed:
+      type: bool
+      default: false
+      description: The thief confessed who buys the stolen goods; the fence's ledger
+        can be found.
+    reputation:
+      type: int
+      default: 0
+      min: -5
+      max: 5
+      description: How the city sees the traveler. Blessings raise it; theft, bribes
+        and brawls lower it.
+evolution:
+  pop_size: 400
+  generations: 200
+  episodes_per_genome: 6
+  max_steps: 60
+  evaluation_threads: auto
+  max_evaluation_processes: 16
+  parallel_backend: processes
+  mutation_rate: 0.22
+  mutation_step: 0.14
+  elitism_rate: 0.08
+  crossover_rate: 0.75
+  blend_crossover_chance: 0.55
+  random_immigrant_rate: 0.08
+  tournament_size: 3
+  max_mutation_step: 0.4
+  stagnation_generations: 3
+  early_stop_generations: 0
+  warm_start: true
+  hall_of_fame_size: 12
+  validation_episodes: 10
+simulation:
+  verbose: true
+  interactive: true
+  mutation_rate: 0.2
+reproducibility:
+  deterministic: true
+  seed: 42
+genome_bounds:
+  threat_prob:
+  - 0.1
+  - 0.5
+  spawn_prob:
+  - 0.25
+  - 0.75
+  setup_prob:
+  - 0.1
+  - 0.45
+  success_bias:
+  - 0.5
+  - 0.9
+  guard_bias:
+  - 0.1
+  - 0.5
+  voyage_bias:
+  - 0.45
+  - 0.9
+  discovery_bias:
+  - 0.3
+  - 0.9
+  recovery_bias:
+  - 0.2
+  - 0.8
+  lead_bias:
+  - 0.3
+  - 0.9
+  event_prob:
+  - 0.08
+  - 0.4
+  chaos_bias:
+  - 0.1
+  - 0.75
+  goal_bias:
+  - 0.3
+  - 1.0
+  novelty_bias:
+  - 0.2
+  - 0.9
+game_state:
+  initial_health: 8
+  max_health: 10
+  arrest_location: Dungeon
+  initial_coins: 10
+  low_health_threshold: 4
+  auto_transfer_when_stuck: true
+  auto_travel_on_spawn: true
+  auto_travel_on_spawn_threshold: 1.5
+  auto_travel_commit_threshold: 1.2
+  commit_discovery_weight: 0.4
+  commit_revisit_penalty: 0.6
+transition_objective:
+  story_phases:
+    intro_end: 0.3
+    climax_start: 0.75
+    intro_tags:
+    - exploration
+    - urban
+    - maritime
+    - trade
+    - nature
+    middle_tags:
+    - threat
+    - social
+    - dark
+    - guarded
+    - discovery
+    climax_tags:
+    - palace
+    - vault
+    - luxury
+    - payoff
+    - success
+  intent_similarity_weight: 4.0
+  exact_intent_weight: 2.0
+  novelty_weight: 2.0
+  available_action_weight: 0.2
+  revisit_penalty: 2.5
+  story_phase_weight: 0.8
+  voyage_weight: 1.0
+  discovery_weight: 0.8
+  character_goal_weight: 2.0
+  known_location_bonus: 3.0
+outcome_objective:
+  success_threshold: 0.5
+  health_weight: 1.5
+  repetition_penalty: 1.5
+  coin_weight: 0.15
+  success_probability_weight: 2.0
+  discovery_weight: 2.0
+  movement_weight: 2.5
+  threat_interest_weight: 1.0
+  low_health_risk_penalty: 3.0
+  success_tag_bonus: 1.0
+  setup_weight: 1.5
+  payoff_weight: 2.0
+narrative_end:
+  max_actions: 100
+  max_consecutive_steps_in_location: 5
+  end_on_dungeon: false
+scene:
+  visibility:
+    npc_social_bias_weight: 1.0
+    npc_threat_bias_weight: 0.5
+    npc_urban_bias_weight: 0.25
+    item_similarity_weight: 2.0
+    item_urban_bias_weight: 0.4
+    item_maritime_bias_weight: 0.4
+    item_combat_bias_weight: 0.2
+  max_visible_npcs: 3
+  max_visible_objects: 2
+  npc_similarity_threshold: 0.68
+  npc_exact_tag_weight: 1.25
+  npc_semantic_weight: 1.0
+  npc_known_location_bonus: 3.0
+  npc_generic_tag_weight: 0.05
+  location_tag_match_bonus: 4.0
+  location_npc_tags:
+    Harbor:
+    - harbor
+    - maritime
+    Market:
+    - market
+    - commercial
+    - trade
+    Palace:
+    - palace
+    - luxury
+    - guarded
+    Dungeon:
+    - dungeon
+    - prison
+    - guard
+    - prisoner
+  generic_npc_tags:
+  - urban
+  - social
+  - discovery
+  - threat
+  - success
+  - neutral
+location_constraints:
+  Dungeon:
+    requires_escape: true
+    lock_when: sent
+    escape_tags:
+    - escape
+persistence:
+  path: saves/persistent_variables.json
+  profile: default
+  save_on: change
+  simulate_with: defaults
+mission_settings:
+  enabled: true
+  end_on_goal: true
+  route_weight: 6.0
+  discovery_route_cost: 2
+  pursuit_start_step: 12
+  pursuit_full_step: 30
+action_rules:
+  default_repeat:
+    location: per_visit
+    npc: per_visit
+    item: once
+    event: always
+authored_events:
+  enabled: true
+  fallback_action: Step away from the situation
+  fallback_description: You step back and let the moment pass.
+discovery_nodes:
+  location_base: 0.3
+  location_voyage_weight: 0.4
+  npc_base: 0.2
+  npc_social_weight: 0.3
+  item_base: 0.2
+  item_discovery_weight: 0.3
+npc_leads:
+  every_nth_interaction: 2
+  base_score: 1.0
+  shared_tag_weight: 0.5
+unexpected_events:
+  objective:
+    low_health_healing_weight: 2.0
+    healing_weight: 0.5
+    coin_weight: 0.1
+    low_health_threat_penalty: 2.0
+  enabled: true
+  base_chance: 0.08
+  genome_weight: 0.3
+  chaos_weight: 0.18
+  objective_threshold: 0.24
+  stagnation_pressure: 0.04
+  cooldown_steps: 2
+  max_per_story: 5
+  actors:
+  - a masked courier
+  - a runaway apprentice
+  - an off-duty guard
+  - a fortune teller
+  - a wounded smuggler
+  - a clockwork raven
+  omens:
+  - a bell rings backwards
+  - every flame turns blue
+  - a sudden fog swallows the street
+  - the ground trembles beneath the city
+  - a shower of torn wanted posters fills the air
+  - distant music stops mid-note
+  twists:
+  - offers a dangerous bargain
+  - names you as the subject of a prophecy
+  - drops a key before vanishing
+  - claims the city has changed rulers overnight
+  - reveals that someone in your party is being followed
+  - points toward a route that should not exist
+  effects:
+  - tags:
+    - unexpected
+    - social
+    - setup_clue
+  - tags:
+    - unexpected
+    - threat
+    health_change: -1
+  - tags:
+    - unexpected
+    - discovery
+    - spawn
+    spawn: true
+  - tags:
+    - unexpected
+    - success
+    coin_change: 8
+  - tags:
+    - unexpected
+    - recovery
+    health_change: 1
+spawn_selection:
+  story_phases:
+    intro_end: 0.25
+    climax_start: 0.75
+    intro_tags:
+    - exploration
+    - urban
+    - nature
+    - spawn
+    - maritime
+    - port
+    - trade
+    middle_tags:
+    - threat
+    - guards
+    - social
+    - sleazy
+    - prison
+    - dark
+    - guarded
+    climax_tags:
+    - palace
+    - vault
+    - grand
+    - success
+    - payoff
+    - luxury
+    intro_weight: 1.5
+    middle_weight: 1.75
+    climax_weight: 2.0
+  fallback_similarity_threshold: 0.2
+  fallback_candidates: 5
+  contrast_weight: 2.5
+  character_alignment_weight: 2.0
+  repeat_visit_penalty: 3.0
+  immediate_repeat_penalty: 10.0
+action_selection:
+  base_weight: 0.15
+  threat_weight: 1.0
+  spawn_weight: 1.5
+  setup_weight: 1.15
+  discovery_weight: 1.3
+  movement_weight: 1.5
+  recovery_weight: 1.25
+  stay_penalty_power: 2.2
+  consistency_penalty_weight: 1.0
+  event_trigger_weight: 1.5
+  mission_goal_weight: 6.0
+  repetition_penalty: 1.0
+  skill_fit_weight: 2.0
+  location_penalties:
+    Dungeon:
+      action_terms:
+        royal halls: 12.0
+      destination_tags:
+        palace: 10.0
+        luxury: 6.0
+        grand: 4.0
+outcome_scoring:
+  spawn_bonus: 1.7
+  movement_bonus: 1.7
+  discovery_bonus: 1.4
+  lead_bonus: 1.4
+  recovery_bonus: 1.2
+  setup_bonus: 1.1
+  payoff_bonus: 1.2
+outcome_resolution:
+  probability_floor: 0.05
+  probability_ceiling: 0.95
+  success_bias_weight: 0.3
+  discovery_weight: 0.16
+  lead_weight: 0.16
+  voyage_weight: 0.18
+  recovery_weight: 0.12
+  low_health_recovery_bonus: 0.08
+  stagnation_threshold: 2
+  stagnation_movement_bonus: 0.1
+  early_setup_bonus: 0.05
+  severe_risk_penalty: 0.08
+  navigation_floor: 0.98
+  tag_weights:
+    threat: -0.18
+    spawn: 0.18
+    social: 0.12
+    stealth: 0.12
+    urban: 0.08
+    maritime: 0.08
+    luxury: 0.08
+    setup: 0.12
+skill_check_resolution:
+  roll_sides: 100
+  difficulty_penalty: 0
+  difficulty_rate_per_step: 0.0
+  difficulty_rate_start_step: 10
+  min_chance: 5
+  max_chance: 95
+  damage_mitigation_per_point: 25
+  failure_mitigation_threshold: 80
+power_model:
+  base_power: 0.0
+  health_weight: 1.5
+  stat_weight: 1.5
+  low_health_penalty: 0.5
+  min_power: 0.0
+  max_power: 5.0
+fitness:
+  npc_interaction_cap: 3
+  variety:
+    distinct_choice_weight: 30
+    repeated_outcome_penalty: 2
+  base:
+    zero_step_penalty: -100
+    death_penalty: 35
+    completion_bonus: 10
+    stall_penalty: 20
+    dungeon_penalty: 10
+    max_action_completion_bonus: 8
+    mission_win_bonus: 60
+    mission_win_min_steps: 20
+  dramatic_arc:
+    intro_end: 0.25
+    middle_end: 0.75
+    intro_tags:
+    - exploration
+    - urban
+    - nature
+    - spawn
+    - maritime
+    - port
+    - trade
+    middle_tags:
+    - threat
+    - guards
+    - social
+    - sleazy
+    - prison
+    - dark
+    - guarded
+    climax_tags:
+    - payoff_
+    - palace
+    - vault
+    - grand
+    - success
+    - luxury
+    intro_bonus: 2
+    middle_bonus: 3
+    climax_bonus: 5
+  story_length:
+    min: 20
+    max: 60
+    target: 35
+    bonus: 25
+    penalty_per_unit: 2
+  threat_balance:
+    min: 5
+    max: 15
+    target: 10
+    bonus: 20
+    penalty_per_unit: 2
+  health_balance:
+    min: 2
+    max: 6
+    target: 3
+    bonus: 30
+    penalty_per_unit: 4
+  setup_payoff:
+    target_count: 2
+    pair_bonus: 15
+    early_setup_bonus: 10
+    late_payoff_bonus: 10
+    clue_variants: 3
+    min_gap_fraction: 0.33
+    gap_step_bonus: 2
+    short_gap_bonus: 5
+    target_count_bonus: 2
+    unmatched_setup_penalty: 4
+    unmatched_payoff_penalty: 3
+  volatility:
+    pair_weight: 10
+    threat_patterns:
+    - threat
+    - combat
+    recovery_patterns:
+    - neutral
+    - success
+  payoff_match_score: 10
+  max_location_visits: 3
+  visit_penalty: 5
+  contrast_weight: 10
+  volatility_pair_weight: 10
+  tone_variety:
+    density_weight: 30
+    unique_tag_bonus: 1.5
+    ignore_patterns:
+    - spawn
+    - failure
+    - success
+    - neutral
+    - setup_
+    - payoff_
+  path_variety:
+    unique_location_bonus: 6
+    revisit_penalty: 2
+    repeat_penalty_power: 2
+    repeat_penalty_weight: 10
+  character_interaction_bonus: 5
+  character_spawn_bonus: 15
+  npc_similarity_weight: 20
+  npc_repeat_weight: 10
+  combat_success_bonus: 25
+  discovery:
+    location_bonus: 4
+    inventory_bonus: 2
+    character_bonus: 3
+  unexpected_events:
+    target: 3
+    variety_bonus: 6
+    excess_penalty: 4
+llm_evaluator:
+  enabled: true
+  model_name: meta-llama/Llama-3.2-1B-Instruct
+  max_new_tokens: 2048
+  temperature: 0.3
+llm_fallback:
+  enabled: true
+  model_name: Qwen/Qwen2.5-0.5B-Instruct
+  local_files_only: false
+  trust_remote_code: false
+config_editor:
+  enabled: true
+  show_story_browser_on_startup: true
+  guided_mode: true
+  show_json_path_examples: true
+editor_suggester:
+  enabled: true
+  max_new_tokens: 256
+  temperature: 0.7
+augmentation:
+  enabled: true
+  min_locations: 12
+  min_items: 20
+  min_npcs: 15
+  min_outcomes: 60
+  output_dir: augmentations
+  save_to_source: true
+messages:
+  mission_start: '[MISSION] {title}: {description}'
+  mission_start_brief: '[MISSION] {title}'
+  mission_complete: '[MISSION COMPLETE] {title}'
+  end_line: '[END] {reason}'
+  end_death: The traveler can no longer continue.
+  end_mission: 'Mission complete: {title}.'
+  end_action_limit: The story reached its action limit of {limit} steps.
+  end_stalled: The story stalled in {location} for too long.
+  end_dungeon: The traveler was thrown into the {location}.
+  arrival: '
+
+    You are in the {location}. {description}'
+  arrival_npc: 'Met a {npc}: {description}'
+  arrival_item: 'Nearby you see: {description}'
+  continue_here: '
+
+    Continuing your activities in the {location}...'
+  action_taken: '> {action}'
+  result: 'RESULT: {description}'
+  failure: '[FAILURE] {action} failed.'
+  failure_arrest: '[FAILURE] The traveler lost the encounter and was dragged to the
+    {location}.'
+  travel_new: Move to {location}
+  travel_return: Return to {location}
+  travel_result: You travel to {location}.
+  location_current: '[LOCATION] Current location: {location}'
+  location_moved: '[LOCATION] Transferred from {origin} to {destination}'
+  location_stayed: '[LOCATION] Still at {location}'
+  auto_transfer: '[AUTO TRANSFER] No actions remained in {origin}, so a new route
+    carried you to {destination}.'
+  spawn: '[SPAWN] New path discovered: {location}'
+  spawn_forced: '[SPAWN] A situational path opens to: {location}'
+  voyage: '[VOYAGE] The opening draws you toward {location}.'
+  escape: '[ESCAPE] You found a way out of {location}.'
+  sent: '[SENT] You are taken to the {location}. There is no way back the way you
+    came.'
+  talk_action: Talk with {npc}
+  talk_default: '{npc} shares a few thoughts with you.'
+  talk_goal: ' They speak about their goal: {goal}.'
+  reveal_npc: '[DISCOVERY] You noticed {npc} in the scene.'
+  reveal_item: '[DISCOVERY] You spotted the {item} nearby.'
+  lead_path: '[LEAD] {npc} told you about the way to: {location}'
+  lead_move: "\n >>> [LEAD] {npc} led you to: {location}"
+  npc_removed: '[NPC REMOVED] {npc} is no longer part of the story.'
+  npc_removed_scene: '[NPC REMOVED] {npc} leaves the {location}.'
+  encounter: '[ENCOUNTER] {npc} confronts you!'
+  item_collected: You collected the {item}.
+  item_used: You have utilized the {item}.
+  paid: '[RESOURCES] Paid: {coins} coins (Balance: {balance})'
+  health_capped: '[HEALTH] Already at {health}/{max_health}; healing is capped at
+    the maximum.'
+  check_passed: '[CHECK] {stat}: rolled {roll}, needed {target} or less - passed.'
+  check_failed: '[CHECK] {stat}: rolled {roll}, needed {target} or less - failed.'
+  stat_changed: '[STAT] {stat}: {old} -> {new}'
+  variable_changed: '[PERSISTENT] {name}: {old} -> {new}'
+  event_start: '[EVENT] {title}: {description}'
+  event_trigger_result: '{title} begins.'
+  event_chain: '[EVENT END] {title} gives way to a new situation.'
+  event_end_return: '[EVENT END] {title} is over. You are back in the {location}.'
+  event_end_moved: '[EVENT END] {title} is over. The outcome carried you to {location}.'
+  event_unknown: '[EVENT] Unknown event ''{event}'' was ignored.'
+  unexpected_event: '[UNEXPECTED EVENT] {description}'
+  unexpected_effect: '[EVENT EFFECT] Health {health:+d}, coins {coins:+d}.'
+  unexpected_discovery: '[EVENT DISCOVERY] A path opens to {location}.'
+generated_run:
+  best_score: 133.24048447524018
+  candidate_count: 4
+  generations: 3
+  simulation_steps: 3
+  genome:
+    threat_prob: 0.35787181088525544
+    spawn_prob: 0.4954254121300022
+    setup_prob: 0.2689890678144149
+    success_bias: 0.7979883050973475
+    guard_bias: 0.19841848168282641
+    discovery_bias: 0.5797422192099706
+    recovery_bias: 0.26629317606215175
+    lead_bias: 0.6755565506649744
+    event_prob: 0.18967098580770383
+    chaos_bias: 0.7421686878461562
+    bias_urban: 0.10009319091602986
+    bias_maritime: 0.877246869043275
+    bias_social: 0.20802302174455622
+    bias_threat: 0.7287101260293157
+    bias_stealth: 0.40109385665776454
+    bias_luxury: 0.23299934390421395
+    voyage_bias: 0.8794423329959411
+    goal_bias: 0.5646645654334463
+    novelty_bias: 0.25425233459217755
+  learning:
+    best_score: 133.24
+    generations_run: 3
+    early_stopped: false
+    warm_started_from_memory: 0
+    improvement: 0.0
+    history:
+    - generation: 0
+      best: 133.24
+      mean: 116.077
+      worst: 94.909
+      spread: 17.395
+      diversity: 0.1619
+      mutation_step: 0.14
+      improved: true
+      best_traits:
+        threat_prob: 0.35787181088525544
+        spawn_prob: 0.4954254121300022
+        setup_prob: 0.2689890678144149
+        success_bias: 0.7979883050973475
+        guard_bias: 0.19841848168282641
+        discovery_bias: 0.5797422192099706
+        recovery_bias: 0.26629317606215175
+        lead_bias: 0.6755565506649744
+        event_prob: 0.18967098580770383
+        chaos_bias: 0.7421686878461562
+        bias_urban: 0.10009319091602986
+        bias_maritime: 0.877246869043275
+        bias_social: 0.20802302174455622
+        bias_threat: 0.7287101260293157
+        bias_stealth: 0.40109385665776454
+        bias_luxury: 0.23299934390421395
+        voyage_bias: 0.8794423329959411
+        goal_bias: 0.5646645654334463
+        novelty_bias: 0.25425233459217755
+      validation: 133.24
+    - generation: 1
+      best: 133.24
+      mean: 133.24
+      worst: 133.24
+      spread: 0.0
+      diversity: 0.1068
+      mutation_step: 0.14
+      improved: false
+      best_traits:
+        threat_prob: 0.35787181088525544
+        spawn_prob: 0.4954254121300022
+        setup_prob: 0.2689890678144149
+        success_bias: 0.7979883050973475
+        guard_bias: 0.19841848168282641
+        discovery_bias: 0.5797422192099706
+        recovery_bias: 0.26629317606215175
+        lead_bias: 0.6755565506649744
+        event_prob: 0.18967098580770383
+        chaos_bias: 0.7421686878461562
+        bias_urban: 0.10009319091602986
+        bias_maritime: 0.877246869043275
+        bias_social: 0.20802302174455622
+        bias_threat: 0.7287101260293157
+        bias_stealth: 0.40109385665776454
+        bias_luxury: 0.23299934390421395
+        voyage_bias: 0.8794423329959411
+        goal_bias: 0.5646645654334463
+        novelty_bias: 0.25425233459217755
+      validation: 133.24
+    - generation: 2
+      best: 133.24
+      mean: 133.24
+      worst: 133.24
+      spread: 0.0
+      diversity: 0.0538
+      mutation_step: 0.14
+      improved: false
+      best_traits:
+        threat_prob: 0.35787181088525544
+        spawn_prob: 0.4954254121300022
+        setup_prob: 0.2689890678144149
+        success_bias: 0.7979883050973475
+        guard_bias: 0.19841848168282641
+        discovery_bias: 0.5797422192099706
+        recovery_bias: 0.26629317606215175
+        lead_bias: 0.6755565506649744
+        event_prob: 0.18967098580770383
+        chaos_bias: 0.7421686878461562
+        bias_urban: 0.10009319091602986
+        bias_maritime: 0.877246869043275
+        bias_social: 0.20802302174455622
+        bias_threat: 0.7287101260293157
+        bias_stealth: 0.40109385665776454
+        bias_luxury: 0.23299934390421395
+        voyage_bias: 0.8794423329959411
+        goal_bias: 0.5646645654334463
+        novelty_bias: 0.25425233459217755
+      validation: 133.24
+    best_genome:
+      threat_prob: 0.35787181088525544
+      spawn_prob: 0.4954254121300022
+      setup_prob: 0.2689890678144149
+      success_bias: 0.7979883050973475
+      guard_bias: 0.19841848168282641
+      discovery_bias: 0.5797422192099706
+      recovery_bias: 0.26629317606215175
+      lead_bias: 0.6755565506649744
+      event_prob: 0.18967098580770383
+      chaos_bias: 0.7421686878461562
+      bias_urban: 0.10009319091602986
+      bias_maritime: 0.877246869043275
+      bias_social: 0.20802302174455622
+      bias_threat: 0.7287101260293157
+      bias_stealth: 0.40109385665776454
+      bias_luxury: 0.23299934390421395
+      voyage_bias: 0.8794423329959411
+      goal_bias: 0.5646645654334463
+      novelty_bias: 0.25425233459217755
+    learned_traits:
+    - trait: threat_prob
+      meaning: appetite for danger and combat
+      value: 0.358
+      population_mean: 0.294
+      bounds:
+      - 0.1
+      - 0.5
+      tendency: moderate
+    - trait: spawn_prob
+      meaning: eagerness to open new places
+      value: 0.495
+      population_mean: 0.496
+      bounds:
+      - 0.25
+      - 0.75
+      tendency: moderate
+    - trait: setup_prob
+      meaning: planting clues that pay off later
+      value: 0.269
+      population_mean: 0.244
+      bounds:
+      - 0.1
+      - 0.45
+      tendency: moderate
+    - trait: success_bias
+      meaning: leaning toward outcomes that succeed
+      value: 0.798
+      population_mean: 0.758
+      bounds:
+      - 0.5
+      - 0.9
+      tendency: high
+    - trait: guard_bias
+      meaning: willingness to deal with guards
+      value: 0.198
+      population_mean: 0.224
+      bounds:
+      - 0.1
+      - 0.5
+      tendency: low
+    - trait: discovery_bias
+      meaning: 'curiosity: revealing people, items and paths'
+      value: 0.58
+      population_mean: 0.632
+      bounds:
+      - 0.3
+      - 0.9
+      tendency: moderate
+    - trait: recovery_bias
+      meaning: resting and healing when hurt
+      value: 0.266
+      population_mean: 0.261
+      bounds:
+      - 0.2
+      - 0.8
+      tendency: low
+    - trait: lead_bias
+      meaning: following NPC leads
+      value: 0.676
+      population_mean: 0.705
+      bounds:
+      - 0.3
+      - 0.9
+      tendency: moderate
+    - trait: event_prob
+      meaning: welcoming unexpected events and triggered situations
+      value: 0.19
+      population_mean: 0.231
+      bounds:
+      - 0.08
+      - 0.4
+      tendency: moderate
+    - trait: chaos_bias
+      meaning: tolerance for surprising twists
+      value: 0.742
+      population_mean: 0.685
+      bounds:
+      - 0.1
+      - 0.75
+      tendency: high
+    - trait: bias_urban
+      meaning: preference for city scenes
+      value: 0.1
+      population_mean: 0.121
+      bounds:
+      - 0.1
+      - 0.9
+      tendency: low
+    - trait: bias_maritime
+      meaning: preference for harbour and sea scenes
+      value: 0.877
+      population_mean: 0.855
+      bounds:
+      - 0.1
+      - 0.9
+      tendency: high
+    - trait: bias_social
+      meaning: preference for social characters
+      value: 0.208
+      population_mean: 0.193
+      bounds:
+      - 0.1
+      - 0.9
+      tendency: low
+    - trait: bias_threat
+      meaning: preference for threatening characters
+      value: 0.729
+      population_mean: 0.727
+      bounds:
+      - 0.1
+      - 0.9
+      tendency: high
+    - trait: bias_stealth
+      meaning: preference for stealthy approaches
+      value: 0.401
+      population_mean: 0.438
+      bounds:
+      - 0.1
+      - 0.9
+      tendency: moderate
+    - trait: bias_luxury
+      meaning: preference for palaces and riches
+      value: 0.233
+      population_mean: 0.308
+      bounds:
+      - 0.1
+      - 0.9
+      tendency: low
+    - trait: voyage_bias
+      meaning: 'wanderlust: moving on instead of staying'
+      value: 0.879
+      population_mean: 0.858
+      bounds:
+      - 0.45
+      - 0.9
+      tendency: high
+    - trait: goal_bias
+      meaning: drive toward the mission in the climax
+      value: 0.565
+      population_mean: 0.565
+      bounds:
+      - 0.3
+      - 1.0
+      tendency: moderate
+    - trait: novelty_bias
+      meaning: avoiding repetition
+      value: 0.254
+      population_mean: 0.241
+      bounds:
+      - 0.2
+      - 0.9
+      tendency: low

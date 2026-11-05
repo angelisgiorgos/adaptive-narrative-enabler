@@ -12,6 +12,15 @@ from utils.tag_similarity import semantic_tag_similarity
 from core_engine import Genome, Location, WorldGraph, Action, Outcome, GameState, Character, Object, Event, Mission
 from core_engine.actions import REPEAT_RULES
 from core_engine.narration import message
+from core_engine import stats, variables
+from core_engine.evolution import LearningMemory, NarrativeEvolution
+# World building and fitness live in core_engine (also shipped in offline engine exports).
+from core_engine.builder import (  # noqa: F401  (re-exported for callers of main)
+    _SPAWN_RULES_CACHE, _build_action, _build_outcome, _build_spawn_rules, _coerce_list, _interaction_prompts,
+    _location_distant_descriptions, _location_entered_descriptions, _resolve_outcome_links, _stat_usage_errors,
+    build_world,
+)
+from core_engine.fitness import _fitness_breakdown, fitness  # noqa: F401
 
 # ============================
 # CONFIG (loaded from config.yaml)
@@ -23,7 +32,7 @@ EPISODES_PER_GENOME = config.get("evolution.episodes_per_genome", 3)
 MAX_STEPS = config.get("evolution.max_steps", 60)
 EVALUATION_THREADS = config.get("evolution.evaluation_threads", 8)
 PARALLEL_BACKEND = config.get("evolution.parallel_backend", "processes")
-_SPAWN_RULES_CACHE = {}
+LAST_LEARNING = None  # learning summary of the latest evolve() run
 
 
 class GenerationStopper:
@@ -120,543 +129,14 @@ def apply_random_seed(force=False):
     return seed
 
 
-def _coerce_list(value):
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return value
-    return [value]
-
-
-def _location_distant_descriptions(data):
-    return _coerce_list(
-        data.get("distant_descriptions")
-        or data.get("distant_text")
-        or data.get("descriptions")
-    )
-
-
-def _location_entered_descriptions(data):
-    return _coerce_list(
-        data.get("entered_descriptions")
-        or data.get("entering_text")
-        or data.get("entered_text")
-        or data.get("descriptions")
-    )
-
-
-def _interaction_prompts(data):
-    prompts = list(_coerce_list(data.get("interact_prompts")))
-    for point in _coerce_list(data.get("interaction_points")):
-        prompt = point.get("prompt") or point.get("label")
-        if prompt and prompt not in prompts:
-            prompts.append(prompt)
-    return prompts
-
-
-def _resolve_outcome_links(o_data):
-    move_to = o_data.get("move_to")
-    reveal_location = o_data.get("reveal_location") or o_data.get("linked_location")
-    reveal_npc = o_data.get("reveal_npc") or o_data.get("linked_npc")
-    reveal_object = o_data.get("reveal_object") or o_data.get("linked_item")
-
-    if move_to is None and o_data.get("linked_location_mode") == "move":
-        move_to = o_data.get("linked_location")
-
-    return move_to, reveal_location, reveal_npc, reveal_object
-
-
-def _flatten_seen_tags(tags_seen):
-    flattened = []
-    for entry in tags_seen:
-        if isinstance(entry, list):
-            flattened.extend(entry)
-        else:
-            flattened.append(entry)
-    return flattened
-
-
-def _matches_tag_pattern(tag, pattern):
-    if pattern is None:
-        return False
-    if pattern.endswith("*"):
-        return tag.startswith(pattern[:-1])
-    if pattern.endswith("_"):
-        return tag.startswith(pattern)
-    return tag == pattern
-
-
-def _count_matching_tags(tags, expected_tags):
-    if not expected_tags:
-        return 0
-    return sum(
-        1
-        for tag in tags
-        for pattern in expected_tags
-        if _matches_tag_pattern(tag, pattern)
-    )
-
-
-def _count_pattern_occurrences(tags, patterns):
-    if not patterns:
-        return 0
-    count = 0
-    for tag in tags:
-        if any(_matches_tag_pattern(tag, pattern) for pattern in patterns):
-            count += 1
-    return count
-
-
-def _story_progress(index, total_steps):
-    if total_steps <= 1:
-        return 1.0
-    return index / max(1, total_steps - 1)
-
-
-def _normalize_step_tags(step_tags):
-    if isinstance(step_tags, list):
-        return step_tags
-    return [step_tags]
-
-
-def _band_score(value, cfg, default_bonus=10):
-    min_v = cfg.get("min")
-    max_v = cfg.get("max")
-    target = cfg.get("target", value)
-    bonus = cfg.get("bonus", default_bonus)
-
-    if min_v is not None and max_v is not None and min_v <= value <= max_v:
-        return bonus
-    return max(0, bonus - abs(value - target) * cfg.get("penalty_per_unit", 1))
-
-
-def _fitness_breakdown(state):
-    fitness_cfg = config.get("fitness", {})
-    base_cfg = fitness_cfg.get("base", {})
-    total_steps = state.actions_taken
-    if total_steps == 0:
-        return {"zero_step_penalty": base_cfg.get("zero_step_penalty", -100)}
-
-    breakdown = {}
-
-    arc_cfg = fitness_cfg.get("dramatic_arc", {})
-    intro_tags = arc_cfg.get("intro_tags", ["exploration", "urban", "nature", "spawn", "maritime"])
-    middle_tags = arc_cfg.get("middle_tags", ["threat", "guards", "social", "sleazy", "prison"])
-    climax_tags = arc_cfg.get("climax_tags", ["payoff_", "palace", "vault", "grand", "success"])
-    intro_end = arc_cfg.get("intro_end", 0.25)
-    middle_end = arc_cfg.get("middle_end", 0.75)
-    intro_bonus = arc_cfg.get("intro_bonus", 2)
-    middle_bonus = arc_cfg.get("middle_bonus", 3)
-    climax_bonus = arc_cfg.get("climax_bonus", 5)
-
-    arc_score = 0.0
-    for i, step_tags in enumerate(state.tags_seen):
-        progress = _story_progress(i, len(state.tags_seen))
-        current_tags = _normalize_step_tags(step_tags)
-        if progress < intro_end:
-            arc_score += _count_matching_tags(current_tags, intro_tags) * intro_bonus
-        elif progress < middle_end:
-            arc_score += _count_matching_tags(current_tags, middle_tags) * middle_bonus
-        else:
-            arc_score += _count_matching_tags(current_tags, climax_tags) * climax_bonus
-    breakdown["dramatic_arc"] = arc_score
-
-    contrast_weight = fitness_cfg.get("contrast_weight", 10)
-    contrast_score = 0.0
-    for i in range(len(state.path) - 1):
-        loc1 = state.world.locations.get(state.path[i])
-        loc2 = state.world.locations.get(state.path[i + 1])
-        if loc1 and loc2:
-            similarity = semantic_tag_similarity(loc1.tags, loc2.tags)
-            contrast_score += (1.0 - similarity) * contrast_weight
-    breakdown["scene_contrast"] = contrast_score
-
-    setup_cfg = fitness_cfg.get("setup_payoff", {})
-    pair_bonus = 0.0
-    for s_tag, s_idx in state.setup_indices.items():
-        p_tag = s_tag.replace("setup_", "payoff_")
-        if p_tag in state.payoff_indices:
-            p_idx = state.payoff_indices[p_tag]
-            gap = p_idx - s_idx
-            min_gap = total_steps * setup_cfg.get("min_gap_fraction", 1 / 3)
-            if gap > min_gap:
-                pair_bonus += setup_cfg.get("pair_bonus", 20)
-                pair_bonus += gap * setup_cfg.get("gap_step_bonus", 2)
-                if p_idx >= total_steps * 0.66:
-                    pair_bonus += setup_cfg.get("late_payoff_bonus", 0)
-            else:
-                pair_bonus += setup_cfg.get("short_gap_bonus", 5)
-
-    matched_pairs = min(len(state.setup_indices), len(state.payoff_indices))
-    pair_bonus += matched_pairs * setup_cfg.get("target_count_bonus", 0)
-    unmatched_setups = max(0, len(state.setup_indices) - matched_pairs)
-    unmatched_payoffs = max(0, len(state.payoff_indices) - matched_pairs)
-    pair_bonus -= unmatched_setups * setup_cfg.get("unmatched_setup_penalty", 0)
-    pair_bonus -= unmatched_payoffs * setup_cfg.get("unmatched_payoff_penalty", 0)
-    breakdown["setup_payoff"] = pair_bonus
-
-    all_tags = _flatten_seen_tags(state.tags_seen)
-    volatility_cfg = fitness_cfg.get("volatility", {})
-    threat_patterns = volatility_cfg.get("threat_patterns", ["threat", "combat"])
-    recovery_patterns = volatility_cfg.get("recovery_patterns", ["neutral", "success"])
-    threats = _count_pattern_occurrences(all_tags, threat_patterns)
-    recoveries = _count_pattern_occurrences(all_tags, recovery_patterns)
-    breakdown["volatility"] = min(threats, recoveries) * volatility_cfg.get("pair_weight", fitness_cfg.get("volatility_pair_weight", 10))
-    breakdown["threat_balance"] = _band_score(threats, fitness_cfg.get("threat_balance", {}), default_bonus=20)
-    breakdown["health_balance"] = _band_score(state.health, fitness_cfg.get("health_balance", {}), default_bonus=20)
-
-    tone_cfg = fitness_cfg.get("tone_variety", {})
-    ignore_patterns = tone_cfg.get("ignore_patterns", ["spawn", "failure", "success", "neutral", "setup_", "payoff_"])
-    narrative_tags = []
-    for step_tags in state.tags_seen:
-        for tag in _normalize_step_tags(step_tags):
-            if not any(_matches_tag_pattern(tag, pattern) for pattern in ignore_patterns):
-                narrative_tags.append(tag)
-
-    tone_score = 0.0
-    if narrative_tags:
-        unique_narrative = len(set(narrative_tags))
-        variety_ratio = unique_narrative / len(narrative_tags)
-        tone_score += variety_ratio * tone_cfg.get("density_weight", fitness_cfg.get("tone_variety_weight", 30))
-        tone_score += unique_narrative * tone_cfg.get("unique_tag_bonus", fitness_cfg.get("tone_variety_bonus", 15))
-    breakdown["tone_variety"] = tone_score
-
-    breakdown["story_length"] = _band_score(total_steps, fitness_cfg.get("story_length", {}), default_bonus=25)
-
-    path_cfg = fitness_cfg.get("path_variety", {})
-    consecutive_repeats = sum(
-        1 for i in range(1, len(state.path)) if state.path[i] == state.path[i - 1]
-    )
-    repeat_power = path_cfg.get("repeat_penalty_power", fitness_cfg.get("path_repeat_penalty_power", 2))
-    repeat_weight = path_cfg.get("repeat_penalty_weight", fitness_cfg.get("path_repeat_penalty_weight", 10))
-    path_score = -(consecutive_repeats ** repeat_power) * repeat_weight
-
-    max_visits = fitness_cfg.get("max_location_visits", 3)
-    visit_penalty = fitness_cfg.get("visit_penalty", 5)
-    for visits in state.location_counts.values():
-        if visits > max_visits:
-            path_score -= (visits - max_visits) * visit_penalty
-
-    unique_locations = len(set(state.path))
-    revisits = max(0, len(state.path) - unique_locations)
-    path_score += unique_locations * path_cfg.get("unique_location_bonus", 0)
-    path_score -= revisits * path_cfg.get("revisit_penalty", 0)
-    breakdown["path_variety"] = path_score
-
-    char_bonus = fitness_cfg.get("character_interaction_bonus", 5)
-    char_spawn_bonus = fitness_cfg.get("character_spawn_bonus", 15)
-    npc_similarity_weight = fitness_cfg.get("npc_similarity_weight", 20)
-    npc_repeat_weight = fitness_cfg.get("npc_repeat_weight", 10)
-    npc_context_score = 0.0
-    for char_name, count in state.character_interactions.items():
-        char_obj = next((c for c in state.world.characters if c.name == char_name), None)
-        if not char_obj:
-            continue
-        npc_context_score += count * char_bonus
-        path_similarity = semantic_tag_similarity(char_obj.associated_tags, state.tags_seen)
-        npc_context_score += path_similarity * npc_similarity_weight
-        npc_context_score += count * npc_repeat_weight
-        if count >= 2:
-            npc_context_score += char_spawn_bonus
-    breakdown["character_interactions"] = npc_context_score
-
-    combat_bonus = 0.0
-    for step_tags in state.tags_seen:
-        current_tags = set(_normalize_step_tags(step_tags))
-        if {"combat", "success"} <= current_tags or {"threat", "success"} <= current_tags:
-            combat_bonus += fitness_cfg.get("combat_success_bonus", 25)
-    breakdown["combat_success"] = combat_bonus
-
-    discovery_cfg = fitness_cfg.get("discovery", {})
-    breakdown["discovery"] = (
-        len(set(state.path)) * discovery_cfg.get("location_bonus", 0)
-        + len(state.inventory) * discovery_cfg.get("inventory_bonus", 0)
-        + len(state.character_interactions) * discovery_cfg.get("character_bonus", 0)
-    )
-    # Variety: many distinct choices and no repeated outcomes keep a story engaging.
-    variety_cfg = fitness_cfg.get("variety", {})
-    choice_counts = getattr(state, "choice_counts", {})
-    outcome_counts = getattr(state, "outcome_counts", {})
-    chosen = sum(choice_counts.values())
-    breakdown["variety"] = (
-        (len(choice_counts) / chosen if chosen else 0.0) * variety_cfg.get("distinct_choice_weight", 30)
-        - sum(count - 1 for count in outcome_counts.values() if count > 1)
-        * variety_cfg.get("repeated_outcome_penalty", 2)
-    )
-
-    event_cfg = fitness_cfg.get("unexpected_events", {})
-    event_count = len(getattr(state, "unexpected_events", []))
-    event_target = int(event_cfg.get("target", 3))
-    breakdown["unexpected_events"] = (
-        min(event_count, event_target) * event_cfg.get("variety_bonus", 5)
-        - max(0, event_count - event_target) * event_cfg.get("excess_penalty", 3)
-    )
-
-    end_score = 0.0
-    if getattr(state, "won", False):
-        # A rushed win is worth less than a win after a full story.
-        min_steps = max(1, base_cfg.get("mission_win_min_steps", 20))
-        end_score += base_cfg.get("mission_win_bonus", 60) * min(1.0, total_steps / min_steps)
-    if state.ended:
-        if state.health <= 0:
-            end_score -= base_cfg.get("death_penalty", 0)
-        else:
-            end_score += base_cfg.get("completion_bonus", 0)
-        # end_kind, not the (customisable) end_reason text, identifies the ending.
-        end_kind = getattr(state, "end_kind", None)
-        if end_kind == "stalled":
-            end_score -= base_cfg.get("stall_penalty", 0)
-        if end_kind == "dungeon":
-            end_score -= base_cfg.get("dungeon_penalty", 0)
-        if end_kind == "action_limit":
-            end_score += base_cfg.get("max_action_completion_bonus", 0)
-    breakdown["ending"] = end_score
-
-    return breakdown
-
-
 # ============================
 # FITNESS FUNCTION
 # ============================
-
-def fitness(state):
-    return sum(_fitness_breakdown(state).values())
-
-
-def _next_setup_tag(action_index, outcome_index):
-    setup_cfg = config.get("fitness.setup_payoff", {})
-    clue_variants = max(1, int(setup_cfg.get("clue_variants", 3)))
-    clue_index = ((action_index + outcome_index) % clue_variants) + 1
-    return f"setup_{clue_index}"
-
-
-def _location_signature(locations_cfg):
-    return tuple(
-        sorted(
-            (
-                name,
-                tuple(sorted(_coerce_list(data.get("tags", [])))),
-            )
-            for name, data in locations_cfg.items()
-        )
-    )
-
-
-def _build_spawn_rules(locations, locations_cfg, config_wd):
-    strategy = config_wd.get("spawn_strategy", "static")
-    if strategy == "similarity":
-        threshold = config_wd.get("similarity_threshold", 0.2)
-        cache_key = ("similarity", threshold, _location_signature(locations_cfg))
-        cached = _SPAWN_RULES_CACHE.get(cache_key)
-        if cached is not None:
-            return copy.deepcopy(cached)
-
-        spawn_rules = {}
-        loc_names = list(locations.keys())
-        for i in range(len(loc_names)):
-            for j in range(len(loc_names)):
-                if i == j:
-                    continue
-                name1, name2 = loc_names[i], loc_names[j]
-                l1, l2 = locations[name1], locations[name2]
-                sim = semantic_tag_similarity(l1.tags, l2.tags)
-                if sim >= threshold:
-                    spawn_rules.setdefault(name1, []).append(name2)
-
-        _SPAWN_RULES_CACHE[cache_key] = copy.deepcopy(spawn_rules)
-        return spawn_rules
-
-    spawn_rules_cfg = config_wd.get("spawn_rules", {})
-    return {parent: list(children) for parent, children in spawn_rules_cfg.items()}
 
 
 # ============================
 # WORLD CREATION
 # ============================
-
-def _build_outcome(o_data, genome, tags=None):
-    move_to, reveal_location, reveal_npc, reveal_object = _resolve_outcome_links(o_data)
-    success_prob = 1.0
-    if o_data.get("use_genome_bias"):
-        success_prob = genome.success_bias
-    elif "success_prob" in o_data:
-        success_prob = o_data["success_prob"]
-
-    return Outcome(
-        desc=o_data.get("desc", ""),
-        tags=o_data.get("tags", []) if tags is None else tags,
-        success_prob=success_prob,
-        health_change=o_data.get("health_change", 0),
-        coin_change=o_data.get("coin_change", 0),
-        spawn=o_data.get("spawn", False),
-        move_to=move_to,
-        reveal_location=reveal_location,
-        reveal_npc=reveal_npc,
-        reveal_object=reveal_object,
-        lead_to_known=o_data.get("lead_to_known", False),
-        remove_npc=o_data.get("remove_npc"),
-        send_to=o_data.get("send_to"),
-    )
-
-
-def _build_action(a_data, outcomes, events_cfg, name=None, character_name=None, source=None, owner=None):
-    repeat = a_data.get("repeat")
-    if repeat is not None and repeat not in REPEAT_RULES:
-        raise ValueError(
-            f"Action '{a_data.get('name', 'Action')}' of {owner}: repeat must be one of "
-            f"{', '.join(REPEAT_RULES)}, not {repeat!r}."
-        )
-    triggers_event = a_data.get("triggers_event")
-    if triggers_event and not outcomes:
-        # A trigger action needs no outcomes of its own; the event carries the story.
-        title = events_cfg.get(triggers_event, {}).get("title", triggers_event)
-        outcomes = [Outcome(desc=message("event_trigger_result", title=title), tags=["event"])]
-
-    return Action(
-        name=name or a_data.get("name", "Action"),
-        outcomes=outcomes,
-        character_name=character_name,
-        required_object=a_data.get("required_object"),
-        required_tag=a_data.get("required_tag"),
-        required_coins=a_data.get("required_coins", 0),
-        collects_object=a_data.get("collects_object"),
-        consumes_object=a_data.get("consumes_object", False),
-        triggers_event=triggers_event,
-        repeat=repeat,
-        exclusive_group=a_data.get("exclusive_group"),
-        source=source,
-        owner=owner,
-    )
-
-
-def build_world(genome):
-    world = WorldGraph()
-    config_wd = config.get("world_definition", {})
-    events_cfg = config_wd.get("events") or {}
-    
-    # 1. Locations
-    locations_cfg = config_wd.get("locations", {})
-    for name, data in locations_cfg.items():
-        loc = Location(
-            name, 
-            data.get("tags", []), 
-            interact_prompts=_interaction_prompts(data),
-            goals=data.get("goals", []),
-            distant_descriptions=_location_distant_descriptions(data),
-            entered_descriptions=_location_entered_descriptions(data)
-        )
-        
-        # 2. Actions/Outcomes
-        actions_list = []
-        for action_index, a_data in enumerate(data.get("actions", [])):
-            outcomes_list = []
-            for outcome_index, o_data in enumerate(a_data.get("outcomes", [])):
-                # Clue Handling
-                tags = copy.copy(o_data.get("tags", []))
-                if "setup_clue" in tags:
-                    tags.remove("setup_clue")
-                    tags.append(_next_setup_tag(action_index, outcome_index))
-                outcomes_list.append(_build_outcome(o_data, genome, tags=tags))
-            actions_list.append(_build_action(a_data, outcomes_list, events_cfg, source="location", owner=name))
-        loc.actions = actions_list
-        world.add_location(loc)
-
-    # 3. Spawn rules (Dynamic Similarity or Static)
-    for parent, children in _build_spawn_rules(world.locations, locations_cfg, config_wd).items():
-        for child in children:
-            world.allow_spawn(parent, child)
-
-    # 4. Characters
-    characters_cfg = config_wd.get("characters", [])
-    for char_data in characters_cfg:
-        char_actions_list = []
-        for a_data in char_data.get("actions", []):
-            char_outcomes_list = [
-                _build_outcome(o_data, genome) for o_data in a_data.get("outcomes", [])
-            ]
-            char_actions_list.append(_build_action(
-                a_data,
-                char_outcomes_list,
-                events_cfg,
-                name=f"({char_data['name']}) {a_data.get('name', 'Action')}",
-                character_name=char_data['name'],
-                source="npc",
-                owner=char_data['name'],
-            ))
-        
-        char = Character(
-            char_data["name"], 
-            char_data.get("associated_tags", []), 
-            goals=char_data.get("goals", []),
-            descriptions=char_data.get("descriptions", []),
-            actions=char_actions_list,
-            known_locations=char_data.get("known_locations", []),
-            known_objects=char_data.get("known_objects", []),
-            unique=char_data.get("unique", False),
-            encounter_event=char_data.get("encounter_event"),
-            encounter_repeat=char_data.get("encounter_repeat", False),
-        )
-        world.add_character(char)
-
-    # 5. Objects
-    objects_cfg = config_wd.get("objects", [])
-    for obj_data in objects_cfg:
-        obj_actions_list = []
-        for a_data in obj_data.get("actions", []):
-            obj_outcomes_list = [
-                _build_outcome(o_data, genome) for o_data in a_data.get("outcomes", [])
-            ]
-            obj_actions_list.append(_build_action(
-                a_data,
-                obj_outcomes_list,
-                events_cfg,
-                name=f"[{obj_data['name']}] {a_data.get('name', 'Action')}",
-                source="item",
-                owner=obj_data['name'],
-            ))
-        
-        obj = Object(
-            obj_data["name"], 
-            obj_data.get("associated_tags", []), 
-            interact_prompts=obj_data.get("interact_prompts", []),
-            goals=obj_data.get("goals", []),
-            descriptions=obj_data.get("descriptions", []),
-            actions=obj_actions_list,
-            collectible=obj_data.get("collectible", False)
-        )
-        world.add_object(obj)
-
-    # 6. Events (entered through actions with `triggers_event`)
-    for event_name, event_data in events_cfg.items():
-        event_actions = [
-            _build_action(
-                a_data,
-                [_build_outcome(o_data, genome) for o_data in a_data.get("outcomes", [])],
-                events_cfg,
-                source="event",
-                owner=event_name,
-            )
-            for a_data in event_data.get("actions", [])
-        ]
-        world.add_event(Event(
-            event_name,
-            title=event_data.get("title"),
-            tags=event_data.get("tags", []),
-            descriptions=_location_entered_descriptions(event_data),
-            actions=event_actions,
-        ))
-
-    # 7. Missions (one is chosen at random as the story's win condition)
-    for mission_name, mission_data in (config_wd.get("missions") or {}).items():
-        world.add_mission(Mission(
-            mission_name,
-            mission_data.get("goal"),
-            title=mission_data.get("title"),
-            description=mission_data.get("description", ""),
-            weight=mission_data.get("weight", 1.0),
-        ))
-
-    return world
 
 
 def print_action_graph(world):
@@ -831,80 +311,39 @@ def evaluate_population(population, generation, base_seed, stop_event=None, exec
     return results
 
 
-def evolve(stop_event=None):
-    population = [Genome() for _ in range(POP_SIZE)]
-    base_seed = _base_evaluation_seed()
-    best_run = None
-    max_workers = _evaluation_worker_count(len(population))
-    process_executor = None
+def evolve(stop_event=None, progress=None):
+    """Evolve storytellers with the shared evolutionary engine (core_engine.evolution).
 
-    if max_workers > 1 and PARALLEL_BACKEND == "processes":
-        process_executor = ProcessPoolExecutor(max_workers=max_workers)
+    Returns (best mean score, best genome, best episode score, best episode state).
+    """
+    max_workers = _evaluation_worker_count(POP_SIZE)
+    executor = None
+    if max_workers > 1:
+        executor_class = ProcessPoolExecutor if PARALLEL_BACKEND == "processes" else ThreadPoolExecutor
+        executor = executor_class(max_workers=max_workers)
+    map_fn = (lambda function, tasks: list(executor.map(function, tasks))) if executor else None
 
+    def report(generation, total, stats):
+        print(
+            f"Gen {generation} | Best Score: {stats.best:.2f} | Mean: {stats.mean:.2f} | "
+            f"Diversity: {stats.diversity:.3f} | Mutation step: {stats.mutation_step:.3f}"
+            + ("  (improved)" if stats.improved else "")
+        )
+        if progress is not None:
+            progress(generation, total, stats)
+
+    memory = LearningMemory() if config.get("evolution.warm_start", True) else None
+    evolution = NarrativeEvolution(build_world, fitness, seed=_base_evaluation_seed(), memory=memory, map_fn=map_fn)
     try:
-        for gen in range(GENERATIONS):
-            scored = evaluate_population(
-                population,
-                gen,
-                base_seed,
-                stop_event=stop_event,
-                executor=process_executor,
-            )
-            if not scored:
-                break
-            scored.sort(key=lambda x: x[0], reverse=True)
-            if scored[0][3] is None:
-                best_index = population.index(scored[0][1])
-                _, best_episode_score, best_episode_state = evaluate_genome(
-                    scored[0][1],
-                    rng_seed=_evaluation_seed(base_seed, gen, best_index),
-                    stop_event=stop_event,
-                )
-                scored[0] = (scored[0][0], scored[0][1], best_episode_score, best_episode_state)
-            if best_run is None or scored[0][0] > best_run[0]:
-                best_run = scored[0]
-
-            print(f"Gen {gen} | Best Score: {scored[0][0]:.2f}")
-
-            if stop_event and stop_event.is_set():
-                break
-
-            # Select top 25% (at least 1)
-            survivors = [g for _, g, _, _ in scored[:max(1, POP_SIZE // 4)]]
-
-            # Reproduce with elites, blended crossover, mutation, and random
-            # immigrants. This avoids converging every run on one narrow story.
-            elite_count = max(1, int(POP_SIZE * config.get("evolution.elitism_rate", 0.08)))
-            immigrant_count = int(POP_SIZE * config.get("evolution.random_immigrant_rate", 0.08))
-            crossover_rate = config.get("evolution.crossover_rate", 0.75)
-            new_population = [copy.deepcopy(g) for g in survivors[:elite_count]]
-            while len(new_population) < POP_SIZE:
-                if len(new_population) >= POP_SIZE - immigrant_count:
-                    new_population.append(Genome())
-                    continue
-                parent = random.choice(survivors)
-                if len(survivors) > 1 and random.random() < crossover_rate:
-                    second_parent = random.choice(survivors)
-                    child = Genome.crossover(parent, second_parent)
-                else:
-                    child = copy.deepcopy(parent)
-                child.mutate()
-                new_population.append(child)
-
-            population = new_population
+        result = evolution.run(progress=report, stop_event=stop_event)
     finally:
-        if process_executor is not None:
-            process_executor.shutdown(
-                wait=not (stop_event and stop_event.is_set()),
-                cancel_futures=True,
-            )
-
-    if best_run is not None:
-        return best_run
-
-    fallback_genome = population[0] if population else Genome()
-    score, episode_score, state = evaluate_genome(fallback_genome, rng_seed=base_seed)
-    return score, fallback_genome, episode_score, state
+        if executor is not None:
+            executor.shutdown(wait=not (stop_event and stop_event.is_set()), cancel_futures=True)
+    global LAST_LEARNING
+    LAST_LEARNING = result.summary()
+    if result.warm_started:
+        print(f"[LEARNING] Started from {result.warm_started} genome(s) remembered from earlier runs.")
+    return result.best_score, result.best_genome, fitness(result.best_state), result.best_state
 
 
 # ============================
@@ -988,6 +427,22 @@ def load_best_world_if_available():
     config.set_world_definition(world_definition)
     print(f"[ARCHIVE] Loaded best world from: {best_world_file}")
     return best_world_file
+
+
+def export_offline_engine(genome, score, run_dir, timestamp):
+    """Write the trained engine as an offline, game-ready ZIP next to the run archive."""
+    try:
+        from backend.export import export_engine  # imported here: the backend imports this module
+
+        result = export_engine(genome=genome, score=score, learning=LAST_LEARNING,
+                               description="best of a terminal run", name=f"narrative-engine-{timestamp}")
+        target = os.path.join(run_dir, "offline_engine.zip")
+        os.replace(result["path"], target)
+        print(f"[EXPORT] Offline engine for games saved to: {target} (unzip, then `python run.py play|serve`)")
+        return target
+    except Exception as exc:  # the story and archive are saved either way
+        print(f"[EXPORT] The offline engine could not be exported: {exc}")
+        return None
 
 
 def save_best_artifacts(score, genome, state, run_dir=None, timestamp=None, reason="Best structural evolution score"):
@@ -1132,7 +587,7 @@ def run_story(world_path=None):
     sim_verbose = config.get("simulation.verbose", True)
     sim_interactive = config.get("simulation.interactive", True)
     
-    final_state = GameState(final_world, best_genome, 
+    final_state = GameState(final_world, best_genome, store=variables.VariableStore(), 
                             verbose=True, 
                             interactive=sim_interactive)
     for _ in range(MAX_STEPS):
@@ -1189,6 +644,7 @@ def run_story(world_path=None):
         f.write("\n\n" + "="*60 + "\n")
 
     print(f"\n[ARCHIVE] Story successfully saved to: {run_file}")
+    export_offline_engine(best_genome, best_score, run_dir, timestamp)
 
 
 if __name__ == "__main__":

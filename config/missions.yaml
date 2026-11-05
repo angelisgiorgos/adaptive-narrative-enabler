@@ -16,6 +16,7 @@
 world_definition:
   missions:
     expose_the_fence:
+      enabled_if: {thief_caught: false, fence_exposed: false}
       title: Expose the fence
       description: Find out who buys the goods stolen at the market.
       goal:
@@ -37,7 +38,14 @@ world_definition:
         location: Palace
         coins: 20
     rid_the_market_of_the_thief:
+      enabled_if: {thief_caught: false}
       title: Rid the market of the thief
       description: Drive the thief out of the market for good.
       goal:
         npc_removed: Thief
+    clear_your_name:
+      title: Clear your name
+      description: Your reputation precedes you. Earn back the city's trust.
+      enabled_if: {reputation: {lt: 0}}   # offered only to travelers with a bad name
+      goal:
+        variables: {reputation: {gte: 1}}

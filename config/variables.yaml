@@ -1,0 +1,37 @@
+# Persistent variables: values that carry over from one playthrough to the next.
+#
+#   <name>:
+#     type: bool | int | float | str
+#     default: <value for a brand-new player profile>
+#     min / max: <optional bounds for numbers>
+#     description: <what it means, for writers>
+#
+# Change them in an outcome:
+#     set_variables:    {thief_caught: true}
+#     change_variables: {reputation: -1}          # numbers only; clamped to min/max
+#
+# Switch locations, NPCs, items and missions on or off with `enabled_if`
+# (every condition must hold):
+#     enabled_if:
+#       thief_caught: false                       # equals
+#       reputation: {gte: -2}                     # eq, ne, gt, gte, lt, lte, in, not_in
+#       playthroughs: {gte: 1}                    # built in: finished playthroughs
+#
+# Values are saved per player profile (persistence settings in
+# hyperparameters.yaml). Only real play saves them; simulations never do.
+world_definition:
+  variables:
+    thief_caught:
+      type: bool
+      default: false
+      description: The Market thief was beaten in a fight and is gone for good.
+    fence_exposed:
+      type: bool
+      default: false
+      description: The thief confessed who buys the stolen goods; the fence's ledger can be found.
+    reputation:
+      type: int
+      default: 0
+      min: -5
+      max: 5
+      description: How the city sees the traveler. Blessings raise it; theft, bribes and brawls lower it.

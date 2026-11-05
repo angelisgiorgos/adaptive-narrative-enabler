@@ -65,6 +65,10 @@ messages:
   item_used: "You have utilized the {item}."  # {item}
   paid: "[RESOURCES] Paid: {coins} coins (Balance: {balance})"  # {balance}, {coins}
   health_capped: "[HEALTH] Already at {health}/{max_health}; healing is capped at the maximum."  # {health}, {max_health}
+  check_passed: "[CHECK] {stat}: rolled {roll}, needed {target} or less - passed."  # {roll}, {stat}, {target}
+  check_failed: "[CHECK] {stat}: rolled {roll}, needed {target} or less - failed."  # {roll}, {stat}, {target}
+  stat_changed: "[STAT] {stat}: {old} -> {new}"  # {new}, {old}, {stat}
+  variable_changed: "[PERSISTENT] {name}: {old} -> {new}"  # {name}, {new}, {old} (empty text hides it)
 
   # --- Events
   event_start: "[EVENT] {title}: {description}"  # {description}, {title}

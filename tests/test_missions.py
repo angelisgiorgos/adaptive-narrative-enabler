@@ -2,7 +2,7 @@ import random
 import unittest
 from unittest.mock import patch
 
-import app as studio
+from backend import sessions
 import main as engine
 from core_engine import Action, Character, Event, GameState, Genome, Location, Mission, Object, Outcome, WorldGraph
 from utils.config_loader import config
@@ -51,6 +51,12 @@ def _choose(state, name):
 
 
 class MissionTests(unittest.TestCase):
+    def setUp(self):
+        # Mission logic is tested without skill-check dice.
+        patcher = patch.dict(config._config["world_definition"]["character_stats"], {"tag_checks": {}})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _state(self, *missions, **kwargs):
         return GameState(_world(*missions), _genome(), start="Market", rng=random.Random(2), **kwargs)
 
@@ -223,15 +229,15 @@ class RoutePlanningTests(unittest.TestCase):
 class GoalBiasCompatibilityTests(unittest.TestCase):
     def test_bundles_saved_before_goal_bias_still_load(self):
         values = {key: 0.5 for key in vars(Genome()) if key != "goal_bias"}
-        genome = studio._validated_genome(values)
+        genome = sessions._validated_genome(values)
         low, high = config.get("genome_bounds.goal_bias")
         self.assertAlmostEqual(genome.goal_bias, (low + high) / 2)
-        self.assertIsNotNone(studio._model_genome_values(values))
+        self.assertIsNotNone(sessions._model_genome_values(values))
 
     def test_other_missing_parameters_are_still_rejected(self):
         values = {key: 0.5 for key in vars(Genome()) if key != "voyage_bias"}
         with self.assertRaises(Exception):
-            studio._validated_genome(values)
+            sessions._validated_genome(values)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,13 @@ evolution:
   crossover_rate: 0.75
   blend_crossover_chance: 0.55
   random_immigrant_rate: 0.08
+  tournament_size: 3          # parents are the best of this many random genomes
+  max_mutation_step: 0.4      # adaptive mutation widens up to this when learning stalls...
+  stagnation_generations: 3   # ...after this many generations without improvement
+  early_stop_generations: 0   # stop after this many generations without improvement (0: never)
+  warm_start: true            # start from the best genomes remembered from earlier runs
+  hall_of_fame_size: 12       # how many genomes the learning memory keeps
+  validation_episodes: 10     # fixed benchmark stories that score each generation's champion
 simulation:
   verbose: true
   interactive: true
@@ -71,7 +78,15 @@ game_state:
   auto_travel_on_spawn: true
   auto_travel_on_spawn_threshold: 1.5
   auto_travel_commit_threshold: 1.2
+  commit_discovery_weight: 0.4   # following a new path: x genome.discovery_bias
+  commit_revisit_penalty: 0.6    # ... minus this per earlier visit
 transition_objective:
+  story_phases:                # which destinations suit the opening, middle and climax
+    intro_end: 0.3
+    climax_start: 0.75
+    intro_tags: [exploration, urban, maritime, trade, nature]
+    middle_tags: [threat, social, dark, guarded, discovery]
+    climax_tags: [palace, vault, luxury, payoff, success]
   intent_similarity_weight: 4.0
   exact_intent_weight: 2.0
   novelty_weight: 2.0
@@ -100,6 +115,14 @@ narrative_end:
   max_consecutive_steps_in_location: 5
   end_on_dungeon: false
 scene:
+  visibility:                  # which NPCs and items stand out in a scene
+    npc_social_bias_weight: 1.0
+    npc_threat_bias_weight: 0.5
+    npc_urban_bias_weight: 0.25
+    item_similarity_weight: 2.0
+    item_urban_bias_weight: 0.4
+    item_maritime_bias_weight: 0.4
+    item_combat_bias_weight: 0.2
   max_visible_npcs: 3
   max_visible_objects: 2
   npc_similarity_threshold: 0.68
@@ -127,6 +150,12 @@ location_constraints:
     # escape; one who found a normal route may walk back. always: everyone.
     lock_when: sent
     escape_tags: [escape]
+persistence:
+  # Persistent variables (config/variables.yaml) are saved per player profile.
+  path: saves/persistent_variables.json   # relative to the project, or absolute
+  profile: default
+  save_on: change          # change: save after every change; end: only when a story ends
+  simulate_with: defaults  # evolution uses defaults (reproducible) or the stored values
 mission_settings:
   enabled: true
   end_on_goal: true
@@ -146,7 +175,23 @@ authored_events:
   enabled: true
   fallback_action: Step away from the situation
   fallback_description: You step back and let the moment pass.
+discovery_nodes:               # what an NPC's hint reveals: a place, a person or an item
+  location_base: 0.3
+  location_voyage_weight: 0.4
+  npc_base: 0.2
+  npc_social_weight: 0.3
+  item_base: 0.2
+  item_discovery_weight: 0.3
+npc_leads:
+  every_nth_interaction: 2     # NPCs share a lead on every n-th conversation (or a success)
+  base_score: 1.0
+  shared_tag_weight: 0.5
 unexpected_events:
+  objective:                   # how the engine picks the effect of an unexpected event
+    low_health_healing_weight: 2.0
+    healing_weight: 0.5
+    coin_weight: 0.1
+    low_health_threat_penalty: 2.0
   enabled: true
   base_chance: 0.08
   genome_weight: 0.3
@@ -199,6 +244,17 @@ unexpected_events:
     - recovery
     health_change: 1
 spawn_selection:
+  story_phases:                # which newly discovered places suit each phase
+    intro_end: 0.25
+    climax_start: 0.75
+    intro_tags: [exploration, urban, nature, spawn, maritime, port, trade]
+    middle_tags: [threat, guards, social, sleazy, prison, dark, guarded]
+    climax_tags: [palace, vault, grand, success, payoff, luxury]
+    intro_weight: 1.5
+    middle_weight: 1.75
+    climax_weight: 2.0
+  fallback_similarity_threshold: 0.2   # when no spawn rule applies: similar places only...
+  fallback_candidates: 5               # ...and at most this many
   contrast_weight: 2.5
   character_alignment_weight: 2.0
   repeat_visit_penalty: 3.0
@@ -216,6 +272,7 @@ action_selection:
   event_trigger_weight: 1.5
   mission_goal_weight: 6.0
   repetition_penalty: 1.0  # per earlier use of the same choice (x genome.novelty_bias)
+  skill_fit_weight: 2.0    # x (pass chance - 0.5) of an action's skill check
   location_penalties:
     Dungeon:
       action_terms:
@@ -233,6 +290,8 @@ outcome_scoring:
   setup_bonus: 1.1
   payoff_bonus: 1.2
 outcome_resolution:
+  probability_floor: 0.05      # success probabilities of unchecked outcomes stay in this range
+  probability_ceiling: 0.95
   success_bias_weight: 0.3
   discovery_weight: 0.16
   lead_weight: 0.16
@@ -253,43 +312,26 @@ outcome_resolution:
     maritime: 0.08
     luxury: 0.08
     setup: 0.12
-combat_resolution:
-  attack_success_weight: 0.08
-  defense_success_weight: 0.04
-  power_success_weight: 0.05
-  attack_failure_weight: 0.06
-  defense_failure_weight: 0.08
-  power_failure_weight: 0.04
-  attack_outcome_weight: 0.6
-  defense_outcome_weight: 0.25
-  power_outcome_weight: 0.4
-  attack_lose_weight: 0.35
-  defense_lose_weight: 0.5
-  power_lose_weight: 0.25
-  attack_damage_mitigation: 0.15
-  defense_damage_mitigation: 0.5
-  failure_defense_mitigation: 0.5
-  attack_tags:
-    weapon: 1.0
-    combat: 0.5
-    fight: 0.75
-    dagger: 0.75
-    sword: 1.0
-  defense_tags:
-    defense: 1.0
-    shield: 1.0
-    armor: 1.0
-    guarded: 0.4
-    protection: 0.8
+skill_check_resolution:
+  # A check rolls 1..roll_sides and passes at or below:
+  #   skill value + action modifier - difficulty_penalty - rate x (step - start step)
+  roll_sides: 100
+  difficulty_penalty: 0            # positive: every check harder; negative: easier
+  difficulty_rate_per_step: 0.0    # per story step; positive: harder over time, negative: easier
+  difficulty_rate_start_step: 10   # the change over time applies from this step
+  min_chance: 5                    # pass chance never below this percentage...
+  max_chance: 95                   # ...or above this one
+  damage_mitigation_per_point: 25  # damage-reduction stat value per 1 combat damage prevented
+  failure_mitigation_threshold: 80 # that stat's value at which a failed dangerous action costs no health
 power_model:
   base_power: 0.0
   health_weight: 1.5
-  attack_weight: 1.0
-  defense_weight: 0.8
+  stat_weight: 1.5        # x average skill value / 100
   low_health_penalty: 0.5
   min_power: 0.0
   max_power: 5.0
 fitness:
+  npc_interaction_cap: 3  # interactions per NPC that still add to the score (no reward for chat farming)
   variety:
     distinct_choice_weight: 30   # x share of choices that were distinct
     repeated_outcome_penalty: 2  # per outcome text shown again

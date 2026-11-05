@@ -436,6 +436,9 @@ class ConfigEditor:
             if kind == "npcs":
                 print(f"  5. Unique NPC (currently: {self._unique_label(entry)})")
                 print(f"  6. Encounter event (currently: {self._encounter_label(entry)})")
+            print(f"  e. Enabled if (persistent variables; currently: {entry.get('enabled_if') or 'always'})")
+            if kind == "items":
+                print(f"  s. Stat bonus while held (currently: {entry.get('stat_bonus') or 'none'})")
             print("  b. back")
             choice = input("Selection: ").strip().lower()
 
@@ -474,6 +477,30 @@ class ConfigEditor:
                 )
                 if entry.get("unique") != unique:
                     entry["unique"] = unique
+                    changed = True
+                continue
+            if kind == "items" and choice == "s":
+                print("Stat bonuses while the item is held, e.g. {attack: 15}.")
+                if self._set_typed_field(entry, "stat_bonus", "yaml"):
+                    changed = True
+                continue
+            if choice == "e":
+                print("Conditions on persistent variables, e.g. {thief_caught: false, reputation: {gte: 1}}.")
+                print("Comparisons: eq, ne, gt, gte, lt, lte, in, not_in. Leave empty to always enable.")
+                value = input("Enabled if (YAML): ").strip()
+                try:
+                    conditions = yaml.safe_load(value) if value else None
+                except yaml.YAMLError as exc:
+                    print(f"Not valid YAML: {exc}")
+                    continue
+                if conditions is not None and not isinstance(conditions, dict):
+                    print("Please enter a mapping of variable names to values or comparisons.")
+                    continue
+                if conditions:
+                    changed = entry.get("enabled_if") != conditions or changed
+                    entry["enabled_if"] = conditions
+                elif "enabled_if" in entry:
+                    entry.pop("enabled_if")
                     changed = True
                 continue
             if kind == "npcs" and choice == "6":
@@ -843,6 +870,7 @@ class ConfigEditor:
             print("  5. Show full action")
             print(f"  6. Repeat rule (currently: {action.get('repeat') or 'default for its source'})")
             print(f"  7. Exclusive group (currently: {action.get('exclusive_group') or 'none'})")
+            print(f"  8. Skill check (currently: {action.get('skill_check') or 'none'})")
             print("  b. back")
             choice = input("Selection: ").strip().lower()
 
@@ -904,7 +932,12 @@ class ConfigEditor:
                     action.pop("exclusive_group")
                     changed = True
                 continue
-            print("Please choose 1, 2, 3, 4, 5, 6, 7, or b.")
+            if choice == "8":
+                print("A skill check rolls 1-100 against a stat, e.g. {stat: persuasion, modifier: -10}.")
+                if self._set_typed_field(action, "skill_check", "yaml"):
+                    changed = True
+                continue
+            print("Please choose 1, 2, 3, 4, 5, 6, 7, 8, or b.")
 
     def _edit_action_requirements(self, action):
         changed = False
@@ -1109,6 +1142,10 @@ class ConfigEditor:
             ("spawn", "bool"),
             ("move_to", "text"),
             ("send_to", "text"),  # one-way: the player cannot walk back
+            ("set_variables", "yaml"),  # persistent variables, e.g. {thief_caught: true}
+            ("on_check", "text"),  # pass / fail: only after that skill-check result
+            ("change_stats", "yaml"),  # e.g. {persuasion: 5}, for the rest of the playthrough
+            ("change_variables", "yaml"),  # numeric deltas, e.g. {reputation: -1}
             ("move_to_tags", "yaml"),
             ("reveal_npc", "text"),
             ("reveal_object", "text"),

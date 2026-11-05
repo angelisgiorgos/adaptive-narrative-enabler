@@ -1,0 +1,41 @@
+# Character stats: define whatever suits the story, e.g. attack / defence /
+# agility for a combat-heavy story, or stealth / persuasion / watchfulness /
+# intimidation for a social one.
+#
+# Each player spreads `total_points` over the stats, each between `min_points`
+# and `max_points`. Points become skill values on the 1-100 check scale
+# (points x value_per_point, so 5..20 points -> 25..100 by default).
+#
+# mode: how a player gets their points when they do not choose them
+#   random    a random split within the limits (seeded, so reproducible)
+#   defined   `defined_points` below
+#   balanced  an even split
+#
+# Skill checks: a check rolls 1-100 and passes when the roll is at or below
+# the skill value (plus modifiers, minus difficulty; see skill_check_resolution
+# in hyperparameters.yaml). An action can require one:
+#     skill_check: {stat: persuasion, modifier: -10}
+# with outcomes written for each result:
+#     on_check: pass | fail
+# Outcomes tagged with a tag in `tag_checks` need a check of that stat even
+# without a skill_check. Items help while held (`stat_bonus: {attack: 15}`)
+# and outcomes change stats for the rest of the playthrough
+# (`change_stats: {persuasion: 5}`).
+world_definition:
+  character_stats:
+    stats:
+      attack: {description: Landing blows and winning fights.}
+      defence: {description: Taking a hit and staying on your feet; softens combat damage.}
+      stealth: {description: Moving unseen, picking pockets and locks.}
+      persuasion: {description: Talking, bribing and bargaining your way through.}
+    allocation:
+      total_points: 50
+      min_points: 5
+      max_points: 20
+      value_per_point: 5
+    mode: random
+    defined_points: {attack: 13, defence: 13, stealth: 12, persuasion: 12}
+    tag_checks:
+      combat: attack
+      stealth: stealth
+    damage_reduction_stat: defence

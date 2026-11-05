@@ -58,6 +58,12 @@ DEFAULT_MESSAGES = {
     "item_used": "You have utilized the {item}.",
     "paid": "[RESOURCES] Paid: {coins} coins (Balance: {balance})",
     "health_capped": "[HEALTH] Already at {health}/{max_health}; healing is capped at the maximum.",
+    # Skill checks and character stats
+    "check_passed": "[CHECK] {stat}: rolled {roll}, needed {target} or less - passed.",
+    "check_failed": "[CHECK] {stat}: rolled {roll}, needed {target} or less - failed.",
+    "stat_changed": "[STAT] {stat}: {old} -> {new}",
+    # Persistent variables (an empty text hides the change from the story)
+    "variable_changed": "[PERSISTENT] {name}: {old} -> {new}",
     # Events
     "event_start": "[EVENT] {title}: {description}",
     "event_trigger_result": "{title} begins.",
@@ -136,7 +142,8 @@ class Narrator:
         """Format ``key``. With ``stable`` (e.g. a location name) the variant depends
         only on that value, which keeps action names identical between turns."""
         configured = (config.get("messages") or {}).get(key)
-        variants = _variants(configured) if configured else [DEFAULT_MESSAGES[key]]
+        # An empty text is a valid customisation (it hides the message).
+        variants = _variants(configured) if configured is not None and configured != [] else [DEFAULT_MESSAGES[key]]
         if stable is not None:
             index = sum(ord(ch) for ch in str(stable))
         else:

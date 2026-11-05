@@ -39,24 +39,36 @@ world_definition:
           tags: [combat, success]
           coin_change: 10
           remove_npc: true
+          set_variables: {thief_caught: true}     # the thief stays gone in later playthroughs
+          change_variables: {reputation: -1}
         - desc: The thief lands a quick jab and escapes into the crowd.
           tags: [combat, threat, failure]
           health_change: -2
           remove_npc: true
       - name: Interrogate the thief
+        skill_check: {stat: persuasion, modifier: -10}   # thieves do not talk easily
         outcomes:
         - desc: Cornered, the thief admits they sell stolen goods to someone in the sewers.
+          on_check: pass
           tags: [social, setup_clue]
           reveal_location: Sewers
+          set_variables: {fence_exposed: true}
         - desc: In exchange for their freedom, the thief leads you down to their hideout in the sewers.
+          on_check: pass
           tags: [social, discovery]
           move_to: Sewers
+          remove_npc: true
+          set_variables: {fence_exposed: true}
+        - desc: The thief laughs in your face, slips your grip and vanishes into the crowd.
+          on_check: fail
+          tags: [social, failure]
           remove_npc: true
       - name: Steal from the thief
         outcomes:
         - desc: While they protest their innocence, you lift a stolen pouch from their belt.
           tags: [stealth, success]
           coin_change: 15
+          change_variables: {reputation: -1}
         - desc: A market guard sees you rummaging through the thief's pockets and drives you both off.
           tags: [stealth, threat, failure]
           health_change: -1
@@ -94,10 +106,13 @@ world_definition:
           tags: [threat]
           health_change: -5
       - name: Make a run for it
+        skill_check: {stat: stealth}
         outcomes:
         - desc: You duck under the blade and lose the bandit in the crowd.
+          on_check: pass
           tags: [stealth, success]
         - desc: The bandit catches your cloak and slashes before you break free.
+          on_check: fail
           tags: [threat, failure]
           health_change: -2
     memory_theft:

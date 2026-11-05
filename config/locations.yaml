@@ -591,6 +591,8 @@ world_definition:
           tags: [unexpected, threat]
           reveal_npc: Memory Thief
     Festival of Masks:
+      # The masquerade turns away travelers with a bad name.
+      enabled_if: {reputation: {gte: -2}}
       tags: [urban, social, celebration, deception, district_docks]
       interact_prompts:
       - Join the midnight masquerade

@@ -18,6 +18,8 @@ world_definition:
       outcomes:
       - desc: The priest offers a prayer that restores your spirit.
         health_change: 2
+        change_variables: {reputation: 1}
+        change_stats: {persuasion: 5}   # blessed words carry weight
         tags:
         - neutral
       - desc: He offers to lead you to a quiet place of prayer.
@@ -61,14 +63,18 @@ world_definition:
       name: Bribe with coins
       exclusive_group: get_past_gate_guard
       required_coins: 15
+      skill_check: {stat: persuasion}
       outcomes:
       - id: gate_guard_bribe_success
+        on_check: pass
         desc: He pockets the coins and looks the other way.
+        change_variables: {reputation: -1}
         tags:
         - neutral
         lead_to_known: true
         linked_location: Vault
       - id: gate_guard_bribe_warning
+        on_check: fail
         desc: He takes the coins but warns you not to get caught inside.
         tags:
         - threat
@@ -100,6 +106,7 @@ world_definition:
       outcomes:
       - id: gate_guard_fight_win
         desc: You overpower the guard and force your way inside!
+        change_variables: {reputation: -2}
         tags:
         - combat
         - success
@@ -248,6 +255,8 @@ world_definition:
         health_change: -1
   - name: Memory Thief
     unique: true
+    # Remembers you from futures that never happened: only from the second playthrough on.
+    enabled_if: {playthroughs: {gte: 1}}
     # Hostile: confronts the player the first time they meet.
     encounter_event: memory_theft
     associated_tags: [eerie, ancient, stealth, threat, underground, discovery]
@@ -310,6 +319,7 @@ world_definition:
         health_change: -1
   - name: Thief
     unique: true
+    enabled_if: {thief_caught: false}   # beaten once, gone in later playthroughs
     associated_tags: [market, trade, urban, stealth, threat]
     known_locations: [Market]
     known_objects: [Gold Coins]

@@ -9,6 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     ANE_UI_HOST=0.0.0.0 \
     ANE_UI_PORT=8003 \
     ANE_DATA_DIR=/app/config \
+    ANE_SAVE_DIR=/app/saves \
     HF_HOME=/var/cache/huggingface
 
 WORKDIR /app
@@ -27,13 +28,13 @@ COPY . /app
 RUN useradd --create-home --uid 10001 app \
     && cp -a /app/config /app/config.defaults \
     && chmod 0755 /app/docker-entrypoint.sh \
-    && mkdir -p /var/cache/huggingface /app/artifacts \
+    && mkdir -p /var/cache/huggingface /app/artifacts /app/saves \
     && chown -R app:app /app /var/cache/huggingface \
     && python -m compileall -q /app \
     && python -m pip check
 
 USER app
-VOLUME ["/app/config", "/app/artifacts", "/var/cache/huggingface"]
+VOLUME ["/app/config", "/app/artifacts", "/app/saves", "/var/cache/huggingface"]
 EXPOSE 8003 8004
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

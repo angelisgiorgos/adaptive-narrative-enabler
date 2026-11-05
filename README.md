@@ -2,7 +2,7 @@
 
 Adaptive Narrative Enabler is a Python prototype for generating interactive narrative runs from modular YAML content. It builds a world from locations, NPCs, items, actions, and outcomes, then evolves genome-like control parameters that influence movement, discovery, threat, recovery, setup/payoff, and success behavior.
 
-The main entry point is [`main.py`](main.py). Content and tuning live in [`config/`](config/). Generated stories, best worlds, and per-run archives are written to [`runs/`](runs/).
+The main entry point is [`main.py`](main.py). The studio ([`app.py`](app.py)) is only the user interface: all logic lives in the backend ([`backend/`](backend/), [`core_engine/`](core_engine/)), which the REST API ([`api.py`](api.py)) calls too. Content and tuning live in [`config/`](config/). Generated stories, best worlds, and per-run archives are written to [`runs/`](runs/).
 
 ## Features
 
@@ -21,16 +21,28 @@ The main entry point is [`main.py`](main.py). Content and tuning live in [`confi
 - One-time, per-visit, and always-available options, plus exclusive choices (bribe *or* fight the guard).
 - Every sentence the engine writes is customisable, with variants that rotate instead of repeating.
 - Play decisions are deterministic and genome-driven; evolution also learns to avoid repetitive stories.
+- Persistent variables carry over between playthroughs and switch locations, NPCs, items and missions on or off.
+- Writer-defined character stats (any names) with a point budget, and 1-100 skill checks resolved by a combat system.
 
 ## Repository Layout
 
 ```text
 adaptive-narrative-enabler/
-|-- main.py                         # Entry point, world building, evolution, simulation, archives
+|-- main.py                         # Terminal entry point, world building, fitness, archives
+|-- app.py                          # Gradio studio: user interface only
+|-- api.py                          # REST API: calls the backend
+|-- backend/                        # Backend of the studio and API
+|   |-- store.py                    # Configuration I/O, validation, settings, weights, rules, engine logic
+|   |-- content.py                  # World authoring: entries, actions, missions, messages, variables, stats
+|   |-- sessions.py                 # Games created by evolution, bundles, play sessions
+|   `-- export.py                   # Offline engine export for games
+|-- narrative_runtime/              # Offline runtime shipped in exports: embedding API, HTTP server, CLI
 |-- config/
 |   |-- hyperparameters.yaml        # Evolution, fitness, LLM, editor, augmentation settings
 |   |-- events.yaml                 # Event definitions (self-contained situations)
 |   |-- messages.yaml               # Every sentence the engine writes, customisable
+|   |-- variables.yaml              # Persistent variables carried across playthroughs
+|   |-- stats.yaml                  # Character stats, point budget, tag checks
 |   |-- missions.yaml               # Mission goals / win conditions
 |   |-- locations.yaml              # Location definitions and location actions
 |   |-- items.yaml                  # Object/item definitions and item actions
@@ -38,9 +50,15 @@ adaptive-narrative-enabler/
 |-- core_engine/
 |   |-- actions.py                  # Action/outcome resolution
 |   |-- augmenter.py                # Optional LLM world augmentation
+|   |-- evolution.py                # NarrativeEvolution: the evolutionary AI, learning memory
+|   |-- builder.py                  # Builds the runtime world from the configuration
+|   |-- fitness.py                  # The fitness function evolution maximises
 |   |-- game_state.py               # Runtime story state and simulation loop
 |   |-- health.py                   # HealthPlayer: bounded health and power of the player
+|   |-- stats.py                    # CharacterStats: writer-defined stats, point budget, allocation
+|   |-- combat.py                   # CombatSystem: skill checks, difficulty, combat damage
 |   |-- narration.py                # Default story messages and the message formatter
+|   |-- variables.py                # Persistent variables: conditions, changes, storage
 |   |-- genome.py                   # Evolvable narrative parameters
 |   `-- world.py                    # World graph, spawn rules, entities
 |-- evaluator/
@@ -103,28 +121,53 @@ The complete UI is available at `http://localhost:8003`, the REST API at
 `http://localhost:8004/docs`. See [`docs/API.md`](docs/API.md) for endpoint
 coverage and request examples.
 
-The Gradio studio edits locations, NPCs (including the **Unique NPC** option), items, events, and tags through forms, saves
-simulation settings to the YAML configuration, runs a small candidate
-tournament, and turns its best genome into a player-controlled game.
+The Gradio studio edits the whole story world through forms, saves simulation
+settings to the YAML configuration, runs a small candidate tournament, and
+turns its best genome into a player-controlled game. Every editor validates
+before saving, and the REST API offers the same operations
+([`docs/API.md`](docs/API.md)).
 
-The **5 · Actions & app parameters** tab provides a Python editor for
-`core_engine/actions.py` and forms for the app's session/upload/work limits,
-simulation defaults and bounds, crossover probability, queue settings, and
-host/port/share options. Saving action logic checks syntax and the required
-`Action`/`Outcome` classes, rejects stale edits, and keeps the previous source
-in `core_engine/actions.py.bak`. Use **Reload actions.py from disk** to discard
-unsaved edits and fetch the latest source. Syntax validation does not guarantee
-that edited code will run correctly. The editor loads the latest source when
-opening the UI. The REST API provides matching `GET` and `PUT /v1/actions`
-endpoints; set `ANE_AUTHORING_TOKEN` and send it as a bearer token to enable
-access. See [action API examples](docs/API.md#edit-action-logic).
+| Studio | What you can change | REST API |
+| --- | --- | --- |
+| **1 · World editor** → an entry | Name, tags, descriptions, goals; NPC **Unique**, **Encounter event**, **Repeat on every visit**; **Enabled if** (locations, NPCs, items); **Event title**; item **Stat bonus while held** | `GET/PUT/DELETE /v1/entities/{kind}/{name}` |
+| **1 · World editor** → *Actions & outcomes of this entry* | The entry's actions as YAML: `repeat`, `exclusive_group`, `triggers_event`, `skill_check`, requirements, and outcome effects (`on_check`, `change_stats`, `send_to`, `remove_npc`, `set_variables`, `change_variables`, …) | `GET/PUT /v1/entities/{kind}/{name}/actions` |
+| **1 · World editor** → *Missions* | Missions, their goals, weights, and `enabled_if` | `GET/PUT /v1/missions` |
+| **2 · Simulation settings** | Population, steps, starting and **maximum health**, coins, reproducibility | `GET/PUT /v1/settings` |
+| **2** → *Story rules* | Mission pacing and route weight, default repeat rules, arrest location and confinement, following new paths, persistence (default profile, save on, evolution values), event fallback | `GET/PUT /v1/rules` |
+| **2** → *Persistent variables* | Variable definitions; a profile's stored values and playthroughs (editable), reset to a new player | `/v1/variables`, `/v1/variables/values`, `/v1/variables/profiles`, `/v1/variables/reset` |
+| **2** → *Story messages* | Every sentence the engine writes | `GET/PUT /v1/messages` |
+| **2** → *Character stats* | Stat names, point budget, allocation mode, tag checks, damage-reduction stat | `GET/PUT /v1/stats`, `POST /v1/stats/allocate` |
+| **4 · Simulate & play** → *Export the engine* | Download the trained engine to run offline in a game: this run's best, any generation's champion, the best remembered storyteller, or the current game's; with or without the learning memory | `POST /v1/exports`, `GET /v1/runs` |
+| **5 · Engine logic** | Every parameter of the engine's logic, section by section (no code editing) | `GET /v1/logic`, `GET/PUT /v1/logic/{section}` |
+| **3 · Weights** → *Skill Check Resolution* | Difficulty (easier/harder), difficulty over time, chance floor/ceiling, damage mitigation | `GET/PUT /v1/weights` |
+| **4 · Simulate & play** → evolution | Storytellers, generations, steps, **stories per storyteller**, **continue learning from earlier runs**; the **learning curve** and **what the storyteller learned**; forget the learning memory | `POST /v1/simulations` (`episodes`, `warm_start`, returns `learning`), `GET/DELETE /v1/learning` |
+| **4 · Simulate & play** | **Player profile** and the player's **character stats** (story default, random, balanced, or own points with Randomize/Balance); the scene shows mission, health `x/max`, stats, the last check, and remembered values | `POST /v1/simulations` (`profile`, `stats_mode`, `stats`), `/v1/sessions/{id}` (structured state) |
 
-App parameters persist in `config/ui_settings.yml`, separate from story
-hyperparameters. Restart the UI after saving parameters, and restart engine
-processes after saving action logic. Existing games keep their loaded code until
-restart. `ANE_UI_HOST`, `ANE_UI_PORT`, and `ANE_UI_SHARE` override saved launch
-options. Restrict access to trusted authors: the source editor can change Python
-code that executes on the server.
+Choosing a new **Player profile** name on the play tab starts a new player.
+Stored values can be edited in *Persistent variables*, for example
+`playthroughs: 1`, to test what a returning player sees.
+
+The **5 · Engine logic & app parameters** tab changes how the engine behaves
+without editing code. The logic runs in the backend scripts (`core_engine/`,
+`backend/`). Every constant that shapes a decision is a parameter in
+`config/hyperparameters.yaml`: ranking weights, outcome objectives,
+story-phase tags, discovery, NPC leads, scene visibility, skill checks,
+fitness, and the evolutionary search itself.
+
+- **Engine logic** edits one section at a time. Pick a section, read what it
+  controls, and edit its parameters with the comments kept. A section is only
+  saved when it keeps the same settings and value types, and misspelt or
+  unknown settings are rejected, so an edit cannot break the engine. New
+  simulations and games use it immediately.
+- The same sections are available through `GET /v1/logic` and
+  `GET|PUT /v1/logic/{section}`.
+- **App parameters** covers the studio's session, upload, and work limits,
+  simulation defaults, queue settings, and host/port/share. These are stored in
+  `config/ui_settings.yml`. Restart the UI after saving them. `ANE_UI_HOST`,
+  `ANE_UI_PORT`, and `ANE_UI_SHARE` override the saved launch options.
+
+The studio no longer edits Python files, and the REST API has no
+code-editing endpoint.
 
 #### Docker config volumes
 
@@ -142,10 +185,9 @@ the volume is restored on the next start, so empty it instead (for example
 `world_definition: {events: {}}`) to switch its content off. After updating,
 run `docker compose up --build`.
 
-With Docker, app parameters persist in the existing config volume. Source edits
-are local to the container that saved them and are lost when that container is recreated;
-copy edited `actions.py` back to the project and rebuild to retain changes and
-apply them to both services.
+With Docker, app parameters persist in the existing config volume, and the
+learning memory and persistent variables persist on the `narrative-saves`
+volume.
 
 Startup options:
 
@@ -178,21 +220,150 @@ During generation, press `q` to stop evolution early and continue to story execu
 7. Optional LLM evaluation scores the final transcript.
 8. Artifacts are saved in a timestamped folder under `runs/`.
 
-## Evolution And Speed
+## The evolutionary AI
 
-The `evolution` section in [`config/hyperparameters.yaml`](config/hyperparameters.yaml) controls search size and parallelism:
+Every story the tool creates comes from evolution
+([`core_engine/evolution.py`](core_engine/evolution.py)). The terminal
+(`python main.py`), the studio, and the REST API all use the same
+`NarrativeEvolution` engine.
+
+A **genome** is a storyteller: 19 traits such as appetite for danger,
+curiosity, drive toward the mission, and avoiding repetition. Each generation:
+
+1. Every storyteller plays `episodes_per_genome` stories, each with its own
+   mission and character stats. All storytellers of a generation play the
+   **same** story seeds, so a higher score means a better storyteller rather
+   than an easier story.
+2. The **fitness function** (`fitness` in `hyperparameters.yaml`) scores how
+   engaging each story is: dramatic arc, contrast, setup and payoff, variety,
+   tension, mission wins, and more.
+3. The generation's champion also plays a fixed **validation benchmark**
+   (`validation_episodes` stories, the same in every generation). The overall
+   best storyteller is chosen on this comparable score, so a lucky generation
+   cannot fool the search.
+4. The next generation is bred from the scores: `elitism_rate` keeps the
+   best, parents come from tournament selection (`tournament_size`),
+   `crossover_rate` blends them, `mutation_rate`/`mutation_step` mutate them,
+   and `random_immigrant_rate` adds fresh storytellers.
+5. **Adaptive mutation.** After `stagnation_generations` without benchmark
+   improvement, mutation widens up to `max_mutation_step` to escape the
+   plateau, and it narrows again after an improvement. `early_stop_generations`
+   stops a run that has stopped learning.
+
+**Learning across runs.** The champions and their benchmark scores go into a
+learning memory: `saves/evolution_memory.json`, keeping `hall_of_fame_size`
+of them. With `warm_start`, the next run starts from the best remembered
+storytellers, so the tool keeps improving from run to run. In the studio,
+**Continue learning from earlier runs** switches this on or off, and **Forget
+what the AI learned** resets it. The API offers `GET|DELETE /v1/learning`.
+
+**What the AI learned is shown.** The studio's play tab draws the learning
+curve: the benchmark champion, the best, and the average per generation. It
+also lists the evolved storyteller's traits next to the population average
+and bounds, with a plain meaning and whether the trait is high, moderate, or
+low. The API returns the same data as `learning` on `POST /v1/simulations`
+(history, `learned_traits`, `best_genome`, improvement, warm start). Bundles
+store it too.
+
+Measured on 20 held-out stories that evolution never played (16 storytellers,
+8 generations, 4 stories each):
+
+| | Held-out score |
+| --- | --- |
+| Random storytellers, average | 631 |
+| Random storytellers, best of 10 | 718 |
+| Evolved, first run | 750 |
+| Evolved, second run (from memory) | 869 |
+| Evolved, third run (from memory) | 893 |
+
+**Resisting reward hacking.** Talking to the same NPC again and again used to
+earn points without limit. `fitness.npc_interaction_cap` (3) stops that, so
+evolution looks for better stories instead of farming conversations.
+
+Settings (`evolution` in `hyperparameters.yaml`, or **Engine logic →
+evolution**):
 
 ```yaml
 evolution:
-  pop_size: 400
+  pop_size: 400                 # storytellers per generation (studio: "Candidate genomes")
   generations: 200
-  episodes_per_genome: 6
+  episodes_per_genome: 6        # stories per storyteller per generation (studio: "Stories per storyteller")
   max_steps: 60
-  evaluation_threads: 8
-  parallel_backend: processes
+  elitism_rate: 0.08
+  crossover_rate: 0.75
+  random_immigrant_rate: 0.08
+  tournament_size: 3
+  mutation_rate: 0.22
+  mutation_step: 0.14
+  max_mutation_step: 0.4
+  stagnation_generations: 3
+  early_stop_generations: 0     # 0: never stop early
+  warm_start: true
+  hall_of_fame_size: 12
+  validation_episodes: 10
+  evaluation_threads: auto      # terminal: parallel evaluation...
+  parallel_backend: processes   # ...on several CPU cores
 ```
 
-`parallel_backend: processes` uses multiple CPU cores for score generation. Tag similarity and similarity-based spawn rules are cached to reduce repeated scoring work.
+With a reproducibility seed, a run is fully reproducible: the same seed gives
+the same storytellers, stories, and learning curve. Tag similarity and
+similarity-based spawn rules are cached to reduce repeated scoring work.
+
+## Exporting the engine for games
+
+After a generation or a complete training, you can export the whole engine
+as a ZIP that **runs offline** and **integrates in a game**:
+
+- **Studio:** **4 · Simulate & play → Export the engine (offline, for a
+  game)**. Choose *This run's best*, *A generation of this run* (any
+  generation's champion), *Best remembered storyteller*, or *This game's
+  storyteller*, and whether to include the learning memory.
+- **API:** `POST /v1/exports` with
+  `{"source": "run" | "memory" | "game", "run_id", "generation", "session_id", "include_memory", "name"}`
+  returns a `download_url`. `GET /v1/runs` lists the runs you can export, and
+  every simulation response carries its `run_id`.
+- **Terminal:** `python main.py` writes `runs/<timestamp>/offline_engine.zip`
+  after every run.
+
+The ZIP contains only what the engine needs:
+
+| Path | What it is |
+| --- | --- |
+| `engine.json` | Manifest: the evolved storyteller (genome), its benchmark score, the learning history, a world summary |
+| `config/engine.yaml` | The complete active configuration: world, tuning, messages, stats, missions, rules |
+| `data/tag_vectors.json` | The tag vectors the storyteller was trained with |
+| `saves/evolution_memory.json` | The learning memory (optional), to keep training offline |
+| `core_engine/`, `utils/` | The engine code, without the studio, the API, or the LLM augmenter |
+| `narrative_runtime/` | Embedding API, HTTP/JSON server, command line |
+| `run.py`, `requirements.txt`, `README.md` | Entry point, dependencies (`pyyaml`, `numpy`), integration guide |
+
+**It behaves exactly like the trained engine.** Tag similarity drives NPC
+placement and routing, and it normally depends on which ML libraries are
+installed. The export therefore ships the exact vectors used during training
+and needs neither torch, sentence-transformers, nor scikit-learn. On the
+same seed, an exported engine produces the same story, word for word, as
+the studio engine (checked in the tests).
+
+**Integrate it:**
+
+```python
+from narrative_runtime import NarrativeEngine          # Python games (e.g. Pygame, Ren'Py)
+engine = NarrativeEngine("path/to/export")
+game = engine.new_game(profile="player-1", stats_mode="random")
+view = game.view()               # location, description, npcs, items, actions, health, mission, stats, ...
+view = game.choose(view["actions"][0])                  # by name or index; view["turn"] = story text
+game.save("slot1.game")                                 # engine.load_game(...) continues later
+```
+
+For Unity, Godot, Unreal, or web games, run `python run.py serve --port 8765`
+next to the game and use HTTP + JSON: `POST /games`,
+`POST /games/<id>/choose`, `GET /games/<id>`, `GET /games/<id>/transcript`,
+`DELETE /games/<id>`, `GET /engine`, and `POST /evolve`. The export's README
+has Unity (C#) and Godot (GDScript) snippets. `python run.py play` plays in a
+terminal. `python run.py evolve` keeps training offline from the shipped
+memory, and adopts the new storyteller only when it beats the current one
+on the same stories. Persistent variables are saved per profile in the
+export's `saves/`.
 
 ## LLM Fallback
 
@@ -268,6 +439,8 @@ Augmented worlds are written under [`augmentations/`](augmentations/). If `augme
 - [`config/items.yaml`](config/items.yaml): objects, tags, descriptions, collectibility, item actions.
 - [`config/npcs.yaml`](config/npcs.yaml): characters, tags, descriptions, known locations/objects, NPC actions, and the `unique` flag. See [Unique and generic NPCs](#unique-and-generic-npcs).
 - [`config/events.yaml`](config/events.yaml): events, their exclusive actions, and outcomes. See [Events](#events).
+- [`config/stats.yaml`](config/stats.yaml): character stats. See [Character stats and skill checks](#character-stats-and-skill-checks).
+- [`config/variables.yaml`](config/variables.yaml): persistent variables. See [Persistent variables](#persistent-variables).
 - [`config/messages.yaml`](config/messages.yaml): every sentence the engine writes into a story. See [Story messages](#story-messages).
 - [`config/missions.yaml`](config/missions.yaml): missions and their goals, which are the story's win conditions. See [Missions and winning](#missions-and-winning).
 - [`config/hyperparameters.yaml`](config/hyperparameters.yaml): evolution, simulation, fitness, LLM, editor, and augmentation settings.
@@ -674,7 +847,8 @@ everything about the player's health and power. Every `GameState` has one as
   maximum, and damage never takes it below 0. If `initial_health` is above the
   maximum, the story starts at the maximum.
 - **Power** is recomputed after every change from the health ratio
-  (`health / max_health`) and the inventory's attack and defense bonuses. It
+  (`health / max_health`) and the player's average skill value
+  (`power_model.stat_weight`; see [Character stats and skill checks](#character-stats-and-skill-checks)). It
   is clamped to `power_model.min_power` .. `power_model.max_power` (default
   `0` .. `5`).
 
@@ -683,9 +857,7 @@ everything about the player's health and power. Every `GameState` has one as
 | `heal(n)` / `damage(n)` / `change(delta)` / `set(value)` / `restore_full()` | Change health within bounds; each returns the change that really applied. |
 | `effective_change(delta)` | Preview what a change would do, without applying it. |
 | `is_alive`, `is_dead`, `is_low` (≤ `low_health_threshold`), `is_full`, `missing`, `ratio` | State checks used by the engine. |
-| `mitigated_combat_change(delta, attack, defense)` | Combat damage reduced by weapons and armour (`combat_resolution.*_damage_mitigation`); never turns damage into healing. |
-| `failure_penalty(defense, dangerous)` | Health lost on a failed action; armour softens failures in fights or against guards. |
-| `calculate_power(attack, defense)` | Recompute and clamp power. |
+| `calculate_power(stat_average)` | Recompute and clamp power. Combat damage and failure penalties are handled by `CombatSystem`. |
 | `damage_taken`, `healing_received`, `healing_wasted`, `lowest_health`, `highest_health`, `summary()` | Statistics over the game. |
 
 `state.health`, `state.max_health`, and `state.power` still work and read
@@ -756,7 +928,7 @@ conversation), so renaming anything, including travel options, is safe.
 ### Story messages
 
 Every sentence the engine adds to a story lives in
-[`config/messages.yaml`](config/messages.yaml), 51 messages in all: travel,
+[`config/messages.yaml`](config/messages.yaml), 53 messages in all: travel,
 arrivals, discoveries, leads, events, encounters, failures, missions, and
 endings. Rewrite any of them:
 
@@ -831,9 +1003,212 @@ at the start of a story, as requested, and weighted by `weight`; a mission
 passed to `GameState(..., mission=...)` uses no randomness. Evolution itself
 also uses randomness to create, cross, and mutate genomes. Saved bundles
 without `novelty_bias` still load and take the midpoint of its bounds.
-`Action.choose_outcome` and `Outcome.success` in `actions.py` still contain
-random code but are not used; outcomes are chosen by the deterministic
-objective.
+Outcomes are chosen by the deterministic objective. The only dice of a
+story are its skill checks.
+
+### Persistent variables
+
+Persistent variables remember what happened in earlier playthroughs and change
+the world of the next one. They are defined in
+[`config/variables.yaml`](config/variables.yaml):
+
+```yaml
+world_definition:
+  variables:
+    thief_caught: {type: bool, default: false}
+    reputation:   {type: int, default: 0, min: -5, max: 5}
+```
+
+The types are `bool`, `int`, `float`, and `str`. `min` and `max` bound numbers.
+The built-in, read-only `playthroughs` counts finished playthroughs.
+
+**Change them with outcomes:**
+
+```yaml
+- desc: A short scuffle ends with the thief fleeing empty-handed.
+  set_variables: {thief_caught: true}   # set a value
+  change_variables: {reputation: -1}    # add to a number, clamped to min/max
+```
+
+**Switch things on or off** with `enabled_if` on a location, NPC, item, or
+mission. Every condition must hold:
+
+```yaml
+- name: Thief
+  enabled_if: {thief_caught: false}              # equals
+- name: Memory Thief
+  enabled_if: {playthroughs: {gte: 1}}           # only from the second playthrough on
+Festival of Masks:
+  enabled_if: {reputation: {gte: -2}}            # eq, ne, gt, gte, lt, lte, in, not_in
+```
+
+- **What a disabled entry means.** A disabled location cannot be reached by
+  travel, discovery, spawning, leads, automatic transfer, or the mission
+  planner. The story never starts in one. Disabled NPCs and items do not
+  appear. Disabled missions are not drawn. Unique NPCs keep the same home
+  across playthroughs.
+- **Changes apply at once.** When an outcome changes a variable, the current
+  scene is re-evaluated. A newly enabled NPC appears without leaving the
+  location, and what the player already discovered stays.
+- **Mission goals** can use them too:
+  `goal: {variables: {reputation: {gte: 1}}}`. The planner routes the player
+  to where an outcome changes that variable.
+- The transcript notes each change as
+  `[PERSISTENT] reputation: 0 -> 1` (message `variable_changed`; set it to
+  `""` to hide changes).
+
+**Storage.** Values are kept per player profile in a JSON file:
+`persistence.path` (default `saves/persistent_variables.json`, which git
+ignores), or `$ANE_SAVE_DIR/persistent_variables.json` (in Docker,
+`/app/saves` on the `narrative-saves` volume). Writes are atomic.
+
+- **Only real play saves.** That means the studio game (after a simulation or
+  a loaded engine) and the terminal story at the end of `python main.py`.
+  Changes are saved as they happen (`persistence.save_on: change`, or `end`),
+  and a finished story counts as a playthrough.
+- **Simulations and evolution never write.** By default they play with the
+  default values, so runs stay reproducible
+  (`persistence.simulate_with: defaults`). Set `stored` to evolve for the
+  player's current world instead (read only).
+
+**Shipped example**, across playthroughs:
+- Beating the Market thief in a fight sets `thief_caught`. From then on the
+  Thief is gone, together with the two missions that need him.
+- Making him confess sets `fence_exposed`. A new **Fence's Ledger** then
+  appears in the Sewers, and "Expose the fence" is no longer offered.
+- Blessings raise `reputation`; theft, bribes, and fighting guards lower it.
+  Below −2 the Festival of Masks turns the traveler away, and below 0 a
+  **Clear your name** mission becomes available.
+- The **Memory Thief**, who "remembers meeting you in futures that never
+  happened", appears from the second playthrough on.
+
+In a five-playthrough run with one profile, the first playthrough exposed the
+fence. From the second on, the ledger and the Memory Thief appeared and the
+fence mission was no longer drawn.
+
+**Where to edit:**
+- **Studio:** **Simulation settings → Persistent variables** has the
+  definitions editor (validated, comments kept), the stored values of the
+  profile, and **Reset stored values (new player)**. **World editor → Enabled
+  if** covers locations, NPCs, and items, and the scene lists the current values.
+- **REST API:** `GET|PUT /v1/variables` (definitions), `GET /v1/variables/values`,
+  `POST /v1/variables/reset` (optional `?profile=`), and `enabled_if` on entities.
+- **Terminal editor:** **e. Enabled if** on any entry, and
+  `set_variables` / `change_variables` in outcome effects.
+
+Undefined variables, unknown comparisons, and values of the wrong type stop
+the world build with a clear message. The studio and the API reject them when
+saving.
+
+### Character stats and skill checks
+
+The fixed combat model (attack and defence from weapon and armour tags, a
+single power number, `combat_resolution` weights) is replaced by **character
+stats the writer defines** and **skill checks** resolved by a combat system.
+
+**Define the stats** in [`config/stats.yaml`](config/stats.yaml), with any
+names. The story decides:
+
+```yaml
+world_definition:
+  character_stats:
+    stats:                         # a combat story...
+      attack: {description: Landing blows and winning fights.}
+      defence: {description: Taking a hit; softens combat damage.}
+      stealth: {description: Moving unseen.}
+      persuasion: {description: Talking and bribing your way through.}
+    # ...or a social one: stealth, persuasion, watchfulness, intimidation
+    allocation:
+      total_points: 50             # every player spends exactly this
+      min_points: 5                # per stat
+      max_points: 20
+      value_per_point: 5           # points -> 1-100 skill value (5..20 -> 25..100)
+    mode: random                   # random | defined | balanced
+    defined_points: {attack: 13, defence: 13, stealth: 12, persuasion: 12}
+    tag_checks: {combat: attack, stealth: stealth}   # outcome tag -> stat to check
+    damage_reduction_stat: defence
+```
+
+**`CharacterStats`** ([`core_engine/stats.py`](core_engine/stats.py)) holds
+one player's stats. The player chooses their points (`defined`, validated
+against the budget and the per-stat limits), or gets a `random` split within
+the limits (seeded, so reproducible), or a `balanced` one. Held items add
+`stat_bonus: {attack: 15}`, and outcomes change stats for the rest of the
+playthrough with `change_stats: {persuasion: 5}`. Values always stay within
+1–100.
+
+**`CombatSystem`** ([`core_engine/combat.py`](core_engine/combat.py)) resolves
+every check and fight:
+
+- **The check.** It rolls 1–100. The check passes when the roll is at or below
+  the stat's value (with item bonuses), plus the action's modifier, minus the
+  difficulty. The transcript shows each check, e.g. `[CHECK] persuasion: rolled
+  34, needed 60 or less - passed.`
+- **Which checks apply.** An action can require one, and its outcomes can be
+  written for each result:
+
+  ```yaml
+  - name: Interrogate the thief
+    skill_check: {stat: persuasion, modifier: -10}
+    outcomes:
+    - {desc: The thief talks., on_check: pass, set_variables: {fence_exposed: true}}
+    - {desc: The thief slips away., on_check: fail, remove_npc: true}
+  ```
+
+  Without a `skill_check`, an outcome whose tag appears in `tag_checks` (e.g.
+  `combat`) needs a check of that stat, so existing content uses stats without
+  edits. A failed check plays the `on_check: fail` outcome when there is one.
+  Otherwise the generic failure applies: a health penalty, or an arrest by
+  guards.
+- **Combat consequences.** Combat damage is reduced by 1 per
+  `damage_mitigation_per_point` (25) of the `damage_reduction_stat`. At
+  `failure_mitigation_threshold` (80) or above, failed dangerous actions cost
+  no health.
+- **The AI uses it.** Outcomes are scored with their real pass chance, and
+  `action_selection.skill_fit_weight` makes the AI prefer checks its
+  character is likely to pass. A stealthy character sneaks, and a strong one
+  fights.
+
+**Skill check resolution** replaces *Combat resolution* in the **Weights** tab
+(`skill_check_resolution` in `hyperparameters.yaml`):
+
+| Setting | Effect |
+| --- | --- |
+| `difficulty_penalty` | Added to every check. Positive makes checks harder, negative easier. |
+| `difficulty_rate_per_step`, `difficulty_rate_start_step` | Difficulty change per story step from that step on. Positive gets harder over time, negative easier. |
+| `min_chance`, `max_chance` | The pass chance never goes below or above these percentages (5 and 95). |
+| `damage_mitigation_per_point`, `failure_mitigation_threshold` | How the damage-reduction stat softens combat. |
+
+Shipped content:
+- **Item bonuses.** The Steel Dagger gives +15 attack, the Heavy Shield +20
+  defence, the Rusty Sword +5 attack, the Vintage Wine +5 persuasion, and the
+  Fence's Ledger +10 persuasion.
+- **Explicit checks.** Bribing the gate guard is a persuasion check,
+  interrogating the thief a persuasion check at −10, and running from a bandit
+  a stealth check.
+- **Stat changes.** The priest's blessing gives +5 persuasion.
+
+Over the same 100 stories, a stealth-and-persuasion build won 97%, a
+balanced one 76%, and an attack-and-defence build 64%. The brawler made the
+most attack checks: 80, against 42 for the balanced build. The shipped world
+rewards stealth and talk more than fighting, because most fights first need
+a weapon.
+
+**Where to set it:**
+- **Studio:** *Simulation settings → Character stats* (definitions);
+  *Simulate & play → Character stats of the player* (story default, random,
+  balanced, or your own points, with **Randomize**/**Balance** and a live
+  points check); *World editor* → item **Stat bonus while held**; and
+  `skill_check`, `on_check`, and `change_stats` in the actions editor.
+- **REST API:** `GET|PUT /v1/stats`, `POST /v1/stats/allocate` (check or
+  preview points), `stats` / `stats_mode` on `POST /v1/simulations`,
+  `stat_bonus` on items, and `stats`, `stat_points`, and `last_check` in the
+  play state.
+- **Terminal editor:** action **8. Skill check**, outcome effects `on_check` /
+  `change_stats`, and item **s. Stat bonus**.
+
+Undefined stats, invalid `on_check` values, impossible budgets, and invalid
+points are rejected with a clear message.
 
 ### Coins and arrival text
 

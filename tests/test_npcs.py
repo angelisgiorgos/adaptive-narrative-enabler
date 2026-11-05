@@ -10,7 +10,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 import api
-import app as studio
+from backend import content, store
 import main as engine
 from core_engine import Action, Character, GameState, Genome, Location, Outcome, WorldGraph
 from utils.config_loader import config
@@ -101,7 +101,7 @@ class NPCPlacementTests(unittest.TestCase):
     def test_upload_rejects_non_boolean_unique(self):
         candidate = config.default_config()
         candidate["world_definition"]["characters"][0]["unique"] = "yes"
-        errors = studio._validate_complete_config(candidate, config.default_config())
+        errors = store._validate_complete_config(candidate, config.default_config())
         self.assertTrue(any("unique" in error for error in errors))
 
 
@@ -110,8 +110,8 @@ class UniqueFlagEditingTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.path = Path(directory.name) / "npcs.yaml"
-        shutil.copy(studio.CONFIG_DIR / "npcs.yaml", self.path)
-        patcher = patch.dict(studio.ENTITY_FILES, {"NPCs": (self.path, "characters", "list")})
+        shutil.copy(store.CONFIG_DIR / "npcs.yaml", self.path)
+        patcher = patch.dict(content.ENTITY_FILES, {"NPCs": (self.path, "characters", "list")})
         patcher.start()
         self.addCleanup(patcher.stop)
         self.client = TestClient(api.api)
@@ -121,13 +121,13 @@ class UniqueFlagEditingTests(unittest.TestCase):
         return next(r for r in records if r["name"] == name)
 
     def test_editor_round_trip(self):
-        name, tags, descriptions, goals, unique, *_ = studio.load_entity("NPCs", "Gate Guard")
+        name, tags, descriptions, goals, unique, *_ = content.load_entity("NPCs", "Gate Guard")
         self.assertFalse(unique)
-        studio.save_entity("NPCs", name, name, tags, descriptions, goals, True)
+        content.save_entity("NPCs", name, name, tags, descriptions, goals, True)
         self.assertTrue(self._stored("Gate Guard")["unique"])
-        studio.save_entity("NPCs", name, name, tags, descriptions, goals)  # None keeps it
+        content.save_entity("NPCs", name, name, tags, descriptions, goals)  # None keeps it
         self.assertTrue(self._stored("Gate Guard")["unique"])
-        self.assertIsNone(studio.load_entity("Locations", "Harbor")[4])
+        self.assertIsNone(content.load_entity("Locations", "Harbor")[4])
 
     def test_api_get_and_put(self):
         response = self.client.get("/v1/entities/NPCs/Pale Conductor")

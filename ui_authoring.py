@@ -1,6 +1,4 @@
-"""Persistence and validation for the studio's developer controls."""
-import ast
-import hashlib
+"""Persistence and validation of the studio's app parameters (config/ui_settings.yml)."""
 import os
 from pathlib import Path
 import tempfile
@@ -9,7 +7,6 @@ import threading
 import yaml
 
 ROOT = Path(__file__).resolve().parent
-ACTIONS_PATH = ROOT / "core_engine" / "actions.py"
 SETTINGS_PATH = ROOT / "config" / "ui_settings.yml"
 LOCK = threading.RLock()
 DEFAULTS = {
@@ -85,29 +82,3 @@ def save_app_settings(values):
     validate_settings(values)
     with LOCK:
         atomic_write(SETTINGS_PATH, yaml.safe_dump(values, sort_keys=False))
-
-
-def load_actions_source():
-    with LOCK:
-        source = ACTIONS_PATH.read_text(encoding="utf-8")
-        return source, hashlib.sha256(source.encode()).hexdigest()
-
-
-class ActionsRevisionConflict(ValueError):
-    """The editor's source revision no longer matches the file on disk."""
-
-
-def save_actions_source(source, revision):
-    # Compile without executing author-supplied code in the running server.
-    tree = ast.parse(source, filename=str(ACTIONS_PATH))
-    compile(tree, str(ACTIONS_PATH), "exec")
-    classes = {node.name for node in tree.body if isinstance(node, ast.ClassDef)}
-    if not {"Action", "Outcome"}.issubset(classes):
-        raise ValueError("Keep both the Action and Outcome classes required by the engine.")
-    with LOCK:
-        previous, current_revision = load_actions_source()
-        if revision != current_revision:
-            raise ActionsRevisionConflict("actions.py changed since it was loaded. Reload before saving.")
-        atomic_write(ACTIONS_PATH.with_suffix(".py.bak"), previous)
-        atomic_write(ACTIONS_PATH, source)
-        return hashlib.sha256(source.encode()).hexdigest()

@@ -6,7 +6,10 @@ import re
 from utils.config_loader import config
 from .actions import Action, Outcome
 from .health import HealthPlayer
+from .stats import CharacterStats
+from .combat import CombatSystem
 from .narration import Narrator
+from . import variables as persistent
 from utils.tag_similarity import semantic_tag_similarity
 
 _ACTION_PREFIX = re.compile(r"^\s*(\([^)]*\)|\[[^\]]*\])\s*")
@@ -22,7 +25,11 @@ def _action_keys(name):
 # ============================
 
 class GameState:
-    def __init__(self, world, genome, start="Harbor", verbose=False, interactive=False, rng=None, mission=None):
+    def __init__(self, world, genome, start="Harbor", verbose=False, interactive=False, rng=None, mission=None,
+                 variables=None, store=None, profile=None, stats=None, stats_mode=None):
+        """``store`` (a persistent.VariableStore) marks real play: variable changes
+        are saved to it and a finished story counts as a playthrough. Without
+        it (simulations, evolution) nothing is ever written."""
         self.world = world
         self.genome = genome
         self.verbose = verbose
@@ -30,11 +37,34 @@ class GameState:
         self.rng = rng or random
         if not world.locations:
             raise ValueError("The world must contain at least one location.")
+
+        # Persistent variables, loaded before anything depends on them.
+        self.variable_specs = persistent.definitions()
+        self.profile = profile or config.get("persistence.profile", "default")
+        self._store = store
+        if variables is not None:
+            self.variables = {**persistent.defaults(self.variable_specs), **variables}
+        elif store is not None:
+            self.variables = store.load(self.profile, self.variable_specs)
+        elif config.get("persistence.simulate_with", "defaults") == "stored":
+            self.variables = persistent.VariableStore().load(self.profile, self.variable_specs)  # read only
+        else:
+            self.variables = persistent.defaults(self.variable_specs)
+        self.variables.setdefault("playthroughs", 0)
+        self._variables_version = 0
+        self._scene_dirty = False
+
         start = start if start in world.locations else next(iter(world.locations))
+        if not self.is_enabled(world.locations[start]):
+            start = next((name for name, loc in world.locations.items() if self.is_enabled(loc)), start)
         self.current = world.locations[start]
 
         # Health and power, bounded by max_health and power_model.max_power.
         self.health_player = HealthPlayer()
+        # Character stats (``stats``: stat -> points, or a stats_mode) and the
+        # combat system that resolves every skill check and fight.
+        self.stats = CharacterStats(points=stats, mode=stats_mode, rng=self.rng)
+        self.combat = CombatSystem(self.stats, world=world, rng=self.rng)
         self.actions_taken = 0
 
         self.tags_seen = []
@@ -99,6 +129,34 @@ class GameState:
         self.succeeded_actions = set()
         self.succeeded_outcome_tags = set()
         self._start_mission(mission)
+
+    # ---- persistent variables -------------------------------------------------
+
+    def is_enabled(self, entity):
+        """Whether a location, NPC, item or mission is switched on by its ``enabled_if``."""
+        return persistent.check(getattr(entity, "enabled_if", None), self.variables)
+
+    def _apply_variable_changes(self, outcome):
+        changed = []
+        for name, value in outcome.set_variables.items():
+            changed.append((name, value))
+        for name, delta in outcome.change_variables.items():
+            changed.append((name, self.variables.get(name, 0) + delta))
+        for name, value in changed:
+            if name not in self.variable_specs:
+                continue
+            old = self.variables.get(name)
+            new = persistent.clamp(name, value, self.variable_specs)
+            if new == old:
+                continue
+            self.variables[name] = new
+            self._variables_version += 1
+            self._scene_dirty = True  # NPCs, items or routes may have switched on or off
+            message = self.narrate("variable_changed", name=name, old=old, new=new)
+            if message:
+                self.history.append(message)
+        if changed and self._store is not None and config.get("persistence.save_on", "change") == "change":
+            self._store.save(self.profile, self.variables)
 
     @property
     def health(self):
@@ -192,7 +250,7 @@ class GameState:
             self.mission = self.world.missions[requested]
         else:
             # A goal that already holds at the start would win without playing.
-            candidates = [m for m in self.world.missions.values() if not self._goal_met(m)]
+            candidates = [m for m in self.world.missions.values() if self.is_enabled(m) and not self._goal_met(m)]
             if not candidates:
                 return
             self.mission = self.rng.choices(candidates, weights=[max(0.0, m.weight) for m in candidates], k=1)[0]
@@ -219,6 +277,8 @@ class GameState:
             return str(value).lower() in self.succeeded_outcome_tags
         if key == "coins":
             return self.coins >= value
+        if key == "variables":
+            return persistent.check(value, self.variables)
         return False
 
     def _goal_met(self, mission):
@@ -253,11 +313,13 @@ class GameState:
             return any(str(value).lower() in {t.lower() for t in o.tags} for o in outcomes)
         if key == "coins":
             return any(o.coin_change > 0 for o in outcomes)
+        if key == "variables":
+            return any(set(value) & (set(o.set_variables) | set(o.change_variables)) for o in outcomes)
         return False
 
     def _npc_sites(self, npc_name):
         char = next((c for c in self.world.characters if c.name == npc_name), None)
-        if char is None or (char.unique and char.name in self.removed_npcs):
+        if char is None or (char.unique and char.name in self.removed_npcs) or not self.is_enabled(char):
             return set()
         if char.unique:
             return {self.npc_homes[char.name]} if char.name in self.npc_homes else set()
@@ -267,19 +329,22 @@ class GameState:
         """Locations where the item is on show when the player arrives (the
         same top-N visibility ranking a scene uses)."""
         cache = self.__dict__.setdefault("_item_sites_cache", {})
-        if item_name in cache:
-            return cache[item_name]
+        if (item_name, self._variables_version) in cache:
+            return cache[(item_name, self._variables_version)]
         limit = config.get("scene.max_visible_objects", 2)
         sites = set()
+        enabled = [obj for obj in self.world.objects if self.is_enabled(obj)]
         for name, loc in self.world.locations.items():
+            if item_name not in {obj.name for obj in enabled}:
+                break
             ranked = sorted(
-                (obj for obj in self.world.objects if obj.associated_tags & loc.tags),
+                (obj for obj in enabled if obj.associated_tags & loc.tags),
                 key=lambda obj: (self._score_object_visibility(obj, loc), obj.name),
                 reverse=True,
             )
             if item_name in {obj.name for obj in ranked[:limit]}:
                 sites.add(name)
-        cache[item_name] = sites
+        cache[(item_name, self._variables_version)] = sites
         return sites
 
     def _can_discover_from(self, location_name):
@@ -352,7 +417,7 @@ class GameState:
         pending = self._pending_goal()
         key = (
             tuple(sorted(pending.items(), key=str)), frozenset(self.removed_npcs),
-            len(self.spent_actions), len(self.closed_groups),
+            len(self.spent_actions), len(self.closed_groups), self._variables_version,
         )
         cached = getattr(self, "_goal_sites_cache", None)
         if cached and cached[0] == key:
@@ -375,7 +440,7 @@ class GameState:
                     continue
                 if key != "location" and self._advances(action, key, value, npc):
                     sites |= self._resolve_sites(action_sites)
-        sites = {name for name in sites if name in self.world.locations}
+        sites = {name for name in sites if name in self.world.locations and self.is_enabled(self.world.locations[name])}
         self._goal_sites_cache = (key, sites)
         return sites
 
@@ -393,7 +458,8 @@ class GameState:
         # A site whose goal actions are used up for this visit must be left and
         # re-entered (actions come back on the next visit).
         exhausted = self.current.name in sites and not self._goal_actionable_here()
-        key = (sites, edge_count, frozenset(self.unlocked_locations), self.confined_in, self.current.name, exhausted)
+        key = (sites, edge_count, frozenset(self.unlocked_locations), self.confined_in, self.current.name,
+               exhausted, self._variables_version)
         cached = getattr(self, "_route_cache", None)
         if cached and cached[0] == key:
             return cached[1]
@@ -401,10 +467,10 @@ class GameState:
         discovery_cost = float(config.get("mission_settings.discovery_route_cost", 2))
         predecessors = {name: [] for name in self.world.locations}
         for name, loc in self.world.locations.items():
-            if self._location_is_locked(name):
+            if self._location_is_locked(name) or not self.is_enabled(loc):
                 continue
             for neighbour in loc.connected:
-                if neighbour in predecessors:
+                if neighbour in predecessors and self.is_enabled(self.world.locations[neighbour]):
                     predecessors[neighbour].append((name, 1.0))
             if not self._can_discover_from(name):
                 continue
@@ -535,6 +601,8 @@ class GameState:
         self.ended = True
         self.end_kind = kind
         self.end_reason = reason
+        if self._store is not None:
+            self._store.save(self.profile, self.variables, finished=True)
         return True
 
     def _finalize_if_ended(self):
@@ -548,12 +616,13 @@ class GameState:
 
     def _score_character_visibility(self, char):
         score = self._npc_location_affinity(char)
+        weights = config.get("scene.visibility") or {}
         if "social" in char.associated_tags:
-            score += self.genome.bias_social
+            score += self.genome.bias_social * weights.get("npc_social_bias_weight", 1.0)
         if "threat" in char.associated_tags:
-            score += self.genome.bias_threat * 0.5
+            score += self.genome.bias_threat * weights.get("npc_threat_bias_weight", 0.5)
         if "urban" in char.associated_tags:
-            score += self.genome.bias_urban * 0.25
+            score += self.genome.bias_urban * weights.get("npc_urban_bias_weight", 0.25)
         return score
 
     def _npc_location_affinity(self, char, location=None):
@@ -636,7 +705,7 @@ class GameState:
 
         ``explicit`` is used for writer-driven reveals, which bypass tag fitting.
         """
-        if self._is_removed(char.name):
+        if self._is_removed(char.name) or not self.is_enabled(char):
             return False
         if char.unique:
             return self.npc_homes.get(char.name) == self.current.name
@@ -659,13 +728,14 @@ class GameState:
 
     def _score_object_visibility(self, obj, location=None):
         location = location or self.current
-        score = semantic_tag_similarity(obj.associated_tags, location.tags) * 2.0
+        weights = config.get("scene.visibility") or {}
+        score = semantic_tag_similarity(obj.associated_tags, location.tags) * weights.get("item_similarity_weight", 2.0)
         if "urban" in obj.associated_tags:
-            score += self.genome.bias_urban * 0.4
+            score += self.genome.bias_urban * weights.get("item_urban_bias_weight", 0.4)
         if "maritime" in obj.associated_tags:
-            score += self.genome.bias_maritime * 0.4
+            score += self.genome.bias_maritime * weights.get("item_maritime_bias_weight", 0.4)
         if "combat" in obj.associated_tags:
-            score += self.genome.bias_threat * 0.2
+            score += self.genome.bias_threat * weights.get("item_combat_bias_weight", 0.2)
         return score
 
     def _commit_score(self, target_name):
@@ -673,8 +743,8 @@ class GameState:
         target = self.world.locations[target_name]
         score = semantic_tag_similarity(self.current.tags, target.tags)
         score += self.genome.voyage_bias
-        score += self.genome.discovery_bias * 0.4
-        score -= self.location_counts.get(target_name, 0) * 0.6
+        score += self.genome.discovery_bias * config.get("game_state.commit_discovery_weight", 0.4)
+        score -= self.location_counts.get(target_name, 0) * config.get("game_state.commit_revisit_penalty", 0.6)
         # Paths toward the mission goal are more tempting as the climax nears.
         score += self.goal_route_score(target_name) * self._goal_drive()
         return score
@@ -707,12 +777,13 @@ class GameState:
         )
 
         progress = self.actions_taken / max(100, config.get("narrative_end.max_actions", 100))
-        phase_tags = (
-            {"exploration", "urban", "maritime", "trade", "nature"}
-            if progress < 0.3
-            else {"threat", "social", "dark", "guarded", "discovery"}
-            if progress < 0.75
-            else {"palace", "vault", "luxury", "payoff", "success"}
+        phases = transition_cfg.get("story_phases") or {}
+        phase_tags = set(
+            phases.get("intro_tags", ["exploration", "urban", "maritime", "trade", "nature"])
+            if progress < phases.get("intro_end", 0.3)
+            else phases.get("middle_tags", ["threat", "social", "dark", "guarded", "discovery"])
+            if progress < phases.get("climax_start", 0.75)
+            else phases.get("climax_tags", ["palace", "vault", "luxury", "payoff", "success"])
         )
         score += len(location_tags & phase_tags) * transition_cfg.get("story_phase_weight", 0.8)
 
@@ -753,6 +824,7 @@ class GameState:
             if name in self.world.locations
             and name not in exclude
             and (name != "Dungeon" or allow_special)
+            and self.is_enabled(self.world.locations[name])
         ]
         if not candidates:
             return None
@@ -777,7 +849,7 @@ class GameState:
             * objective_cfg.get("repetition_penalty", 1.5)
         )
         score += outcome.coin_change * objective_cfg.get("coin_weight", 0.15)
-        score += outcome.success_probability(self.genome, self, action) * objective_cfg.get(
+        score += self._success_chance(outcome, action) * objective_cfg.get(
             "success_probability_weight", 2.0
         )
         if outcome.spawn or outcome.reveal_location or outcome.reveal_npc or outcome.reveal_object:
@@ -798,7 +870,7 @@ class GameState:
         # Outcomes that advance the mission (e.g. revealing the goal item).
         score += sum(
             1 for key, value in self._pending_goal().items()
-            if key in {"location", "item", "npc_removed", "outcome_tag", "coins"}
+            if key in {"location", "item", "npc_removed", "outcome_tag", "coins", "variables"}
             and self._advances(action, key, value, outcomes=[outcome])
         ) * config.get("action_selection.mission_goal_weight", 6.0) * self._goal_drive()
         if outcome.spawn:
@@ -815,36 +887,29 @@ class GameState:
             )
         return score
 
-    def _choose_calculated_outcome(self, action):
-        if not action.outcomes:
+    def _choose_calculated_outcome(self, action, check_result=None):
+        """The best outcome by the objective; ``check_result`` ("pass"/"fail") keeps
+        the outcomes written for that result (``on_check``), else the general ones."""
+        outcomes = action.outcomes
+        if check_result is not None:
+            outcomes = [o for o in outcomes if o.on_check == check_result] or [o for o in outcomes if o.on_check is None]
+        if not outcomes:
             return None
         return max(
-            action.outcomes,
+            outcomes,
             key=lambda outcome: (self._outcome_objective_score(outcome, action), outcome.desc),
         )
 
-    def _inventory_combat_profile(self):
-        combat_cfg = config.get("combat_resolution", {})
-        attack_values = combat_cfg.get("attack_tags", {})
-        defense_values = combat_cfg.get("defense_tags", {})
-        attack = 0.0
-        defense = 0.0
-
-        for obj in self.world.objects:
-            if obj.name not in self.inventory:
-                continue
-            tags = {tag.lower() for tag in obj.associated_tags}
-            for tag, value in attack_values.items():
-                if tag in tags:
-                    attack += value
-            for tag, value in defense_values.items():
-                if tag in tags:
-                    defense += value
-
-        return attack, defense
+    def _success_chance(self, outcome, action):
+        """Chance that an outcome's action succeeds: its skill check's pass chance, or
+        the deterministic success probability of unchecked outcomes."""
+        check = self.combat.check_for(action, outcome)
+        if check:
+            return self.combat.pass_chance(*check, inventory=self.inventory, step=self.actions_taken)
+        return outcome.success_probability(self.genome, self, action)
 
     def update_power(self):
-        return self.health_player.calculate_power(*self._inventory_combat_profile())
+        return self.health_player.calculate_power(self.stats.average(self.combat.item_bonuses(self.inventory)))
 
     def _rank_actions(self, actions):
         ranked = []
@@ -884,6 +949,14 @@ class GameState:
                 weight += recovery_score * self.genome.recovery_bias * config.get("action_selection.recovery_weight", 1.2)
             if a.triggers_event:
                 weight += self.genome.event_prob * config.get("action_selection.event_trigger_weight", 1.5)
+            # Skill fit: prefer checks this character is likely to pass.
+            check = self.combat.check_for(a) or next(
+                (c for c in (self.combat.check_for(a, o) for o in a.outcomes) if c), None
+            )
+            if check:
+                chance = self.combat.pass_chance(*check, inventory=self.inventory, step=self.actions_taken)
+                weight += (chance - 0.5) * config.get("action_selection.skill_fit_weight", 2.0)
+
             # Novelty: every earlier use of the same choice makes it less appealing.
             weight -= (
                 self.choice_counts[self._novelty_key(a)]
@@ -1039,8 +1112,11 @@ class GameState:
 
     def _refresh_scene(self):
         """Place NPCs and items when the player enters a location (or the scene emptied)."""
-        # 1. Detect New Location Entry or Stale Inhabitants
-        if not self.current_inhabitants or self.current.name != self.last_location_name:
+        # 1. Detect New Location Entry, Stale Inhabitants, or a variable change
+        if not self.current_inhabitants or self.current.name != self.last_location_name or self._scene_dirty:
+            same_visit = self.current.name == self.last_location_name
+            previously_visible = (set(self.visible_inhabitants), set(self.visible_objects)) if same_visit else (set(), set())
+            self._scene_dirty = False
             self.last_location_name = self.current.name
             
             # Determine ALL possible NPCs for this visit. Unique NPCs who live
@@ -1061,11 +1137,18 @@ class GameState:
 
             # 3. Dynamic Object visibility
             self.location_objects = sorted(
-                [obj for obj in self.world.objects if obj.associated_tags & self.current.tags],
+                [obj for obj in self.world.objects if obj.associated_tags & self.current.tags and self.is_enabled(obj)],
                 key=lambda obj: (self._score_object_visibility(obj), obj.name),
                 reverse=True,
             )
             self.visible_objects = {obj.name for obj in self.location_objects[:config.get("scene.max_visible_objects", 2)]}
+
+            # A re-evaluation within the same visit keeps what was already discovered.
+            allowed_npcs = {c.name for c in self.world.characters if self._npc_can_appear_here(c, explicit=True)}
+            kept_npcs = previously_visible[0] & allowed_npcs - self.visible_inhabitants
+            self.visible_inhabitants |= kept_npcs
+            self.current_inhabitants += [c for c in self.world.characters if c.name in kept_npcs]
+            self.visible_objects |= previously_visible[1] & {obj.name for obj in self.location_objects}
 
         self._announce_arrival()
 
@@ -1121,7 +1204,10 @@ class GameState:
         ]
 
         # 4. Navigation
-        navigation_targets = [] if self._location_is_locked() else sorted(self.current.connected)
+        navigation_targets = [] if self._location_is_locked() else sorted(
+            name for name in self.current.connected
+            if name in self.world.locations and self.is_enabled(self.world.locations[name])
+        )
         for loc_name in navigation_targets:
             target_loc = self.world.locations.get(loc_name)
             name = self.narrate("travel_new", stable=loc_name, location=loc_name)
@@ -1225,18 +1311,21 @@ class GameState:
 
         effects = event_cfg.get("effects", [{"tags": ["unexpected", "social"]}])
 
+        objective = event_cfg.get("objective") or {}
+
         def effect_objective(effect):
             effect_tags = {tag.lower() for tag in effect.get("tags", [])}
             score = self.health_player.effective_change(effect.get("health_change", 0)) * (
-                2.0 if self.health_player.is_low else 0.5
+                objective.get("low_health_healing_weight", 2.0) if self.health_player.is_low
+                else objective.get("healing_weight", 0.5)
             )
-            score += effect.get("coin_change", 0) * 0.1
+            score += effect.get("coin_change", 0) * objective.get("coin_weight", 0.1)
             if effect.get("spawn"):
                 score += self.genome.discovery_bias + self.genome.voyage_bias
             if "threat" in effect_tags:
                 score += self.genome.threat_prob
                 if self.health_player.is_low:
-                    score -= 2.0
+                    score -= objective.get("low_health_threat_penalty", 2.0)
             if "social" in effect_tags:
                 score += self.genome.bias_social
             if "success" in effect_tags or "recovery" in effect_tags:
@@ -1466,7 +1555,22 @@ class GameState:
             self.visit_actions_performed.add(action.name)
         
         # Outcomes and their transitions are selected by the objective function.
-        outcome = self._choose_calculated_outcome(action)
+        # An action with its own skill_check rolls first and then picks among
+        # the outcomes written for that result; otherwise the chosen outcome's
+        # tags may call for a check (character_stats.tag_checks).
+        check = self.combat.check_for(action)
+        outcome = None if check else self._choose_calculated_outcome(action)
+        if check is None and outcome is not None:
+            check = self.combat.check_for(action, outcome)
+        check_result = None
+        if check:
+            check_result = self.combat.roll(*check, inventory=self.inventory, step=self.actions_taken)
+            self.history.append(self.narrate(
+                "check_passed" if check_result.passed else "check_failed",
+                stat=check_result.stat, roll=check_result.roll, target=check_result.target,
+            ))
+            if outcome is None:
+                outcome = self._choose_calculated_outcome(action, "pass" if check_result.passed else "fail")
         if outcome is None:
             return False
         self.actions_taken += 1
@@ -1478,12 +1582,20 @@ class GameState:
         if outcome.move_to:
             self.consecutive_steps_in_location = 0
 
-        calculated_success = outcome.success_probability(
-            genome=self.genome,
-            state=self,
-            action=action,
-        ) >= config.get("outcome_objective.success_threshold", 0.5)
-        if calculated_success:
+        if check_result is not None:
+            calculated_success = check_result.passed
+        else:
+            calculated_success = outcome.success_probability(
+                genome=self.genome,
+                state=self,
+                action=action,
+            ) >= config.get("outcome_objective.success_threshold", 0.5)
+        # A failed check with an outcome written for failure plays that outcome
+        # instead of the generic failure penalty.
+        authored_failure = not calculated_success and outcome.on_check == "fail"
+        if authored_failure:
+            self.apply(outcome, action=action)
+        elif calculated_success:
             if self.interactive:
                 print(f"\nRESULT: {outcome.desc}")
             self.succeeded_actions |= _action_keys(action.name)
@@ -1492,10 +1604,9 @@ class GameState:
         else:
             if self.verbose:
                 print(f"  FAILED: {action.name}")
-            _, defense_bonus = self._inventory_combat_profile()
             outcome_tags = {tag.lower() for tag in outcome.tags}
             dangerous = self._is_guard_failure(action, outcome) or bool(outcome_tags & {"combat", "threat"})
-            self.health_player.damage(HealthPlayer.failure_penalty(defense_bonus, dangerous))
+            self.health_player.damage(self.combat.failure_penalty(dangerous, self.inventory))
             self.update_power()
             self.tags_seen.append("failure")
             
@@ -1550,10 +1661,11 @@ class GameState:
         """Genome-driven discovery of hidden inhabitants or objects, prioritized by source NPC's knowledge."""
         if not node_type:
             # Voyage bias increases the chance of discovering a location lead
+            nodes = config.get("discovery_nodes") or {}
             node_scores = {
-                "loc": 0.3 + self.genome.voyage_bias * 0.4,
-                "npc": 0.2 + self.genome.bias_social * 0.3,
-                "obj": 0.2 + self.genome.discovery_bias * 0.3,
+                "loc": nodes.get("location_base", 0.3) + self.genome.voyage_bias * nodes.get("location_voyage_weight", 0.4),
+                "npc": nodes.get("npc_base", 0.2) + self.genome.bias_social * nodes.get("npc_social_weight", 0.3),
+                "obj": nodes.get("item_base", 0.2) + self.genome.discovery_bias * nodes.get("item_discovery_weight", 0.3),
             }
             node_type = max(node_scores, key=node_scores.get)
 
@@ -1577,6 +1689,7 @@ class GameState:
                     hidden_locs = [
                         l for l in char_obj.known_locations
                         if l not in self.current.connected and l != self.current.name
+                        and l in self.world.locations and self.is_enabled(self.world.locations[l])
                     ]
                     if hidden_locs:
                         scored = []
@@ -1631,6 +1744,8 @@ class GameState:
         """
         if target_name != self.current.name and self._location_is_locked():
             return False
+        if target_name in self.world.locations and not self.is_enabled(self.world.locations[target_name]):
+            return False  # switched off by a persistent variable
         if target_name not in self.world.locations:
             forced_loc = self.world.spawn(
                 self.current,
@@ -1691,6 +1806,12 @@ class GameState:
         self.history.append(self.narrate("location_current", location=origin_location))
 
         # 0. Apply Outcome Mechanical Changes
+        self._apply_variable_changes(outcome)
+        for stat, delta in outcome.change_stats.items():
+            if stat in self.stats.names:
+                old, new = self.stats.change(stat, delta)
+                if new != old:
+                    self.history.append(self.narrate("stat_changed", stat=stat, old=old, new=new))
         lower_tags = {tag.lower() for tag in outcome.tags}
         constraint = config.get("location_constraints", {}).get(origin_location, {})
         escape_tags = {str(tag).lower() for tag in constraint.get("escape_tags", ["escape"])}
@@ -1704,7 +1825,7 @@ class GameState:
                 print(f"  >>> {escape_msg}")
         health_delta = outcome.health_change
         if "combat" in lower_tags or "threat" in lower_tags:
-            health_delta = HealthPlayer.mitigated_combat_change(health_delta, *self._inventory_combat_profile())
+            health_delta = self.combat.mitigate(health_delta, self.inventory)
         applied = self.health_player.change(health_delta)
         if outcome.health_change > 0 and applied < outcome.health_change:
             self.history.append(self.narrate(
@@ -1771,7 +1892,8 @@ class GameState:
         # 2. NPC-driven leads can unlock travel even if the action itself does not move
         if action and action.character_name and not self._is_removed(action.character_name):
             c_name = action.character_name
-            if self.character_interactions[c_name] % 2 == 0 or "success" in outcome.tags or "social" in outcome.tags:
+            every = max(1, int(config.get("npc_leads.every_nth_interaction", 2)))
+            if self.character_interactions[c_name] % every == 0 or "success" in outcome.tags or "social" in outcome.tags:
                 node_type, node_name = self.discover_new_node(source_npc=c_name)
                 if node_type == "loc":
                     new_loc = self.world.spawn(self.current, force_target=node_name, state=self)
@@ -1811,12 +1933,19 @@ class GameState:
         if getattr(outcome, 'lead_to_known', False) and action and action.character_name:
             char = next((c for c in self.world.characters if c.name == action.character_name), None)
             if char and char.known_locations:
-                candidates = [l for l in char.known_locations if l in self.world.locations and l != self.current.name]
+                candidates = [
+                    l for l in char.known_locations
+                    if l in self.world.locations and l != self.current.name and self.is_enabled(self.world.locations[l])
+                ]
                 if candidates:
                     scored = []
                     for loc_name in candidates:
                         loc = self.world.locations[loc_name]
-                        score = 1.0 + len(loc.tags & char.associated_tags) * 0.5 + semantic_tag_similarity(loc.tags, char.associated_tags)
+                        score = (
+                            config.get("npc_leads.base_score", 1.0)
+                            + len(loc.tags & char.associated_tags) * config.get("npc_leads.shared_tag_weight", 0.5)
+                            + semantic_tag_similarity(loc.tags, char.associated_tags)
+                        )
                         if "social" in loc.tags: score += self.genome.bias_social
                         if "urban" in loc.tags: score += self.genome.bias_urban
                         scored.append((score, loc_name))

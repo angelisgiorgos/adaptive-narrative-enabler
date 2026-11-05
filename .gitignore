@@ -163,5 +163,8 @@ useful_material/
 # Studio source-editor backup
 core_engine/actions.py.bak
 
+# Persistent variables saved by real play
+saves/
+
 # Gradio local cache (holds a TLS certificate)
 .gradio/

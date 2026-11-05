@@ -25,6 +25,7 @@ world_definition:
         spawn: true
         linked_location: Palace
   - name: Vintage Wine
+    stat_bonus: {persuasion: 5}   # a fine gift opens doors
     collectible: true
     associated_tags:
     - social
@@ -49,6 +50,7 @@ world_definition:
         tags:
         - stealth
   - name: Steel Dagger
+    stat_bonus: {attack: 15}
     collectible: true
     associated_tags:
     - urban
@@ -74,6 +76,7 @@ world_definition:
         - neutral
         - success
   - name: Heavy Shield
+    stat_bonus: {defence: 20}
     collectible: true
     associated_tags:
     - guarded
@@ -108,5 +111,26 @@ world_definition:
     associated_tags:
     - nature
   - name: Rusty Sword
+    stat_bonus: {attack: 5}
     associated_tags:
     - damp
+  - name: Fence's Ledger
+    stat_bonus: {persuasion: 10}  # leverage
+    # Only exists once the thief has confessed who buys the stolen goods.
+    enabled_if: {fence_exposed: true}
+    collectible: true
+    associated_tags: [underground, foul]
+    descriptions:
+    - A water-stained ledger listing every stolen treasure and who paid for it.
+    actions:
+    - name: Read the ledger
+      outcomes:
+      - desc: One buyer appears on every page, with a key to a strongroom in the Vault.
+        tags: [discovery, payoff_1]
+        reveal_location: Vault
+        change_variables: {reputation: 1}
+    - name: Take the ledger
+      collects_object: Fence's Ledger
+      outcomes:
+      - desc: You tuck the ledger under your cloak. Someone will pay dearly for it.
+        tags: [neutral, success]

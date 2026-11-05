@@ -3,6 +3,7 @@ name: hamlet-ane
 x-studio-volumes: &studio-volumes
   - ${ANE_CONFIG_VOLUME:-narrative-config}:/app/config
   - narrative-artifacts:/app/artifacts
+  - narrative-saves:/app/saves  # persistent variables across playthroughs
   - model-cache:/var/cache/huggingface
 
 services:
@@ -41,7 +42,6 @@ services:
       - "${ANE_API_BIND_ADDRESS:-0.0.0.0}:${ANE_API_PORT:-8004}:8004"
     environment:
       ANE_CORS_ORIGINS: ${ANE_CORS_ORIGINS:-}
-      ANE_AUTHORING_TOKEN: ${ANE_AUTHORING_TOKEN:-}
     volumes: *studio-volumes
     networks:
       hamlet-shared-network:
@@ -58,6 +58,7 @@ services:
 volumes:
   narrative-config:
   narrative-artifacts:
+  narrative-saves:
   model-cache:
 
 networks:

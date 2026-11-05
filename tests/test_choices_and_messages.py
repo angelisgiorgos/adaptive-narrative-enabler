@@ -9,7 +9,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 import api
-import app as studio
+from backend import content, sessions, store
 import main as engine
 from core_engine import Action, Character, GameState, Genome, Location, Outcome, WorldGraph
 from core_engine.narration import DEFAULT_MESSAGES, Narrator, validate_messages
@@ -156,7 +156,7 @@ class MessageTests(unittest.TestCase):
         self.assertLessEqual(engine._fitness_breakdown(state)["ending"], config.get("fitness.base.completion_bonus") - penalty)
 
     def test_shipped_file_matches_defaults(self):
-        shipped = yaml.safe_load((studio.CONFIG_DIR / "messages.yaml").read_text())["messages"]
+        shipped = yaml.safe_load((store.CONFIG_DIR / "messages.yaml").read_text())["messages"]
         self.assertEqual(shipped, DEFAULT_MESSAGES)
 
 
@@ -166,16 +166,16 @@ class MessageEditingTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.path = Path(directory.name) / "messages.yaml"
         self.path.write_text("messages:\n  voyage: \"The opening draws you toward {location}.\"\n")
-        for patcher in (patch.object(studio, "MESSAGES_PATH", self.path), patch.object(studio.config, "reload")):
+        for patcher in (patch.object(content, "MESSAGES_PATH", self.path), patch.object(store.config, "reload")):
             patcher.start()
             self.addCleanup(patcher.stop)
 
     def test_editor_validates_before_saving(self):
         good = "# mine\nmessages:\n  voyage: \"You head towards the {location}.\"\n"
-        self.assertEqual(studio.save_messages_yaml(good)[0], good)
+        self.assertEqual(content.save_messages_yaml(good)[0], good)
         self.assertEqual(self.path.read_text(), good)  # comments kept
         with self.assertRaises(Exception):
-            studio.save_messages_yaml("messages:\n  voyage: \"To {place}\"\n")
+            content.save_messages_yaml("messages:\n  voyage: \"To {place}\"\n")
         self.assertEqual(self.path.read_text(), good)
 
     def test_api(self):
@@ -188,17 +188,27 @@ class MessageEditingTests(unittest.TestCase):
 
 
 class GenomeDrivenChoiceTests(unittest.TestCase):
-    def test_no_dice_rolls_during_play(self):
+    def test_only_skill_checks_roll_dice(self):
+        """Every decision is deterministic except the dice of skill checks."""
         class NoDice(random.Random):
             def random(self):
-                raise AssertionError("play must not roll dice")
+                raise AssertionError("only skill checks may roll dice")
 
         genome = _genome()
         world = engine.build_world(genome)
-        state = GameState(world, genome, rng=NoDice(0), mission=next(iter(world.missions)))
-        for _ in range(60):
-            if not state.step():
-                break
+        rolls = []
+
+        def fixed_roll(combat, stat, modifier=0, inventory=(), step=0):
+            from core_engine.combat import CheckResult
+            rolls.append(stat)
+            return CheckResult(stat, 1, combat.target(stat, modifier, inventory, step), True, step)
+
+        balanced = {name: 50 // 4 + (1 if i < 50 % 4 else 0) for i, name in enumerate(["attack", "defence", "stealth", "persuasion"])}
+        with patch("core_engine.combat.CombatSystem.roll", fixed_roll):
+            state = GameState(world, genome, rng=NoDice(0), mission=next(iter(world.missions)), stats=balanced)
+            for _ in range(60):
+                if not state.step():
+                    break
         self.assertGreater(state.actions_taken, 0)
 
     def test_novelty_bias_discourages_repeating_a_choice(self):
@@ -218,7 +228,7 @@ class GenomeDrivenChoiceTests(unittest.TestCase):
 
     def test_old_bundles_without_novelty_bias_load(self):
         values = {key: 0.5 for key in vars(Genome()) if key not in ("novelty_bias", "goal_bias")}
-        genome = studio._validated_genome(values)
+        genome = sessions._validated_genome(values)
         low, high = config.get("genome_bounds.novelty_bias")
         self.assertAlmostEqual(genome.novelty_bias, (low + high) / 2)
 

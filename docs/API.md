@@ -35,31 +35,99 @@ docker run --rm -p 8003:8003 \
 
 ## Endpoint coverage
 
+Every write is validated before anything is saved. Invalid requests return
+`400` with the list of problems, and nothing is written.
+
+**Configuration**
 - `GET /v1/config` returns the complete merged active configuration.
-- `POST /v1/config/upload` validates and activates a combined YAML upload.
-- `POST /v1/config/reset` restores the built-in file configuration.
-- `GET|PUT /v1/settings` reads or changes the basic simulation settings.
-  `max_health` caps healing; omit it on `PUT` to keep the stored value.
-- `GET|PUT /v1/hyperparameters` reads or validates the complete hyperparameter YAML.
-- `GET|PUT /v1/actions` reads or validates and saves `core_engine/actions.py` (authoring bearer token required).
-- `GET|PUT /v1/weights` reads or updates every weight exposed by the UI.
-- `GET|PUT /v1/messages` reads (with defaults and allowed placeholders) or
-  validates and saves the story messages in `config/messages.yaml`.
+- `POST /v1/config/upload` validates and activates a combined YAML upload;
+  `POST /v1/config/reset` restores the built-in file configuration.
+- `GET|PUT /v1/settings`: basic simulation settings. `max_health` caps
+  healing; omit it on `PUT` to keep the stored value.
+- `GET|PUT /v1/rules`: story rules as one object. These are mission pacing
+  (`missions_enabled`, `end_on_goal`, `pursuit_start_step`,
+  `pursuit_full_step`, `route_weight`), default repeat rules
+  (`repeat_location|npc|item|event`: `once`, `per_visit`, `always`), and
+  arrests (`arrest_location`, `arrest_lock_when`: `sent`, `always`, `never`).
+  They also cover discovery (`auto_travel_on_spawn`,
+  `auto_travel_on_spawn_threshold`), persistence (`profile`, `save_on`,
+  `simulate_with`), and the event fallback (`fallback_action`,
+  `fallback_description`). Fields left out of a `PUT` keep their value.
+- `GET|PUT /v1/hyperparameters` reads or validates the complete hyperparameter
+  YAML; `GET|PUT /v1/weights` reads or updates every weight.
+- `GET /v1/logic` lists the parameter sections of the engine's logic, with what
+  each controls. `GET|PUT /v1/logic/{section}` reads or changes one section as
+  YAML text (`{"parameters": "evolution:\n  ..."}`). It must keep the same
+  settings and value types, unknown settings are rejected, and comments are
+  kept. There is no code-editing endpoint.
+
+**World authoring**
 - `GET /v1/entities/{kind}` lists Locations, NPCs, Items, or Events.
-- `GET|PUT /v1/entities/{kind}/{name}` reads, creates, renames, or updates an entry.
-  NPC entries carry `unique` (`true`: lives in one location for the whole game;
-  `false`: generic, appears wherever it fits). Omit it on `PUT` to keep the stored
-  value. It is `null` for other kinds.
-  NPC entries also carry `encounter_event` (an event that starts by itself when
-  the NPC is in the scene; send `""` to remove it) and `encounter_repeat`
-  (`true`: on every visit; `false`: once per game).
-- `POST /v1/simulations` evolves a model and begins a playable session.
-- `POST /v1/engines/load` loads a prior YAML or ZIP engine and begins a session.
-- `GET /v1/sessions/{id}` reads the current scene and choices; `event` holds the
-  title of the active event, or `null` outside events.
-  `mission` holds the story's mission title and `won` becomes `true` once the
-  goal is achieved. A won story has `ended: true` and offers no more actions.
-- `POST /v1/sessions/{id}/actions` takes a selected action.
+- `GET|PUT|DELETE /v1/entities/{kind}/{name}` reads, creates, renames,
+  updates, or deletes an entry. Optional fields, which keep their stored value
+  when omitted on `PUT`:
+  - `unique`, `encounter_event` (send `""` to remove it), and
+    `encounter_repeat`: NPCs only.
+  - `enabled_if`: locations, NPCs, and items (send `{}` to remove it).
+  - `title`: events.
+- `GET|PUT /v1/entities/{kind}/{name}/actions`: the entry's actions and
+  outcomes as stored. This covers `repeat`, `exclusive_group`,
+  `triggers_event`, requirements, and outcome effects, including `send_to`,
+  `remove_npc`, `set_variables`, and `change_variables`. Unknown fields,
+  unknown events, locations, NPCs, or items, invalid `repeat` values, and
+  wrongly typed variable changes are rejected.
+- `GET|PUT /v1/missions`: missions (`title`, `description`, `goal`, `weight`,
+  `enabled_if`). Goal keys and every referenced location, item, event, NPC,
+  and variable are checked.
+- `GET|PUT /v1/messages`: story messages, with defaults and allowed
+  placeholders.
+
+**Character stats**
+- `GET|PUT /v1/stats`: the stat definitions (`stats`, `allocation`, `mode`,
+  `defined_points`, `tag_checks`, `damage_reduction_stat`).
+- `POST /v1/stats/allocate` with `{"points": {...}}` checks a player's own
+  points against the budget. With `{"mode": "random"|"balanced"}` it previews a
+  split. It returns the points, the 1-100 values, and any problems.
+- Items carry `stat_bonus` on the entity API. Actions and outcomes accept
+  `skill_check`, `on_check`, and `change_stats` in the actions editor
+  endpoint.
+
+**Persistent variables**
+- `GET|PUT /v1/variables`: variable definitions and the default profile's
+  stored values.
+- `GET /v1/variables/profiles` lists the player profiles.
+- `GET|PUT /v1/variables/values?profile=` reads or overwrites a profile's
+  stored `values` and `playthroughs`, e.g. to test a later playthrough.
+  `POST /v1/variables/reset?profile=` starts the profile over as a new player.
+
+**Evolution and play**
+- `POST /v1/simulations` runs the evolutionary AI and begins a playable
+  session with the best storyteller. `episodes` sets the stories per
+  storyteller per generation, and `warm_start` continues from the learning
+  memory. The response's `learning` holds `history` (per generation: `best`,
+  `mean`, `worst`, `spread`, `diversity`, `mutation_step`, `validation`),
+  `learned_traits`, `best_genome`, `improvement`, `generations_run`,
+  `early_stopped`, and `warm_started_from_memory`. `profile` chooses the
+  player profile for persistent variables, and `stats` (the player's own
+  points) or `stats_mode` sets the character's stats.
+- `POST /v1/exports` exports the trained engine as a ZIP that runs offline and
+  integrates in a game. `source` is `run` (with `run_id`, the latest if
+  omitted, and an optional `generation` for that generation's champion),
+  `memory` (the best remembered storyteller), or `game` (`session_id`). It
+  also takes `include_memory` and `name`, and returns `download_url`, `name`,
+  `source`, `score`, `genome`, and `world`. `GET /v1/runs` lists the exportable
+  runs, and simulation responses carry their `run_id`.
+- `GET /v1/learning` returns the storytellers the AI remembers from earlier
+  runs; `DELETE /v1/learning` forgets them.
+- `POST /v1/engines/load?profile=&stats_mode=` loads a prior YAML or ZIP engine
+  and begins a session without evolving again.
+- `GET /v1/sessions/{id}` and `POST /v1/sessions/{id}/actions` return the
+  scene (Markdown), the available `actions`, and the last turn. They also give
+  a structured state: `location`, `health`, `max_health`, `coins`, `power`,
+  `inventory`, `mission`, `mission_status`, `won`, `event`, `ended`,
+  `end_reason`, `profile`, `variables`, `stats` (1-100 values with item bonuses),
+  `stat_points`, and `last_check` (`stat`, `roll`, `target`, `passed`, `step`). A won story has `ended: true`
+  and offers no more actions.
 - `GET /v1/artifacts/{id}` downloads generated config or engine bundles.
 
 The schemas and validation constraints are available in `/docs`.
@@ -94,41 +162,3 @@ Upload a complete configuration or saved engine:
 curl -F file=@config.yaml http://localhost:8004/v1/config/upload
 curl -F file=@narrative-engine.zip http://localhost:8004/v1/engines/load
 ```
-
-## Edit action logic
-
-Set `ANE_AUTHORING_TOKEN` in the API server environment (Compose forwards this
-variable), then use the same value as a bearer token. These two endpoints return
-503 when the token is not configured and 401 when credentials are missing or
-incorrect. Swagger's **Authorize** button also accepts the token.
-
-Fetch the current source and revision:
-
-```bash
-curl http://localhost:8004/v1/actions \
-  -H "Authorization: Bearer $ANE_AUTHORING_TOKEN" > actions-document.json
-```
-
-Edit the `source` string in `actions-document.json`, preserving its `revision`,
-then save the complete document:
-
-```bash
-curl -X PUT http://localhost:8004/v1/actions \
-  -H "Authorization: Bearer $ANE_AUTHORING_TOKEN" \
-  -H 'Content-Type: application/json' \
-  --data-binary @actions-document.json
-```
-
-The save response contains the new `revision`, a message, and
-`restart_required: true`. Invalid Python or missing `Action`/`Outcome` classes
-returns 400; a stale revision returns 409. Reload and reconcile your changes
-before saving again. Saves keep the previous source in `actions.py.bak` and do
-not execute the submitted code during validation. Restart engine processes to
-apply it; syntax validation does not verify runtime behavior.
-
-The UI exposes the same editor in **5 · Actions & app parameters**, loading the
-latest source when the page opens. Local UI/API processes in the same checkout
-edit the same file. Docker source edits belong to the service container that
-saved them, so copy the edited file back to the project and rebuild both services
-to retain and share those changes. Give the authoring token only to trusted
-code authors, since their changes execute with the engine's permissions.

@@ -6,7 +6,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 import api
-import app as studio
+from backend import store
 import main as engine
 from core_engine import Action, GameState, Genome, HealthPlayer, Location, Outcome, WorldGraph
 from utils.config_loader import config
@@ -60,18 +60,11 @@ class HealthPlayerTests(unittest.TestCase):
     def test_power_is_clamped(self):
         max_power = config.get("power_model.max_power")
         player = HealthPlayer(initial=10, maximum=10)
-        self.assertEqual(player.calculate_power(attack_bonus=100, defense_bonus=100), max_power)
+        self.assertLessEqual(player.calculate_power(stat_average=100), max_power)
+        with patch.dict(config._config["power_model"], {"stat_weight": 100}):
+            self.assertEqual(player.calculate_power(stat_average=100), max_power)
         player.set(0)
         self.assertEqual(player.calculate_power(), config.get("power_model.min_power"))
-
-    def test_combat_rules(self):
-        # Mitigation softens damage but never turns it into healing.
-        self.assertEqual(HealthPlayer.mitigated_combat_change(-4, 0, 0), -4)
-        self.assertEqual(HealthPlayer.mitigated_combat_change(-1, 10, 10), 0)
-        self.assertEqual(HealthPlayer.mitigated_combat_change(+2, 10, 10), 2)
-        self.assertEqual(HealthPlayer.failure_penalty(0, dangerous=True), 1)
-        self.assertEqual(HealthPlayer.failure_penalty(10, dangerous=True), 0)
-        self.assertEqual(HealthPlayer.failure_penalty(10, dangerous=False), 1)
 
 
 class GameStateHealthTests(unittest.TestCase):
@@ -126,9 +119,9 @@ class GameStateHealthTests(unittest.TestCase):
 
 class HealthSettingsTests(unittest.TestCase):
     def test_starting_health_cannot_exceed_maximum(self):
-        values = list(studio.load_settings())
+        values = list(store.load_settings())
         with self.assertRaises(Exception):
-            studio.save_settings(*values[:4], 20, *values[5:9], max_health=10)
+            store.save_settings(*values[:4], 20, *values[5:9], max_health=10)
 
     def test_api_exposes_maximum_health(self):
         response = TestClient(api.api).get("/v1/settings")

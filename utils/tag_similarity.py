@@ -6,27 +6,47 @@ import numpy as np
 
 from utils.config_loader import config
 
-try:
-    from sentence_transformers import SentenceTransformer
-except ImportError:
-    SentenceTransformer = None
-
-try:
-    from sklearn.feature_extraction.text import HashingVectorizer
-except ImportError:
-    HashingVectorizer = None
-
-
+# Embedding backends are imported only when a tag has to be encoded, so a run
+# with pre-computed tag vectors (an offline engine export) needs neither
+# sentence-transformers/torch nor scikit-learn.
 _TAG_EMBEDDING_MODEL = None
 _TAG_EMBEDDING_MODEL_READY = False
 _TAG_EMBED_CACHE = {}
 _TAG_SET_CENTROID_CACHE = {}
 _TAG_SIMILARITY_CACHE = {}
 _TAG_CACHE_LOCK = threading.Lock()
-_TAG_HASHING_VECTORIZER = (
-    HashingVectorizer(analyzer="char_wb", ngram_range=(2, 5), n_features=256, norm=None)
-    if HashingVectorizer is not None else None
-)
+_TAG_HASHING_VECTORIZER = None
+_TAG_HASHING_READY = False
+_PRELOADED_DIMENSION = None  # set when pre-computed vectors are loaded
+
+
+def _hashing_vectorizer():
+    global _TAG_HASHING_VECTORIZER, _TAG_HASHING_READY
+    if not _TAG_HASHING_READY:
+        _TAG_HASHING_READY = True
+        try:
+            from sklearn.feature_extraction.text import HashingVectorizer
+            _TAG_HASHING_VECTORIZER = HashingVectorizer(analyzer="char_wb", ngram_range=(2, 5), n_features=256, norm=None)
+        except ImportError:
+            _TAG_HASHING_VECTORIZER = None
+    return _TAG_HASHING_VECTORIZER
+
+
+def load_tag_vectors(vectors):
+    """Use pre-computed tag vectors ({tag: [floats]}), e.g. those an engine was trained with."""
+    global _PRELOADED_DIMENSION
+    with _TAG_CACHE_LOCK:
+        for tag, vector in vectors.items():
+            _TAG_EMBED_CACHE[_normalize_tag_text(tag)] = np.asarray(vector, dtype=float)
+        if vectors:
+            _PRELOADED_DIMENSION = len(next(iter(vectors.values())))
+        _TAG_SET_CENTROID_CACHE.clear()
+        _TAG_SIMILARITY_CACHE.clear()
+
+
+def export_tag_vectors(tags):
+    """{tag: vector} for the given tags, computed exactly as in this environment."""
+    return {text: _encode_single_tag(text).tolist() for text in sorted({_normalize_tag_text(t) for t in tags if t})}
 
 
 def _normalize_tag_text(tag):
@@ -49,7 +69,9 @@ def _get_tag_embedding_model():
         return _TAG_EMBEDDING_MODEL
 
     _TAG_EMBEDDING_MODEL_READY = True
-    if SentenceTransformer is None:
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError:
         return None
 
     model_name = config.get(
@@ -70,14 +92,21 @@ def _encode_single_tag(tag_text):
         if cached is not None:
             return cached
 
+    if _PRELOADED_DIMENSION is not None:
+        # A tag the engine was not trained with: neutral, same size as the others.
+        vector = np.zeros(_PRELOADED_DIMENSION)
+        with _TAG_CACHE_LOCK:
+            _TAG_EMBED_CACHE[tag_text] = vector
+        return vector
+
     model = _get_tag_embedding_model()
     if model is not None:
         vector = np.asarray(
             model.encode(tag_text, convert_to_numpy=True, normalize_embeddings=True),
             dtype=float,
         )
-    elif _TAG_HASHING_VECTORIZER is not None:
-        vector = _TAG_HASHING_VECTORIZER.transform([tag_text]).toarray()[0].astype(float)
+    elif _hashing_vectorizer() is not None:
+        vector = _hashing_vectorizer().transform([tag_text]).toarray()[0].astype(float)
         norm = np.linalg.norm(vector)
         if norm > 0:
             vector /= norm
