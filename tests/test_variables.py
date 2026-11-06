@@ -1,4 +1,8 @@
 """Persistent variables: definitions, outcomes, enabled_if, storage across playthroughs."""
+try:  # recording goes to a temporary folder, not the real records database
+    import records_sandbox  # noqa: F401
+except ImportError:  # run as tests.<module>
+    from tests import records_sandbox  # noqa: F401
 import json
 import os
 import random

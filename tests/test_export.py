@@ -1,7 +1,12 @@
 """Exporting a trained engine and running it offline, as a game would."""
+try:  # recording goes to a temporary folder, not the real records database
+    import records_sandbox  # noqa: F401
+except ImportError:  # run as tests.<module>
+    from tests import records_sandbox  # noqa: F401
 import json
 import os
 import random
+import shutil
 import socket
 import subprocess
 import sys
@@ -162,14 +167,43 @@ print(json.dumps({
         self.assertTrue(view["actions"])
         status, turn = call(f"/games/{view['game_id']}/choose", {"action": 0})
         self.assertEqual((status, turn["turn_number"]), (200, 1))
-        self.assertTrue(turn["turn"].startswith(">"))
+        self.assertIn(f"> {view['actions'][0]}", turn["turn"])  # an unexpected event may come first
         self.assertEqual(call(f"/games/{view['game_id']}/choose", {"action": "fly away"})[0], 400)
         self.assertEqual(call("/games/nope")[0], 404)
         self.assertIn("transcript", call(f"/games/{view['game_id']}/transcript")[1])
         self.assertEqual(call(f"/games/{view['game_id']}", method="DELETE")[0], 200)
+        status, chosen = call("/games", {"start": "Tavern", "persist": False})
+        self.assertEqual((status, chosen["location"], chosen["start_location"]), (201, "Tavern", "Tavern"))
+        self.assertEqual(call("/games", {"start": "Dungeon", "persist": False})[0], 400)  # not a starting location
+
+    def test_starting_locations_offline(self):
+        out = _run_offline(self.root, """
+import json
+from narrative_runtime import NarrativeEngine
+engine = NarrativeEngine()
+chosen = engine.new_game(start="Market", persist=False).view()
+drawn = sorted({engine.new_game(seed=seed, persist=False).view()["start_location"] for seed in range(40)})
+try:
+    engine.new_game(start="Vault", persist=False)
+    refused = False
+except ValueError:
+    refused = True
+played = [engine.new_game(profile="returning", seed=seed).state.start_location for seed in range(3)]
+print(json.dumps({"listed": engine.info()["starting_locations"], "chosen": [chosen["location"], chosen["start_location"]],
+                  "drawn": drawn, "refused": refused, "played": played, "history": engine.store.recent_starts("returning")}))
+""")
+        data = json.loads(out.strip().splitlines()[-1])
+        self.assertEqual(data["listed"], ["Harbor", "Market", "Tavern", "Festival of Masks"])
+        self.assertEqual(data["chosen"], ["Market", "Market"])
+        self.assertTrue(set(data["drawn"]) <= set(data["listed"]) and len(data["drawn"]) > 1, data["drawn"])
+        self.assertTrue(data["refused"])  # the Vault is not a starting location
+        self.assertEqual(data["history"], data["played"])  # the profile remembers where its stories began
 
     def test_keeps_training_offline(self):
-        out = _run_offline(self.root, """
+        # A copy: adopting a better storyteller rewrites engine.json, which the other tests play with.
+        root = Path(tempfile.mkdtemp(dir=self.dir)) / self.root.name
+        shutil.copytree(self.root, root)
+        out = _run_offline(root, """
 from narrative_runtime import NarrativeEngine
 summary = NarrativeEngine().evolve(generations=2, pop_size=4, episodes=1, max_steps=5, seed=1)
 print(summary["warm_started_from_memory"], summary["adopted"], summary["new_storyteller_score"] >= 0)

@@ -1,4 +1,8 @@
 """Character stats, skill checks, and the combat system."""
+try:  # recording goes to a temporary folder, not the real records database
+    import records_sandbox  # noqa: F401
+except ImportError:  # run as tests.<module>
+    from tests import records_sandbox  # noqa: F401
 import os
 import random
 import shutil

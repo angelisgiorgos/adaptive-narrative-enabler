@@ -1,4 +1,8 @@
 """One-time and exclusive options, customisable story text, and genome-driven choices."""
+try:  # recording goes to a temporary folder, not the real records database
+    import records_sandbox  # noqa: F401
+except ImportError:  # run as tests.<module>
+    from tests import records_sandbox  # noqa: F401
 import random
 import tempfile
 import unittest
@@ -205,7 +209,9 @@ class GenomeDrivenChoiceTests(unittest.TestCase):
 
         balanced = {name: 50 // 4 + (1 if i < 50 % 4 else 0) for i, name in enumerate(["attack", "defence", "stealth", "persuasion"])}
         with patch("core_engine.combat.CombatSystem.roll", fixed_roll):
-            state = GameState(world, genome, rng=NoDice(0), mission=next(iter(world.missions)), stats=balanced)
+            # The mission and start are fixed: drawing them is setup, not a storytelling decision.
+            state = GameState(world, genome, rng=NoDice(0), mission=next(iter(world.missions)), stats=balanced,
+                              start="Harbor")
             for _ in range(60):
                 if not state.step():
                     break
@@ -217,7 +223,9 @@ class GenomeDrivenChoiceTests(unittest.TestCase):
         before = dict((a.name, w) for w, a in state._rank_actions([salute]))[salute.name]
         state.choice_counts[state._novelty_key(salute)] += 3
         after = dict((a.name, w) for w, a in state._rank_actions([salute]))[salute.name]
-        self.assertAlmostEqual(before - after, 3 * state.genome.novelty_bias * config.get("action_selection.repetition_penalty"))
+        power = config.get("story_rules.repetition_power")  # every further use costs more than the last
+        self.assertAlmostEqual(before - after,
+                               3 ** power * state.genome.novelty_bias * config.get("action_selection.repetition_penalty"))
 
     def test_variety_fitness_penalises_repeated_outcomes(self):
         state = _state()

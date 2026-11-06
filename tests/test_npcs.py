@@ -1,4 +1,8 @@
 """Unique vs generic NPC placement, and the unique flag in the editor and API."""
+try:  # recording goes to a temporary folder, not the real records database
+    import records_sandbox  # noqa: F401
+except ImportError:  # run as tests.<module>
+    from tests import records_sandbox  # noqa: F401
 import random
 import shutil
 import tempfile

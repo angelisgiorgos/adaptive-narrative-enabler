@@ -1,4 +1,8 @@
 """The evolutionary AI behind story creation, and editing engine logic through parameters."""
+try:  # recording goes to a temporary folder, not the real records database
+    import records_sandbox  # noqa: F401
+except ImportError:  # run as tests.<module>
+    from tests import records_sandbox  # noqa: F401
 import json
 import os
 import random
@@ -132,8 +136,10 @@ class NoPythonInTheUITests(unittest.TestCase):
         self.assertNotIn("python", languages)
 
     def test_the_ui_file_holds_no_backend_logic(self):
+        # app.py formats YAML for its code editors (yaml.safe_dump) but uses no backend code:
+        # tests/test_studio_api.py checks that it imports none of it.
         source = Path(__file__).resolve().parent.parent.joinpath("app.py").read_text()
-        for backend_only in ("import main", "write_text(", "yaml.safe_dump(", "GameState(", "NarrativeEvolution("):
+        for backend_only in ("import main", "write_text(", "GameState(", "NarrativeEvolution("):
             self.assertNotIn(backend_only, source)
 
 
@@ -159,6 +165,101 @@ class LearningInPlayTests(_TempSaves):
         curve, traits = outputs[7], outputs[8]
         self.assertEqual(set(curve["series"]), {"benchmark (champion)", "best this generation", "population average"})
         self.assertIn("goal_bias", set(traits["trait"]))
+
+
+def _turn(action, outcome, location="Gate", health=8, coins=0, event_after=None, check=None, succeeded=True, source="location"):
+    return {"action": action, "outcome": outcome, "location_before": location, "location_after": location,
+            "event": None, "event_after": event_after, "health": health, "coins": coins, "check": check,
+            "succeeded": succeeded, "source": source, "owner": location}
+
+
+class EngagementScoreTests(unittest.TestCase):
+    """The score counts what a player feels turn by turn (core_engine/fitness.py)."""
+
+    CFG = {"filler_penalty": 60, "loop_window": 6, "loop_penalty": 4, "novelty_fade_penalty": 50, "escalation_bonus": 40}
+
+    def _terms(self, log):
+        from types import SimpleNamespace
+
+        from core_engine.fitness import _engagement
+
+        return _engagement(SimpleNamespace(turn_log=log), self.CFG)
+
+    def test_loops_and_filler_cost(self):
+        looping = [_turn("Pray", "Nothing answers."), _turn("Wait", "You wait.")] * 6
+        varied = [_turn(f"Act {i}", f"Something new {i}.") for i in range(12)]
+        bad, good = self._terms(looping), self._terms(varied)
+        self.assertEqual(good["loops"], 0)
+        self.assertEqual(bad["loops"], -10 * 4)                    # every turn after the first two repeats
+        self.assertEqual(good["filler"], 0)
+        self.assertAlmostEqual(bad["filler"], -60 * 10 / 12)          # 10 of 12 turns brought nothing new
+        self.assertLess(bad["novelty_fade"], 0)                    # new content dried up
+
+    def test_rising_tension_is_rewarded(self):
+        calm = [_turn(f"Act {i}", f"Calm {i}.") for i in range(6)]
+        rising = calm[:3] + [_turn(f"Fight {i}", f"Hit {i}.", health=8 - i - 1, event_after="Ambush") for i in range(3)]
+        self.assertEqual(self._terms(calm)["escalation"], 0)
+        self.assertGreater(self._terms(rising)["escalation"], 0)
+
+    def test_an_ending_beats_the_action_limit(self):
+        from core_engine.fitness import _fitness_breakdown
+
+        state = engine.GameState(engine.build_world(Genome(random.Random(3))), Genome(random.Random(3)), rng=random.Random(3))
+        state.step()
+        state.ended, state.end_kind = True, "action_limit"
+        cut = _fitness_breakdown(state)["ending"]
+        state.end_kind = "epilogue"
+        self.assertEqual(_fitness_breakdown(state)["ending"] - cut, engine.config.get("fitness.base.action_limit_penalty"))
+
+    def test_growing_terms_count_per_turn(self):
+        from core_engine.fitness import _fitness_breakdown
+
+        genome = Genome(random.Random(5))
+        state = engine.GameState(engine.build_world(genome), genome, rng=random.Random(5))
+        for _ in range(60):
+            if state.ended or not state.step():
+                break
+        normalized = _fitness_breakdown(state)
+        with patch.dict(engine.config._config["fitness"]["length_normalization"], {"enabled": False}):
+            raw = _fitness_breakdown(state)
+        scale = 35 / max(state.actions_taken, 20)
+        for term in ("discovery", "character_interactions", "tone_variety"):
+            self.assertAlmostEqual(normalized[term], raw[term] * scale)
+
+
+class ReliableLearningTests(unittest.TestCase):
+    """Champions are chosen on the benchmark; the population stays diverse."""
+
+    def _evolution(self, **settings):
+        base = {"pop_size": 6, "generations": 1, "episodes_per_genome": 1, "validation_episodes": 2, "max_steps": 4,
+                "full_length_stories": False, "warm_start": False, "cover_situations": False}
+
+        def scores(function, tasks):  # the training stories favour threat, the benchmark the opposite
+            return [(-1 if task[3][0] >= 10 ** 6 else 1) * task[2]["threat_prob"] for task in tasks]
+
+        return NarrativeEvolution(engine.build_world, engine.fitness, settings={**base, **settings}, seed=1, map_fn=scores)
+
+    def test_the_champion_is_the_best_on_the_benchmark_among_the_top_k(self):
+        for top_k in (1, 3):
+            with self.subTest(top_k=top_k):
+                evolution = self._evolution(benchmark_top_k=top_k)
+                result = evolution.run()
+                ranked = sorted(evolution.last_checkpoint["scored"], key=lambda pair: pair[0], reverse=True)
+                top = [traits["threat_prob"] for _, traits in ranked[:top_k]]
+                self.assertEqual(result.best_genome.traits()["threat_prob"], min(top))
+                self.assertEqual(result.history[0].best_traits, result.best_genome.traits())
+
+    def test_the_benchmark_covers_every_situation(self):
+        evolution = self._evolution(cover_situations=True)
+        self.assertEqual(len(evolution._validation_seeds()), max(2, len(evolution._situations())))
+
+    def test_a_collapsing_population_gets_newcomers(self):
+        evolution = self._evolution(min_diversity=1.0, max_immigrant_rate=0.5)
+        clone = Genome(random.Random(2))
+        scored = [(1.0, Genome.from_traits(clone.traits())) for _ in range(6)]
+        population = evolution._next_population(scored, 0.14, diversity=0.0)
+        keys = {evolution._genome_key(genome) for genome in population}
+        self.assertEqual(len(keys), len(population))                # no two storytellers alike
 
 
 if __name__ == "__main__":

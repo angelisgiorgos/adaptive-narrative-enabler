@@ -1,4 +1,8 @@
 """Walking into a prison by a normal route vs being sent there one way."""
+try:  # recording goes to a temporary folder, not the real records database
+    import records_sandbox  # noqa: F401
+except ImportError:  # run as tests.<module>
+    from tests import records_sandbox  # noqa: F401
 import random
 import unittest
 from unittest.mock import patch

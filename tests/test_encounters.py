@@ -1,4 +1,8 @@
 """Hostile NPCs that start an event by themselves, and generic NPC removal."""
+try:  # recording goes to a temporary folder, not the real records database
+    import records_sandbox  # noqa: F401
+except ImportError:  # run as tests.<module>
+    from tests import records_sandbox  # noqa: F401
 import random
 import shutil
 import tempfile
