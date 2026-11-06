@@ -1,5 +1,8 @@
 from utils.config_loader import config
 
+from .conditions import Conditional
+from .effects import EffectList, from_outcome_fields, normalize as normalize_effects
+
 
 # ============================
 # ACTIONS / OUTCOMES
@@ -7,6 +10,18 @@ from utils.config_loader import config
 
 # Action.repeat values: once per game, again on each visit, or every turn.
 REPEAT_RULES = ("once", "per_visit", "always")
+
+
+def repetition_errors(repeat, retry_on_failure, label="Action"):
+    """Problems with an action's ``repeat`` and ``retry_on_failure`` (empty when valid)."""
+    errors = []
+    if repeat is not None and repeat not in REPEAT_RULES:
+        errors.append(f"{label}: `repeat` must be one of {', '.join(REPEAT_RULES)}, not {repeat!r}.")
+    if retry_on_failure is not None and not isinstance(retry_on_failure, bool):
+        errors.append(f"{label}: `retry_on_failure` must be true or false.")
+    elif retry_on_failure and repeat == "always":
+        errors.append(f"{label}: `retry_on_failure` has no effect with `repeat: always` (the action never runs out).")
+    return errors
 
 class Outcome:
     def __init__(self, desc, tags=None,
@@ -25,7 +40,8 @@ class Outcome:
                  set_variables=None,
                  change_variables=None,
                  on_check=None,
-                 change_stats=None):
+                 change_stats=None,
+                 effects=None):
         self.desc = desc
         self.tags = tags or []
         self.success_prob = success_prob
@@ -50,6 +66,12 @@ class Outcome:
         # (None: either); change_stats raises or lowers stats for the playthrough.
         self.on_check = on_check
         self.change_stats = dict(change_stats or {})
+        # Effect list (effects.py): the variable and stat fields above are its
+        # shorthand and run first, then the explicit ``effects`` in order.
+        self.effects = EffectList(
+            from_outcome_fields(self.set_variables, self.change_variables, self.change_stats)
+            + normalize_effects(effects)
+        )
 
     def _clamp(self, value, low=None, high=None):
         low = config.get("outcome_resolution.probability_floor", 0.05) if low is None else low
@@ -141,13 +163,25 @@ class Outcome:
         return self._clamp(probability)
 
 
-class Action:
+class Action(Conditional):
+    """``enabled_if`` (a condition, conditions.py) hides the action while it does
+    not hold; ``required_object``, ``required_tag`` and ``required_coins`` stay
+    as before (they also pick the item used and the price paid).
+
+    ``retry_on_failure``: a failed attempt does not use the action up. A
+    ``once`` action then disappears only after it succeeds, and a ``per_visit``
+    action stays on offer in the visit until it succeeds.
+    """
+    retry_on_failure = False  # class default: games saved before the field existed load unchanged
+
     def __init__(self, name, outcomes, character_name=None, 
                  required_object=None, required_tag=None, required_coins=0,
                  collects_object=None, consumes_object=False,
                  triggers_event=None, repeat=None, exclusive_group=None,
-                 source=None, owner=None, skill_check=None):
+                 source=None, owner=None, skill_check=None, enabled_if=None, retry_on_failure=False):
         self.name = name
+        self.enabled_if = enabled_if
+        self.retry_on_failure = bool(retry_on_failure)
         self.outcomes = outcomes
         self.character_name = character_name
         self.required_object = required_object

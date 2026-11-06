@@ -93,7 +93,10 @@ class RepeatAndExclusiveTests(unittest.TestCase):
         self.assertNotIn("(Guard) Ask the time", names)  # once
         self.assertNotIn("(Guard) Chat about the weather", names)  # per_visit
         _choose(state, "Move to Yard")
-        names = _names(state)
+        # The director hides a chat whose only outcome was told a turn ago (a loop)...
+        self.assertNotIn("(Guard) Chat about the weather", _names(state))
+        with patch.dict(config._config["director"], {"enabled": False}):  # ...the repeat rules alone:
+            names = _names(state)
         self.assertIn("(Guard) Chat about the weather", names)  # a new visit (another guard, same rules)
         self.assertIn("(Guard) Ask the time", names)  # generic NPC: a different guard here
 

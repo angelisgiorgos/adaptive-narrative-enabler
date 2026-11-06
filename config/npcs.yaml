@@ -13,6 +13,16 @@ world_definition:
     - He's always worrying about saving others.
     - He's got a good heart looking out for others.
     - A true believer.
+    # What he says when you talk with him: the first line whose enabled_if
+    # holds (any condition), otherwise his usual words.
+    dialogue:
+    - enabled_if: {reputation: {gte: 2}}
+      text: The whole city speaks well of you, child. Walk in peace.
+    - enabled_if:
+        any:
+        - {variable: reputation, op: lt, value: 0}
+        - {has_item: "Fence's Ledger"}
+      text: I hear troubling things about you. My door is open, should you wish to make amends.
     actions:
     - name: Seek a blessing
       outcomes:
@@ -44,14 +54,16 @@ world_definition:
       name: Give him the {alcohol_desc}
       # One way past the guard: once any of these succeeds, the others disappear.
       exclusive_group: get_past_gate_guard
+      enabled_if: {not: {at_location: Vault}}   # inside the Vault there is nothing left to get past
       required_tag: alcohol
       consumes_object: true
       outcomes:
       - id: gate_guard_bribe_pass
-        desc: The guard takes the bottle with a wink and lets you pass.
+        desc: The guard takes the bottle with a wink, lets you pass, and nods at a shield left by the barracks.
         tags:
         - neutral
         - success
+        reveal_object: Heavy Shield
         lead_to_known: true
         linked_location: Palace
       - id: gate_guard_drunk_sluggish
@@ -124,7 +136,7 @@ world_definition:
     encounter_event: bandit_ambush
     encounter_repeat: true
     associated_tags: [dark, alley, threat, urban, discovery]
-    known_locations: [Sewers, Vault]
+    known_locations: [Sewers, Alley]     # bandits lurk in dark streets, not in guarded places
     known_objects: [Steel Dagger, Ancient Map]
     goals:
     - Rob travelers

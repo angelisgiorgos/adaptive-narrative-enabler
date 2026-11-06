@@ -8,11 +8,17 @@
 #                 "(NPC) " / "[Item] " prefix ("Seek a blessing").
 #   location:     the player has reached this location.
 #   item:         this item is in the inventory.
-#   event:        this event was entered and resolved.
+#   event:        this event was entered and resolved (whatever the result).
+#   event_succeeded: this event was resolved by an event action that succeeded
+#                 (a failed action or stepping away does not count).
 #   npc_removed:  this NPC was removed from the story (outcome `remove_npc`).
 #   outcome_tag:  an outcome with this tag succeeded (e.g. escape).
 #   coins:        the player holds at least this many coins.
+#   variables:    persistent variables, e.g. {reputation: {gte: 1}}.
+#   condition:    any condition tree (all / any / not, variable, stat,
+#                 resource, has_item, visited, ...); see the README.
 # Missions whose goal already holds at the start of the story are never chosen.
+# `rewards` is an effect list applied when the mission is completed.
 world_definition:
   missions:
     expose_the_fence:
@@ -23,9 +29,9 @@ world_definition:
         action: Interrogate the thief
     break_into_the_vault:
       title: Break into the Vault
-      description: Find a way past the guards and into the Vault.
+      description: Find a way past the guards, into the Vault, and crack its main safe.
       goal:
-        location: Vault
+        action: Crack the main safe
     shield_bearer:
       title: Find a shield
       description: Get hold of a heavy shield before the real trouble starts.
@@ -43,6 +49,9 @@ world_definition:
       description: Drive the thief out of the market for good.
       goal:
         npc_removed: Thief
+      rewards:                     # the merchants are grateful
+      - change_variable: {reputation: 1}
+      - change_coins: 10
     clear_your_name:
       title: Clear your name
       description: Your reputation precedes you. Earn back the city's trust.

@@ -269,7 +269,7 @@ class FitnessLossTests(_Rules):
     def _story(self, steps, won=False, ended=True, path=None, choices=None):
         state = GameState(_gate_world(), _genome(), start="Gate", rng=random.Random(0))
         state.actions_taken, state.won, state.ended = steps, won, ended
-        state.end_kind = "mission" if won else ("action_limit" if ended else None)
+        state.end_kind = "mission" if won else ("epilogue" if ended else None)
         state.path = path or ["Gate"]
         state.tags_seen = [["urban", "threat", "success", "combat"]] * steps
         state.choice_counts = Counter(choices or {})
@@ -360,16 +360,19 @@ class DirectorTests(_Rules):
             self.assertEqual(plain.end_kind, "action_limit")
 
     def test_an_action_that_can_only_repeat_itself_is_not_offered(self):
-        pray = Action("Pray", [Outcome("Nothing answers.", tags=["neutral"])], repeat="always",
-                      source="location", owner="Gate")
-        state = self._state(pray)
+        pray = Action("Pray", [Outcome("Nothing answers.", tags=["neutral"])], source="location", owner="Gate")
+        state = self._state(pray)                                  # per_visit: offered again on every visit
         _choose(state, "Pray")
-        self.assertNotIn("Pray", _names(state))                   # its only outcome was just told
+        _choose(state, "Move to Yard")
+        _choose(state, "Return to Gate")
+        self.assertNotIn("Pray", _names(state))                   # its only outcome was just told: a loop
         state.actions_taken += 6                                   # outside director.loop_window
         self.assertIn("Pray", _names(state))
+        state.actions_taken -= 6
         with patch.dict(config._config["director"], {"min_options": 10}):
-            state.actions_taken -= 6
             self.assertIn("Pray", _names(state))                   # never fewer options than min_options
+        with patch.dict(config._config["director"], {"enabled": False}):
+            self.assertIn("Pray", _names(state))
 
     def test_players_see_the_best_options_in_the_scene_order(self):
         actions = [Action(name, [Outcome(f"{name} done.", tags=tags)], repeat="always", source="location", owner="Gate")

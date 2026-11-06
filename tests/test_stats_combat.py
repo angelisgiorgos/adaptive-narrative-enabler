@@ -132,7 +132,8 @@ class CombatSystemTests(_SocialStory):
         self.assertIsNone(combat.check_for(Action("Wave", []), Outcome("z", tags=["social"])))
         self.assertEqual(combat.mitigate(-4), -2)  # intimidation 65 // 25 = 2 prevented
         self.assertEqual(combat.mitigate(-1), 0)
-        self.assertEqual(combat.failure_penalty(dangerous=True), 1)
+        self.assertEqual(combat.failure_penalty(dangerous=False), 1)                 # skill_check_resolution
+        self.assertEqual(combat.failure_penalty(dangerous=True), 2)                  # failure_damage / dangerous_
         with patch.dict(config._config["skill_check_resolution"], {"failure_mitigation_threshold": 60}):
             self.assertEqual(combat.failure_penalty(dangerous=True), 0)
 

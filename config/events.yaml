@@ -24,6 +24,23 @@
 #                         How often an option is offered, and one-choice groups
 #                         (see "Repeatable and one-time options" in the README).
 # Actions and outcomes otherwise use the same fields as location actions.
+#
+# When an event may start. These rules hold for every way into it (trigger
+# actions, encounters, chains, start_event effects, the random schedule); while
+# they block it, its trigger actions are not offered and its encounters wait:
+#   enabled_if            A condition that must hold.
+#   repeat                once (unique in the story) | per_location | per_visit
+#                         | always (default).
+#   max_occurrences       At most this many times per story.
+#   cooldown              Turns after it ended before it can start again.
+#   trigger               action (default): something in the story starts it.
+#                         random: it may also start by itself; each turn it can
+#                         start, it does with probability `chance`, and `weight`
+#                         picks between random events that hit together, e.g.
+#                           trigger: random
+#                           chance: 0.15
+#                           enabled_if: {at_location: Market}
+#                           cooldown: 6
 world_definition:
   events:
     confront_thief:
@@ -41,12 +58,11 @@ world_definition:
           remove_npc: true
           set_variables: {thief_caught: true}     # the thief stays gone in later playthroughs
           change_variables: {reputation: -1}
-        - desc: The thief lands a quick jab and escapes into the crowd.
+        - desc: The thief lands a quick jab and slips back into the crowd, still working the market.
           tags: [combat, threat, failure]
           health_change: -2
-          remove_npc: true
       - name: Interrogate the thief
-        skill_check: {stat: persuasion, modifier: -10}   # thieves do not talk easily
+        skill_check: {stat: persuasion, modifier: 0}     # a cornered thief can be made to talk
         outcomes:
         - desc: Cornered, the thief admits they sell stolen goods to someone in the sewers.
           on_check: pass
@@ -59,10 +75,9 @@ world_definition:
           move_to: Sewers
           remove_npc: true
           set_variables: {fence_exposed: true}
-        - desc: The thief laughs in your face, slips your grip and vanishes into the crowd.
+        - desc: The thief laughs in your face and slips your grip, but you will find them in the market again.
           on_check: fail
           tags: [social, failure]
-          remove_npc: true
       - name: Steal from the thief
         outcomes:
         - desc: While they protest their innocence, you lift a stolen pouch from their belt.
@@ -75,6 +90,7 @@ world_definition:
           move_to: Alley
     bandit_ambush:
       title: Ambushed by a bandit
+      cooldown: 6     # bandits lurk on every visit, but not on every turn
       tags: [threat, ambush]
       descriptions:
       - A hooded figure steps out of the shadows, blade first. "Your purse or your life."
@@ -117,6 +133,7 @@ world_definition:
           health_change: -2
     memory_theft:
       title: The Memory Thief strikes
+      repeat: once    # unique: whatever starts it, it happens once per story
       tags: [spectral, threat]
       descriptions:
       - Mirrored eyes find yours, and a memory you have not made yet starts to slip away.
