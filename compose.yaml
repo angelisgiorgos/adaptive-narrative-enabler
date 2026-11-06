@@ -5,6 +5,10 @@ x-studio-volumes: &studio-volumes
   - narrative-artifacts:/app/artifacts
   - narrative-saves:/app/saves  # persistent variables across playthroughs
   - model-cache:/var/cache/huggingface
+  # The records database (every run, world, engine and story) and engine model files.
+  # The folder must be writable by the container user (uid 10001); otherwise recording
+  # switches itself off and the studio and API keep working.
+  - ${ANE_RECORDS_HOST_DIR:-/data/angelisg/ane}:/data/angelisg/ane
 
 services:
   ui:
@@ -19,6 +23,14 @@ services:
       ANE_UI_HOST: 0.0.0.0
       ANE_UI_PORT: 8003
       ANE_UI_SHARE: ${ANE_UI_SHARE:-false}
+      # The studio does everything through the API service (one engine, one set of
+      # sessions, runs and records). ANE_STUDIO_API_URL= (empty) serves the API
+      # inside the studio instead.
+      ANE_API_URL: ${ANE_STUDIO_API_URL-http://hamlet-ane-api:8004}
+      ANE_RECORDS_DIR: /data/angelisg/ane
+    depends_on:
+      api:
+        condition: service_healthy
     volumes: *studio-volumes
     networks:
       hamlet-shared-network:
@@ -42,6 +54,7 @@ services:
       - "${ANE_API_BIND_ADDRESS:-0.0.0.0}:${ANE_API_PORT:-8004}:8004"
     environment:
       ANE_CORS_ORIGINS: ${ANE_CORS_ORIGINS:-}
+      ANE_RECORDS_DIR: /data/angelisg/ane
     volumes: *studio-volumes
     networks:
       hamlet-shared-network:

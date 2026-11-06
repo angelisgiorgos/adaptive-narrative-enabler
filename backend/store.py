@@ -9,10 +9,12 @@ import threading
 from numbers import Number
 from pathlib import Path
 import yaml
-import ui_authoring
 import main as engine
 from core_engine import Mission
 from core_engine.actions import REPEAT_RULES
+from core_engine import rules, starts
+from core_engine.evolution import AGGREGATES
+from core_engine.builder import logic_errors
 from core_engine.narration import validate_messages
 from core_engine.variables import PROFILE_PATTERN, validate_definitions
 from utils.config_loader import config
@@ -75,11 +77,109 @@ OPTIONAL_CONFIG_PATHS = {
     "unexpected_events.objective",
     "outcome_resolution.probability_floor",
     "outcome_resolution.probability_ceiling",
+    "start_selection",
+    "story_rules",
+    "unexpected_events.coin_budget",
+    "unexpected_events.effect_repeat_penalty",
+    "unexpected_events.name_location",
+    "fitness.base.unfinished_penalty",
+    "fitness.repetition",
+    "fitness.pacing",
+    "fitness.length_normalization",
+    "evolution.full_length_stories",
+    "evolution.stratify_episodes",
+    "evolution.score_aggregate",
+    "evolution.consistency_weight",
+    # Added with the director and the engagement-based score; older configurations use the defaults.
+    "evolution.min_diversity",
+    "evolution.max_immigrant_rate",
+    "evolution.cover_situations",
+    "evolution.benchmark_top_k",
+    "fitness.base.action_limit_penalty",
+    "fitness.length_normalization.mode",
+    "fitness.length_normalization.floor_steps",
+    "fitness.engagement",
+    "skill_check_resolution.failure_damage",
+    "skill_check_resolution.dangerous_failure_damage",
+    "director",
+    "mission_selection",
+    "player_options",
 }
 
 CONFIG_LOCK = threading.RLock()
 
-APP_SETTINGS = ui_authoring.load_app_settings()
+# ---- the studio's app parameters (config/ui_settings.yml; GET|PUT /v1/app-settings) ----------
+
+APP_SETTINGS_PATH = CONFIG_DIR / "ui_settings.yml"
+APP_SETTINGS_LOCK = threading.RLock()
+# The largest run the REST API accepts (POST /v1/simulations, the jobs, continue and
+# retrain); the studio's slider limits below may be set up to these.
+RUN_LIMITS = {"candidate_limit": 400, "generation_limit": 1000, "simulation_step_limit": 400}
+APP_DEFAULTS = {
+    "max_web_sessions": 100,
+    "max_simulation_work": 60000,  # an upper bound: whole stories are counted at narrative_end.max_actions
+    "max_config_upload_bytes": 2 * 1024 * 1024,
+    "max_engine_upload_bytes": 20 * 1024 * 1024,
+    "candidate_limit": RUN_LIMITS["candidate_limit"],
+    "generation_limit": RUN_LIMITS["generation_limit"],
+    "simulation_step_limit": RUN_LIMITS["simulation_step_limit"],
+    "default_candidates": 8,
+    "default_generations": 5,
+    "default_simulation_steps": 16,
+    "crossover_probability": 0.75,
+    "queue_concurrency": 2,
+    "queue_max_size": 24,
+    "server_host": "0.0.0.0",
+    "server_port": 7860,
+    "share": False,
+}
+
+
+def validate_app_settings(values):
+    if not isinstance(values, dict) or set(values) != set(APP_DEFAULTS):
+        raise ValueError("App settings must contain exactly the supported parameter names.")
+    for key, default in APP_DEFAULTS.items():
+        value = values[key]
+        if isinstance(default, bool):
+            valid = isinstance(value, bool)
+        elif isinstance(default, int):
+            valid = type(value) is int and value > 0
+        elif isinstance(default, float):
+            valid = type(value) in (int, float) and 0 <= value <= 1
+        else:
+            valid = isinstance(value, str) and bool(value.strip())
+        if not valid:
+            raise ValueError(f"Invalid value for {key}.")
+    if values["server_port"] > 65535:
+        raise ValueError("Server port must be between 1 and 65535.")
+    for limit, maximum in RUN_LIMITS.items():
+        if values[limit] > maximum:
+            raise ValueError(f"{limit} must not exceed {maximum}, the largest run the API accepts.")
+    for default, limit in (("default_candidates", "candidate_limit"),
+                           ("default_generations", "generation_limit"),
+                           ("default_simulation_steps", "simulation_step_limit")):
+        if values[default] > values[limit]:
+            raise ValueError(f"{default} must not exceed {limit}.")
+    work = values["default_candidates"] * values["default_generations"] * values["default_simulation_steps"]
+    if work > values["max_simulation_work"]:
+        raise ValueError("Default simulation exceeds max_simulation_work.")
+    return values
+
+
+def load_app_settings():
+    with APP_SETTINGS_LOCK:
+        saved = yaml.safe_load(APP_SETTINGS_PATH.read_text()) if APP_SETTINGS_PATH.exists() else {}
+        return validate_app_settings({**APP_DEFAULTS, **(saved or {})})
+
+
+def save_app_settings(values):
+    """Validate and save the app parameters; they apply when the studio and the API restart."""
+    validate_app_settings(values)
+    with APP_SETTINGS_LOCK:
+        _write_yaml(APP_SETTINGS_PATH, values)
+
+
+APP_SETTINGS = load_app_settings()
 
 MAX_WEB_SESSIONS = APP_SETTINGS["max_web_sessions"]
 
@@ -183,7 +283,15 @@ def _validate_complete_config(candidate: object, reference: object, path: str = 
         for name, entry in candidate.items():
             if not str(name).strip() or not isinstance(entry, dict):
                 errors.append("Every location needs a name and a mapping/object value.")
+            else:
+                errors.extend(starts.location_errors(entry, f"Location `{name}`"))
         return errors
+    if path == "start_selection" and isinstance(candidate, dict):
+        errors.extend(starts.validate_settings(starts.settings({"start_selection": candidate})))
+    if path == "story_rules" and isinstance(candidate, dict):
+        errors.extend(rules.validate_settings(rules.settings({"story_rules": candidate})))
+    if path == "evolution.score_aggregate" and candidate not in AGGREGATES:
+        errors.append(f"`evolution.score_aggregate` must be one of {', '.join(AGGREGATES)}.")
     if path == "messages":
         return validate_messages(candidate)
     if path == "world_definition.variables":
@@ -273,6 +381,8 @@ def upload_config(uploaded_file):
     if not isinstance(uploaded, dict):
         raise AuthoringError("The YAML document must contain a mapping/object at its root.")
     errors = _validate_complete_config(uploaded, config.default_config())
+    if not errors:  # every condition and effect list, against the uploaded world itself
+        errors = logic_errors(uploaded.get("world_definition"))
     if errors:
         preview = "\n".join(f"- {error}" for error in errors[:20])
         remainder = len(errors) - 20
@@ -482,7 +592,7 @@ def save_rules_ui(*values):
 LOGIC_SECTIONS = {
     "evolution": "How the evolutionary AI searches: population, generations, stories per storyteller, selection, crossover, mutation, adaptive mutation, early stopping and the learning memory.",
     "genome_bounds": "The range each evolvable storyteller trait may take.",
-    "fitness": "What makes a story engaging: the scores that evolution maximises (dramatic arc, contrast, setup/payoff, variety, mission wins, ...).",
+    "fitness": "What makes a story engaging: the scores that evolution maximises (dramatic arc, contrast, setup/payoff, variety, endings), counted per turn, and the engagement terms: filler turns, loops, fading novelty and escalation.",
     "action_selection": "How the storyteller ranks the actions it can take (threat, discovery, movement, goals, novelty, skill fit, location penalties).",
     "outcome_objective": "How the storyteller picks an outcome of an action (health, coins, success chance, discovery, repetition).",
     "outcome_resolution": "How likely unchecked outcomes are to succeed, and the probability range.",
@@ -492,10 +602,15 @@ LOGIC_SECTIONS = {
     "scene": "Which NPCs and items appear in a scene.",
     "skill_check_resolution": "How hard skill checks are, over time, and how the damage-reduction stat softens combat.",
     "mission_settings": "Missions: pacing of goal pursuit and route planning.",
+    "story_rules": "Rules that keep stories coherent, paced and varied: failure outcomes, text-consistent routes, holding back from the mission early, moving on instead of stalling, repetition and backtracking costs, tie-breaking, items and clue payoffs.",
+    "start_selection": "Where stories start: how strongly a player's recent starts are discouraged, and the single start of worlds without starting locations.",
     "action_rules": "How often actions are offered by default (once, per visit, always).",
     "game_state": "Starting health and coins, maximum health, arrests and following new paths.",
     "power_model": "How the power indicator is derived from health and skills.",
     "narrative_end": "When a story ends (action limit, stalling).",
+    "director": "How a story builds over its course: escalation of events, threats and damage, the finale before the action limit with an epilogue ending, and options that would only loop.",
+    "mission_selection": "How a story's mission is drawn: a player's recent missions are drawn less often.",
+    "player_options": "The choices a player sees: how many, and in which order (the scene's order, or the storyteller's ranking).",
     "location_constraints": "Prisons: which locations confine a player until an escape.",
     "unexpected_events": "Procedural unexpected events: how often, and their parts.",
     "authored_events": "Authored events: the fallback option.",

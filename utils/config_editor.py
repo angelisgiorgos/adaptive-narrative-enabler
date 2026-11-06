@@ -436,7 +436,7 @@ class ConfigEditor:
             if kind == "npcs":
                 print(f"  5. Unique NPC (currently: {self._unique_label(entry)})")
                 print(f"  6. Encounter event (currently: {self._encounter_label(entry)})")
-            print(f"  e. Enabled if (persistent variables; currently: {entry.get('enabled_if') or 'always'})")
+            print(f"  e. Enabled if (a condition; currently: {entry.get('enabled_if') or 'always'})")
             if kind == "items":
                 print(f"  s. Stat bonus while held (currently: {entry.get('stat_bonus') or 'none'})")
             print("  b. back")
@@ -485,7 +485,8 @@ class ConfigEditor:
                     changed = True
                 continue
             if choice == "e":
-                print("Conditions on persistent variables, e.g. {thief_caught: false, reputation: {gte: 1}}.")
+                print("A condition, e.g. {thief_caught: false, reputation: {gte: 1}} or")
+                print("{any: [{has_item: Ancient Map}, {stat: persuasion, op: gte, value: 60}]}.")
                 print("Comparisons: eq, ne, gt, gte, lt, lte, in, not_in. Leave empty to always enable.")
                 value = input("Enabled if (YAML): ").strip()
                 try:
@@ -493,8 +494,14 @@ class ConfigEditor:
                 except yaml.YAMLError as exc:
                     print(f"Not valid YAML: {exc}")
                     continue
-                if conditions is not None and not isinstance(conditions, dict):
-                    print("Please enter a mapping of variable names to values or comparisons.")
+                from core_engine import conditions as condition_language
+                from utils.config_loader import config
+
+                problems = condition_language.validate(
+                    conditions, condition_language.References.from_world(config.get("world_definition")),
+                )
+                if problems:
+                    print("\n".join(problems))
                     continue
                 if conditions:
                     changed = entry.get("enabled_if") != conditions or changed

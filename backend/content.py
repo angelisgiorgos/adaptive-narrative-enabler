@@ -7,11 +7,12 @@ import re
 from numbers import Number
 import yaml
 import main as engine
-from core_engine import Mission
-from core_engine.actions import REPEAT_RULES
+from core_engine import Mission, conditions, effects, starts
+from core_engine.builder import EVENT_POLICY_FIELDS, ITEM_POLICY_FIELDS, event_policy_errors, item_policy_errors, logic_errors
+from core_engine.actions import REPEAT_RULES, repetition_errors
 from core_engine.stats import MODES as STAT_MODES, CharacterStats, stats_config, validate_settings as validate_stat_settings
 from core_engine.narration import DEFAULT_MESSAGES, validate_messages
-from core_engine.variables import PROFILE_PATTERN, VariableStore, clamp, validate_changes, validate_conditions, validate_definitions
+from core_engine.variables import PROFILE_PATTERN, VariableStore, clamp, validate_changes, validate_definitions
 from utils.config_loader import config
 
 from .errors import AuthoringError
@@ -54,7 +55,8 @@ def _conditions_text(conditions) -> str:
 def load_entity(kind: str, name: str):
     """Return name, tags, descriptions, goals, the NPC options unique,
     encounter_event and encounter_repeat (None for other kinds), enabled_if,
-    the event title and the item stat bonus (None for other kinds)."""
+    the event title, the item stat bonus, and the location's start_eligible
+    and start_weight (None for other kinds)."""
     _, _, records, shape = _entity_records(kind)
     if shape == "mapping":
         record = records.get(name, {})
@@ -76,7 +78,19 @@ def load_entity(kind: str, name: str):
         record.get("enabled_if") or None,
         (record.get("title") or None) if kind == "Events" else None,
         (record.get("stat_bonus") or None) if kind == "Items" else None,
+        bool(record.get("start_eligible", False)) if kind == "Locations" else None,
+        record.get("start_weight", 1.0) if kind == "Locations" else None,
     )
+
+def _apply_start(record: dict, start_eligible, start_weight) -> None:
+    """Set a location's start_eligible / start_weight (None keeps the stored value)."""
+    if start_eligible is not None:
+        record["start_eligible"] = bool(start_eligible)
+    if start_weight is not None:
+        record["start_weight"] = start_weight
+    errors = starts.location_errors(record, "Location")
+    if errors:
+        raise AuthoringError("\n".join(errors))
 
 def _apply_stat_bonus(record: dict, stat_bonus) -> None:
     """Set or clear an item's stat_bonus from a mapping or YAML text (None keeps it)."""
@@ -95,8 +109,13 @@ def _apply_stat_bonus(record: dict, stat_bonus) -> None:
     else:
         record.pop("stat_bonus", None)
 
+def _references() -> conditions.References:
+    """The names conditions and effects may refer to in the current world."""
+    return conditions.References.from_world(config.get("world_definition") or {})
+
 def _apply_enabled_if(record: dict, enabled_if) -> None:
-    """Set or clear an entry's enabled_if from a mapping or YAML text (None keeps it)."""
+    """Set or clear an entry's enabled_if (a condition, see core_engine/conditions.py)
+    from a mapping, a list or YAML text (None keeps it)."""
     if enabled_if is None:
         return
     if isinstance(enabled_if, str):
@@ -104,7 +123,7 @@ def _apply_enabled_if(record: dict, enabled_if) -> None:
             enabled_if = yaml.safe_load(enabled_if) if enabled_if.strip() else None
         except yaml.YAMLError as exc:
             raise AuthoringError(f"`Enabled if` is not valid YAML: {exc}") from exc
-    errors = validate_conditions(enabled_if, config.get("world_definition.variables") or {})
+    errors = conditions.validate(enabled_if, _references())
     if errors:
         raise AuthoringError("\n".join(errors))
     if enabled_if:
@@ -114,9 +133,9 @@ def _apply_enabled_if(record: dict, enabled_if) -> None:
 
 def save_entity(kind: str, selected_name: str, name: str, tags, descriptions: str, goals: str,
                 unique=None, encounter_event=None, encounter_repeat=None, enabled_if=None, title=None,
-                stat_bonus=None):
-    """Save an entry. For NPCs, an option passed as None keeps its stored value
-    (unique defaults to generic); ``encounter_event=""`` removes the encounter."""
+                stat_bonus=None, start_eligible=None, start_weight=None):
+    """Save an entry. An option passed as None keeps its stored value (an NPC's
+    unique defaults to generic); ``encounter_event=""`` removes the encounter."""
     name = (name or "").strip()
     if not name:
         raise AuthoringError("Name is required.")
@@ -130,9 +149,10 @@ def save_entity(kind: str, selected_name: str, name: str, tags, descriptions: st
             record["tags"] = list(tags or [])
             record["entered_descriptions"] = _lines(descriptions)
             record["goals"] = _lines(goals)
-            if kind != "Events":
-                _apply_enabled_if(record, enabled_if)
-            elif title is not None:
+            if kind == "Locations":
+                _apply_start(record, start_eligible, start_weight)
+            _apply_enabled_if(record, enabled_if)
+            if kind == "Events" and title is not None:
                 if title.strip():
                     record["title"] = title.strip()
                 else:
@@ -204,24 +224,35 @@ def delete_entity(kind: str, selected_name: str):
 ACTION_FIELDS = {
     "id", "name", "outcomes", "required_object", "required_tag", "required_coins",
     "collects_object", "consumes_object", "triggers_event", "repeat", "exclusive_group", "skill_check",
+    "enabled_if", "retry_on_failure",
 }
 
 OUTCOME_FIELDS = {
     "id", "desc", "tags", "success_prob", "use_genome_bias", "health_change", "coin_change",
     "spawn", "move_to", "move_to_tags", "reveal_npc", "reveal_object", "reveal_location",
     "linked_location", "linked_location_mode", "linked_npc", "linked_item", "lead_to_known",
-    "remove_npc", "send_to", "set_variables", "change_variables", "on_check", "change_stats",
+    "remove_npc", "send_to", "set_variables", "change_variables", "on_check", "change_stats", "effects",
 }
 
 ACTION_REFERENCE = """
-**Action fields:** `name` · `outcomes` · `repeat` (once / per_visit / always) · `exclusive_group` ·
+**Action fields:** `name` · `outcomes` · `repeat` (once / per_visit / always) ·
+`retry_on_failure` (true: a failed attempt does not use the action up) · `exclusive_group` ·
 `triggers_event` · `skill_check` ({stat, modifier}) · `required_tag` · `required_object` · `required_coins` ·
-`collects_object` · `consumes_object`
+`collects_object` · `consumes_object` · `enabled_if` (a condition: the action is offered only while it holds)
 
 **Outcome fields:** `desc` · `tags` · `success_prob` · `health_change` · `coin_change` · `spawn` ·
 `move_to` · `send_to` (one way) · `move_to_tags` · `reveal_location` · `reveal_npc` · `reveal_object` ·
 `lead_to_known` · `remove_npc` (true or a name) · `set_variables` · `change_variables` ·
-`on_check` (pass / fail) · `change_stats`
+`on_check` (pass / fail) · `change_stats` · `effects` (a list, e.g. `[{give_item: Royal Pass}, {change_variable: {reputation: 1}}]`)
+
+**Conditions** (`enabled_if`): `{all: [...]}` · `{any: [...]}` · `{not: ...}` · `{variable: x, op: gte, value: 2}` ·
+`{stat: s, op: gte, value: 60}` · `{resource: coins, op: gte, value: 20}` · `{has_item: X}` · `{visited: L}` ·
+`{at_location: L}` · `{npc_removed: N}` · `{event_done: E}` · `{event_succeeded: E}` · `{event_failed: E}` ·
+`{item_collected: X}` · `{action_done: A}` · `{outcome_tag: t}` · `{mission: m}`, or the shorthand `{variable: value}`.
+
+**Effects:** `set_variable` · `change_variable` · `set_stat` · `change_stat` · `give_item` · `take_item` ·
+`change_coins` · `change_health` · `remove_npc` · `reveal_npc` · `reveal_item` · `reveal_location` ·
+`unlock_location` · `move_to` · `send_to` · `start_event` · `complete_mission` · `end_story`
 """
 
 def _record(kind: str, name: str):
@@ -254,6 +285,7 @@ def validate_entity_actions(kind: str, actions) -> list[str]:
     items = {entry.get("name") for entry in world.get("objects") or []}
     events = set(world.get("events") or {})
     specs = world.get("variables") or {}
+    refs = _references()
     errors = []
     for index, action in enumerate(actions, start=1):
         label = f"Action {index}"
@@ -266,8 +298,7 @@ def validate_entity_actions(kind: str, actions) -> list[str]:
         unknown = sorted(set(action) - ACTION_FIELDS)
         if unknown:
             errors.append(f"{label}: unknown field(s) {', '.join(unknown)}.")
-        if action.get("repeat") not in (None, *REPEAT_RULES):
-            errors.append(f"{label}: `repeat` must be one of {', '.join(REPEAT_RULES)}.")
+        errors.extend(repetition_errors(action.get("repeat"), action.get("retry_on_failure"), label))
         if action.get("triggers_event") and action["triggers_event"] not in events:
             errors.append(f"{label}: unknown event `{action['triggers_event']}`.")
         if not isinstance(action.get("required_coins", 0), int) or action.get("required_coins", 0) < 0:
@@ -275,6 +306,7 @@ def validate_entity_actions(kind: str, actions) -> list[str]:
         for field in ("required_object", "collects_object"):
             if action.get(field) and action[field] not in items:
                 errors.append(f"{label}: unknown item `{action[field]}` in `{field}`.")
+        errors.extend(conditions.validate(action.get("enabled_if"), refs, where=f"{label}.enabled_if"))
         outcomes = action.get("outcomes") or []
         if not isinstance(outcomes, list) or (not outcomes and not action.get("triggers_event")):
             errors.append(f"{label}: needs a list of `outcomes` (or `triggers_event`).")
@@ -307,6 +339,7 @@ def validate_entity_actions(kind: str, actions) -> list[str]:
             if isinstance(remove, str) and remove not in npcs:
                 errors.append(f"{where}: unknown NPC `{remove}` in `remove_npc`.")
             errors.extend(validate_changes(outcome.get("set_variables"), outcome.get("change_variables"), specs, where=where))
+            errors.extend(effects.validate(outcome.get("effects"), refs, where=f"{where}.effects"))
     stat_names = list((world.get("character_stats") or {}).get("stats") or {})
     errors.extend(engine._stat_usage_errors({"actions": [a for a in actions if isinstance(a, dict)]}, stat_names, kind))
     return errors
@@ -329,6 +362,102 @@ def save_entity_actions(kind: str, name: str, actions) -> str:
         config.clear_override()
         config.reload()
     return f"Saved {len(actions)} action(s) of **{name}** to `{path.name}`."
+
+POLICY_FIELDS = {"Events": EVENT_POLICY_FIELDS, "Items": ITEM_POLICY_FIELDS}
+POLICY_HELP = {
+    "Events": "# When the event may start (every way in follows these rules):\n"
+              "#   trigger: action | random   chance: 0.2 (random, per turn)   weight: 1 (random)\n"
+              "#   cooldown: 3 (turns)   max_occurrences: 2   repeat: once | per_location | per_visit | always\n",
+    "Items": "# unique: true makes the item exist once per story, at `location` (or where it fits best).\n",
+}
+
+def load_entity_policy(kind: str, name: str) -> dict:
+    """An event's start rules or an item's uniqueness, as stored (fields left out use defaults)."""
+    if kind not in POLICY_FIELDS:
+        raise AuthoringError("Only events and items have uniqueness and scheduling rules here "
+                             "(NPC uniqueness is the Unique NPC option).")
+    record = _record(kind, name)[2]
+    return {field: copy.deepcopy(record[field]) for field in POLICY_FIELDS[kind] if field in record}
+
+def load_entity_policy_yaml(kind: str, name: str) -> str:
+    if kind not in POLICY_FIELDS or not name:
+        return "# Events and items only.\n"
+    policy = load_entity_policy(kind, name)
+    return POLICY_HELP[kind] + (yaml.safe_dump(policy, sort_keys=False, allow_unicode=True) if policy else "{}\n")
+
+def save_entity_policy(kind: str, name: str, policy) -> dict:
+    """Validate and store an event's start rules or an item's uniqueness (a mapping
+    or YAML text). The whole policy replaces the stored one; nothing is written
+    when it is invalid."""
+    if kind not in POLICY_FIELDS:
+        raise AuthoringError("Only events and items have uniqueness and scheduling rules here.")
+    if isinstance(policy, str):
+        try:
+            policy = yaml.safe_load(policy) if policy.strip() else {}
+        except yaml.YAMLError as exc:
+            raise AuthoringError(f"The rules are not valid YAML: {exc}") from exc
+    policy = policy or {}
+    if not isinstance(policy, dict):
+        raise AuthoringError("The rules must be a mapping.")
+    unknown = sorted(set(policy) - set(POLICY_FIELDS[kind]))
+    errors = [f"Unknown field(s) {', '.join(unknown)}; use {', '.join(POLICY_FIELDS[kind])}."] if unknown else []
+    if kind == "Events":
+        errors += event_policy_errors(policy, f"Event '{name}'")
+    else:
+        errors += item_policy_errors(policy, f"Item '{name}'", set(config.get("world_definition.locations") or {}))
+    if errors:
+        raise AuthoringError("The rules are invalid:\n" + "\n".join(f"- {e}" for e in errors))
+    with CONFIG_LOCK:
+        path, data, record = _record(kind, name)
+        for field in POLICY_FIELDS[kind]:
+            record.pop(field, None)
+        record.update(policy)
+        _write_yaml(path, data)
+        config.clear_override()
+        config.reload()
+    return load_entity_policy(kind, name)
+
+def save_entity_policy_ui(kind: str, name: str, yaml_text: str):
+    if not name:
+        raise AuthoringError("Select an entry first.")
+    save_entity_policy(kind, name, yaml_text)
+    return load_entity_policy_yaml(kind, name), f"Saved the rules of **{name}**."
+
+REPEAT_DEFAULT = "default"  # the action leaves `repeat` out: action_rules.default_repeat decides
+
+def entity_action_choices(kind: str, name: str) -> list[tuple[str, int]]:
+    """(label, index) of an entry's actions, for picking one in the editor."""
+    if not name:
+        return []
+    return [(f"{index + 1}. {action.get('name', 'Action')}", index)
+            for index, action in enumerate(load_entity_actions(kind, name))]
+
+def load_action_repetition(kind: str, name: str, index) -> tuple[str, bool]:
+    """(repeat or "default", retry_on_failure) of one action of an entry."""
+    actions = load_entity_actions(kind, name) if name else []
+    if index is None or not 0 <= int(index) < len(actions):
+        return REPEAT_DEFAULT, False
+    action = actions[int(index)]
+    return action.get("repeat") or REPEAT_DEFAULT, bool(action.get("retry_on_failure", False))
+
+def save_action_repetition(kind: str, name: str, index, repeat: str, retry_on_failure: bool) -> str:
+    """Set how often one action is offered and whether a failure uses it up; the
+    whole action list is validated before anything is written."""
+    actions = load_entity_actions(kind, name) if name else []
+    if index is None or not 0 <= int(index) < len(actions):
+        raise AuthoringError("Select an action first.")
+    action = actions[int(index)]
+    if repeat in (None, "", REPEAT_DEFAULT):
+        action.pop("repeat", None)
+    else:
+        action["repeat"] = repeat
+    if retry_on_failure:
+        action["retry_on_failure"] = True
+    else:
+        action.pop("retry_on_failure", None)
+    save_entity_actions(kind, name, actions)
+    retry = "retried after a failure" if retry_on_failure else "used up by any attempt"
+    return f"Saved **{action.get('name', 'Action')}**: repeat `{action.get('repeat', REPEAT_DEFAULT)}`, {retry}."
 
 def save_entity_actions_ui(kind: str, name: str, yaml_text: str):
     if not name:
@@ -542,16 +671,16 @@ def validate_missions(missions) -> list[str]:
         "location": set(world.get("locations") or {}),
         "item": {entry.get("name") for entry in world.get("objects") or []},
         "event": set(world.get("events") or {}),
+        "event_succeeded": set(world.get("events") or {}),
         "npc_removed": {entry.get("name") for entry in world.get("characters") or []},
     }
-    specs = world.get("variables") or {}
     errors = []
     for mission_id, mission in missions.items():
         label = f"Mission `{mission_id}`"
         if not isinstance(mission, dict):
             errors.append(f"{label} must be a mapping.")
             continue
-        unknown = sorted(set(mission) - {"title", "description", "goal", "weight", "enabled_if"})
+        unknown = sorted(set(mission) - {"title", "description", "goal", "weight", "enabled_if", "rewards"})
         if unknown:
             errors.append(f"{label}: unknown field(s) {', '.join(unknown)}.")
         goal = mission.get("goal")
@@ -566,8 +695,11 @@ def validate_missions(missions) -> list[str]:
                 errors.append(f"{label}: `{goal[key]}` in `goal.{key}` does not exist.")
         if "coins" in goal and (not isinstance(goal["coins"], int) or goal["coins"] < 0):
             errors.append(f"{label}: `goal.coins` must be a whole number of 0 or more.")
-        errors += validate_conditions(goal.get("variables"), specs, where=f"{mission_id}.goal.variables")
-        errors += validate_conditions(mission.get("enabled_if"), specs, where=f"{mission_id}.enabled_if")
+        refs = conditions.References.from_world({**world, "missions": missions})
+        for key in ("variables", "condition"):
+            errors += conditions.validate(goal.get(key), refs, where=f"{mission_id}.goal.{key}")
+        errors += conditions.validate(mission.get("enabled_if"), refs, where=f"{mission_id}.enabled_if")
+        errors += effects.validate(mission.get("rewards"), refs, where=f"{mission_id}.rewards")
         weight = mission.get("weight", 1)
         if not isinstance(weight, Number) or isinstance(weight, bool) or weight < 0:
             errors.append(f"{label}: `weight` must be a number of 0 or more.")

@@ -4,6 +4,11 @@ The Compose stack runs the complete Gradio UI and REST API as separate services
 from the same image. They share persistent configuration, artifact, and model
 cache volumes.
 
+The studio is a client of this API: every tab works through the endpoints
+below (`ANE_API_URL`, set to `http://hamlet-ane-api:8004` by Compose), and
+whatever it does, other clients can do too. Without `ANE_API_URL`, `python
+app.py` serves the same API inside the studio's process.
+
 | URL | Purpose |
 |---|---|
 | `http://localhost:8003` | Adaptive Narrative Studio |
@@ -30,17 +35,173 @@ To build and run without Compose:
 docker build -t adaptive-narrative-enabler .
 docker run --rm -p 8004:8004 adaptive-narrative-enabler
 docker run --rm -p 8003:8003 \
-  -e ANE_UI_PORT=8003 adaptive-narrative-enabler python app.py
+  -e ANE_UI_PORT=8003 -e ANE_API_URL=http://<api-host>:8004 \
+  adaptive-narrative-enabler python app.py
 ```
+
+Leave out `ANE_API_URL` to run the studio with its own API inside.
+
+## How the API behaves
+
+### One stateful process
+
+The API keeps games and recent work in its memory, so it runs as **one
+process with one worker** (Compose does this). A second worker would not see
+the first one's games, and a restart forgets everything that lives in memory:
+
+| In memory (lost on restart) | On disk (kept) |
+| --- | --- |
+| Play sessions: the newest `max_web_sessions` (100); beyond that the oldest is dropped | Configuration: `config/*.yaml` and the app parameters `config/ui_settings.yml` |
+| Recent runs that can be exported (the latest 20) | Player profiles' persistent variables and the learning memory (`ANE_SAVE_DIR`) |
+| Background jobs (the latest 100) | The records database and engine model files (`ANE_RECORDS_DIR`) |
+| Download links `/v1/artifacts/{id}` (the files stay in `ANE_ARTIFACT_DIR`, the links do not) | Generated configurations, engine models and exports (`ANE_ARTIFACT_DIR`) |
+| An uploaded configuration (`POST /v1/config/upload`), until `POST /v1/config/reset` or a restart | |
+
+The studio (`app.py`) is a client of this API. With `ANE_API_URL` it uses the
+API service, and its games, runs and jobs are the API's. Without
+`ANE_API_URL` it serves the API inside its own process, which then holds that
+state.
+
+### Writes: checked first, then saved whole
+
+- **Shape and ranges.** A request with a missing field, a wrong type, or a
+  value out of range (for example `candidate_count: 401`) is refused with
+  `422`. Its `detail` is a list of `{loc, msg}`.
+- **Content.** A well-formed request that does not fit the world is refused
+  with `400` and a message listing every problem, and nothing is written.
+  Examples: an unknown location or event, a broken condition, invalid YAML, an
+  unknown app parameter, or a run above the work limit.
+- **Atomic.** Files are replaced in one step (a temporary file, then a
+  rename) under one lock. Concurrent writes do not interleave, and an
+  interrupted write leaves the previous file.
+- **Immediate.** After a save the configuration is reloaded, and new
+  simulations and games use it at once. App parameters
+  (`PUT /v1/app-settings`) apply when the API and the studio restart.
+
+### Status codes
+
+| Code | When |
+| --- | --- |
+| `200` | Done; the body is the result |
+| `202` | A job was queued (`POST /v1/jobs/...`); poll `GET /v1/jobs/{id}` |
+| `400` | Refused content (see above), a file of the wrong type, an engine file that cannot be loaded, a choice that is not on offer, a deterministic run without a seed |
+| `404` | Unknown entry, document, action index, play session, job, artifact, or recorded run, world, engine or story (also when playing, continuing or retraining it, before any work starts). While no records database exists, the records endpoints answer `404` ("No records yet") |
+| `413` | An upload above its limit: configuration 2 MB (`max_config_upload_bytes`), engine 20 MB (`max_engine_upload_bytes`), model parameters 100 KB |
+| `422` | The request's shape, types or ranges |
+
+Errors are JSON: `{"detail": "..."}` (or the list of `422`).
+
+### Runs: limits, work, and waiting
+
+1. **Maximums.** One run takes up to 400 storytellers
+   (`candidate_count`), 1000 `generations`, 400 `simulation_steps`, and 10
+   `episodes`; above that is `422`.
+2. **Studio limits.** A run is then held to the app parameters
+   `candidate_limit`, `generation_limit`, and `simulation_step_limit`
+   (by default the maximums). A request above a lowered limit runs at the
+   limit; it is not refused.
+3. **Work.** Storytellers × generations × story length × stories per
+   storyteller must stay within `max_simulation_work` (60,000 simulated
+   turns). With `evolution.full_length_stories`, a story counts as at least
+   100 turns (`narrative_end.max_actions`). A run above this is refused with
+   `400` before anything runs.
+4. **Reproducible.** `deterministic: true` uses the seed of the settings; the
+   same configuration and seed give the same evolution.
+5. **Waiting.** `POST /v1/simulations` and the records' `play`, `continue` and
+   `retrain` answer when the work is done, which can take minutes, so give
+   the client a long timeout. The job endpoints answer at once (`202`) and
+   report progress per generation. Jobs run one at a time in the order they
+   arrive; synchronous runs do not wait for them.
+
+### Play
+
+- A game is a session (`session_id`). `POST /v1/sessions/{id}/actions` takes
+  one of the `actions` the last response offered; any other choice is refused
+  with `400`, and an unknown session is `404`.
+- `actions` are the storyteller's best options (`player_options.limit`, 8),
+  listed in the scene's order (`player_options.order: world`), not best first.
+- With the director (`director` in the configuration), the last
+  `finale_actions` turns are a finale, and a story that reaches the action
+  limit closes with an epilogue (its record's `end_kind` is `epilogue`) instead
+  of being cut off. Damage grows as the story escalates, so a player can die.
+- A finished story has `ended: true` and offers no more actions.
+- Real play saves persistent variables to its `profile` (`save_on` in the
+  story rules). Evaluated stories during evolution do not
+  (`simulate_with`).
+
+### Records: who asked
+
+When recording is on, every run, generation, engine, story, and turn is
+recorded. The origin is `studio` for requests with the header
+`X-ANE-Client: studio`, `api` for all other requests, and `terminal` for
+`main.py`. Recording is best effort: if the records folder is not usable,
+recording switches itself off and requests still succeed.
+
+### Files and browsers
+
+- Generated files are offered as download links (`*_download_url`,
+  `GET /v1/artifacts/{id}`), valid while the process runs.
+- Uploads are recognised by their extension (`.yaml`/`.yml`, `.zip`) and
+  read in chunks up to their limit.
+- CORS is off unless `ANE_CORS_ORIGINS` lists the allowed origins (comma
+  separated). It then allows `GET`, `PUT`, `POST`, `DELETE` and the headers
+  `Content-Type`, `Authorization`, and `X-ANE-Client`.
 
 ## Endpoint coverage
 
 Every write is validated before anything is saved. Invalid requests return
 `400` with the list of problems, and nothing is written.
 
+Requests with the header `X-ANE-Client: studio` are recorded with the origin
+`studio` (the studio sends it); all others with the origin `api`.
+
+**Studio services** (what the studio is built on; any client can use them)
+- `GET /v1/reference`: what an authoring UI needs: `entity_kinds`,
+  `common_tags`, `action_reference`, `repeat_rules` and `repeat_default`,
+  mission `goal_keys`, `rule_choices` and `rule_fields` (the story-rule form),
+  `player_stat_choices`, the editable `documents`, and the `defaults` of a new
+  run (`episodes_per_genome`, `warm_start`, `profile`).
+- `GET|PUT /v1/app-settings`: the studio's app parameters
+  (`config/ui_settings.yml`: limits, defaults, queue, launch) with their
+  `defaults`. A `PUT` (`{"settings": {...}}`) changes the parameters it names,
+  validates all of them, and rejects unknown ones. They apply after a restart.
+- `GET /v1/documents` lists the configuration documents edited as YAML text
+  with their comments kept: `missions`, `messages`, `variables`, `stats`, and
+  `stored_values` (a player profile's values, `?profile=`).
+  `GET /v1/documents/{name}` returns `{"name", "yaml"}`;
+  `PUT /v1/documents/{name}` with `{"yaml": "..."}` validates and saves it and
+  returns the saved text and a message.
+- `POST /v1/variables/reset/yaml?profile=` starts a profile over and returns its
+  `stored_values` document.
+- `GET|PUT /v1/entities/{kind}/{name}/actions/yaml`: the entry's actions as YAML
+  text, validated like `.../actions`.
+- `GET /v1/entities/{kind}/{name}/policy/yaml` and
+  `PUT /v1/entities/{Events|Items}/{name}/policy/yaml`: an event's start rules or
+  an item's uniqueness as YAML text, validated like `.../policy`.
+- `GET|PUT /v1/entities/{kind}/{name}/actions/{index}/repetition`: how often
+  action number `index` (from 0) is offered (`repeat`: `default`, `once`,
+  `per_visit`, `always`) and whether a failure uses it up
+  (`retry_on_failure`). The whole action list is validated before it is
+  written; an unknown index is `404`.
+- `GET /v1/entities/{kind}?fields=names` returns only the names.
+
+**Jobs** (long work with progress)
+- `POST /v1/jobs/simulations` (body as `POST /v1/simulations`),
+  `POST /v1/jobs/engines/{id}/continue` and
+  `POST /v1/jobs/engines/{id}/retrain` (bodies as the records endpoints) start
+  the work in the background and return `202` with the job.
+- `GET /v1/jobs/{id}`: `status` (`queued`, `running`, `finished`, `failed`),
+  `progress` (`generation`, `total`, `best`, `mean`, `validation`, `improved`),
+  and, when finished, `result` (what the synchronous endpoint returns: the
+  playable game) or `error`. `GET /v1/jobs` lists the latest jobs without their
+  results. Jobs run one at a time in the order they arrive; the latest 100 are
+  kept (in memory).
+
 **Configuration**
 - `GET /v1/config` returns the complete merged active configuration.
-- `POST /v1/config/upload` validates and activates a combined YAML upload;
+- `POST /v1/config/upload` validates and activates a combined YAML upload
+  (every section, plus every condition and effect list of its world; a
+  rejected upload leaves the active configuration unchanged);
   `POST /v1/config/reset` restores the built-in file configuration.
 - `GET|PUT /v1/settings`: basic simulation settings. `max_health` caps
   healing; omit it on `PUT` to keep the stored value.
@@ -68,19 +229,55 @@ Every write is validated before anything is saved. Invalid requests return
   when omitted on `PUT`:
   - `unique`, `encounter_event` (send `""` to remove it), and
     `encounter_repeat`: NPCs only.
-  - `enabled_if`: locations, NPCs, and items (send `{}` to remove it).
+  - `enabled_if`: locations, NPCs, items, and events (send `{}` to remove it).
+    Any condition: the variable shorthand or a tree with `all` / `any` / `not`
+    (see the README, Conditions and effects).
+  - `start_eligible` and `start_weight` (above 0): locations only. Stories
+    start at the eligible locations (see the README, Starting locations).
   - `title`: events.
+- `GET|PUT /v1/entities/{Events|Items}/{name}/policy`: an event's start rules
+  (`trigger`: action or random, `chance`, `weight`, `cooldown`,
+  `max_occurrences`, `repeat`: once, per_location, per_visit or always) or an
+  item's uniqueness (`unique`, `location`). A `PUT` replaces the whole policy,
+  fields left out use their defaults, and an invalid policy writes nothing.
 - `GET|PUT /v1/entities/{kind}/{name}/actions`: the entry's actions and
   outcomes as stored. This covers `repeat`, `exclusive_group`,
-  `triggers_event`, requirements, and outcome effects, including `send_to`,
-  `remove_npc`, `set_variables`, and `change_variables`. Unknown fields,
-  unknown events, locations, NPCs, or items, invalid `repeat` values, and
-  wrongly typed variable changes are rejected.
+  `triggers_event`, `enabled_if` (a condition), `retry_on_failure` (a failed
+  attempt does not use a `once` or `per_visit` action up), requirements, and outcome
+  fields, including `send_to`, `remove_npc`, `set_variables`,
+  `change_variables`, and `effects` (an effect list). Unknown fields, unknown
+  events, locations, NPCs, or items, invalid `repeat` values, invalid
+  conditions, and invalid effects (wrong types, read-only or undefined
+  targets) are rejected, and nothing is written.
 - `GET|PUT /v1/missions`: missions (`title`, `description`, `goal`, `weight`,
-  `enabled_if`). Goal keys and every referenced location, item, event, NPC,
-  and variable are checked.
+  `enabled_if`, `rewards`). Goal keys (including `event_succeeded`, which needs
+  the event to be resolved by a successful action, and `condition`, any
+  condition tree), the rewards' effect list, and every referenced location, item, event,
+  NPC, stat, and variable are checked.
 - `GET|PUT /v1/messages`: story messages, with defaults and allowed
   placeholders.
+
+**Records and saved engines**
+- Earlier files (engine models, exports, older bundles, story configurations)
+  are brought into the records with `python main.py --import-artifacts
+  [FOLDER]` (see the README, Records database); they then appear here with the
+  origin `import`, their rebuilt runs and a preview story.
+- `GET /v1/records`: the records folder and whether recording is on.
+- `GET /v1/records/runs` and `GET /v1/records/runs/{id}`: runs with every
+  setting, every generation, their engines, stories, and files.
+- `GET /v1/records/worlds` and `GET /v1/records/worlds/{id}` (`?format=yaml`:
+  a combined configuration to upload again).
+- `GET /v1/records/engines` (`run_id`, `source`), `GET /v1/records/engines/{id}`,
+  and `GET /v1/records/engines/{id}/model` (the engine model file).
+- `POST /v1/records/engines/{id}/play`, `/continue` (`generations`: continue the
+  training exactly), and `/retrain` (`candidate_count`, `generations`,
+  `simulation_steps`, `episodes`, `deterministic`) start a game, like a
+  simulation, and are recorded.
+- `GET /v1/records/stories` (`run_id`, `engine_id`, `kind`, `origin`,
+  `session_id`) and `GET /v1/records/stories/{id}` (with every turn).
+- Simulation and load responses carry `engine_id`; `engine_download_url` is the
+  engine model file, which `POST /v1/engines/load` accepts. `POST /v1/exports`
+  takes `source: engine` with `engine_id`.
 
 **Character stats**
 - `GET|PUT /v1/stats`: the stat definitions (`stats`, `allocation`, `mode`,
@@ -104,7 +301,15 @@ Every write is validated before anything is saved. Invalid requests return
 - `POST /v1/simulations` runs the evolutionary AI and begins a playable
   session with the best storyteller. `episodes` sets the stories per
   storyteller per generation, and `warm_start` continues from the learning
-  memory. The response's `learning` holds `history` (per generation: `best`,
+  memory. A run takes up to 400 `candidate_count` storytellers, 1000
+  `generations`, and 400 `simulation_steps` (the same maximums apply to the
+  jobs, `continue`, and `retrain`); the total work is also capped by the app
+  parameter `max_simulation_work`. `simulation_steps` is the length of an evaluated story;
+  with `evolution.full_length_stories` every story is played to its end, and
+  the work limit counts whole stories. Storytellers are evaluated on the same
+  spread of start × mission situations (`evolution.stratify_episodes`) and
+  scored as mean minus a share of their spread (`evolution.score_aggregate`).
+  The response's `learning` holds `history` (per generation: `best`,
   `mean`, `worst`, `spread`, `diversity`, `mutation_step`, `validation`),
   `learned_traits`, `best_genome`, `improvement`, `generations_run`,
   `early_stopped`, and `warm_started_from_memory`. `profile` chooses the
@@ -119,11 +324,15 @@ Every write is validated before anything is saved. Invalid requests return
   runs, and simulation responses carry their `run_id`.
 - `GET /v1/learning` returns the storytellers the AI remembers from earlier
   runs; `DELETE /v1/learning` forgets them.
-- `POST /v1/engines/load?profile=&stats_mode=` loads a prior YAML or ZIP engine
-  and begins a session without evolving again.
+- `POST /v1/engines/load?profile=&stats_mode=&stats=` loads an engine model
+  (`.ane.zip`), an older engine ZIP, or a configuration YAML (form field
+  `file`) and begins a session without evolving again. `parameters` (optional
+  form field) is a model-parameters YAML for a configuration without
+  `generated_run.genome`; `stats` is the player's own points as a JSON object
+  (overrides `stats_mode`).
 - `GET /v1/sessions/{id}` and `POST /v1/sessions/{id}/actions` return the
   scene (Markdown), the available `actions`, and the last turn. They also give
-  a structured state: `location`, `health`, `max_health`, `coins`, `power`,
+  a structured state: `location`, `start_location`, `health`, `max_health`, `coins`, `power`,
   `inventory`, `mission`, `mission_status`, `won`, `event`, `ended`,
   `end_reason`, `profile`, `variables`, `stats` (1-100 values with item bonuses),
   `stat_points`, and `last_check` (`stat`, `roll`, `target`, `passed`, `step`). A won story has `ended: true`

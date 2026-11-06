@@ -30,6 +30,7 @@ from utils.config_loader import config
 from utils.tag_similarity import export_tag_vectors
 
 from .errors import AuthoringError
+from . import records
 from .sessions import RUNS, SESSIONS, SESSION_LOCK
 from .store import PROJECT_ROOT
 
@@ -39,35 +40,22 @@ RUNTIME_CODE = [
     "utils/tag_similarity.py",
     *(f"narrative_runtime/{path.name}" for path in sorted((PROJECT_ROOT / "narrative_runtime").glob("*.py"))),
 ]
-# Tags the engine adds by itself, besides those written in the configuration.
-ENGINE_TAGS = ["failure", "unexpected", "event", "conversation", "social", "neutral", "success"]
-SOURCES = ("run", "memory", "game")
+# The tag collector lives with the engine model (it saves the same vectors).
+from core_engine.model import ENGINE_TAGS, world_tags  # noqa: E402,F401
+SOURCES = ("run", "memory", "game", "engine")
 
 
-def _collect_tags(value, key=""):
-    tags = set()
-    if isinstance(value, dict):
-        for child_key, child in value.items():
-            tags |= _collect_tags(child, str(child_key))
-    elif isinstance(value, list):
-        if key == "tags" or key.endswith("tags") or key.endswith("_patterns"):
-            tags |= {str(item) for item in value if isinstance(item, (str, int, float))}
-        for item in value:
-            if isinstance(item, (dict, list)):
-                tags |= _collect_tags(item, key)
-    return tags
-
-
-def world_tags(cfg: dict) -> set:
-    """Every tag the world can produce: written tags, generated clue tags, engine tags."""
-    tags = _collect_tags(cfg) | set(ENGINE_TAGS)
-    variants = int((cfg.get("fitness") or {}).get("setup_payoff", {}).get("clue_variants", 3))
-    tags |= {f"{kind}_{index}" for kind in ("setup", "payoff") for index in range(1, variants + 1)}
-    return {tag for tag in tags if tag}
-
-
-def _choose_storyteller(source, run_id=None, generation=None, token=None):
+def _choose_storyteller(source, run_id=None, generation=None, token=None, engine_id=None):
     """(genome, score, description, learning) of the storyteller to export."""
+    if source == "engine":
+        if not engine_id:
+            raise AuthoringError("Give the `engine_id` of a recorded engine to export.")
+        try:
+            model = records.load_engine(engine_id)
+        except (LookupError, ValueError) as exc:
+            raise AuthoringError(str(exc)) from exc
+        model.activate()  # its own world and tuning, not whatever is active
+        return model.genome, model.score, f"recorded engine {engine_id}", model.learning
     if source == "run":
         run = RUNS.get(run_id) if run_id else (RUNS[next(reversed(RUNS))] if RUNS else None)
         if run is None:
@@ -117,7 +105,7 @@ import sys; sys.path.insert(0, "path/to/{name}")
 from narrative_runtime import NarrativeEngine
 
 engine = NarrativeEngine("path/to/{name}")
-game = engine.new_game(profile="player-1", stats_mode="random")   # or stats={{...}} points
+game = engine.new_game(profile="player-1", stats_mode="random")   # or stats={{...}} points, start="Harbor"
 view = game.view()        # location, description, npcs, items, actions, health, mission, stats, ...
 while not view["ended"]:
     view = game.choose(view["actions"][0])   # by name or index; view["turn"] is the story text
@@ -132,7 +120,7 @@ process), then:
 | Request | Body | Returns |
 | --- | --- | --- |
 | `GET /engine` | | engine information |
-| `POST /games` | `{{"profile": "p1", "stats_mode": "random"}}` | the first view, with `game_id` |
+| `POST /games` | `{{"profile": "p1", "stats_mode": "random"}}` (optional `"start"`: one of `starting_locations`) | the first view, with `game_id` |
 | `GET /games/<id>` | | the current view |
 | `POST /games/<id>/choose` | `{{"action": "Explore harbor"}}` or `{{"action": 0}}` | the turn text and the new view |
 | `GET /games/<id>/transcript` | | the story so far |
@@ -172,7 +160,8 @@ http.request("http://127.0.0.1:8765/games/" + game_id + "/choose",
 
 
 def export_engine(source="run", run_id=None, generation=None, token=None, include_memory=True, name=None,
-                  genome=None, score=None, learning=None, description=None) -> dict:
+                  genome=None, score=None, learning=None, description=None, engine_id=None, checkpoint=None,
+                  memory=None) -> dict:
     """Build the offline engine ZIP; returns {"path", "manifest"}.
 
     The storyteller comes from ``source``: "run" (``run_id``, default the latest
@@ -182,7 +171,13 @@ def export_engine(source="run", run_id=None, generation=None, token=None, includ
     if genome is not None:
         description = description or "evolved storyteller"
     else:
-        genome, score, description, learning = _choose_storyteller(source, run_id, generation, token)
+        genome, score, description, learning = _choose_storyteller(source, run_id, generation, token, engine_id)
+        if source == "engine":
+            model = records.load_engine(engine_id)
+            checkpoint, memory = model.checkpoint, model.memory
+        elif source == "run" and generation in (None, ""):
+            run = RUNS.get(run_id) if run_id else (RUNS[next(reversed(RUNS))] if RUNS else {})
+            checkpoint, engine_id = run.get("checkpoint"), run.get("engine_id")
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
     name = re.sub(r"[^A-Za-z0-9_.-]+", "-", name or f"narrative-engine-{stamp}").strip("-") or "narrative-engine"
     active = config.as_dict()
@@ -191,6 +186,8 @@ def export_engine(source="run", run_id=None, generation=None, token=None, includ
         "format": FORMAT,
         "version": 1,
         "name": name,
+        "engine_id": engine_id,
+        "resumable": bool(checkpoint),
         "created": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "source": description,
         "score": score,
@@ -220,8 +217,11 @@ def export_engine(source="run", run_id=None, generation=None, token=None, includ
         (root / "data").mkdir()
         (root / "data" / "tag_vectors.json").write_text(json.dumps(export_tag_vectors(world_tags(active))), encoding="utf-8")
         (root / "saves").mkdir()
+        if checkpoint:
+            # The training state: `python run.py evolve --resume` continues it exactly.
+            (root / "data" / "training.json").write_text(json.dumps(checkpoint), encoding="utf-8")
         if include_memory:
-            entries = LearningMemory().load()
+            entries = memory if memory is not None else LearningMemory().load()
             if entries:
                 (root / "saves" / "evolution_memory.json").write_text(
                     json.dumps({"version": 1, "hall_of_fame": entries}, indent=2), encoding="utf-8")
@@ -239,4 +239,6 @@ def export_engine(source="run", run_id=None, generation=None, token=None, includ
                     zipped.write(path, path.relative_to(staging))
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+    records.record_artifact("offline_engine", archive, run_id=run_id if source == "run" else None,
+                            engine_id=engine_id, keep_copy=True)
     return {"path": str(archive), "manifest": manifest}
