@@ -2,6 +2,8 @@
 from utils.config_loader import config
 from utils.tag_similarity import semantic_tag_similarity
 
+from . import rules
+
 
 def _flatten_seen_tags(tags_seen):
     flattened = []
@@ -60,6 +62,68 @@ def _band_score(value, cfg, default_bonus=10):
         return bonus
     return max(0, bonus - abs(value - target) * cfg.get("penalty_per_unit", 1))
 
+def _thirds(values):
+    """The first and the last third of a sequence (at least one element each)."""
+    size = max(1, len(values) // 3)
+    return values[:size], values[-size:]
+
+
+def _share(values):
+    return sum(values) / len(values) if values else 0.0
+
+
+def _engagement(state, cfg):
+    """What a player feels turn by turn, from the story's turn log.
+
+    A turn is *new* when it brings a place, an event, a person, an outcome not told
+    before, a skill check, or a change of health or coins; otherwise it is filler.
+    A *loop* is an action repeated with the same outcome within ``loop_window``
+    turns. *Tension* is damage, an event under way or a failed check. A story is
+    better when few turns are filler, it does not loop, the new content does not
+    fade toward the end, and tension rises (escalation)."""
+    log = getattr(state, "turn_log", None) or []
+    if not cfg or not log:
+        return {}
+    places, events, people, outcomes = {log[0]["location_before"]}, set(), set(), set()
+    new_turns, tension, loops = [], [], 0
+    window = max(1, int(cfg.get("loop_window", 6)))
+    previous = None
+    for index, turn in enumerate(log):
+        new = False
+        if turn["location_after"] not in places:
+            places.add(turn["location_after"])
+            new = True
+        for event in (turn.get("event"), turn.get("event_after")):
+            if event and event not in events:
+                events.add(event)
+                new = True
+        if turn.get("source") in ("npc", "conversation") and turn.get("owner") and turn["owner"] not in people:
+            people.add(turn["owner"])
+            new = True
+        if turn.get("outcome") and turn["outcome"] not in outcomes:
+            outcomes.add(turn["outcome"])
+            new = True
+        hurt = previous is not None and turn["health"] < previous["health"]
+        if turn.get("check") or (previous is not None and (hurt or turn["coins"] != previous["coins"])):
+            new = True
+        new_turns.append(new)
+        tension.append(bool(hurt or turn.get("event_after") or (turn.get("check") and not turn.get("succeeded"))))
+        if any(earlier["action"] == turn["action"] and earlier.get("outcome") == turn.get("outcome")
+               for earlier in log[max(0, index - window):index]):
+            loops += 1
+        previous = turn
+    terms = {
+        "filler": -(1.0 - _share(new_turns)) * float(cfg.get("filler_penalty", 0)),
+        "loops": -loops * float(cfg.get("loop_penalty", 0)),
+    }
+    if len(log) >= 6:
+        early_new, late_new = _thirds(new_turns)
+        early_tension, late_tension = _thirds(tension)
+        terms["novelty_fade"] = -max(0.0, _share(early_new) - _share(late_new)) * float(cfg.get("novelty_fade_penalty", 0))
+        terms["escalation"] = max(0.0, _share(late_tension) - _share(early_tension)) * float(cfg.get("escalation_bonus", 0))
+    return terms
+
+
 def _fitness_breakdown(state):
     fitness_cfg = config.get("fitness", {})
     base_cfg = fitness_cfg.get("base", {})
@@ -103,26 +167,24 @@ def _fitness_breakdown(state):
 
     setup_cfg = fitness_cfg.get("setup_payoff", {})
     pair_bonus = 0.0
-    for s_tag, s_idx in state.setup_indices.items():
-        p_tag = s_tag.replace("setup_", "payoff_")
-        if p_tag in state.payoff_indices:
-            p_idx = state.payoff_indices[p_tag]
-            gap = p_idx - s_idx
-            min_gap = total_steps * setup_cfg.get("min_gap_fraction", 1 / 3)
-            if gap > min_gap:
-                pair_bonus += setup_cfg.get("pair_bonus", 20)
-                pair_bonus += gap * setup_cfg.get("gap_step_bonus", 2)
-                if p_idx >= total_steps * 0.66:
-                    pair_bonus += setup_cfg.get("late_payoff_bonus", 0)
-            else:
-                pair_bonus += setup_cfg.get("short_gap_bonus", 5)
+    # Clues and payoffs are matched as the storyteller matches them (story_rules.clue_matching).
+    pairs, open_setups, unmatched_payoffs = rules.clue_pairs(
+        state.setup_indices, state.payoff_indices, rules.settings()["clue_matching"],
+    )
+    for _, s_idx, _, p_idx in pairs:
+        gap = p_idx - s_idx
+        min_gap = total_steps * setup_cfg.get("min_gap_fraction", 1 / 3)
+        if gap > min_gap:
+            pair_bonus += setup_cfg.get("pair_bonus", 20)
+            pair_bonus += gap * setup_cfg.get("gap_step_bonus", 2)
+            if p_idx >= total_steps * 0.66:
+                pair_bonus += setup_cfg.get("late_payoff_bonus", 0)
+        else:
+            pair_bonus += setup_cfg.get("short_gap_bonus", 5)
 
-    matched_pairs = min(len(state.setup_indices), len(state.payoff_indices))
-    pair_bonus += matched_pairs * setup_cfg.get("target_count_bonus", 0)
-    unmatched_setups = max(0, len(state.setup_indices) - matched_pairs)
-    unmatched_payoffs = max(0, len(state.payoff_indices) - matched_pairs)
-    pair_bonus -= unmatched_setups * setup_cfg.get("unmatched_setup_penalty", 0)
-    pair_bonus -= unmatched_payoffs * setup_cfg.get("unmatched_payoff_penalty", 0)
+    pair_bonus += len(pairs) * setup_cfg.get("target_count_bonus", 0)
+    pair_bonus -= len(open_setups) * setup_cfg.get("unmatched_setup_penalty", 0)
+    pair_bonus -= len(unmatched_payoffs) * setup_cfg.get("unmatched_payoff_penalty", 0)
     breakdown["setup_payoff"] = pair_bonus
 
     all_tags = _flatten_seen_tags(state.tags_seen)
@@ -241,9 +303,48 @@ def _fitness_breakdown(state):
             end_score -= base_cfg.get("stall_penalty", 0)
         if end_kind == "dungeon":
             end_score -= base_cfg.get("dungeon_penalty", 0)
-        if end_kind == "action_limit":
+        if end_kind == "action_limit":  # cut off without an ending (the director ends with an epilogue)
             end_score += base_cfg.get("max_action_completion_bonus", 0)
+            end_score -= base_cfg.get("action_limit_penalty", 0)
+    if not state.ended:
+        # Cut by the evaluation length before it ended: its ending was never judged.
+        end_score -= base_cfg.get("unfinished_penalty", 0)
     breakdown["ending"] = end_score
+
+    # Repetition: the same action again and again, and A -> B -> A travel loops.
+    repetition_cfg = fitness_cfg.get("repetition", {})
+    free_uses = int(repetition_cfg.get("free_uses", 2))
+    repeats = sum(max(0, count - free_uses) for key, count in choice_counts.items() if key[0] == "action")
+    loops = sum(1 for i in range(len(state.path) - 2) if state.path[i] == state.path[i + 2])
+    breakdown["repetition"] = -(
+        repeats * repetition_cfg.get("action_repeat_penalty", 0) + loops * repetition_cfg.get("backtrack_penalty", 0)
+    )
+
+    # Pacing: a mission won before the story had room to unfold.
+    pacing_cfg = fitness_cfg.get("pacing", {})
+    breakdown["pacing"] = 0.0
+    if getattr(state, "won", False):
+        min_steps = base_cfg.get("mission_win_min_steps", 20)
+        breakdown["pacing"] = -max(0, min_steps - total_steps) * pacing_cfg.get("early_win_penalty_per_step", 0)
+
+    breakdown.update(_engagement(state, fitness_cfg.get("engagement", {})))
+
+    # Terms that grow with every step: a longer story is not better merely for being
+    # longer (story_length judges length). mode "rate" counts them per turn (x the
+    # target length; a story shorter than floor_steps counts as that long), mode "cap"
+    # only scales longer stories down to the target length.
+    normalization = fitness_cfg.get("length_normalization", {})
+    if normalization.get("enabled", False):
+        length_cfg = fitness_cfg.get("story_length", {})
+        target = length_cfg.get("target", 35)
+        if normalization.get("mode", "cap") == "rate":
+            floor = max(1, int(normalization.get("floor_steps", length_cfg.get("min", 20))))
+            scale = target / max(total_steps, floor)
+        else:
+            scale = min(1.0, target / total_steps)
+        for term in normalization.get("terms", []):
+            if term in breakdown:
+                breakdown[term] *= scale
 
     return breakdown
 

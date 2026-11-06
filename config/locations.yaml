@@ -1,6 +1,16 @@
+# Locations of the world.
+#
+# Starting locations: a story starts at one of the locations with
+#     start_eligible: true      # default false: a story never starts here
+#     start_weight: 1.0         # relative chance among the eligible locations
+# drawn at random among those that are enabled and from which the story's
+# mission can be reached; the player's recent starts are drawn less often
+# (start_selection in hyperparameters.yaml).
 world_definition:
   locations:
     Harbor:
+      start_eligible: true
+      start_weight: 1.5   # the classic opening, drawn more often than the other starts
       tags:
       - urban
       - maritime
@@ -104,6 +114,8 @@ world_definition:
           - setup_clue
           reveal_location: Palace
     Market:
+      start_eligible: true
+      start_weight: 1.0
       tags:
       - urban
       - trade
@@ -208,15 +220,19 @@ world_definition:
       - The air inside is thick with incense and the sound of hushed whispers.
       actions:
       - name: Attempt to infiltrate
+        repeat: once            # once inside, there is nothing left to infiltrate...
+        retry_on_failure: true  # ...but a spotted attempt can be tried again
         outcomes:
         - desc: The traveler slips past the outer guards unnoticed.
           tags:
           - stealth
           - success
+          - payoff_clue         # the routes and patrols learned at the harbor pay off
           reveal_object: Heavy Shield
         - desc: A sentinel spots you and raises the alarm!
           tags:
           - threat
+          - failure             # told when the attempt fails
           health_change: -2
         - desc: Whispers of a prisoner in the Dungeon are heard.
           tags:
@@ -277,6 +293,8 @@ world_definition:
           tags:
           - neutral
     Tavern:
+      start_eligible: true
+      start_weight: 1.0
       tags:
       - urban
       - social
@@ -352,16 +370,20 @@ world_definition:
           - threat
           health_change: -2
       - name: Crack the main safe
+        repeat: once            # an opened safe stays open...
+        retry_on_failure: true  # ...but a jammed one can be tried again
         outcomes:
         - desc: You successfully open the safe! It contains the Crown Jewels.
           tags:
           - stealth
           - success
+          - payoff_clue         # the crown everyone whispered about
           reveal_object: Gold Coins
         - desc: The mechanism jams, sounding a silent alarm.
           tags:
           - threat
           - guards
+          - failure             # told when the attempt fails
           reveal_npc: Gate Guard
     Secret Garden:
       tags:
@@ -593,6 +615,8 @@ world_definition:
     Festival of Masks:
       # The masquerade turns away travelers with a bad name.
       enabled_if: {reputation: {gte: -2}}
+      start_eligible: true   # only while the enabled_if above admits the traveler
+      start_weight: 0.5
       tags: [urban, social, celebration, deception, district_docks]
       interact_prompts:
       - Join the midnight masquerade

@@ -1,9 +1,9 @@
 """Command line of an exported engine.
 
     python -m narrative_runtime info
-    python -m narrative_runtime play  [--profile NAME] [--stats random|balanced|defined] [--seed N]
+    python -m narrative_runtime play  [--profile NAME] [--stats random|balanced|defined] [--seed N] [--start LOCATION]
     python -m narrative_runtime serve [--host 127.0.0.1] [--port 8765]
-    python -m narrative_runtime evolve [--generations 5] [--pop-size 12] [--episodes 3]
+    python -m narrative_runtime evolve [--generations 5] [--pop-size 12] [--episodes 3] [--resume]
 """
 import argparse
 import json
@@ -12,7 +12,7 @@ from .engine import NarrativeEngine
 
 
 def play(engine, args):
-    game = engine.new_game(profile=args.profile, stats_mode=args.stats, seed=args.seed)
+    game = engine.new_game(profile=args.profile, stats_mode=args.stats, seed=args.seed, start=args.start)
     view = game.view()
     if view["mission"]:
         print(f"Mission: {view['mission']} - {view['mission_description'] or ''}")
@@ -43,6 +43,7 @@ def main(argv=None):
     play_cmd.add_argument("--profile")
     play_cmd.add_argument("--stats", choices=["random", "balanced", "defined"])
     play_cmd.add_argument("--seed", type=int)
+    play_cmd.add_argument("--start", help="starting location (default: drawn among the starting locations)")
     serve_cmd = commands.add_parser("serve")
     serve_cmd.add_argument("--host", default="127.0.0.1")
     serve_cmd.add_argument("--port", type=int, default=8765)
@@ -51,6 +52,8 @@ def main(argv=None):
     evolve_cmd.add_argument("--pop-size", type=int, default=12)
     evolve_cmd.add_argument("--episodes", type=int, default=3)
     evolve_cmd.add_argument("--seed", type=int)
+    evolve_cmd.add_argument("--resume", action="store_true",
+                            help="continue the saved training state exactly (data/training.json)")
     args = parser.parse_args(argv)
 
     engine = NarrativeEngine(args.root)
@@ -62,7 +65,7 @@ def main(argv=None):
         from .server import serve
         serve(engine, args.host, args.port)
     elif args.command == "evolve":
-        summary = engine.evolve(args.generations, args.pop_size, args.episodes, seed=args.seed,
+        summary = engine.evolve(args.generations, args.pop_size, args.episodes, seed=args.seed, resume=args.resume,
                                 progress=lambda g, total, s: print(f"Generation {g + 1}/{total}: benchmark {s.validation:.1f}"))
         print(f"New {summary['new_storyteller_score']:.1f} vs current {summary['current_storyteller_score']:.1f}: "
               + ("adopted the new storyteller." if summary["adopted"] else "kept the current storyteller."))

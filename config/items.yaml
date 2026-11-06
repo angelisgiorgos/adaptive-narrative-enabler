@@ -1,3 +1,10 @@
+# Items. A generic item (the default) is shown wherever its tags fit, so each
+# location can hold its own copy; the player holds at most one, and a used one
+# can be found again. A unique item exists once per story:
+#     unique: true
+#     location: Sewers      # where its one instance lies (default: the location
+#                           # its tags fit best); shown only there, gone from the
+#                           # world once collected, and gone for good once used.
 world_definition:
   objects:
   - name: Ancient Map
@@ -118,6 +125,10 @@ world_definition:
     stat_bonus: {persuasion: 10}  # leverage
     # Only exists once the thief has confessed who buys the stolen goods.
     enabled_if: {fence_exposed: true}
+    # One ledger in the whole story, lying in the Sewers: its tags alone would
+    # also fit the Bone Orchard and the Ghostline Station.
+    unique: true
+    location: Sewers
     collectible: true
     associated_tags: [underground, foul]
     descriptions:

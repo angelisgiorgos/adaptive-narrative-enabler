@@ -3,23 +3,38 @@ from collections import defaultdict
 from utils.config_loader import config
 from utils.tag_similarity import semantic_tag_similarity
 
+from .conditions import Condition, ConditionError, Conditional, goal_condition
+from .effects import EffectList
+
 # ============================
 # WORLD GRAPH / CHARACTERS
 # ============================
 
-class Character:
+class DialogueLine(Conditional):
+    """Something an NPC says when the player talks with them. The first line of
+    the NPC's ``dialogue`` whose ``enabled_if`` holds is said; its ``effects``
+    (effects.py) apply when it is said. ``text`` may list variants."""
+    def __init__(self, text, enabled_if=None, effects=None):
+        self.text = text
+        self.enabled_if = enabled_if
+        self.effects = EffectList.of(effects)
+
+
+class Character(Conditional):
     """An NPC. A unique NPC lives in a single location for the whole game;
     a generic NPC (e.g. a guard) may appear in every location it fits.
 
     ``encounter_event`` names an Event that starts by itself when the NPC is
     present in the scene (e.g. a bandit ambush), once per game, or on every
-    visit to a location when ``encounter_repeat`` is set."""
+    visit to a location when ``encounter_repeat`` is set. ``dialogue`` lists
+    DialogueLines chosen by condition when the player talks with the NPC."""
     def __init__(self, name, associated_tags, goals=None, 
                  descriptions=None, actions=None, 
                  known_locations=None, known_objects=None, unique=False,
-                 encounter_event=None, encounter_repeat=False, enabled_if=None):
+                 encounter_event=None, encounter_repeat=False, enabled_if=None, dialogue=None):
         self.name = name
-        self.enabled_if = enabled_if or None  # persistent-variable conditions
+        self.enabled_if = enabled_if  # a condition (conditions.py)
+        self.dialogue = list(dialogue or [])
         self.unique = bool(unique)
         self.encounter_event = encounter_event or None
         self.encounter_repeat = bool(encounter_repeat)
@@ -30,13 +45,22 @@ class Character:
         self.known_locations = known_locations or []
         self.known_objects = known_objects or []
 
-class Object:
+class Object(Conditional):
+    """An item definition.
+
+    A generic item (the default) is shown wherever it fits, so each location
+    can hold its own copy. A ``unique`` item exists once per story: GameState
+    gives it one ItemInstance, placed at ``location`` (or the location it fits
+    best), shown only where that instance lies, and gone for good once used.
+    """
     def __init__(self, name, associated_tags, interact_prompts=None, 
                  goals=None, descriptions=None, actions=None, collectible=False,
-                 enabled_if=None, stat_bonus=None):
+                 enabled_if=None, stat_bonus=None, unique=False, location=None):
         self.name = name
+        self.unique = bool(unique)
+        self.location = location or None  # where the unique item's instance is placed
         self.stat_bonus = dict(stat_bonus or {})  # stat -> bonus while the item is held
-        self.enabled_if = enabled_if or None
+        self.enabled_if = enabled_if
         self.associated_tags = set(associated_tags)
         self.interact_prompts = interact_prompts or []
         self.goals = goals or []
@@ -44,11 +68,39 @@ class Object:
         self.actions = actions or []
         self.collectible = collectible
 
-class Location:
-    def __init__(self, name, tags, interact_prompts=None, goals=None, 
-                 distant_descriptions=None, entered_descriptions=None, enabled_if=None):
+class ItemInstance:
+    """The one copy of a unique item in a story, apart from its definition.
+
+    ``state`` is where it is: ``placed`` (lying at ``location``), ``held`` (in
+    the inventory), ``used`` (consumed: gone for good) or ``unplaced`` (no
+    location fits; only an action or an effect can hand it over).
+    """
+    def __init__(self, item, location):
+        self.item = item
+        self.location = location
+        self.state = "placed" if location else "unplaced"
+
+    @property
+    def available(self):
+        """Whether it can still be collected or received (not held, not used)."""
+        return self.state in ("placed", "unplaced")
+
+    def __repr__(self):
+        return f"ItemInstance({self.item!r}, {self.state}" + (f" at {self.location!r})" if self.location else ")")
+
+
+class Location(Conditional):
+    """A place in the world.
+
+    ``start_eligible`` lets a story begin here; ``start_weight`` is its relative
+    chance among the eligible locations (see core_engine/starts.py)."""
+    def __init__(self, name, tags, interact_prompts=None, goals=None,
+                 distant_descriptions=None, entered_descriptions=None, enabled_if=None,
+                 start_eligible=False, start_weight=1.0):
         self.name = name
-        self.enabled_if = enabled_if or None
+        self.enabled_if = enabled_if
+        self.start_eligible = bool(start_eligible)
+        self.start_weight = float(start_weight)
         self.tags = set(tags)
         self.interact_prompts = interact_prompts or []
         self.goals = goals or []
@@ -66,30 +118,59 @@ class Location:
         self.connected.add(other.name)
 
 
-class Event:
+class Event(Conditional):
     """A self-contained situation entered by taking an action that triggers it.
 
     While an event is active its actions replace every location, NPC, item and
     travel action. NPCs and items never spawn inside an event. When the player
     picks one of its actions the event ends and the player is back at the
     location where it began, unless that action's outcome moved them elsewhere.
+
+    When it may start (GameState._event_blocked, enforced for every way in):
+      enabled_if       a condition that must hold
+      repeat           once (unique in the story), per_location, per_visit or always
+      max_occurrences  at most this many times per story (None: no limit)
+      cooldown         turns after it ended before it can start again
+    How it starts: ``trigger: action`` (something in the story starts it: a
+    trigger action, an NPC encounter, a chain or a start_event effect), or
+    ``trigger: random``, which may also start it by itself: each turn it can
+    start, it does with probability ``chance``; ``weight`` picks between random
+    events that hit in the same turn.
     """
-    def __init__(self, name, title=None, tags=None, descriptions=None, actions=None):
+    REPEAT = ("once", "per_location", "per_visit", "always")
+    TRIGGERS = ("action", "random")
+
+    def __init__(self, name, title=None, tags=None, descriptions=None, actions=None, enabled_if=None,
+                 trigger="action", chance=None, weight=1.0, cooldown=0, max_occurrences=None, repeat="always"):
         self.name = name
+        self.enabled_if = enabled_if
+        self.trigger = trigger or "action"
+        self.chance = chance
+        self.weight = float(weight)
+        self.cooldown = int(cooldown or 0)
+        self.max_occurrences = max_occurrences
+        self.repeat = repeat or "always"
+        if self.trigger not in self.TRIGGERS or self.repeat not in self.REPEAT:
+            raise ValueError(f"Event '{name}': trigger must be one of {', '.join(self.TRIGGERS)} "
+                             f"and repeat one of {', '.join(self.REPEAT)}.")
         self.title = title or name
         self.tags = set(tags or [])
         self.descriptions = descriptions or []
         self.actions = actions or []
 
 
-class Mission:
+class Mission(Conditional):
     """A goal the player must achieve to win. One mission is chosen per story.
 
-    Every condition in ``goal`` must hold for the mission to be complete.
+    Every condition in ``goal`` must hold for the mission to be complete. The
+    goal keys are shorthand for conditions (conditions.goal_condition), and
+    ``condition`` takes any condition tree. ``rewards`` (effects.py) apply
+    when the mission is completed.
     """
-    GOAL_KEYS = ("action", "location", "item", "event", "npc_removed", "outcome_tag", "coins", "variables")
+    GOAL_KEYS = ("action", "location", "item", "event", "event_succeeded", "npc_removed", "outcome_tag", "coins",
+                 "variables", "condition")
 
-    def __init__(self, name, goal, title=None, description="", weight=1.0, enabled_if=None):
+    def __init__(self, name, goal, title=None, description="", weight=1.0, enabled_if=None, rewards=None):
         unknown = sorted(set(goal or {}) - set(self.GOAL_KEYS))
         if not goal or unknown:
             raise ValueError(
@@ -98,10 +179,15 @@ class Mission:
             )
         self.name = name
         self.goal = dict(goal)
+        try:
+            self.goal_conditions = {key: Condition(goal_condition(key, value)) for key, value in self.goal.items()}
+        except ConditionError as exc:
+            raise ValueError(f"Mission '{name}': {exc}") from exc
         self.title = title or name
         self.description = description
         self.weight = float(weight)
-        self.enabled_if = enabled_if or None  # offered only when these conditions hold
+        self.enabled_if = enabled_if  # offered only when this condition holds
+        self.rewards = EffectList.of(rewards)
 
 
 class WorldGraph:
@@ -115,6 +201,25 @@ class WorldGraph:
 
     def add_location(self, loc):
         self.locations[loc.name] = loc
+
+    @property
+    def dynamic_conditions(self):
+        """Whether a location, NPC or item is switched on by more than persistent
+        variables (items held, places visited, ...), so that what is enabled can
+        change with every turn, not only when a variable changes."""
+        key = (Conditional.revision, len(self.locations), len(self.characters), len(self.objects))
+        cached = self.__dict__.get("_dynamic_conditions")
+        if cached is None or cached[0] != key:
+            dynamic = any(
+                entity.condition is not None and entity.condition.dynamic
+                for entity in (*self.locations.values(), *self.characters, *self.objects)
+            )
+            cached = self._dynamic_conditions = (key, dynamic)
+        return cached[1]
+
+    def start_locations(self):
+        """Locations a story may start at (``start_eligible``), in config order."""
+        return [loc for loc in self.locations.values() if loc.start_eligible]
 
     def add_character(self, char):
         self.characters.append(char)

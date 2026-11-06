@@ -5,15 +5,17 @@ Variables are defined under ``world_definition.variables`` (config/variables.yam
     thief_caught: {type: bool, default: false, description: ...}
     reputation:   {type: int, default: 0, min: -5, max: 5}
 
-Outcomes change them (``set_variables`` / ``change_variables``) and locations,
-NPCs, items and missions can depend on them with ``enabled_if``::
+Effects change them (``set_variable`` / ``change_variable``, or the outcome
+shorthand ``set_variables`` / ``change_variables``; see effects.py), and every
+``enabled_if`` can depend on them (see conditions.py), e.g. in shorthand::
 
     enabled_if:
       thief_caught: false          # equals
       reputation: {gte: 2}         # eq, ne, gt, gte, lt, lte, in, not_in
       playthroughs: {gte: 1}       # built-in: finished playthroughs
 
-Values are stored per player profile in a JSON file (``persistence.path``).
+Values are stored per player profile in a JSON file (``persistence.path``),
+with the profile's latest starting locations (``starts``, see starts.py).
 Only real play writes to it; simulations and evolution never do.
 """
 import copy
@@ -24,9 +26,11 @@ import threading
 
 from utils.config_loader import config
 
+from . import conditions
+from .conditions import BUILTIN_VARIABLES as BUILTINS, OPERATORS, References
+from .starts import HISTORY_LIMIT
+
 TYPES = {"bool": bool, "int": int, "float": float, "str": str}
-OPERATORS = ("eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in")
-BUILTINS = {"playthroughs": "int"}  # read-only, maintained by the store
 PROFILE_PATTERN = r"^[A-Za-z0-9_.-]{1,64}$"
 
 
@@ -56,6 +60,9 @@ def validate_definitions(specs):
         label = f"`variables.{name}`"
         if name in BUILTINS:
             errors.append(f"{label}: `{name}` is built in and cannot be redefined.")
+            continue
+        if name in conditions.KEYWORDS:
+            errors.append(f"{label}: `{name}` is a condition keyword; choose another name.")
             continue
         if not isinstance(spec, dict):
             errors.append(f"{label} must be a mapping with `type` and `default`.")
@@ -94,78 +101,39 @@ def clamp(name, value, specs):
 
 # ---- conditions --------------------------------------------------------------
 
-def _compare(value, operator, expected):
-    try:
-        return {
-            "eq": lambda: value == expected,
-            "ne": lambda: value != expected,
-            "gt": lambda: value > expected,
-            "gte": lambda: value >= expected,
-            "lt": lambda: value < expected,
-            "lte": lambda: value <= expected,
-            "in": lambda: value in expected,
-            "not_in": lambda: value not in expected,
-        }[operator]()
-    except TypeError:
-        return False
+def check(condition, values):
+    """Whether a condition holds for these variable values (no story in progress:
+    only `variable` leaves can be read). Same evaluator as every ``enabled_if``."""
+    return conditions.holds(condition, conditions.VariableFacts(values))
 
 
-def check(conditions, values):
-    """Whether every condition in an ``enabled_if``-style mapping holds."""
-    for name, expected in (conditions or {}).items():
-        value = values.get(name)
-        if isinstance(expected, dict):
-            if not all(_compare(value, op, target) for op, target in expected.items()):
-                return False
-        elif value != expected:
-            return False
-    return True
-
-
-def validate_conditions(conditions, specs, where="enabled_if"):
-    """Return problems with a condition mapping (unknown variables/operators)."""
-    if conditions is None:
-        return []
-    if not isinstance(conditions, dict):
-        return [f"`{where}` must be a mapping of variable names to values or comparisons."]
-    known = set(specs) | set(BUILTINS)
-    errors = []
-    for name, expected in conditions.items():
-        if name not in known:
-            errors.append(f"`{where}` uses undefined variable `{name}`.")
-        elif isinstance(expected, dict):
-            unknown = sorted(set(expected) - set(OPERATORS))
-            if unknown or not expected:
-                errors.append(
-                    f"`{where}.{name}` needs comparisons from: {', '.join(OPERATORS)}"
-                    + (f" (unknown: {', '.join(unknown)})." if unknown else ".")
-                )
-    return errors
+def validate_conditions(condition, specs, where="enabled_if"):
+    """Problems with a condition that may only use these variables (see
+    conditions.validate for full world references)."""
+    return conditions.validate(condition, References(variables=specs), where=where)
 
 
 def validate_changes(set_variables, change_variables, specs, where="outcome"):
-    """Return problems with an outcome's variable changes."""
+    """Problems with an outcome's ``set_variables`` / ``change_variables`` (shorthand
+    for effects; validated by effects.validate)."""
+    from . import effects
+
     errors = []
     for field, changes in (("set_variables", set_variables), ("change_variables", change_variables)):
-        if changes is None:
-            continue
-        if not isinstance(changes, dict):
+        if changes is not None and not isinstance(changes, dict):
             errors.append(f"`{where}.{field}` must be a mapping of variable names to values.")
-            continue
-        for name, value in changes.items():
-            spec = specs.get(name)
-            if spec is None:
-                errors.append(f"`{where}.{field}` changes undefined variable `{name}`.")
-            elif field == "set_variables" and not _matches_type(value, spec.get("type")):
-                errors.append(f"`{where}.set_variables.{name}` must be a {spec.get('type')}.")
-            elif field == "change_variables" and (
-                spec.get("type") not in ("int", "float") or not _matches_type(value, "float")
-            ):
-                errors.append(f"`{where}.change_variables.{name}` needs a numeric variable and a number.")
-    return errors
+    if errors:
+        return errors
+    legacy = effects.from_outcome_fields(set_variables, change_variables)
+    return effects.validate(legacy, References(variables=specs), where=where)
 
 
 # ---- storage -----------------------------------------------------------------
+
+def _start_names(record, key="starts"):
+    starts = record.get(key) if isinstance(record, dict) else None
+    return [name for name in starts if isinstance(name, str)] if isinstance(starts, list) else []
+
 
 def _default_path():
     base = os.environ.get("ANE_SAVE_DIR") or os.path.join(os.path.dirname(os.path.dirname(__file__)), "saves")
@@ -200,13 +168,40 @@ class VariableStore:
         os.replace(temporary, self.path)
 
     def profile(self, name="default"):
-        """Stored record {values, playthroughs, updated} of a profile."""
+        """Stored record {values, playthroughs, starts, updated} of a profile."""
         record = self._read().get("profiles", {}).get(name, {})
         return {
             "values": dict(record.get("values", {})),
             "playthroughs": int(record.get("playthroughs", 0)),
+            "starts": _start_names(record),
+            "missions": _start_names(record, "missions"),
             "updated": record.get("updated"),
         }
+
+    def recent_starts(self, name="default"):
+        """The profile's latest starting locations, oldest first."""
+        return _start_names(self._read().get("profiles", {}).get(name, {}))
+
+    def record_start(self, name, location, limit=None):
+        """Remember where one of the profile's stories started (latest ``limit`` kept)."""
+        self._remember(name, "starts", location, limit)
+
+    def recent_missions(self, name="default"):
+        """The profile's latest missions (their names), oldest first."""
+        return _start_names(self._read().get("profiles", {}).get(name, {}), "missions")
+
+    def record_mission(self, name, mission, limit=None):
+        """Remember the mission of one of the profile's stories (latest ``limit`` kept)."""
+        self._remember(name, "missions", mission, limit)
+
+    def _remember(self, name, key, value, limit=None):
+        with self._lock:
+            data = self._read()
+            record = data.setdefault("profiles", {}).setdefault(name, {"values": {}, "playthroughs": 0})
+            record[key] = (_start_names(record, key) + [str(value)])[-(limit or HISTORY_LIMIT):]
+            record["updated"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+            data["version"] = 1
+            self._write(data)
 
     def load(self, name="default", specs=None):
         """Current values: stored ones for defined variables, defaults otherwise."""

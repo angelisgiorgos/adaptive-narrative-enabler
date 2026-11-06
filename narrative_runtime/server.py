@@ -4,12 +4,12 @@
     python -m narrative_runtime serve --port 8765
 
     GET    /engine                    engine information
-    POST   /games                     {"profile", "stats", "stats_mode", "seed", "mission", "persist"}
+    POST   /games                     {"profile", "stats", "stats_mode", "seed", "mission", "persist", "start"}
     GET    /games/<id>                the current view
     POST   /games/<id>/choose         {"action": "<name>"} or {"action": <index>}
     GET    /games/<id>/transcript     the story so far
     DELETE /games/<id>                end the session
-    POST   /evolve                    {"generations", "pop_size", "episodes", "max_steps", "seed"}
+    POST   /evolve                    {"generations", "pop_size", "episodes", "max_steps", "seed", "resume"}
 """
 from __future__ import annotations
 
@@ -59,7 +59,8 @@ def make_handler(engine: NarrativeEngine):
                     if method == "POST" and parts == ["games"]:
                         body = self._body()
                         game = engine.new_game(**{k: body[k] for k in
-                                                  ("profile", "stats", "stats_mode", "seed", "mission", "persist") if k in body})
+                                                  ("profile", "stats", "stats_mode", "seed", "mission", "persist", "start")
+                                                  if k in body})
                         return self._send(201, game.view())
                     if len(parts) >= 2 and parts[0] == "games":
                         game = self._game(parts[1])

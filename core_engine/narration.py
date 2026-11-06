@@ -18,6 +18,10 @@ DEFAULT_MESSAGES = {
     "end_death": "The traveler can no longer continue.",
     "end_mission": "Mission complete: {title}.",
     "end_action_limit": "The story reached its action limit of {limit} steps.",
+    "end_epilogue": "[EPILOGUE] The day draws to a close after {turns} turns. {mission}You saw {places} places, met {people} people and leave with {items} items.",
+    "epilogue_mission_open": "{title} is left for another day. ",
+    "finale_start": "[FINALE] Time is running out: {title} must be settled now.",
+    "finale_start_free": "[FINALE] Time is running out: the story nears its end.",
     "end_stalled": "The story stalled in {location} for too long.",
     "end_dungeon": "The traveler was thrown into the {location}.",
     # Arriving and staying
@@ -38,6 +42,7 @@ DEFAULT_MESSAGES = {
     "location_moved": "[LOCATION] Transferred from {origin} to {destination}",
     "location_stayed": "[LOCATION] Still at {location}",
     "auto_transfer": "[AUTO TRANSFER] No actions remained in {origin}, so a new route carried you to {destination}.",
+    "stall_move": "[MOVE ON] After lingering in the {origin}, you set out for the {destination}.",
     "spawn": "[SPAWN] New path discovered: {location}",
     "spawn_forced": "[SPAWN] A situational path opens to: {location}",
     "voyage": "[VOYAGE] The opening draws you toward {location}.",

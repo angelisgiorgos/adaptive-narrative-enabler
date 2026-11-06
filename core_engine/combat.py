@@ -118,6 +118,7 @@ class CombatSystem:
 
     def failure_penalty(self, dangerous, inventory=()):
         """Health lost when an action fails; a strong defence shrugs off dangerous failures."""
-        if dangerous and self._reduction_value(inventory) >= float(self._cfg().get("failure_mitigation_threshold", 80)):
+        cfg = self._cfg()
+        if dangerous and self._reduction_value(inventory) >= float(cfg.get("failure_mitigation_threshold", 80)):
             return 0
-        return 1
+        return max(0, int(cfg.get("dangerous_failure_damage", 1) if dangerous else cfg.get("failure_damage", 1)))

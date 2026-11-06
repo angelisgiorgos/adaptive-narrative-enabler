@@ -2,7 +2,7 @@ evolution:
   pop_size: 400
   generations: 200
   episodes_per_genome: 6
-  max_steps: 60
+  max_steps: 100             # steps per evaluated story (narrative_end.max_actions: whole stories)
   evaluation_threads: auto
   max_evaluation_processes: 16
   parallel_backend: processes
@@ -12,6 +12,8 @@ evolution:
   crossover_rate: 0.75
   blend_crossover_chance: 0.55
   random_immigrant_rate: 0.08
+  min_diversity: 0.08         # below this population diversity, more immigrants and wider mutation
+  max_immigrant_rate: 0.3     # ...up to this share of random newcomers per generation
   tournament_size: 3          # parents are the best of this many random genomes
   max_mutation_step: 0.4      # adaptive mutation widens up to this when learning stalls...
   stagnation_generations: 3   # ...after this many generations without improvement
@@ -19,6 +21,28 @@ evolution:
   warm_start: true            # start from the best genomes remembered from earlier runs
   hall_of_fame_size: 12       # how many genomes the learning memory keeps
   validation_episodes: 10     # fixed benchmark stories that score each generation's champion
+  cover_situations: true      # the benchmark has at least one story per start x mission situation
+  benchmark_top_k: 3          # this many of each generation's best are benchmarked; the champion is the
+                              # best of them on the benchmark, not the luckiest on the training stories
+  # How storytellers are evaluated (README, "How the evolutionary AI learns"):
+  full_length_stories: true   # every story is played to its end, as in a real game
+  stratify_episodes: true     # every storyteller plays the same spread of start x mission situations
+  score_aggregate: mean_minus_std  # mean | mean_minus_std: consistent storytellers beat erratic ones
+  consistency_weight: 0.25    # mean_minus_std: score = mean - this x standard deviation of the episodes
+story_rules:
+  # Rules that keep stories coherent, paced and varied (core_engine/rules.py).
+  failure_tags: [failure]     # these outcomes are told only when the attempt fails (as on_check: fail)
+  follow_outcome_text: true   # a route an outcome or an NPC lead opens is the place its text names
+  early_goal_avoidance: 1.0   # x mission_goal_weight: hold back from the mission until pursuit_start_step
+  on_stall: move              # move: after max_consecutive_steps_in_location, move on; end: end the story
+  repetition_power: 1.5       # repeating a choice costs uses ** power (x novelty_bias)
+  backtrack_penalty: 1.5      # going straight back to the place just left (x novelty_bias)
+  tie_epsilon: 0.1            # choices this close to the best are ordered by story logic, not by name
+  collect_weight: 1.0         # picking up an item not held (x discovery_bias; useful items x1.5)
+  payoff_weight: 2.0          # an action that pays off an open clue (x setup_prob)
+  payoff_route_weight: 1.5    # travelling to where an open clue can be paid off (x setup_prob)
+  max_open_clues: 2           # while this many clues are open, no new clue is pursued
+  clue_matching: any          # any: a payoff closes the oldest open clue; numbered: payoff_N closes setup_N
 simulation:
   verbose: true
   interactive: true
@@ -163,6 +187,13 @@ mission_settings:
   discovery_route_cost: 2
   pursuit_start_step: 12
   pursuit_full_step: 30
+start_selection:
+  # Where each story starts: a weighted random draw among the locations with
+  # `start_eligible: true` (weight: their `start_weight`) that are enabled and
+  # from which the story's mission can be reached.
+  default_location: Harbor  # the single start of worlds where no location is start_eligible
+  recent_starts: 3          # how many of a profile's latest starts count as recent...
+  repeat_factor: 0.25       # ...each one multiplies that location's weight by this (0 < f <= 1)
 action_rules:
   # How often an action is offered unless it sets `repeat` itself:
   #   once (per game), per_visit (again on the next visit), always.
@@ -198,8 +229,11 @@ unexpected_events:
   chaos_weight: 0.18
   objective_threshold: 0.24
   stagnation_pressure: 0.04
-  cooldown_steps: 2
-  max_per_story: 5
+  cooldown_steps: 4           # turns between two procedural events
+  max_per_story: 3
+  coin_budget: 10             # coins all procedural events of a story may hand out together
+  effect_repeat_penalty: 1.0  # each earlier use of an effect lowers its score: effects rotate
+  name_location: true         # "In the Harbor, a bell rings backwards. ..."
   actors:
   - a masked courier
   - a runaway apprentice
@@ -317,12 +351,14 @@ skill_check_resolution:
   #   skill value + action modifier - difficulty_penalty - rate x (step - start step)
   roll_sides: 100
   difficulty_penalty: 0            # positive: every check harder; negative: easier
-  difficulty_rate_per_step: 0.0    # per story step; positive: harder over time, negative: easier
-  difficulty_rate_start_step: 10   # the change over time applies from this step
+  difficulty_rate_per_step: 0.3    # per story step; positive: harder over time, negative: easier
+  difficulty_rate_start_step: 15   # the change over time applies from this step
   min_chance: 5                    # pass chance never below this percentage...
   max_chance: 95                   # ...or above this one
   damage_mitigation_per_point: 25  # damage-reduction stat value per 1 combat damage prevented
   failure_mitigation_threshold: 80 # that stat's value at which a failed dangerous action costs no health
+  failure_damage: 1                # health lost when an action fails...
+  dangerous_failure_damage: 2      # ...and when a dangerous one (threats, combat, guards) fails
 power_model:
   base_power: 0.0
   health_weight: 1.5
@@ -339,11 +375,30 @@ fitness:
     zero_step_penalty: -100
     death_penalty: 35
     completion_bonus: 10
-    stall_penalty: 20
+    stall_penalty: 30
     dungeon_penalty: 10
-    max_action_completion_bonus: 8
-    mission_win_bonus: 60
+    max_action_completion_bonus: 0   # reaching the action limit is not an ending...
+    action_limit_penalty: 30         # ...a story cut off there is penalised (the director ends it with an epilogue)
+    mission_win_bonus: 80
     mission_win_min_steps: 20
+    unfinished_penalty: 20     # a story cut by the evaluation length before its ending
+  repetition:                  # losses for repetitive stories
+    free_uses: 2               # an action may be taken this often before it costs
+    action_repeat_penalty: 3   # per further use of the same action
+    backtrack_penalty: 2       # per A -> B -> A travel loop
+  pacing:
+    early_win_penalty_per_step: 2  # per step a win comes before mission_win_min_steps
+  length_normalization:        # these terms grow with every step
+    enabled: true
+    mode: rate                 # rate: counted per turn (x story_length.target); cap: only longer stories scaled down
+    floor_steps: 20            # rate: a shorter story counts as this long, so a short story is not inflated
+    terms: [dramatic_arc, scene_contrast, combat_success, volatility, character_interactions, discovery, tone_variety]
+  engagement:                  # what a player feels turn by turn (from the story's turn log)
+    filler_penalty: 60         # x share of turns that brought nothing new (no place, person, event, outcome, check, change)
+    loop_window: 6             # an action repeated with the same outcome within this many turns...
+    loop_penalty: 4            # ...costs this per turn
+    novelty_fade_penalty: 50   # x drop of the share of new turns from the first to the last third
+    escalation_bonus: 40       # x rise of tension (threats, damage, events) from the first to the last third
   dramatic_arc:
     intro_end: 0.25
     middle_end: 0.75
@@ -474,3 +529,20 @@ augmentation:
   min_outcomes: 60
   output_dir: augmentations
   save_to_source: true
+director:                      # how a story builds over its course, like a game's director
+  enabled: true
+  escalation_start: 0.3        # story progress (share of narrative_end.max_actions) where escalation begins
+  event_pressure: 0.6          # chance of unexpected events x (1 + this x escalation)
+  threat_weight: 0.8           # the storyteller's pull toward threats x (1 + this x escalation)
+  damage_scale: 1.25           # every health loss x this...
+  damage_escalation: 0.6       # ...x (1 + this x escalation), rounded
+  finale_actions: 15           # the finale starts this many actions before the action limit:
+  finale_goal_pull: 1.0        # the mission pulls at full strength, and the story ends with an epilogue
+  loop_window: 6               # an action used within this many turns whose outcomes were all shown is not offered
+  min_options: 2               # ...unless fewer options would remain
+mission_selection:             # how a story's mission is drawn for a player profile
+  recent_missions: 3           # the profile's latest missions...
+  repeat_factor: 0.3           # ...are drawn this much less often, each time they appear
+player_options:                # the choices a player sees (studio, API)
+  limit: 8                     # how many of the storyteller's best options are offered
+  order: world                 # world: in the scene's order (activities, people, items, travel); ranked: best first

@@ -3,7 +3,7 @@
     from narrative_runtime import NarrativeEngine
 
     engine = NarrativeEngine()                 # the export this package belongs to
-    game = engine.new_game(profile="player-1", stats_mode="random")
+    game = engine.new_game(profile="player-1", stats_mode="random")   # start="Harbor" to choose the start
     view = game.view()                         # scene, choices, health, mission, ...
     turn = game.choose(view["actions"][0])     # by name or index
     game.save("slot1.game"); game = engine.load_game("slot1.game")
@@ -46,6 +46,7 @@ class Game:
         return {
             "game_id": self.id,
             "location": state.current.name,
+            "start_location": state.start_location,
             "scene": state.scene_name,
             "description": description,
             "npcs": [name for name, _ in npcs],
@@ -142,6 +143,7 @@ class NarrativeEngine:
             "score": self.manifest.get("score"),
             "genome": self.genome.traits(),
             "locations": list(world.get("locations") or {}),
+            "starting_locations": self.starting_locations(),
             "npcs": [c.get("name") for c in world.get("characters") or []],
             "missions": {k: v.get("title", k) for k, v in (world.get("missions") or {}).items()},
             "stats": list((world.get("character_stats") or {}).get("stats") or {}),
@@ -149,14 +151,35 @@ class NarrativeEngine:
             "remembered_storytellers": len(self.memory.load()),
         }
 
-    def new_game(self, profile=None, stats=None, stats_mode=None, seed=None, mission=None, persist=True) -> Game:
-        """Start a playthrough. ``persist`` saves persistent variables to ``profile``;
-        ``stats`` are the player's own points, or ``stats_mode`` random/balanced/defined."""
+    def starting_locations(self) -> list[str]:
+        """Where a story may start (``start_eligible`` locations, or the single
+        default start of a world that marks none)."""
+        from utils.config_loader import config
+        from core_engine import starts
+
+        locations = (config.get("world_definition") or {}).get("locations") or {}
+        eligible = [name for name, data in locations.items() if (data or {}).get("start_eligible")]
+        default = starts.settings()["default_location"]
+        return eligible or [default if default in locations else next(iter(locations), default)]
+
+    def new_game(self, profile=None, stats=None, stats_mode=None, seed=None, mission=None, persist=True,
+                 start=None) -> Game:
+        """Start a playthrough. ``persist`` saves persistent variables and the start
+        history to ``profile``; ``stats`` are the player's own points, or
+        ``stats_mode`` random/balanced/defined.
+
+        ``start`` picks one of ``starting_locations()``. By default the start is
+        drawn among them, weighted by ``start_weight``, less often where the
+        profile's recent stories began, and only where the mission can be
+        reached. A requested start that the profile's persistent variables
+        switch off (``enabled_if``) is drawn the same way instead."""
         from core_engine import GameState
         from core_engine.builder import build_world
 
+        if start is not None and start not in self.starting_locations():
+            raise ValueError(f"{start!r} is not a starting location. Choose one of: {', '.join(self.starting_locations())}.")
         state = GameState(
-            build_world(self.genome), self.genome, rng=random.Random(seed), mission=mission,
+            build_world(self.genome), self.genome, rng=random.Random(seed), mission=mission, start=start,
             store=self.store if persist else None, profile=profile, stats=stats, stats_mode=stats_mode,
         )
         game = Game(self, state)
@@ -173,22 +196,36 @@ class NarrativeEngine:
         self.games[game.id] = game
         return game
 
-    def evolve(self, generations=5, pop_size=12, episodes=3, max_steps=60, seed=None, adopt=True, progress=None) -> dict:
+    def evolve(self, generations=5, pop_size=12, episodes=3, max_steps=60, seed=None, adopt=True, progress=None,
+               resume=False) -> dict:
         """Keep training offline, starting from what the engine remembers. With
-        ``adopt`` the engine plays with the new champion if it beats the current one."""
+        ``resume`` (and a saved training state, data/training.json) the training
+        continues exactly where it stopped, for ``generations`` more generations.
+        With ``adopt`` the engine plays with the new champion if it beats the current one."""
         from core_engine.builder import build_world
         from core_engine.evolution import NarrativeEvolution, evaluate_task
         from core_engine.fitness import fitness
 
-        settings = {"generations": generations, "pop_size": pop_size, "episodes_per_genome": episodes,
-                    "max_steps": max_steps, "warm_start": True}
-        evolution = NarrativeEvolution(build_world, fitness, settings=settings, seed=seed, memory=self.memory)
-        result = evolution.run(progress=progress)
+        training = self.root / "data" / "training.json"
+        if resume:
+            if not training.exists():
+                raise ValueError("This engine has no saved training state to resume.")
+            checkpoint = json.loads(training.read_text(encoding="utf-8"))
+            evolution = NarrativeEvolution.from_checkpoint(build_world, fitness, checkpoint, generations=generations,
+                                                           memory=self.memory)
+            result = evolution.run(progress=progress, resume=checkpoint)
+        else:
+            settings = {"generations": generations, "pop_size": pop_size, "episodes_per_genome": episodes,
+                        "max_steps": max_steps, "warm_start": True}
+            evolution = NarrativeEvolution(build_world, fitness, settings=settings, seed=seed, memory=self.memory)
+            result = evolution.run(progress=progress)
+        training.parent.mkdir(parents=True, exist_ok=True)
+        training.write_text(json.dumps(evolution.last_checkpoint), encoding="utf-8")
         summary = result.summary()
         # Compare the current and the new storyteller on the same stories.
-        benchmark = evolution._validation_seeds()
-        current = evaluate_task((build_world, fitness, self.genome.traits(), benchmark, max_steps))
-        challenger = evaluate_task((build_world, fitness, result.best_genome.traits(), benchmark, max_steps))
+        # The same benchmark stories (seeds, situations, length) for both storytellers.
+        current = evaluate_task(evolution.benchmark_task(self.genome.traits()))
+        challenger = evaluate_task(evolution.benchmark_task(result.best_genome.traits()))
         summary["current_storyteller_score"] = round(current, 3)
         summary["new_storyteller_score"] = round(challenger, 3)
         summary["adopted"] = bool(adopt and challenger > current)
