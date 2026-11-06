@@ -168,3 +168,5 @@ saves/
 
 # Gradio local cache (holds a TLS certificate)
 .gradio/
+
+artifacts/

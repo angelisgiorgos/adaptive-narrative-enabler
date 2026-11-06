@@ -12,14 +12,16 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 import yaml
 
-from backend import content, export, sessions, store
+from backend import content, export, records, sessions, store
+from core_engine import Mission
+from core_engine.actions import REPEAT_RULES
 from utils.config_loader import config
 
 
@@ -43,14 +45,24 @@ class Entity(BaseModel):
         default=None,
         description="NPCs only. true: the encounter happens on every visit; false: once per game.",
     )
-    enabled_if: dict[str, Any] | None = Field(
+    enabled_if: dict[str, Any] | list[Any] | None = Field(
         default=None,
-        description="Locations, NPCs and items: persistent-variable conditions, e.g. "
-        "{\"thief_caught\": false, \"reputation\": {\"gte\": 1}}. Omit on PUT to keep, send {} to remove.",
+        description="Locations, NPCs, items and events: a condition (shorthand "
+        "{\"thief_caught\": false, \"reputation\": {\"gte\": 1}} or a tree such as "
+        "{\"any\": [{\"has_item\": \"Royal Pass\"}, {\"stat\": \"persuasion\", \"op\": \"gte\", \"value\": 60}]}). "
+        "Omit on PUT to keep, send {} to remove.",
     )
     title: str | None = Field(default=None, description="Events only: the title shown while the event is active.")
     stat_bonus: dict[str, int] | None = Field(
         default=None, description="Items only: stat -> bonus while held. Omit on PUT to keep, send {} to remove.",
+    )
+    start_eligible: bool | None = Field(
+        default=None, description="Locations only: a story may start here. Omit on PUT to keep the stored value.",
+    )
+    start_weight: float | None = Field(
+        default=None, gt=0,
+        description="Locations only: relative chance of starting here among the starting locations (default 1). "
+        "Omit on PUT to keep the stored value.",
     )
 
 
@@ -71,13 +83,15 @@ class CharacterStatsSettings(BaseModel):
 class EntityActions(BaseModel):
     actions: list[dict[str, Any]] = Field(
         description="The entry's actions as stored in YAML (name, outcomes, repeat, exclusive_group, "
-        "triggers_event, send_to, set_variables, change_variables, ...)."
+        "triggers_event, enabled_if, send_to, set_variables, change_variables, effects, ...)."
     )
 
 
 class Missions(BaseModel):
     missions: dict[str, dict[str, Any]] = Field(
-        description="Mission id -> {title, description, goal, weight?, enabled_if?}."
+        description="Mission id -> {title, description, goal, weight?, enabled_if?, rewards?}. Goal keys: action, "
+        "location, item, event, npc_removed, outcome_tag, coins, variables, condition (any condition tree); "
+        "rewards: an effect list applied when the mission is completed."
     )
 
 
@@ -124,9 +138,11 @@ class Settings(BaseModel):
 
 
 class SimulationRequest(BaseModel):
-    candidate_count: int = Field(default=8, ge=1, le=50)
-    generations: int = Field(default=5, ge=1, le=25)
-    simulation_steps: int = Field(default=16, ge=1, le=60)
+    candidate_count: int = Field(default=8, ge=1, le=store.RUN_LIMITS["candidate_limit"])
+    generations: int = Field(default=5, ge=1, le=store.RUN_LIMITS["generation_limit"])
+    simulation_steps: int = Field(default=16, ge=1, le=store.RUN_LIMITS["simulation_step_limit"],
+                                  description="Steps per evaluated story; with "
+                                  "evolution.full_length_stories every story is played to its end.")
     deterministic: bool = True
     profile: str | None = Field(default=None, description="Player profile for persistent variables.")
     stats_mode: Literal["defined", "random", "balanced"] | None = Field(
@@ -171,6 +187,7 @@ class PlayState(BaseModel):
     mission: str | None = Field(default=None, description="Title of the story's mission, if any.")
     won: bool = Field(default=False, description="True once the mission goal has been achieved.")
     location: str | None = None
+    start_location: str | None = Field(default=None, description="Where this story started.")
     health: int | None = None
     max_health: int | None = None
     coins: int | None = None
@@ -194,8 +211,10 @@ class SimulationResponse(PlayState):
         "warm_started_from_memory, history (per generation: best, mean, worst, spread, diversity, "
         "mutation_step, validation), best_genome and learned_traits.",
     )
+    engine_id: str | None = Field(default=None, description="The engine in the records database (GET /v1/records/engines/{id}).")
     config_download_url: str
-    engine_download_url: str
+    engine_download_url: str = Field(description="The engine model file: world, storyteller, training state, memory "
+                                     "and tag vectors. Load it with POST /v1/engines/load.")
 
 
 ARTIFACTS: dict[str, Path] = {}
@@ -218,13 +237,19 @@ if origins:
         allow_origins=origins,
         allow_credentials=False,
         allow_methods=["GET", "PUT", "POST", "DELETE"],
-        allow_headers=["Content-Type", "Authorization"],
+        allow_headers=["Content-Type", "Authorization", "X-ANE-Client"],
     )
 
 
 def _fail(exc: Exception):
     message = getattr(exc, "message", None) or str(exc)
     raise HTTPException(status_code=400, detail=message) from exc
+
+
+def _origin(x_ane_client: str | None = Header(default=None)) -> str:
+    """Where a request comes from, for the records: the studio says so with the
+    ``X-ANE-Client: studio`` header; anything else is the API."""
+    return "studio" if (x_ane_client or "").strip().lower() == "studio" else "api"
 
 
 def _settings() -> Settings:
@@ -430,8 +455,11 @@ def put_weights(body: WeightUpdate):
 
 
 @api.get("/v1/entities/{kind}", tags=["World authoring"])
-def list_entities(kind: Literal["Locations", "NPCs", "Items", "Events"]):
+def list_entities(kind: Literal["Locations", "NPCs", "Items", "Events"], fields: Literal["all", "names"] = "all"):
+    """The entries of a kind (``fields=names``: their names only)."""
     names, _ = content._entity_name_values(kind)
+    if fields == "names":
+        return {"kind": kind, "names": names}
     return {"kind": kind, "entities": [get_entity(kind, name) for name in names]}
 
 
@@ -440,14 +468,13 @@ def get_entity(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str)
     names, _ = content._entity_name_values(kind)
     if name not in names:
         raise HTTPException(status_code=404, detail="Entity not found.")
-    entity_name, tags, descriptions, goals, unique, encounter_event, encounter_repeat, enabled_if, title, stat_bonus = (
-        content.load_entity(kind, name)
-    )
+    (entity_name, tags, descriptions, goals, unique, encounter_event, encounter_repeat, enabled_if, title, stat_bonus,
+     start_eligible, start_weight) = content.load_entity(kind, name)
     return Entity(
         name=entity_name, tags=list(tags), descriptions=store._lines(descriptions),
         goals=store._lines(goals), unique=unique,
         encounter_event=encounter_event, encounter_repeat=encounter_repeat, enabled_if=enabled_if, title=title,
-        stat_bonus=stat_bonus,
+        stat_bonus=stat_bonus, start_eligible=start_eligible, start_weight=start_weight,
     )
 
 
@@ -458,6 +485,7 @@ def put_entity(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str,
             kind, name, body.name, body.tags,
             "\n".join(body.descriptions), "\n".join(body.goals), body.unique,
             body.encounter_event, body.encounter_repeat, body.enabled_if, body.title, body.stat_bonus,
+            body.start_eligible, body.start_weight,
         )
         return get_entity(kind, body.name)
     except Exception as exc:
@@ -498,13 +526,44 @@ def put_entity_actions(kind: Literal["Locations", "NPCs", "Items", "Events"], na
         _fail(exc)
 
 
+class EntityPolicy(BaseModel):
+    policy: dict[str, Any] = Field(
+        description="Events: when the event may start (trigger: action|random, chance, weight, cooldown, "
+        "max_occurrences, repeat: once|per_location|per_visit|always). Items: unique, location. "
+        "Fields left out use their defaults; a PUT replaces the whole policy.",
+    )
+
+
+@api.get("/v1/entities/{kind}/{name}/policy", response_model=EntityPolicy, tags=["World authoring"])
+def get_entity_policy(kind: Literal["Events", "Items"], name: str):
+    """An event's start rules or an item's uniqueness, as stored."""
+    names, _ = content._entity_name_values(kind)
+    if name not in names:
+        raise HTTPException(status_code=404, detail="Entity not found.")
+    return EntityPolicy(policy=content.load_entity_policy(kind, name))
+
+
+@api.put("/v1/entities/{kind}/{name}/policy", response_model=EntityPolicy, tags=["World authoring"])
+def put_entity_policy(kind: Literal["Events", "Items"], name: str, body: EntityPolicy):
+    """Replace an event's start rules or an item's uniqueness after validation."""
+    names, _ = content._entity_name_values(kind)
+    if name not in names:
+        raise HTTPException(status_code=404, detail="Entity not found.")
+    try:
+        return EntityPolicy(policy=content.save_entity_policy(kind, name, body.policy))
+    except Exception as exc:
+        _fail(exc)
+
+
 class ExportRequest(BaseModel):
-    source: Literal["run", "memory", "game"] = Field(
+    source: Literal["run", "memory", "game", "engine"] = Field(
         default="run",
         description="run: an evolution run (run_id; latest if omitted); memory: the best storyteller the AI "
-        "remembers; game: the storyteller of a play session (session_id).",
+        "remembers; game: the storyteller of a play session (session_id); engine: a recorded engine (engine_id), "
+        "with its own world and training state.",
     )
     run_id: str | None = None
+    engine_id: str | None = None
     generation: int | None = Field(default=None, ge=0, description="Export this generation's champion instead of the run's best.")
     session_id: str | None = None
     include_memory: bool = Field(default=True, description="Ship the learning memory so the engine can keep training offline.")
@@ -545,7 +604,7 @@ def export_offline_engine(body: ExportRequest):
     try:
         result = export.export_engine(
             source=body.source, run_id=body.run_id, generation=body.generation, token=body.session_id,
-            include_memory=body.include_memory, name=body.name,
+            include_memory=body.include_memory, name=body.name, engine_id=body.engine_id,
         )
     except Exception as exc:
         _fail(exc)
@@ -633,45 +692,73 @@ def put_rules(body: StoryRules):
 
 
 @api.post("/v1/simulations", response_model=SimulationResponse, tags=["Evolution and play"])
-def simulate(body: SimulationRequest):
+def simulate(body: SimulationRequest, origin: str = Depends(_origin)):
     try:
         game = sessions.run_simulation(
             body.candidate_count, body.generations, body.simulation_steps, body.deterministic,
             profile=body.profile, episodes=body.episodes, warm_start=body.warm_start,
             stats_choice="defined" if body.stats is not None else body.stats_mode,
             stats_points=yaml.safe_dump(body.stats) if body.stats is not None else None,
-            progress=None,
+            progress=None, origin=origin,
         )
-        state = _play_state(game["token"], game["last_turn"])
-        return SimulationResponse(
-            **state.model_dump(), report=game["report"], learning=game["learning"], run_id=game.get("run_id"),
-            config_download_url=_register_artifact(game["config_path"]),
-            engine_download_url=_register_artifact(game["engine_path"]),
-        )
+        return _game_response(game)
     except HTTPException:
         raise
     except Exception as exc:
         _fail(exc)
 
 
+def _game_response(game) -> "SimulationResponse":
+    state = _play_state(game["token"], game["last_turn"])
+    return SimulationResponse(
+        **state.model_dump(), report=game["report"], learning=game["learning"], run_id=game.get("run_id"),
+        engine_id=game.get("engine_id"),
+        config_download_url=_register_artifact(game["config_path"]),
+        engine_download_url=_register_artifact(game["engine_path"]),
+    )
+
+
 @api.post("/v1/engines/load", response_model=SimulationResponse, tags=["Evolution and play"])
-def load_engine(file: UploadFile = File(...), profile: str | None = None,
-                stats_mode: Literal["defined", "random", "balanced"] | None = None):
+def load_engine(file: UploadFile = File(...), parameters: UploadFile | None = File(default=None),
+                profile: str | None = None, stats_mode: Literal["defined", "random", "balanced"] | None = None,
+                stats: str | None = None, origin: str = Depends(_origin)):
+    """Start a game with a saved engine: an engine model file (.ane.zip), an older engine ZIP, or a
+    configuration YAML. ``parameters``: a separate model-parameters YAML for a configuration without
+    ``generated_run.genome``. ``stats``: the player's own points as a JSON object (overrides ``stats_mode``)."""
     path = _save_upload(file, {".yaml", ".yml", ".zip"}, store.MAX_ENGINE_UPLOAD_BYTES)
+    parameters_path = None
     try:
+        if parameters is not None:
+            parameters_path = _save_upload(parameters, {".yaml", ".yml"}, 100_000)
+        points = _json_object(stats, "stats")
         game = sessions.load_best_engine(
-            str(path), profile=profile, stats_choice=stats_mode,
+            str(path), str(parameters_path) if parameters_path else None, profile=profile,
+            stats_choice="defined" if points is not None else stats_mode,
+            stats_points=yaml.safe_dump(points) if points is not None else None, origin=origin,
         )
-        state = _play_state(game["token"], game["last_turn"])
-        return SimulationResponse(
-            **state.model_dump(), report=game["report"], learning=game["learning"], run_id=game.get("run_id"),
-            config_download_url=_register_artifact(game["config_path"]),
-            engine_download_url=_register_artifact(game["engine_path"]),
-        )
+        return _game_response(game)
+    except HTTPException:
+        raise
     except Exception as exc:
         _fail(exc)
     finally:
         path.unlink(missing_ok=True)
+        if parameters_path is not None:
+            parameters_path.unlink(missing_ok=True)
+
+
+def _json_object(text, name):
+    if text in (None, ""):
+        return None
+    import json
+
+    try:
+        value = json.loads(text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"`{name}` must be a JSON object: {exc}") from exc
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=400, detail=f"`{name}` must be a JSON object.")
+    return value
 
 
 @api.get("/v1/sessions/{session_id}", response_model=PlayState, tags=["Evolution and play"])
@@ -681,11 +768,393 @@ def get_session(session_id: str):
 
 @api.post("/v1/sessions/{session_id}/actions", response_model=PlayState, tags=["Evolution and play"])
 def take_action(session_id: str, body: ActionRequest):
+    """Take one of the actions the last response offered; anything else is refused (400)."""
+    with sessions.SESSION_LOCK:
+        if session_id not in sessions.SESSIONS:
+            raise HTTPException(status_code=404, detail="Play session not found.")
     try:
         _, _, turn = sessions.play_action(session_id, body.action)
         return _play_state(session_id, turn)
     except Exception as exc:
         _fail(exc)
+
+
+class EnginePlayRequest(BaseModel):
+    profile: str | None = Field(default=None, description="Player profile for persistent variables.")
+    stats_mode: Literal["defined", "random", "balanced"] | None = None
+    stats: dict[str, int] | None = None
+
+
+class EngineContinueRequest(EnginePlayRequest):
+    generations: int = Field(default=1, ge=1, le=store.RUN_LIMITS["generation_limit"],
+                             description="Further generations, continuing exactly where training stopped.")
+
+
+class EngineRetrainRequest(EnginePlayRequest):
+    candidate_count: int = Field(default=8, ge=1, le=store.RUN_LIMITS["candidate_limit"])
+    generations: int = Field(default=5, ge=1, le=store.RUN_LIMITS["generation_limit"])
+    simulation_steps: int = Field(default=16, ge=1, le=store.RUN_LIMITS["simulation_step_limit"])
+    episodes: int | None = Field(default=None, ge=1, le=10)
+    deterministic: bool = True
+
+
+def _player(body):
+    return {"profile": body.profile,
+            "stats_choice": "defined" if body.stats is not None else body.stats_mode,
+            "stats_points": yaml.safe_dump(body.stats) if body.stats is not None else None}
+
+
+def _records(function, *args, **kwargs):
+    try:
+        return function(*args, **kwargs)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _known_engine(engine_id):
+    """404 for an engine that is not in the records (before any work starts)."""
+    _records(records.get_engine, engine_id)
+
+
+@api.get("/v1/records", tags=["Records"])
+def records_info():
+    """Where the records database is, and whether recording is on."""
+    return {"enabled": records.enabled(), "directory": str(records.directory()),
+            "database": str(records.database_path()), "models": str(records.models_dir())}
+
+
+@api.get("/v1/records/runs", tags=["Records"])
+def list_recorded_runs(limit: int = 50, offset: int = 0):
+    return {"runs": _records(records.list_runs, limit, offset)}
+
+
+@api.get("/v1/records/runs/{run_id}", tags=["Records"])
+def get_recorded_run(run_id: str):
+    """A run with every setting, every generation, its engines, stories and files."""
+    return _records(records.get_run, run_id)
+
+
+@api.get("/v1/records/worlds", tags=["Records"])
+def list_recorded_worlds(limit: int = 50, offset: int = 0):
+    return {"worlds": _records(records.list_worlds, limit, offset)}
+
+
+@api.get("/v1/records/worlds/{world_id}", tags=["Records"])
+def get_recorded_world(world_id: str, format: Literal["json", "yaml"] = "json"):
+    """A recorded world with all its tuning: JSON, or ``format=yaml`` for a combined
+    configuration file that POST /v1/config/upload accepts."""
+    world = _records(records.get_world, world_id)
+    if format == "yaml":
+        handle, path = tempfile.mkstemp(prefix=f"world-{world_id[:8]}-", suffix=".yaml")
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            yaml.safe_dump(world["config"], stream, sort_keys=False, allow_unicode=True)
+        return FileResponse(path, filename=f"world-{world_id}.yaml", media_type="application/x-yaml")
+    return world
+
+
+@api.get("/v1/records/engines", tags=["Records"])
+def list_recorded_engines(run_id: str | None = None, source: str | None = None, limit: int = 200, offset: int = 0):
+    return {"engines": _records(records.list_engines, run_id=run_id, source=source, limit=limit, offset=offset)}
+
+
+@api.get("/v1/records/engines/{engine_id}", tags=["Records"])
+def get_recorded_engine(engine_id: str):
+    return _records(records.get_engine, engine_id)
+
+
+@api.get("/v1/records/engines/{engine_id}/model", tags=["Records"])
+def download_engine_model(engine_id: str):
+    """The engine model file (for a generation's champion, assembled from its run)."""
+    model = _records(records.load_engine, engine_id)
+    handle, path = tempfile.mkstemp(prefix=f"engine-{engine_id[:8]}-", suffix=".ane.zip")
+    os.close(handle)
+    model.save(path)
+    return FileResponse(path, filename=f"engine-{engine_id}.ane.zip", media_type="application/zip")
+
+
+@api.post("/v1/records/engines/{engine_id}/play", response_model=SimulationResponse, tags=["Records"])
+def play_recorded_engine(engine_id: str, body: EnginePlayRequest | None = None, origin: str = Depends(_origin)):
+    """Start a game with a recorded engine (its own world, tuning and storyteller)."""
+    _known_engine(engine_id)
+    try:
+        return _game_response(sessions.play_engine(engine_id, origin=origin, **_player(body or EnginePlayRequest())))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.post("/v1/records/engines/{engine_id}/continue", response_model=SimulationResponse, tags=["Records"])
+def continue_recorded_engine(engine_id: str, body: EngineContinueRequest, origin: str = Depends(_origin)):
+    """Continue the engine's training exactly where it stopped; records the run and a new engine."""
+    _known_engine(engine_id)
+    try:
+        return _game_response(sessions.continue_engine(engine_id, body.generations, origin=origin, **_player(body)))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.post("/v1/records/engines/{engine_id}/retrain", response_model=SimulationResponse, tags=["Records"])
+def retrain_recorded_engine(engine_id: str, body: EngineRetrainRequest, origin: str = Depends(_origin)):
+    """A new run that starts from the engine's storyteller and memory, on its world."""
+    _known_engine(engine_id)
+    try:
+        return _game_response(sessions.retrain_engine(
+            engine_id, body.candidate_count, body.generations, body.simulation_steps, body.episodes,
+            body.deterministic, origin=origin, **_player(body)))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.get("/v1/records/stories", tags=["Records"])
+def list_recorded_stories(run_id: str | None = None, engine_id: str | None = None, kind: str | None = None,
+                          origin: str | None = None, session_id: str | None = None, limit: int = 200, offset: int = 0):
+    return {"stories": _records(records.list_stories, run_id=run_id, engine_id=engine_id, kind=kind, origin=origin,
+                                session_id=session_id, limit=limit, offset=offset)}
+
+
+@api.get("/v1/records/stories/{story_id}", tags=["Records"])
+def get_recorded_story(story_id: str):
+    """A story with its parameters, result, transcript and every turn."""
+    return _records(records.get_story, story_id)
+
+
+# ---- studio services: everything the studio does goes through these and the endpoints above ----
+
+def _known_entity(kind, name):
+    names, _ = content._entity_name_values(kind)
+    if name not in names:
+        raise HTTPException(status_code=404, detail="Entity not found.")
+
+
+@api.get("/v1/reference", tags=["Studio"])
+def get_reference():
+    """What a client needs to build an authoring UI: entry kinds, suggested tags, the
+    action and condition reference, repeat rules, mission goal keys, rule choices,
+    stat choices, editable documents, and the defaults of a new run."""
+    return {
+        "entity_kinds": list(content.ENTITY_FILES),
+        "common_tags": content.COMMON_TAGS,
+        "action_reference": content.ACTION_REFERENCE,
+        "repeat_rules": list(REPEAT_RULES),
+        "repeat_default": content.REPEAT_DEFAULT,
+        "goal_keys": list(Mission.GOAL_KEYS),
+        "rule_choices": store.RULE_CHOICES,
+        "rule_fields": list(store.RULE_FIELDS),
+        "player_stat_choices": content.PLAYER_STAT_CHOICES,
+        "documents": {name: description for name, (description, _, _) in DOCUMENTS.items()},
+        "defaults": {
+            "episodes_per_genome": int(config.get("evolution.episodes_per_genome", 3)),
+            "warm_start": bool(config.get("evolution.warm_start", True)),
+            "profile": config.get("persistence.profile", "default"),
+        },
+    }
+
+
+class AppSettingsBody(BaseModel):
+    settings: dict[str, Any] = Field(description="Parameter -> value; parameters left out keep their value.")
+
+
+@api.get("/v1/app-settings", tags=["Studio"])
+def get_app_settings():
+    """The studio's app parameters (config/ui_settings.yml): limits, defaults, queue, launch."""
+    return {"settings": store.load_app_settings(), "defaults": store.APP_DEFAULTS}
+
+
+@api.put("/v1/app-settings", tags=["Studio"])
+def put_app_settings(body: AppSettingsBody):
+    """Validate and save app parameters; they apply when the studio and the API restart."""
+    unknown = sorted(set(body.settings) - set(store.APP_DEFAULTS))
+    if unknown:
+        raise HTTPException(status_code=400, detail="Unknown app parameters: " + ", ".join(unknown))
+    try:
+        store.save_app_settings({**store.load_app_settings(), **body.settings})
+    except (ValueError, OSError) as exc:
+        _fail(exc)
+    return {"message": "App parameters saved. Restart the studio and the API to apply them.",
+            "settings": store.load_app_settings()}
+
+
+# YAML documents edited as text, comments kept: (description, load(profile), save(profile, text) -> (yaml, message))
+DOCUMENTS = {
+    "missions": ("Missions and their goals and rewards (config/missions.yaml).",
+                 lambda profile: content.load_missions_yaml(), lambda profile, text: content.save_missions_yaml(text)),
+    "messages": ("Every sentence the engine writes into a story (config/messages.yaml).",
+                 lambda profile: content.load_messages_yaml(), lambda profile, text: content.save_messages_yaml(text)),
+    "variables": ("Persistent variable definitions (config/variables.yaml).",
+                  lambda profile: content.load_variables_yaml(), lambda profile, text: content.save_variables_yaml(text)),
+    "stats": ("Character stats, budget and checks (config/stats.yaml).",
+              lambda profile: content.load_stats_yaml(), lambda profile, text: content.save_stats_yaml(text)),
+    "stored_values": ("The stored persistent values and playthroughs of a player profile (?profile=).",
+                      lambda profile: content.stored_values_yaml(profile),
+                      lambda profile, text: content.save_stored_values_yaml(profile, text)),
+}
+
+
+@api.get("/v1/documents", tags=["Studio"])
+def list_documents():
+    return {"documents": [{"name": name, "description": description} for name, (description, _, _) in DOCUMENTS.items()]}
+
+
+@api.get("/v1/documents/{name}", tags=["Studio"])
+def get_document(name: str, profile: str | None = None):
+    """A configuration document as YAML text, comments included."""
+    if name not in DOCUMENTS:
+        raise HTTPException(status_code=404, detail=f"Unknown document `{name}`; use {', '.join(DOCUMENTS)}.")
+    try:
+        return {"name": name, "yaml": DOCUMENTS[name][1](profile)}
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.put("/v1/documents/{name}", tags=["Studio"])
+def put_document(name: str, body: YAMLDocument, profile: str | None = None):
+    """Validate and save a configuration document (comments kept); nothing is written when it is invalid."""
+    if name not in DOCUMENTS:
+        raise HTTPException(status_code=404, detail=f"Unknown document `{name}`; use {', '.join(DOCUMENTS)}.")
+    try:
+        text, message = DOCUMENTS[name][2](profile, body.yaml)
+        return {"name": name, "yaml": text, "message": message}
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.post("/v1/variables/reset/yaml", tags=["Persistent variables"])
+def reset_variable_values_yaml(profile: str | None = None):
+    """Forget a profile's stored values (a new player); returns the stored-values document."""
+    try:
+        text, message = content.reset_stored_values_ui(profile)
+        return {"name": "stored_values", "yaml": text, "message": message}
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.get("/v1/entities/{kind}/{name}/actions/yaml", tags=["World authoring"])
+def get_entity_actions_yaml(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str):
+    _known_entity(kind, name)
+    return {"yaml": content.load_entity_actions_yaml(kind, name)}
+
+
+@api.put("/v1/entities/{kind}/{name}/actions/yaml", tags=["World authoring"])
+def put_entity_actions_yaml(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str, body: YAMLDocument):
+    """Replace the entry's actions from YAML text (validated like PUT .../actions)."""
+    _known_entity(kind, name)
+    try:
+        text, message = content.save_entity_actions_ui(kind, name, body.yaml)
+        return {"yaml": text, "message": message}
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.get("/v1/entities/{kind}/{name}/policy/yaml", tags=["World authoring"])
+def get_entity_policy_yaml(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str):
+    _known_entity(kind, name)
+    return {"yaml": content.load_entity_policy_yaml(kind, name)}
+
+
+@api.put("/v1/entities/{kind}/{name}/policy/yaml", tags=["World authoring"])
+def put_entity_policy_yaml(kind: Literal["Events", "Items"], name: str, body: YAMLDocument):
+    _known_entity(kind, name)
+    try:
+        text, message = content.save_entity_policy_ui(kind, name, body.yaml)
+        return {"yaml": text, "message": message}
+    except Exception as exc:
+        _fail(exc)
+
+
+class ActionRepetition(BaseModel):
+    repeat: Literal["default", "once", "per_visit", "always"] = Field(
+        default="default", description="default: action_rules.default_repeat decides for its source.")
+    retry_on_failure: bool = Field(default=False, description="A failed attempt does not use the action up.")
+
+
+@api.get("/v1/entities/{kind}/{name}/actions/{index}/repetition", tags=["World authoring"])
+def get_action_repetition(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str, index: int):
+    """How often the entry's action number ``index`` (from 0) is offered, and whether a failure uses it up."""
+    _known_entity(kind, name)
+    choices = content.entity_action_choices(kind, name)
+    if not 0 <= index < len(choices):
+        raise HTTPException(status_code=404, detail=f"`{name}` has no action {index}.")
+    repeat, retry = content.load_action_repetition(kind, name, index)
+    return {"index": index, "label": choices[index][0], "repeat": repeat, "retry_on_failure": retry}
+
+
+@api.put("/v1/entities/{kind}/{name}/actions/{index}/repetition", tags=["World authoring"])
+def put_action_repetition(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str, index: int,
+                          body: ActionRepetition):
+    _known_entity(kind, name)
+    try:
+        message = content.save_action_repetition(kind, name, index, body.repeat, body.retry_on_failure)
+        return {"message": message, "yaml": content.load_entity_actions_yaml(kind, name),
+                **get_action_repetition(kind, name, index)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _fail(exc)
+
+
+# ---- jobs: long runs with progress -------------------------------------------------------
+
+def _job_or_404(job_id):
+    job = sessions.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return job
+
+
+@api.post("/v1/jobs/simulations", status_code=202, tags=["Jobs"])
+def submit_simulation(body: SimulationRequest, origin: str = Depends(_origin)):
+    """Run an evolution in the background (as POST /v1/simulations); poll GET /v1/jobs/{id}
+    for its progress per generation and, when finished, the playable game."""
+    def work(progress):
+        game = sessions.run_simulation(
+            body.candidate_count, body.generations, body.simulation_steps, body.deterministic,
+            profile=body.profile, episodes=body.episodes, warm_start=body.warm_start,
+            stats_choice="defined" if body.stats is not None else body.stats_mode,
+            stats_points=yaml.safe_dump(body.stats) if body.stats is not None else None,
+            progress=progress, origin=origin,
+        )
+        return _game_response(game).model_dump()
+    return sessions.submit_job("simulation", work, f"{body.generations} generation(s) of {body.candidate_count} storytellers")
+
+
+@api.post("/v1/jobs/engines/{engine_id}/continue", status_code=202, tags=["Jobs"])
+def submit_continue(engine_id: str, body: EngineContinueRequest, origin: str = Depends(_origin)):
+    """Continue a recorded engine's training in the background (as POST /v1/records/engines/{id}/continue)."""
+    _known_engine(engine_id)
+    def work(progress):
+        return _game_response(sessions.continue_engine(engine_id, body.generations, origin=origin, progress=progress,
+                                                       **_player(body))).model_dump()
+    return sessions.submit_job("continue", work, f"{body.generations} more generation(s) of engine {engine_id}")
+
+
+@api.post("/v1/jobs/engines/{engine_id}/retrain", status_code=202, tags=["Jobs"])
+def submit_retrain(engine_id: str, body: EngineRetrainRequest, origin: str = Depends(_origin)):
+    """Retrain from a recorded engine in the background (as POST /v1/records/engines/{id}/retrain)."""
+    _known_engine(engine_id)
+    def work(progress):
+        return _game_response(sessions.retrain_engine(
+            engine_id, body.candidate_count, body.generations, body.simulation_steps, body.episodes,
+            body.deterministic, origin=origin, progress=progress, **_player(body))).model_dump()
+    return sessions.submit_job("retrain", work, f"{body.generations} generation(s) from engine {engine_id}")
+
+
+@api.get("/v1/jobs", tags=["Jobs"])
+def list_jobs():
+    return {"jobs": sessions.list_jobs()}
+
+
+@api.get("/v1/jobs/{job_id}", tags=["Jobs"])
+def get_job(job_id: str):
+    """status (queued, running, finished, failed), progress (generation, total, best, mean,
+    validation), and the result (as the synchronous endpoint returns it) or the error."""
+    return _job_or_404(job_id)
 
 
 @api.get("/v1/artifacts/{artifact_id}", tags=["Artifacts"])
