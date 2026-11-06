@@ -1359,7 +1359,7 @@ messages:
   anything is saved. A malformed text found at run time falls back to the
   default instead of breaking the story.
 - **Scoring ignores the wording.** Endings carry an `end_kind` (`death`,
-  `mission`, `action_limit`, `stalled`, `dungeon`) that fitness uses instead of
+  `mission`, `epilogue`, `action_limit`, `stalled`, `dungeon`, `story_end`) that fitness uses instead of
   parsing `end_reason`. Previously, stalling *in* the Dungeon was penalised
   twice because the text contained both "stalled" and "Dungeon".
 
