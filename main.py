@@ -33,6 +33,8 @@ MAX_STEPS = config.get("evolution.max_steps", 60)
 EVALUATION_THREADS = config.get("evolution.evaluation_threads", 8)
 PARALLEL_BACKEND = config.get("evolution.parallel_backend", "processes")
 LAST_LEARNING = None  # learning summary of the latest evolve() run
+LAST_EVOLUTION = None  # the NarrativeEvolution and EvolutionResult of the latest evolve() run
+LAST_RESULT = None
 
 
 class GenerationStopper:
@@ -339,8 +341,9 @@ def evolve(stop_event=None, progress=None):
     finally:
         if executor is not None:
             executor.shutdown(wait=not (stop_event and stop_event.is_set()), cancel_futures=True)
-    global LAST_LEARNING
+    global LAST_LEARNING, LAST_EVOLUTION, LAST_RESULT
     LAST_LEARNING = result.summary()
+    LAST_EVOLUTION, LAST_RESULT = evolution, result
     if result.warm_started:
         print(f"[LEARNING] Started from {result.warm_started} genome(s) remembered from earlier runs.")
     return result.best_score, result.best_genome, fitness(result.best_state), result.best_state
@@ -443,6 +446,23 @@ def export_offline_engine(genome, score, run_dir, timestamp):
     except Exception as exc:  # the story and archive are saved either way
         print(f"[EXPORT] The offline engine could not be exported: {exc}")
         return None
+
+
+def record_terminal_run(evolution, result, run_id, run_dir=None, origin="terminal", parent_id=None, source=None):
+    """Record a finished terminal run in the records database and save its engine
+    model (with the complete training state) into the run archive.
+    Returns the EngineModel."""
+    from backend import records  # imported here: the backend imports this module
+    from core_engine.model import EngineModel
+
+    model = EngineModel.from_training(evolution, result, source=source or f"{origin} run {run_id}", parent_id=parent_id)
+    records.finish_run(run_id, result, model=model, origin=origin)
+    records.record_story(result.best_state, origin, "preview", run_id=run_id, engine_id=model.id,
+                         parameters={"benchmark": True})
+    if run_dir:
+        path = model.save(os.path.join(run_dir, "engine_model.ane.zip"))
+        print(f"[ARCHIVE] Engine model (resumable training) saved to: {path}")
+    return model
 
 
 def save_best_artifacts(score, genome, state, run_dir=None, timestamp=None, reason="Best structural evolution score"):
@@ -559,10 +579,21 @@ def run_story(world_path=None):
     timestamp = os.path.basename(run_dir)
     print(f"[ARCHIVE] This generation run will be saved in: {run_dir}")
     print("[GENERATION] Press 'q' to stop generation early and execute the best story found so far.")
-    with GenerationStopper() as stopper:
-        best_score, best_genome, best_episode_score, best_episode_state = evolve(
-            stop_event=stopper.stop_event,
-        )
+    from backend import records  # imported here: the backend imports this module
+
+    run_id = records.start_run(
+        "terminal", settings=dict(config.get("evolution") or {}), seed=_base_evaluation_seed(),
+        parameters={"archive": run_dir, "world_path": world_path},
+    )
+    try:
+        with GenerationStopper() as stopper:
+            best_score, best_genome, best_episode_score, best_episode_state = evolve(
+                stop_event=stopper.stop_event,
+            )
+    except Exception as exc:
+        records.finish_run(run_id, None, error=exc)
+        raise
+    model = record_terminal_run(LAST_EVOLUTION, LAST_RESULT, run_id, run_dir=run_dir)
     best_world_file, best_story_file = save_best_artifacts(
         best_episode_score,
         best_genome,
@@ -590,9 +621,13 @@ def run_story(world_path=None):
     final_state = GameState(final_world, best_genome, store=variables.VariableStore(), 
                             verbose=True, 
                             interactive=sim_interactive)
-    for _ in range(MAX_STEPS):
+    story_id = records.record_story(final_state, "terminal", "terminal", run_id=run_id, engine_id=model.id,
+                                    parameters={"interactive": sim_interactive})
+    for _ in range(max(MAX_STEPS, config.get("narrative_end.max_actions", 100))):  # the whole story
         if final_state.health <= 0: break
         if not final_state.step(): break
+        records.update_story(story_id, final_state)
+    records.update_story(story_id, final_state)
     
     # (Transcript moved to evaluation section below for visibility)
 
@@ -644,10 +679,122 @@ def run_story(world_path=None):
         f.write("\n\n" + "="*60 + "\n")
 
     print(f"\n[ARCHIVE] Story successfully saved to: {run_file}")
-    export_offline_engine(best_genome, best_score, run_dir, timestamp)
+    offline = export_offline_engine(best_genome, best_score, run_dir, timestamp)
+    for kind, path in (("best_world", best_world_file), ("best_story", best_story_file), ("story", run_file),
+                       ("offline_engine", offline)):
+        if path:
+            records.record_artifact(kind, path, run_id=run_id, engine_id=model.id)
+
+
+def _load_model(reference):
+    """An engine model from a file path or a recorded engine id."""
+    from backend import records
+    from core_engine.model import EngineModel
+
+    return EngineModel.load(reference) if os.path.isfile(reference) else records.load_engine(reference)
+
+
+def _parallel_map():
+    workers = _evaluation_worker_count(POP_SIZE)
+    if workers <= 1:
+        return None, None
+    executor_class = ProcessPoolExecutor if PARALLEL_BACKEND == "processes" else ThreadPoolExecutor
+    executor = executor_class(max_workers=workers)
+    return executor, (lambda function, tasks: list(executor.map(function, tasks)))
+
+
+def engine_command(argv=None):
+    """Work with saved engines from the terminal (python main.py --help)."""
+    import argparse
+
+    from backend import records
+
+    parser = argparse.ArgumentParser(prog="python main.py", description=(
+        "Without options: the interactive editor and a new evolution run. With an engine (a model file "
+        ".ane.zip or a recorded engine id from the records database):"))
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--continue-training", metavar="ENGINE", help="continue its training exactly where it stopped")
+    group.add_argument("--retrain", metavar="ENGINE", help="a new run that starts from its storyteller and memory")
+    group.add_argument("--play", metavar="ENGINE", help="play a story with it in the terminal")
+    group.add_argument("--export-world", metavar="ENGINE", help="write its world and tuning as one YAML file")
+    group.add_argument("--list-engines", action="store_true", help="list the recorded engines")
+    group.add_argument("--import-artifacts", metavar="FOLDER", nargs="?", const="",
+                       help="record every engine and game in FOLDER (default: the artifacts folder) and move the "
+                            "files into the records folder")
+    parser.add_argument("--copy", action="store_true", help="--import-artifacts: copy the files instead of moving them")
+    parser.add_argument("--no-preview", action="store_true", help="--import-artifacts: no preview story per new engine")
+    parser.add_argument("--generations", type=int, default=5)
+    parser.add_argument("--out", help="output file (--export-world)")
+    parser.add_argument("--seed", type=int)
+    args = parser.parse_args(argv)
+
+    if args.import_artifacts is not None:
+        import json
+
+        from backend import sessions
+
+        folder = args.import_artifacts or os.getenv("ANE_ARTIFACT_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "artifacts")
+        report = sessions.import_artifacts(folder, move=not args.copy, preview=not args.no_preview)
+        print(json.dumps(report, indent=2))
+        return
+    if args.list_engines:
+        for engine in records.list_engines(limit=100):
+            print(f"{engine['id']}  {engine['source']:<20} gen={engine['generation']!s:<5} "
+                  f"score={engine['score']!s:<10} model={'yes' if engine['model_path'] else 'no'}  {engine['created_at']}")
+        return
+    reference = args.continue_training or args.retrain or args.play or args.export_world
+    model = _load_model(reference)
+    if args.export_world:
+        out = args.out or f"world_{model.id[:8]}.yaml"
+        with open(out, "w", encoding="utf-8") as stream:
+            stream.write(model.world_yaml())
+        print(f"[WORLD] World and tuning of engine {model.id} written to {out}")
+        return
+    if args.play:
+        state = model.new_game(seed=args.seed, interactive=True, store=variables.VariableStore())
+        story_id = records.record_story(state, "terminal", "terminal", engine_id=model.id, seed=args.seed)
+        while not state.ended and state.step():
+            records.update_story(story_id, state)
+        records.update_story(story_id, state)
+        print(state.get_full_story())
+        return
+
+    model.activate()
+    refresh_runtime_settings()
+    executor, map_fn = _parallel_map()
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = _run_archive_dir(timestamp)
+    kind = "continue" if args.continue_training else "retrain"
+    run_id = records.start_run("terminal", kind=kind, settings=(model.checkpoint or {}).get("settings"),
+                               parameters={"generations": args.generations, "archive": run_dir}, seed=args.seed,
+                               parent_engine_id=model.id)
+
+    def report(generation, total, stats):
+        print(f"Gen {generation} | Best Score: {stats.best:.2f} | Benchmark: {stats.validation:.2f}"
+              + ("  (improved)" if stats.improved else ""))
+
+    try:
+        if args.continue_training:
+            result, newer = model.continue_training(args.generations, progress=report, map_fn=map_fn)
+        else:
+            result, newer = model.retrain({"generations": args.generations}, seed=args.seed, progress=report,
+                                          map_fn=map_fn)
+    except Exception as exc:
+        records.finish_run(run_id, None, error=exc)
+        raise
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True)
+    records.finish_run(run_id, result, model=newer, origin="terminal")
+    records.record_story(result.best_state, "terminal", "preview", run_id=run_id, engine_id=newer.id)
+    path = newer.save(os.path.join(run_dir, "engine_model.ane.zip"))
+    print(f"[ENGINE] {kind}: benchmark {result.best_score:.2f}; engine {newer.id} saved to {path}")
 
 
 if __name__ == "__main__":
-    should_run, world_path = prompt_story_setup_editor()
-    if should_run:
-        run_story(world_path=world_path)
+    if len(sys.argv) > 1:
+        engine_command(sys.argv[1:])
+    else:
+        should_run, world_path = prompt_story_setup_editor()
+        if should_run:
+            run_story(world_path=world_path)

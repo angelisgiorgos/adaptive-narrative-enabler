@@ -12,9 +12,14 @@ Learning features:
   fairly (a better score means a better storyteller, not a luckier story).
 - Tournament selection, elitism, crossover, mutation and random immigrants.
 - A fixed validation benchmark (``validation_episodes`` story seeds, the same
-  in every generation) scores each generation's champion. The overall best
-  storyteller, adaptive mutation and early stopping follow this comparable
-  score, so a lucky generation cannot fool the search.
+  in every generation; with ``cover_situations`` at least one per start x
+  mission situation) scores the ``benchmark_top_k`` best of each generation;
+  the best of them on the benchmark is the generation's champion and is kept.
+  The overall best storyteller, adaptive mutation and early stopping follow
+  this comparable score, so a lucky generation cannot fool the search.
+- Diversity: when the population's diversity falls below ``min_diversity``,
+  more random immigrants (up to ``max_immigrant_rate``) and a wider mutation
+  keep it from collapsing, and children identical to a parent are mutated again.
 - Adaptive mutation: when the benchmark score stops improving for
   ``stagnation_generations``, mutation widens (up to ``max_mutation_step``)
   to escape the plateau; it narrows again after an improvement.
@@ -29,7 +34,7 @@ import os
 import random
 import statistics
 import threading
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 from utils.config_loader import config
 
@@ -75,7 +80,17 @@ DEFAULTS = {
     "warm_start": True,
     "hall_of_fame_size": 12,
     "validation_episodes": 10,
+    "cover_situations": False,      # the benchmark has at least one story per start x mission situation
+    "benchmark_top_k": 1,           # this many of each generation's best are benchmarked
+    "min_diversity": 0.0,           # below this diversity: more immigrants, wider mutation
+    "max_immigrant_rate": 0.3,
+    # Methodology (README, "How the evolutionary AI learns"):
+    "full_length_stories": True,    # play every story to its end (narrative_end.max_actions), not max_steps
+    "stratify_episodes": True,      # every storyteller plays the same spread of start x mission situations
+    "score_aggregate": "mean_minus_std",  # mean | mean_minus_std: penalise storytellers whose stories vary in quality
+    "consistency_weight": 0.25,     # mean_minus_std: score = mean - this x standard deviation
 }
+AGGREGATES = ("mean", "mean_minus_std")
 
 
 def evolution_settings(overrides=None):
@@ -88,9 +103,11 @@ def evolution_settings(overrides=None):
 
 # ---- evaluation -------------------------------------------------------------------
 
-def play_episode(build_world, genome, seed, max_steps):
-    """One story played by ``genome`` with the story seed ``seed``."""
-    state = GameState(build_world(genome), genome, rng=random.Random(seed))
+def play_episode(build_world, genome, seed, max_steps, situation=None):
+    """One story played by ``genome`` with the story seed ``seed``; ``situation``
+    (start, mission) fixes where it starts and what it is about."""
+    start, mission = situation or (None, None)
+    state = GameState(build_world(genome), genome, rng=random.Random(seed), start=start, mission=mission)
     for _ in range(max_steps):
         if state.health <= 0 or not state.step():
             break
@@ -98,13 +115,23 @@ def play_episode(build_world, genome, seed, max_steps):
 
 
 def evaluate_task(task):
-    """(build_world, fitness, traits, seeds, max_steps) -> mean fitness.
+    """(build_world, fitness, traits, seeds, max_steps[, options]) -> score.
 
-    A module-level function so a process pool can run it."""
-    build_world, fitness, traits, seeds, max_steps = task
+    ``options``: ``situations`` (one (start, mission) per seed), ``aggregate``
+    (mean or mean_minus_std) and ``consistency_weight``. A module-level
+    function so a process pool can run it."""
+    build_world, fitness, traits, seeds, max_steps = task[:5]
+    options = task[5] if len(task) > 5 else {}
+    situations = options.get("situations") or [None] * len(seeds)
     genome = Genome.from_traits(traits)
-    scores = [fitness(play_episode(build_world, genome, seed, max_steps)) for seed in seeds]
-    return statistics.mean(scores) if scores else float("-inf")
+    scores = [fitness(play_episode(build_world, genome, seed, max_steps, situation))
+              for seed, situation in zip(seeds, situations)]
+    if not scores:
+        return float("-inf")
+    score = statistics.mean(scores)
+    if options.get("aggregate") == "mean_minus_std" and len(scores) > 1:
+        score -= float(options.get("consistency_weight", 0.25)) * statistics.pstdev(scores)
+    return score
 
 
 # ---- results -------------------------------------------------------------------------
@@ -168,6 +195,43 @@ class EvolutionResult:
 
 # ---- learning memory -------------------------------------------------------------------
 
+def merge_hall_of_fame(entries, scored, size):
+    """Hall-of-fame entries plus (score, genome) pairs: the ``size`` best, one per genome."""
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    entries = list(entries) + [
+        {"score": float(score), "traits": genome.traits(), "remembered": now} for score, genome in scored
+    ]
+    unique = {}
+    for entry in entries:
+        key = tuple(round(entry["traits"].get(name, 0), 4) for name in sorted(entry["traits"]))
+        if key not in unique or entry["score"] > unique[key]["score"]:
+            unique[key] = entry
+    return sorted(unique.values(), key=lambda e: e["score"], reverse=True)[:size]
+
+
+class ModelMemory:
+    """A hall of fame kept with a saved engine model instead of a file (same interface
+    as LearningMemory), so each engine continues from its own memory."""
+
+    def __init__(self, entries=None):
+        self.entries = [dict(e) for e in entries or [] if isinstance(e, dict) and isinstance(e.get("traits"), dict)]
+        self.path = None
+
+    def load(self):
+        return [dict(e) for e in self.entries]
+
+    def genomes(self, limit=None):
+        entries = sorted(self.entries, key=lambda e: e.get("score", float("-inf")), reverse=True)
+        return [Genome.from_traits(e["traits"]) for e in entries[:limit]]
+
+    def remember(self, scored, size):
+        self.entries = merge_hall_of_fame(self.entries, scored, size)
+        return self.load()
+
+    def forget(self):
+        self.entries = []
+
+
 class LearningMemory:
     """Hall of fame of the best genomes across runs (``evolution_memory.json``)."""
 
@@ -192,16 +256,7 @@ class LearningMemory:
     def remember(self, scored, size):
         """Merge (score, genome) pairs into the hall of fame, keeping the ``size`` best."""
         with self._lock:
-            now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-            entries = self.load() + [
-                {"score": float(score), "traits": genome.traits(), "remembered": now} for score, genome in scored
-            ]
-            unique = {}
-            for entry in entries:
-                key = tuple(round(entry["traits"].get(name, 0), 4) for name in sorted(entry["traits"]))
-                if key not in unique or entry["score"] > unique[key]["score"]:
-                    unique[key] = entry
-            best = sorted(unique.values(), key=lambda e: e["score"], reverse=True)[:size]
+            best = merge_hall_of_fame(self.load(), scored, size)
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
             temporary = f"{self.path}.tmp"
             with open(temporary, "w", encoding="utf-8") as stream:
@@ -239,6 +294,47 @@ class NarrativeEvolution:
         self.memory = memory
         self.map_fn = map_fn or (lambda function, tasks: list(map(function, tasks)))
 
+    def _max_steps(self):
+        """Steps per evaluated story: the whole story with full_length_stories."""
+        steps = max(1, int(self.settings["max_steps"]))
+        if self.settings["full_length_stories"]:
+            steps = max(steps, max(100, int(config.get("narrative_end.max_actions", 100))))
+        return steps
+
+    def _situations(self):
+        """(start, mission) pairs every storyteller is evaluated on: each starting
+        location with each mission that can be reached from it (None: not stratified)."""
+        if not self.settings["stratify_episodes"]:
+            return None
+        if getattr(self, "_situation_cache", None) is None:
+            genome = Genome(random.Random(0))
+            probe = GameState(self.build_world(genome), genome, rng=random.Random(0))
+            missions = [m for m in probe.world.missions.values() if probe.is_enabled(m)] \
+                if config.get("mission_settings.enabled", True) else []
+            pairs = [
+                (loc.name, mission.name) for loc in probe._start_candidates() for mission in missions
+                if probe._mission_viable_from(mission, loc.name)
+            ] or [(loc.name, None) for loc in probe._start_candidates()]
+            self._situation_cache = pairs
+        return self._situation_cache
+
+    def _options(self, situations):
+        return {"situations": situations, "aggregate": self.settings["score_aggregate"],
+                "consistency_weight": self.settings["consistency_weight"]}
+
+    def _episode_situations(self, generation, count):
+        situations = self._situations()
+        if not situations:
+            return None
+        return [situations[(generation * count + episode) % len(situations)] for episode in range(count)]
+
+    def benchmark_task(self, traits):
+        """The validation task of a storyteller (same stories for every one compared)."""
+        seeds = self._validation_seeds()
+        situations = self._situations()
+        situations = [situations[i % len(situations)] for i in range(len(seeds))] if situations else None
+        return (self.build_world, self.fitness, traits, seeds, self._max_steps(), self._options(situations))
+
     def _story_seeds(self, generation):
         """The shared story seeds of one generation."""
         episodes = max(1, int(self.settings["episodes_per_genome"]))
@@ -247,10 +343,15 @@ class NarrativeEvolution:
         return [self.rng.randrange(2 ** 31) for _ in range(episodes)]
 
     def _validation_seeds(self):
-        """Story seeds of the benchmark, the same in every generation."""
-        episodes = max(1, int(self.settings["validation_episodes"]))
-        base = self.seed if self.seed is not None else self.rng.randrange(2 ** 31)
-        return [base + 10 ** 6 + episode for episode in range(episodes)]
+        """Story seeds of the benchmark, the same in every generation (drawn once
+        when no seed is set, so the benchmark stays fixed)."""
+        if getattr(self, "_validation_seed_cache", None) is None:
+            episodes = max(1, int(self.settings["validation_episodes"]))
+            if self.settings["cover_situations"]:
+                episodes = max(episodes, len(self._situations() or []))
+            base = self.seed if self.seed is not None else self.rng.randrange(2 ** 31)
+            self._validation_seed_cache = [base + 10 ** 6 + episode for episode in range(episodes)]
+        return list(self._validation_seed_cache)
 
     def _initial_population(self):
         size = max(1, int(self.settings["pop_size"]))
@@ -263,11 +364,17 @@ class NarrativeEvolution:
         size = max(1, min(int(self.settings["tournament_size"]), len(scored)))
         return max(self.rng.sample(scored, size), key=lambda pair: pair[0])[1]
 
-    def _next_population(self, scored, mutation_step):
+    def _next_population(self, scored, mutation_step, diversity=None):
         size = len(scored)
         elites = max(1, int(round(size * float(self.settings["elitism_rate"]))))
-        immigrants = int(size * float(self.settings["random_immigrant_rate"]))
+        immigrant_rate = float(self.settings["random_immigrant_rate"])
+        if diversity is not None and diversity < float(self.settings["min_diversity"]):
+            # The population is collapsing onto one storyteller: more newcomers, wider steps.
+            immigrant_rate = max(immigrant_rate, float(self.settings["max_immigrant_rate"]))
+            mutation_step = min(float(self.settings["max_mutation_step"]), mutation_step * 1.5)
+        immigrants = int(size * immigrant_rate) if size > elites else 0
         population = [Genome.from_traits(g.traits()) for _, g in scored[:elites]]
+        seen = {self._genome_key(g) for g in population}
         while len(population) < size - immigrants:
             parent = self._tournament(scored)
             if size > 1 and self.rng.random() < float(self.settings["crossover_rate"]):
@@ -275,35 +382,110 @@ class NarrativeEvolution:
             else:
                 child = Genome.from_traits(parent.traits())
             child.mutate(rng=self.rng, rate=float(self.settings["mutation_rate"]), step=mutation_step)
+            if self._genome_key(child) in seen:  # a copy adds nothing: mutate it again, harder
+                child.mutate(rng=self.rng, rate=1.0, step=min(float(self.settings["max_mutation_step"]), mutation_step * 2))
+            seen.add(self._genome_key(child))
             population.append(child)
         population += [Genome(self.rng) for _ in range(size - len(population))]
         return population
 
-    def run(self, progress=None, stop_event=None):
-        """Evolve; ``progress(generation, total, GenerationStats)`` reports each generation."""
-        generations = max(1, int(self.settings["generations"]))
-        max_steps = max(1, int(self.settings["max_steps"]))
-        base_step = float(self.settings["mutation_step"])
-        mutation_step = base_step
-        population, warm_started = self._initial_population()
-        validation_seeds = self._validation_seeds()
-        history, best = [], None
-        champions = []  # (benchmark score, genome) of every generation's champion
-        stale = 0
-        early_stopped = False
-        scored = []
+    @staticmethod
+    def _genome_key(genome):
+        return tuple(round(value, 4) for _, value in sorted(genome.traits().items()))
 
-        for generation in range(generations):
+    # ---- training state ------------------------------------------------------------
+
+    CHECKPOINT_FORMAT = "ane-evolution-checkpoint"
+
+    def _checkpoint(self, next_generation, population, scored, mutation_step, stale, best, champions,
+                    history, warm_started, early_stopped):
+        """The complete training state after a generation, as plain JSON data:
+        resuming from it continues exactly as an uninterrupted run would."""
+        version, internal, gauss = self.rng.getstate()
+        return {
+            "format": self.CHECKPOINT_FORMAT,
+            "version": 1,
+            "settings": dict(self.settings),
+            "seed": self.seed,
+            "rng_state": [version, list(internal), gauss],
+            "next_generation": next_generation,
+            "population": [genome.traits() for genome in population],
+            "scored": [[float(score), genome.traits()] for score, genome in scored],
+            "mutation_step": mutation_step,
+            "stale": stale,
+            "best": None if best is None else {"score": best[0], "traits": best[1].traits(), "seeds": list(best[2])},
+            "champions": [[float(score), genome.traits()] for score, genome in champions],
+            "history": [asdict(stats) for stats in history],
+            "warm_started": warm_started,
+            "early_stopped": bool(early_stopped),
+            "validation_seeds": self._validation_seeds(),
+            "situations": [list(pair) for pair in self._situations()] if self._situations() else None,
+        }
+
+    @classmethod
+    def from_checkpoint(cls, build_world, fitness, checkpoint, generations=None, memory=None, map_fn=None):
+        """An evolution set up to continue ``checkpoint``; ``generations`` more
+        generations (default: the remaining ones of the original run)."""
+        if not isinstance(checkpoint, dict) or checkpoint.get("format") != cls.CHECKPOINT_FORMAT:
+            raise ValueError("Not an evolution checkpoint.")
+        settings = dict(checkpoint["settings"])
+        if generations is not None:
+            settings["generations"] = int(checkpoint["next_generation"]) + max(1, int(generations))
+        return cls(build_world, fitness, settings=settings, seed=checkpoint.get("seed"), memory=memory, map_fn=map_fn)
+
+    def run(self, progress=None, stop_event=None, resume=None, checkpoint=None):
+        """Evolve; ``progress(generation, total, GenerationStats)`` reports each generation.
+
+        ``checkpoint(state)`` receives the complete training state after every
+        generation (also kept as ``last_checkpoint``). ``resume`` continues such
+        a state from its next generation, exactly as an uninterrupted run would.
+        """
+        if self.settings["score_aggregate"] not in AGGREGATES:
+            raise ValueError(f"evolution.score_aggregate must be one of {', '.join(AGGREGATES)}.")
+        generations = max(1, int(self.settings["generations"]))
+        max_steps = self._max_steps()
+        base_step = float(self.settings["mutation_step"])
+        if resume is not None:
+            if resume.get("format") != self.CHECKPOINT_FORMAT:
+                raise ValueError("Not an evolution checkpoint.")
+            version, internal, gauss = resume["rng_state"]
+            self.rng.setstate((version, tuple(internal), gauss))
+            self._validation_seed_cache = list(resume["validation_seeds"])
+            if resume.get("situations") is not None:
+                self._situation_cache = [tuple(pair) for pair in resume["situations"]]
+            start = int(resume["next_generation"])
+            population = [Genome.from_traits(traits) for traits in resume["population"]]
+            scored = [(score, Genome.from_traits(traits)) for score, traits in resume["scored"]]
+            mutation_step, stale = float(resume["mutation_step"]), int(resume["stale"])
+            saved = resume.get("best")
+            best = None if saved is None else (saved["score"], Genome.from_traits(saved["traits"]), list(saved["seeds"]))
+            champions = [(score, Genome.from_traits(traits)) for score, traits in resume["champions"]]
+            history = [GenerationStats(**stats) for stats in resume["history"]]
+            warm_started = int(resume.get("warm_started", 0))
+        else:
+            start, mutation_step, stale, best, scored = 0, base_step, 0, None, []
+            population, warm_started = self._initial_population()
+            history, champions = [], []  # champions: (benchmark score, genome) of every generation
+        validation_seeds = self._validation_seeds()
+        early_stopped = False
+        self.last_checkpoint = resume
+
+        for generation in range(start, generations):
             seeds = self._story_seeds(generation)
-            tasks = [(self.build_world, self.fitness, genome.traits(), seeds, max_steps) for genome in population]
+            options = self._options(self._episode_situations(generation, len(seeds)))
+            tasks = [(self.build_world, self.fitness, genome.traits(), seeds, max_steps, options) for genome in population]
             scores = self.map_fn(evaluate_task, tasks)
             scored = sorted(zip(scores, population), key=lambda pair: pair[0], reverse=True)
 
-            # The champion of this generation on the fixed benchmark.
-            champion = Genome.from_traits(scored[0][1].traits())
-            validation = self.map_fn(
-                evaluate_task, [(self.build_world, self.fitness, champion.traits(), validation_seeds, max_steps)]
-            )[0]
+            # The champion of this generation: the best on the fixed benchmark among the
+            # benchmark_top_k best on this generation's stories (a lucky story cannot crown it).
+            top_k = max(1, min(int(self.settings["benchmark_top_k"]), len(scored)))
+            contenders = [Genome.from_traits(genome.traits()) for _, genome in scored[:top_k]]
+            validations = self.map_fn(evaluate_task, [self.benchmark_task(g.traits()) for g in contenders])
+            order = sorted(range(top_k), key=lambda i: validations[i], reverse=True)
+            validation, champion = validations[order[0]], contenders[order[0]]
+            # The benchmarked ones lead the breeding pool in their benchmark order (the elites).
+            scored = [scored[i] for i in order] + scored[top_k:]
             champions.append((validation, champion))
             improved = best is None or validation > best[0]
             if improved:
@@ -317,30 +499,38 @@ class NarrativeEvolution:
             values = [score for score, _ in scored]
             stats = GenerationStats(
                 generation=generation,
-                best=round(values[0], 3),
+                best=round(max(values), 3),
                 mean=round(statistics.mean(values), 3),
-                worst=round(values[-1], 3),
+                worst=round(min(values), 3),
                 spread=round(statistics.pstdev(values), 3),
                 diversity=round(_diversity(population), 4),
                 mutation_step=round(mutation_step, 4),
                 improved=improved,
-                best_traits=scored[0][1].traits(),
+                best_traits=champion.traits(),
                 validation=round(validation, 3),
             )
             history.append(stats)
             if progress is not None:
                 progress(generation, generations, stats)
 
+            # The next generation is bred now, so the saved state can continue from it.
+            population = self._next_population(scored, mutation_step, diversity=stats.diversity)
             early = int(self.settings["early_stop_generations"])
-            if (stop_event is not None and stop_event.is_set()) or (early and stale >= early):
-                early_stopped = early and stale >= early
+            early_stopped = bool(early and stale >= early)
+            self.last_checkpoint = self._checkpoint(
+                generation + 1, population, scored, mutation_step, stale, best, champions, history,
+                warm_started, early_stopped,
+            )
+            if checkpoint is not None:
+                checkpoint(self.last_checkpoint)
+            if (stop_event is not None and stop_event.is_set()) or early_stopped:
                 break
-            if generation < generations - 1:
-                population = self._next_population(scored, mutation_step)
 
         best_score, best_genome, best_seeds = best
+        situations = self.benchmark_task(best_genome.traits())[5]["situations"] or [None] * len(best_seeds)
         best_state = max(
-            (play_episode(self.build_world, best_genome, seed, max_steps) for seed in best_seeds),
+            (play_episode(self.build_world, best_genome, seed, max_steps, situation)
+             for seed, situation in zip(best_seeds, situations)),
             key=self.fitness,
         )
         if self.memory is not None:
