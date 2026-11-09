@@ -25,13 +25,23 @@ world_definition:
       enabled_if: {thief_caught: false, fence_exposed: false}
       title: Expose the fence
       description: Find out who buys the goods stolen at the market.
-      goal:
-        action: Interrogate the thief
+      stages:                      # a quest in steps, completed in order
+      - title: Make the thief talk
+        description: Corner the market thief and get a name.
+        goal: {action: Interrogate the thief}
+      - title: Find the fence's ledger
+        description: The thief named someone in the Sewers; their ledger is the proof.
+        goal: {item: Fence's Ledger}
     break_into_the_vault:
       title: Break into the Vault
       description: Find a way past the guards, into the Vault, and crack its main safe.
-      goal:
-        action: Crack the main safe
+      stages:
+      - title: Get into the Vault
+        description: Find a way past the guards.
+        goal: {location: Vault}
+      - title: Crack the main safe
+        description: Whatever the city whispers about lies inside it.
+        goal: {action: Crack the main safe}
     shield_bearer:
       title: Find a shield
       description: Get hold of a heavy shield before the real trouble starts.
@@ -40,9 +50,13 @@ world_definition:
     royal_audience:
       title: Buy your way into the Palace
       description: Reach the Palace with at least 20 coins to your name.
-      goal:
-        location: Palace
-        coins: 20
+      stages:
+      - title: Raise 20 coins
+        description: Nobody enters the Palace with an empty purse.
+        goal: {coins: 20}
+      - title: Reach the Palace
+        description: Bring the coins to the Palace gates.
+        goal: {location: Palace, coins: 20}
     rid_the_market_of_the_thief:
       enabled_if: {thief_caught: false}
       title: Rid the market of the thief

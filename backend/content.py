@@ -224,14 +224,14 @@ def delete_entity(kind: str, selected_name: str):
 ACTION_FIELDS = {
     "id", "name", "outcomes", "required_object", "required_tag", "required_coins",
     "collects_object", "consumes_object", "triggers_event", "repeat", "exclusive_group", "skill_check",
-    "enabled_if", "retry_on_failure",
+    "enabled_if", "retry_on_failure", "until",
 }
 
 OUTCOME_FIELDS = {
     "id", "desc", "tags", "success_prob", "use_genome_bias", "health_change", "coin_change",
     "spawn", "move_to", "move_to_tags", "reveal_npc", "reveal_object", "reveal_location",
     "linked_location", "linked_location_mode", "linked_npc", "linked_item", "lead_to_known",
-    "remove_npc", "send_to", "set_variables", "change_variables", "on_check", "change_stats", "effects",
+    "remove_npc", "send_to", "set_variables", "change_variables", "on_check", "change_stats", "effects", "until",
 }
 
 ACTION_REFERENCE = """
@@ -680,24 +680,34 @@ def validate_missions(missions) -> list[str]:
         if not isinstance(mission, dict):
             errors.append(f"{label} must be a mapping.")
             continue
-        unknown = sorted(set(mission) - {"title", "description", "goal", "weight", "enabled_if", "rewards"})
+        unknown = sorted(set(mission) - {"title", "description", "goal", "weight", "enabled_if", "rewards", "stages"})
         if unknown:
             errors.append(f"{label}: unknown field(s) {', '.join(unknown)}.")
-        goal = mission.get("goal")
-        if not isinstance(goal, dict) or not goal:
-            errors.append(f"{label} needs a `goal` mapping.")
+        stages = mission.get("stages")
+        if stages is not None and (not isinstance(stages, list) or not stages):
+            errors.append(f"{label}: `stages` must be a list of stages (title, description, goal, rewards).")
             continue
-        bad = sorted(set(goal) - set(Mission.GOAL_KEYS))
-        if bad:
-            errors.append(f"{label}: unknown goal key(s) {', '.join(bad)}; use {', '.join(Mission.GOAL_KEYS)}.")
-        for key, known in references.items():
-            if key in goal and goal[key] not in known:
-                errors.append(f"{label}: `{goal[key]}` in `goal.{key}` does not exist.")
-        if "coins" in goal and (not isinstance(goal["coins"], int) or goal["coins"] < 0):
-            errors.append(f"{label}: `goal.coins` must be a whole number of 0 or more.")
+        goals = [(f"stages[{n}].goal", (s or {}).get("goal") if isinstance(s, dict) else None) for n, s in enumerate(stages or [], 1)]
+        if mission.get("goal") is not None or not goals:
+            goals.insert(0, ("goal", mission.get("goal")))
         refs = conditions.References.from_world({**world, "missions": missions})
-        for key in ("variables", "condition"):
-            errors += conditions.validate(goal.get(key), refs, where=f"{mission_id}.goal.{key}")
+        for where, goal in goals:
+            if not isinstance(goal, dict) or not goal:
+                errors.append(f"{label} needs a `{where}` mapping.")
+                continue
+            bad = sorted(set(goal) - set(Mission.GOAL_KEYS))
+            if bad:
+                errors.append(f"{label}: unknown goal key(s) in `{where}` {', '.join(bad)}; use {', '.join(Mission.GOAL_KEYS)}.")
+            for key, known in references.items():
+                if key in goal and goal[key] not in known:
+                    errors.append(f"{label}: `{goal[key]}` in `{where}.{key}` does not exist.")
+            if "coins" in goal and (not isinstance(goal["coins"], int) or goal["coins"] < 0):
+                errors.append(f"{label}: `{where}.coins` must be a whole number of 0 or more.")
+            for key in ("variables", "condition"):
+                errors += conditions.validate(goal.get(key), refs, where=f"{mission_id}.{where}.{key}")
+        for n, stage in enumerate(stages or [], 1):
+            if isinstance(stage, dict):
+                errors += effects.validate(stage.get("rewards"), refs, where=f"{mission_id}.stages[{n}].rewards")
         errors += conditions.validate(mission.get("enabled_if"), refs, where=f"{mission_id}.enabled_if")
         errors += effects.validate(mission.get("rewards"), refs, where=f"{mission_id}.rewards")
         weight = mission.get("weight", 1)

@@ -96,12 +96,14 @@ OPTIONAL_CONFIG_PATHS = {
     "evolution.cover_situations",
     "evolution.benchmark_top_k",
     "fitness.base.action_limit_penalty",
+    "fitness.base.stage_bonus",
     "fitness.length_normalization.mode",
     "fitness.length_normalization.floor_steps",
     "fitness.engagement",
     "skill_check_resolution.failure_damage",
     "skill_check_resolution.dangerous_failure_damage",
     "director",
+    "world_definition.story_map",
     "mission_selection",
     "player_options",
 }
@@ -307,10 +309,16 @@ def _validate_complete_config(candidate: object, reference: object, path: str = 
         if not isinstance(candidate, dict):
             return ["`world_definition.missions` must be a mapping."]
         for name, entry in candidate.items():
-            if not isinstance(entry, dict) or not isinstance(entry.get("goal"), dict) or not entry["goal"]:
-                errors.append(f"Mission `{name}` needs a `goal` mapping.")
-            elif unknown := sorted(set(entry["goal"]) - set(Mission.GOAL_KEYS)):
-                errors.append(f"Mission `{name}` has unknown goal keys: {', '.join(unknown)}.")
+            stages = entry.get("stages") if isinstance(entry, dict) else None
+            goals = [stage.get("goal") if isinstance(stage, dict) else None for stage in stages or []]
+            if not isinstance(entry, dict) or (not goals and (not isinstance(entry.get("goal"), dict) or not entry["goal"])):
+                errors.append(f"Mission `{name}` needs a `goal` mapping (or `stages`).")
+                continue
+            for goal in [entry.get("goal")] * ("goal" in entry) + goals:
+                if not isinstance(goal, dict) or not goal:
+                    errors.append(f"Mission `{name}`: every stage needs a `goal` mapping.")
+                elif unknown := sorted(set(goal) - set(Mission.GOAL_KEYS)):
+                    errors.append(f"Mission `{name}` has unknown goal keys: {', '.join(unknown)}.")
         return errors
     if path == "world_definition.events":
         if not isinstance(candidate, dict):
@@ -362,6 +370,48 @@ def _validate_complete_config(candidate: object, reference: object, path: str = 
             errors.append(f"`{label}` must be {type(reference).__name__}, not {type(candidate).__name__}.")
     return errors
 
+WORLD_CONTENT = ("locations", "characters", "objects", "events", "missions", "variables")
+LOCATION_KEYED = (("location_constraints",), ("action_selection", "location_penalties"))
+
+
+def complete_config(cfg):
+    """(configuration, errors, filled): ``cfg`` with the tuning it lacks taken from the
+    built-in configuration (its own values win), so a file may hold only a world. Its
+    world content is kept as written; tuning keyed by places of the built-in world that
+    this world lacks is dropped; places the tuning must name (the arrest location, the
+    default start) have to exist in this world."""
+    import copy
+
+    def merge(default, own):
+        if isinstance(default, dict) and isinstance(own, dict):
+            merged = copy.deepcopy(default)
+            merged.update({key: merge(default.get(key), value) for key, value in own.items()})
+            return merged
+        return copy.deepcopy(own)
+
+    own = {key: value for key, value in dict(cfg).items() if key != "generated_run"}
+    defaults = config.default_config()
+    default_world = defaults.get("world_definition") or {}
+    defaults["world_definition"] = {k: v for k, v in default_world.items() if k not in WORLD_CONTENT}
+    merged = merge(defaults, own)
+    filled = sorted(set(merged) - set(own))
+    places = set(((merged.get("world_definition") or {}).get("locations") or {}))
+    errors = []
+    if places and places != set(default_world.get("locations") or {}):
+        for path in LOCATION_KEYED:
+            parent = merged
+            for key in path[:-1]:
+                parent = parent.get(key) if isinstance(parent.get(key), dict) else {}
+            mapping = parent.get(path[-1])
+            if isinstance(mapping, dict):
+                parent[path[-1]] = {name: rule for name, rule in mapping.items() if name in places}
+        for label, value in (("game_state.arrest_location", (merged.get("game_state") or {}).get("arrest_location")),
+                             ("start_selection.default_location", (merged.get("start_selection") or {}).get("default_location"))):
+            if value is not None and value not in places:
+                errors.append(f"`{label}` is `{value}`, which is not a place of this world: set it to one of its locations.")
+    return merged, errors, filled
+
+
 def upload_config(uploaded_file):
     if not uploaded_file:
         raise AuthoringError("Choose a YAML configuration file first.")
@@ -380,19 +430,23 @@ def upload_config(uploaded_file):
 
     if not isinstance(uploaded, dict):
         raise AuthoringError("The YAML document must contain a mapping/object at its root.")
-    errors = _validate_complete_config(uploaded, config.default_config())
+    if "world_definition" not in uploaded:
+        raise AuthoringError("The configuration needs a `world_definition`.")
+    uploaded, errors, filled = complete_config(uploaded)  # a world-only file gets the built-in tuning
+    errors += _validate_complete_config(uploaded, config.default_config())
     if not errors:  # every condition and effect list, against the uploaded world itself
         errors = logic_errors(uploaded.get("world_definition"))
     if errors:
         preview = "\n".join(f"- {error}" for error in errors[:20])
         remainder = len(errors) - 20
-        if remainder:
+        if remainder > 0:
             preview += f"\n- …and {remainder} more problem(s)."
         raise AuthoringError("The configuration is incomplete or invalid:\n" + preview)
 
     config.use_override(uploaded)
     engine.refresh_runtime_settings()
-    return (*load_settings(), "✅ Uploaded configuration validated and activated for simulations.")
+    note = f" Taken from the built-in configuration: {', '.join(filled)}." if filled else ""
+    return (*load_settings(), "✅ Uploaded configuration validated and activated for simulations." + note)
 
 def use_builtin_config():
     config.clear_override()

@@ -185,8 +185,8 @@ mission_settings:
   end_on_goal: true
   route_weight: 6.0
   discovery_route_cost: 2
-  pursuit_start_step: 12
-  pursuit_full_step: 30
+  pursuit_start_step: 18       # goal pursuit starts here...
+  pursuit_full_step: 40        # ...and is at full strength here (stories of about 28 turns)
 start_selection:
   # Where each story starts: a weighted random draw among the locations with
   # `start_eligible: true` (weight: their `start_weight`) that are enabled and
@@ -379,8 +379,9 @@ fitness:
     dungeon_penalty: 10
     max_action_completion_bonus: 0   # reaching the action limit is not an ending...
     action_limit_penalty: 30         # ...a story cut off there is penalised (the director ends it with an epilogue)
+    stage_bonus: 15                  # per stage of a staged mission completed
     mission_win_bonus: 80
-    mission_win_min_steps: 20
+    mission_win_min_steps: 25
     unfinished_penalty: 20     # a story cut by the evaluation length before its ending
   repetition:                  # losses for repetitive stories
     free_uses: 2               # an action may be taken this often before it costs
@@ -521,6 +522,9 @@ editor_suggester:
 world_definition:
   spawn_strategy: similarity
   similarity_threshold: 0.5
+  story_map:                   # every story draws its own geography from the spawn rules:
+    enabled: true
+    neighbors: 3               # each place opens onto 3 of the places it fits (more fitting: more likely)
 augmentation:
   enabled: true
   min_locations: 12
@@ -539,7 +543,11 @@ director:                      # how a story builds over its course, like a game
   finale_actions: 15           # the finale starts this many actions before the action limit:
   finale_goal_pull: 1.0        # the mission pulls at full strength, and the story ends with an epilogue
   loop_window: 6               # an action used within this many turns whose outcomes were all shown is not offered
-  min_options: 2               # ...unless fewer options would remain
+  min_options: 2               # ...unless fewer options would remain (one way to move on is enough)
+  barred_turns: 5              # after a failed attempt, the engine does not carry the player where it led, for this long
+  close_threads: true          # late in the story: open fewer new clues, pay off the open ones
+  escape_bonus: 15             # each failed escape makes the next easier by this (skill check modifier)
+  release_after: 5             # a prisoner still locked in after this many turns there is released
 mission_selection:             # how a story's mission is drawn for a player profile
   recent_missions: 3           # the profile's latest missions...
   repeat_factor: 0.3           # ...are drawn this much less often, each time they appear

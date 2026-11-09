@@ -586,20 +586,12 @@ def _literal(value):
 
 
 def _completed_config(cfg):
-    """An artifact's configuration with the tuning it lacks taken from the current
-    defaults (its own values win); its world (world_definition) is kept as it is."""
-    def merge(default, own):
-        if isinstance(default, dict) and isinstance(own, dict):
-            merged = copy.deepcopy(default)
-            merged.update({key: merge(default.get(key), value) for key, value in own.items()})
-            return merged
-        return copy.deepcopy(own)
+    """An artifact's configuration completed as an upload is (store.complete_config)."""
+    from .store import complete_config
 
-    own = {k: v for k, v in dict(cfg).items() if k != "generated_run"}
-    defaults = config.default_config()
-    defaults.pop("world_definition", None)
-    completed = merge(defaults, own)
-    filled = sorted(set(completed) - set(own))
+    completed, errors, filled = complete_config(cfg)
+    if errors:
+        raise AuthoringError("; ".join(errors))
     return completed, filled
 
 

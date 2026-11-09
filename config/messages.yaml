@@ -24,14 +24,15 @@ messages:
   end_epilogue: "[EPILOGUE] The day draws to a close after {turns} turns. {mission}You saw {places} places, met {people} people and leave with {items} items."  # {turns} {mission} {places} {people} {items}
   epilogue_mission_open: "{title} is left for another day. "  # {title}
   finale_start: "[FINALE] Time is running out: {title} must be settled now."  # {title}
+  stage_complete: "[QUEST] {done}: done. Next: {next}. {description}"  # {done} {next} {description}
   finale_start_free: "[FINALE] Time is running out: the story nears its end."
   end_stalled: "The story stalled in {location} for too long."  # {location}
   end_dungeon: "The traveler was thrown into the {location}."  # {location}
 
   # --- Arriving and staying
   arrival: "\nYou are in the {location}. {description}"  # {description}, {location}
-  arrival_npc: "Met a {npc}: {description}"  # {description}, {npc}
-  arrival_item: "Nearby you see: {description}"  # {description}, {item}
+  arrival_npc: "Met {npc}: {description}"  # {description}, {npc}
+  arrival_item: "Nearby you see {item}: {description}"  # {description}, {item}
   continue_here: "\nContinuing your activities in the {location}..."  # {location}
 
   # --- Choices and results
@@ -49,6 +50,7 @@ messages:
   location_stayed: "[LOCATION] Still at {location}"  # {location}
   auto_transfer: "[AUTO TRANSFER] No actions remained in {origin}, so a new route carried you to {destination}."  # {destination}, {origin}
   stall_move: "[MOVE ON] After lingering in the {origin}, you set out for the {destination}."  # {destination}, {origin}
+  released: "[RELEASED] After a long wait the guards lose interest and let you out of the {origin}; you make for the {destination}."  # {origin} {destination}
   spawn: "[SPAWN] New path discovered: {location}"  # {location}
   spawn_forced: "[SPAWN] A situational path opens to: {location}"  # {location}
   voyage: "[VOYAGE] The opening draws you toward {location}."  # {location}

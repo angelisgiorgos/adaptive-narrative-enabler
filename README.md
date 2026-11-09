@@ -41,6 +41,7 @@ adaptive-narrative-enabler/
 |   |-- records.py                  # Records database: runs, worlds, engines, stories, turns
 |   `-- export.py                   # Offline engine export for games
 |-- narrative_runtime/              # Offline runtime shipped in exports: embedding API, HTTP server, CLI
+|-- examples/worlds/                # Example storyworlds (world-only files): a frozen monastery, an orbital station
 |-- docs/
 |   |-- API.md                      # REST API: how it behaves, every endpoint, examples
 |   `-- CHANGELOG.md                # Every change, under Unreleased until released
@@ -652,6 +653,14 @@ not change the active configuration. The upload is a runtime alternative and
 does not overwrite the files under `config/`. Saving an editor entry or the
 built-in settings restores the file-based configuration.
 
+**A file may hold only a world.** Every tuning section it does not set is taken
+from the built-in configuration (its own values win), tuning keyed by places
+of the built-in world that it lacks is dropped, and the places the tuning must
+name (`game_state.arrest_location`, `start_selection.default_location`) have
+to be its own. [`examples/worlds/`](examples/worlds/) holds two such worlds in
+other genres, a frozen monastery and an orbital station, with staged missions,
+`until` hints, a prison and remembered variables: upload one to play it.
+
 Routes discovered during play are reversible, so previously connected
 locations appear as travel actions from either direction. Every visible NPC
 also receives a repeatable **Talk with…** action. Conversations count toward
@@ -815,6 +824,21 @@ automatically (see [Docker config volumes](#docker-config-volumes)).
 
 ### Missions and winning
 
+**Missions in stages.** A mission may be a quest in steps: `stages` lists
+`{title, description, goal, rewards}`, completed in order. Completing one is
+told (`[QUEST] Make the thief talk: done. Next: Find the fence's ledger. …`),
+applies its rewards, and the story then pursues the next stage (route planning,
+the director's finale); the last one completes the mission. The score counts
+each stage reached (`fitness.base.stage_bonus`), won or not.
+
+```yaml
+expose_the_fence:
+  title: Expose the fence
+  stages:
+  - {title: Make the thief talk, goal: {action: Interrogate the thief}}
+  - {title: Find the fence's ledger, description: The thief named someone in the Sewers., goal: {item: Fence's Ledger}}
+```
+
 Every story has a mission, a goal the player must achieve to win. Missions are
 defined under `world_definition.missions` in
 [`config/missions.yaml`](config/missions.yaml). When a story starts, one mission
@@ -939,14 +963,14 @@ mission_settings:
   end_on_goal: true        # false: mark the story won but keep playing
   route_weight: 6.0        # pull of route progress (× goal_bias × pacing)
   discovery_route_cost: 2  # cost of a path that must be discovered first
-  pursuit_start_step: 12   # goal steering is off before this step...
-  pursuit_full_step: 30    # ...and at full strength from this step
+  pursuit_start_step: 18   # goal steering is off before this step...
+  pursuit_full_step: 40    # ...and at full strength from this step
 action_selection:
   mission_goal_weight: 6.0 # bonus per goal condition an action or outcome advances (× goal_bias × pacing)
 fitness:
   base:
     mission_win_bonus: 60      # fitness reward for winning...
-    mission_win_min_steps: 20  # ...paid in full only for stories at least this long
+    mission_win_min_steps: 25  # ...paid in full only for stories at least this long
 ```
 
 For longer stories, move the arc later (`pursuit_start_step` /
@@ -1458,6 +1482,82 @@ always the storyteller's favourite and following it is not an autopilot.
 `recent_missions` latest missions are drawn `repeat_factor` times less often
 each time they appear, as recent starts are, so a returning player meets
 other missions.
+
+### Each story's own geography
+
+The spawn rules (`world_definition.spawn_strategy: similarity`) say which
+places *may* open onto which; with `similarity_threshold: 0.5` that is almost
+every pair. With `world_definition.story_map` every story draws its own
+geography from them: each place opens onto `neighbors` (3) of the places it
+fits, more fitting ones more often, joined into one connected map. Discovery,
+route planning, mission choice and moving a stuck traveler all follow it,
+so two stories of the same world have different maps (about a quarter of their
+links in common) and each map stays consistent for the whole story. NPC leads
+still cross it (people know distant places). The map is drawn from the
+story's seed, so storytellers compared on the same story share the same map.
+
+```yaml
+world_definition:
+  story_map:
+    enabled: true
+    neighbors: 3
+```
+
+### Coherence rules
+
+Rules found by auditing generated stories, applied to every world:
+
+- **Narration.** The location is told after a move (`Transferred from A to
+  B`), never before it. Characters and items are named with an article:
+  "Met Aurora" (an NPC with `article: ""`), "Met the Thief" (unique), "Met a
+  Guard" (generic), "Nearby you see an Ancient Map: …", "some Gold Coins". An
+  NPC's `article` sets it explicitly.
+- **Escapes are for prisoners.** An action whose outcome carries the
+  location's `escape_tags` is offered only while the player is locked there
+  (`lock_when: sent` or `always`), and may be tried again until it works.
+- **No small talk with an attacker.** A hostile NPC (one with an
+  `encounter_event`) gets no generic conversation; authored `dialogue` and
+  actions still apply.
+- **Talking in circles stalls.** A conversation that only repeats what was
+  said counts toward `narrative_end.max_consecutive_steps_in_location`.
+- **Leads go somewhere.** An NPC lead never points to the place the player is
+  in, and never takes them back where the turn started after the outcome
+  moved them. Someone who just refused or beat the player (a `failure`
+  outcome) gives no directions.
+- **A way to move on is a real choice.** The director hides what would only
+  repeat itself even down to one option, when that option is travel or (for a
+  prisoner) an escape; otherwise at least `min_options` stay.
+- **Written routes count.** Route planning (mission choice, starts, goal
+  pursuit) also follows the routes a world's location actions open (`move_to`,
+  `reveal_location`), not only the map, so worlds that connect places through
+  their actions get every start their missions allow.
+- **No way here while already here.** An action whose successes only bring
+  the player where they are ("the officer waves you through to the command
+  deck", on the deck) is not offered.
+- **Goals with a direction.** A goal such as `variables: {reputation: {gte:
+  1}}` is pursued through actions that *raise* the value; actions that lower
+  it no longer count as a way to the goal.
+- **Hints have their time.** An action or outcome with `until` (a condition)
+  is no longer offered or told once it holds, e.g. `until: {action_done: Crack
+  the main safe}` on a hint about the safe, or `until: {reactor_fixed: true}`
+  across playthroughs. A numbered clue (`setup_N`) is not told once its payoff
+  (`payoff_N`) has been, and an action that could only tell such clues is not
+  offered.
+- **A failure is not a free ride.** After a failed attempt, the places its
+  success would have led to are barred from the engine's own moves (moving on
+  after stalling, following a new path, a lead) for `director.barred_turns`;
+  the player may still walk there.
+- **Threads close.** As the story escalates, planting new clues is worth less
+  and paying off open ones more (`director.close_threads`); in the finale no
+  new clue is planted.
+- **A prison costs turns, never the story.** Each failed escape makes the
+  next attempt easier (`director.escape_bonus` on its skill check), and a
+  player still locked in after `director.release_after` turns is released
+  (`[RELEASED] …`) instead of the story ending as stalled.
+- **Pacing.** Goal pursuit starts at `mission_settings.pursuit_start_step`
+  (18) and reaches full strength at `pursuit_full_step` (40), and a win before
+  `fitness.base.mission_win_min_steps` (25) counts as rushed: stories run
+  about 28 turns instead of 21, with as many missions won.
 
 ### Story rules
 

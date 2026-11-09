@@ -322,8 +322,8 @@ def get_config():
 def upload_config(file: UploadFile = File(...)):
     path = _save_upload(file, {".yaml", ".yml"}, store.MAX_CONFIG_UPLOAD_BYTES)
     try:
-        store.upload_config(str(path))
-        return {"message": "Configuration validated and activated.", "settings": _settings()}
+        message = store.upload_config(str(path))[-1]
+        return {"message": message.lstrip("✅ ").strip(), "settings": _settings()}
     except Exception as exc:
         _fail(exc)
     finally:

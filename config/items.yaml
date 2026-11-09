@@ -114,13 +114,39 @@ world_definition:
     descriptions:
     - A few clinking gold coins.
     - Hard currency for hard places.
+    actions:
+    - name: Scoop up the coins
+      repeat: once
+      outcomes:
+      - desc: You scoop the coins into your purse.
+        tags: [neutral, success]
+        coin_change: 8
   - name: Antique Statue
     associated_tags:
     - nature
+    descriptions:
+    - A weathered statue of a forgotten queen, moss in the folds of her robe.
+    actions:
+    - name: Examine the statue
+      repeat: once
+      outcomes:
+      - desc: Under the moss, a merchant's seal points to the Market of the Ancients.
+        tags: [discovery]
+        reveal_location: Market of the Ancients
   - name: Rusty Sword
     stat_bonus: {attack: 5}
+    collectible: true
     associated_tags:
     - damp
+    - weapon
+    descriptions:
+    - Its blade is pitted with rust, but it still holds an edge.
+    actions:
+    - name: Take the rusty sword
+      collects_object: Rusty Sword
+      outcomes:
+      - desc: You take up the rusty sword; better than bare hands.
+        tags: [neutral, success]
   - name: Fence's Ledger
     stat_bonus: {persuasion: 10}  # leverage
     # Only exists once the thief has confessed who buys the stolen goods.

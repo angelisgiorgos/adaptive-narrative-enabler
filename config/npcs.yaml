@@ -54,7 +54,7 @@ world_definition:
       name: Give him the {alcohol_desc}
       # One way past the guard: once any of these succeeds, the others disappear.
       exclusive_group: get_past_gate_guard
-      enabled_if: {not: {at_location: Vault}}   # inside the Vault there is nothing left to get past
+      enabled_if: {not: {any: [{at_location: Vault}, {at_location: Palace}]}}   # it gets you into the Palace: not from inside
       required_tag: alcohol
       consumes_object: true
       outcomes:
@@ -74,6 +74,7 @@ world_definition:
     - id: gate_guard_bribe_coins
       name: Bribe with coins
       exclusive_group: get_past_gate_guard
+      enabled_if: {not: {at_location: Vault}}   # it gets you into the Vault: not from inside
       required_coins: 15
       skill_check: {stat: persuasion}
       outcomes:
@@ -87,11 +88,10 @@ world_definition:
         linked_location: Vault
       - id: gate_guard_bribe_warning
         on_check: fail
-        desc: He takes the coins but warns you not to get caught inside.
+        desc: He takes the coins, laughs, and still blocks the way.   # a failed bribe gets you nowhere
         tags:
         - threat
         - failure
-        move_to: Vault
     - id: gate_guard_approach
       name: Approach the guard
       repeat: always
@@ -113,6 +113,7 @@ world_definition:
     - id: gate_guard_fight
       name: Fight the guard
       exclusive_group: get_past_gate_guard
+      enabled_if: {not: {any: [{at_location: Vault}, {at_location: Palace}]}}   # it forces your way into the Palace
       required_tag: weapon
       consumes_object: false
       outcomes:
@@ -176,6 +177,7 @@ world_definition:
         health_change: 1
   - name: Aurora
     unique: true
+    article: ""          # a proper name: "Met Aurora"
     associated_tags:
     - palace
     - luxury
@@ -190,6 +192,7 @@ world_definition:
     - Her presence is both haunting and regal, as if she belongs to another era.
     actions:
     - name: Ask about the crown
+      until: {action_done: Crack the main safe}   # once the safe is open, the secret is out
       outcomes:
       - desc: She cryptically mentions it's hidden in the Vault.
         tags:
@@ -202,6 +205,25 @@ world_definition:
     - serene
     - hidden
     - secret_garden
+    goals: [Keep the garden alive, Keep Aurora's secrets]
+    known_locations: [Secret Garden, Palace]
+    descriptions:
+    - An old gardener with soil under his nails and a pruning knife in his belt.
+    - He hums to the roses as if they could answer.
+    actions:
+    - name: Help tend the roses
+      repeat: once
+      outcomes:
+      - desc: You work the beds beside him; he promises to tell the city of your kindness.
+        tags: [social, nature, success]
+        health_change: 1
+        change_variables: {reputation: 1}
+    - name: Ask about Aurora's visits
+      repeat: once
+      outcomes:
+      - desc: He lowers his voice. Aurora slips into the Palace by the garden door at dusk.
+        tags: [social, discovery]
+        reveal_location: Palace
   - name: Guard
     unique: false
     associated_tags:
@@ -209,6 +231,25 @@ world_definition:
     - palace
     - dungeon
     - protect
+    goals: [Keep the peace, Finish the shift]
+    known_locations: [Dungeon, Palace, Market]
+    descriptions:
+    - A city guard in a dented helmet, one hand resting on a cudgel.
+    - The guard eyes you, deciding whether you are trouble.
+    actions:
+    - name: Report the market thief
+      repeat: once
+      enabled_if: {thief_caught: false}
+      outcomes:
+      - desc: The guard notes it down and thanks you; word of your honesty gets around.
+        tags: [social, success]
+        change_variables: {reputation: 1}
+    - name: Ask about the prisoners
+      repeat: once
+      outcomes:
+      - desc: He grumbles that a smuggler in the Dungeon talks about tunnels under the Sewers.
+        tags: [social, discovery]
+        reveal_location: Sewers
   - name: Merchant
     unique: false
     associated_tags:
