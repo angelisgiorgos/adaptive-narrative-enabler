@@ -171,9 +171,11 @@ def logic_errors(world):
             label = f"{where} / {a_data.get('name', 'Action')}"
             errors.extend(repetition_errors(a_data.get("repeat"), a_data.get("retry_on_failure"), label))
             condition(a_data.get("enabled_if"), f"{label}.enabled_if")
+            condition(a_data.get("until"), f"{label}.until")
             for number, o_data in enumerate(a_data.get("outcomes") or [], start=1):
                 if not isinstance(o_data, dict):
                     continue
+                condition(o_data.get("until"), f"{label} / outcome {number}.until")
                 errors.extend(variables.validate_changes(
                     o_data.get("set_variables"), o_data.get("change_variables"), refs.variables, where=label,
                 ))
@@ -198,10 +200,15 @@ def logic_errors(world):
     for name, data in (world.get("missions") or {}).items():
         data = data or {}
         condition(data.get("enabled_if"), f"Mission '{name}'.enabled_if")
-        for key, value in (data.get("goal") or {}).items():
-            if key in Mission.GOAL_KEYS:
-                condition(conditions.goal_condition(key, value), f"Mission '{name}'.goal.{key}")
+        goals = [("goal", data.get("goal") or {})] + [
+            (f"stages[{number}].goal", (stage or {}).get("goal") or {}) for number, stage in enumerate(data.get("stages") or [], start=1)]
+        for where, goal in goals:
+            for key, value in goal.items():
+                if key in Mission.GOAL_KEYS:
+                    condition(conditions.goal_condition(key, value), f"Mission '{name}'.{where}.{key}")
         effect_list(data.get("rewards"), f"Mission '{name}'.rewards")
+        for number, stage in enumerate(data.get("stages") or [], start=1):
+            effect_list((stage or {}).get("rewards"), f"Mission '{name}'.stages[{number}].rewards")
     return errors
 
 
@@ -293,6 +300,7 @@ def _build_outcome(o_data, genome, tags=None):
         change_stats=o_data.get("change_stats"),
         effects=o_data.get("effects"),
     )
+    outcome.until = o_data.get("until")
     _checked(outcome.effects)
     return outcome
 
@@ -307,7 +315,7 @@ def _build_action(a_data, outcomes, events_cfg, name=None, character_name=None, 
         title = events_cfg.get(triggers_event, {}).get("title", triggers_event)
         outcomes = [Outcome(desc=message("event_trigger_result", title=title), tags=["event"])]
 
-    return Action(
+    action = Action(
         name=name or a_data.get("name", "Action"),
         outcomes=outcomes,
         character_name=character_name,
@@ -325,6 +333,8 @@ def _build_action(a_data, outcomes, events_cfg, name=None, character_name=None, 
         enabled_if=a_data.get("enabled_if"),
         retry_on_failure=a_data.get("retry_on_failure", False),
     )
+    action.until = a_data.get("until")
+    return action
 
 def build_world(genome):
     world = WorldGraph()
@@ -419,6 +429,7 @@ def build_world(genome):
             encounter_event=char_data.get("encounter_event"),
             encounter_repeat=char_data.get("encounter_repeat", False),
             enabled_if=char_data.get("enabled_if"),
+            article=char_data.get("article"),
             dialogue=[
                 DialogueLine(line.get("text"), line.get("enabled_if"), _checked(effects.EffectList(line.get("effects"))))
                 for line in char_data.get("dialogue") or []
@@ -490,6 +501,7 @@ def build_world(genome):
             weight=mission_data.get("weight", 1.0),
             enabled_if=mission_data.get("enabled_if"),
             rewards=_checked(effects.EffectList(mission_data.get("rewards"))),
+            stages=mission_data.get("stages"),
         ))
 
     return world

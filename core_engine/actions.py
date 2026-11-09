@@ -65,6 +65,7 @@ class Outcome:
         # Skill checks: "pass" / "fail" limits the outcome to that check result
         # (None: either); change_stats raises or lowers stats for the playthrough.
         self.on_check = on_check
+        self.until = None   # a condition: once it holds, this outcome is no longer told
         self.change_stats = dict(change_stats or {})
         # Effect list (effects.py): the variable and stat fields above are its
         # shorthand and run first, then the explicit ``effects`` in order.
@@ -173,6 +174,7 @@ class Action(Conditional):
     action stays on offer in the visit until it succeeds.
     """
     retry_on_failure = False  # class default: games saved before the field existed load unchanged
+    until = None              # a condition: once it holds, the action is no longer offered
 
     def __init__(self, name, outcomes, character_name=None, 
                  required_object=None, required_tag=None, required_coins=0,
@@ -182,6 +184,7 @@ class Action(Conditional):
         self.name = name
         self.enabled_if = enabled_if
         self.retry_on_failure = bool(retry_on_failure)
+        self.until = None
         self.outcomes = outcomes
         self.character_name = character_name
         self.required_object = required_object

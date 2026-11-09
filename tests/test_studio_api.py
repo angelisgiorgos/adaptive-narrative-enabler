@@ -452,5 +452,42 @@ class StudioOverHTTPTests(unittest.TestCase):
             unreachable.get("/healthz")
 
 
+class ExampleWorldTests(unittest.TestCase):
+    """The example worlds (examples/worlds/) are world-only files: uploaded as they are,
+    completed with the built-in tuning, trained on and played."""
+
+    def setUp(self):
+        self.client = TestClient(api.api)
+        self.addCleanup(lambda: self.client.post("/v1/config/reset"))
+
+    def test_example_worlds_load_train_and_play(self):
+        root = Path(__file__).resolve().parent.parent / "examples" / "worlds"
+        for path in sorted(root.glob("*.yaml")):
+            with self.subTest(world=path.name):
+                response = self.client.post("/v1/config/upload", files={"file": (path.name, path.read_bytes())})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertIn("Taken from the built-in configuration", response.json()["message"])
+                world = yaml.safe_load(path.read_text())["world_definition"]
+                active = self.client.get("/v1/config").json()["config"]["world_definition"]
+                self.assertEqual(set(active["locations"]), set(world["locations"]))
+                game = self.client.post("/v1/simulations", json={"candidate_count": 2, "generations": 1, "simulation_steps": 4,
+                                                                 "episodes": 1, "deterministic": False, "warm_start": False})
+                self.assertEqual(game.status_code, 200, game.text)
+                state = game.json()
+                after = self.client.post(f"/v1/sessions/{state['session_id']}/actions", json={"action": state["actions"][0]})
+                self.assertEqual(after.status_code, 200, after.text)
+                self.assertIn(after.json()["location"], world["locations"])
+                self.client.post("/v1/config/reset")
+
+    def test_a_world_must_name_its_own_places(self):
+        path = Path(__file__).resolve().parent.parent / "examples" / "worlds" / "orbital_station.yaml"
+        world = yaml.safe_load(path.read_text())
+        world.pop("game_state")                                      # the arrest location would be the city's Dungeon
+        response = self.client.post("/v1/config/upload", files={"file": ("w.yaml", yaml.safe_dump(world).encode())})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("`game_state.arrest_location` is `Dungeon`, which is not a place of this world", response.json()["detail"])
+        self.assertNotIn("more problem", response.json()["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()

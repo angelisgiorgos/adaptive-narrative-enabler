@@ -278,7 +278,8 @@ class FitnessLossTests(_Rules):
     def test_losses(self):
         breakdown = _fitness_breakdown(self._story(10, choices={("action", "Wait"): 5}, path=["Gate", "Yard", "Gate", "Yard"]))
         self.assertEqual(breakdown["repetition"], -(3 * 3 + 2 * 2))  # 3 uses beyond 2, 2 loops
-        self.assertEqual(_fitness_breakdown(self._story(5, won=True))["pacing"], -(20 - 5) * 2)
+        self.assertEqual(_fitness_breakdown(self._story(5, won=True))["pacing"],
+                         -(config.get("fitness.base.mission_win_min_steps") - 5) * 2)
         self.assertEqual(_fitness_breakdown(self._story(30, won=True))["pacing"], 0)
         self.assertLess(_fitness_breakdown(self._story(30, ended=False))["ending"],
                         _fitness_breakdown(self._story(30))["ending"])
@@ -370,7 +371,7 @@ class DirectorTests(_Rules):
         self.assertIn("Pray", _names(state))
         state.actions_taken -= 6
         with patch.dict(config._config["director"], {"min_options": 10}):
-            self.assertIn("Pray", _names(state))                   # never fewer options than min_options
+            self.assertNotIn("Pray", _names(state))                # a way to move on (travel) is enough
         with patch.dict(config._config["director"], {"enabled": False}):
             self.assertIn("Pray", _names(state))
 
@@ -433,14 +434,310 @@ class ShippedContentTests(unittest.TestCase):
         npcs = {npc["name"]: npc for npc in self._world()["characters"]}
         self.assertNotIn("Vault", npcs["Bandit"]["known_locations"])
         bribe = next(a for a in npcs["Gate Guard"]["actions"] if a.get("id") == "gate_guard_give_drink")
-        self.assertEqual(bribe["enabled_if"], {"not": {"at_location": "Vault"}})
+        self.assertEqual(bribe["enabled_if"], {"not": {"any": [{"at_location": "Vault"}, {"at_location": "Palace"}]}})
+
+    def test_no_way_past_the_guard_from_inside_and_no_free_pass(self):
+        guard = next(npc for npc in self._world()["characters"] if npc["name"] == "Gate Guard")
+        group = [a for a in guard["actions"] if a.get("exclusive_group") == "get_past_gate_guard"]
+        self.assertEqual(len(group), 3)
+        self.assertTrue(all(a.get("enabled_if") for a in group))
+        coins = next(a for a in group if a["name"] == "Bribe with coins")
+        failed = next(o for o in coins["outcomes"] if o.get("on_check") == "fail")
+        self.assertNotIn("move_to", failed)                                # a failed bribe gets you nowhere
+
+    def test_hints_close_and_every_character_and_item_has_something(self):
+        npcs = {npc["name"]: npc for npc in self._world()["characters"]}
+        crown = next(a for a in npcs["Aurora"]["actions"] if a["name"] == "Ask about the crown")
+        self.assertEqual(crown["until"], {"action_done": "Crack the main safe"})
+        for name in ("Guard", "Gardener"):
+            self.assertTrue(npcs[name]["descriptions"] and npcs[name]["actions"], name)
+        items = {item["name"]: item for item in self._world()["objects"]}
+        for name in ("Gold Coins", "Antique Statue", "Rusty Sword"):
+            self.assertTrue(items[name].get("actions"), name)
 
     def test_missions_are_balanced(self):
         missions = self._world()["missions"]
-        self.assertEqual(missions["break_into_the_vault"]["goal"], {"action": "Crack the main safe"})
+        self.assertEqual([stage["goal"] for stage in missions["break_into_the_vault"]["stages"]],
+                         [{"location": "Vault"}, {"action": "Crack the main safe"}])
+        self.assertEqual(missions["expose_the_fence"]["stages"][-1]["goal"], {"item": "Fence's Ledger"})
         thief = self._world()["events"]["confront_thief"]
         failures = [o for a in thief["actions"] for o in a["outcomes"] if "failure" in o.get("tags", [])]
         self.assertTrue(failures and not any(o.get("remove_npc") for o in failures))  # a failure keeps the thief
+
+
+class CoherenceTests(_Rules):
+    """Fixes found by auditing generated stories: narration, names, escapes, leads,
+    conversations, goals that need a direction, and each story's own geography."""
+
+    def _state(self, *actions):
+        return GameState(_gate_world(*actions), _genome(), start="Gate", rng=random.Random(0))
+
+    def test_the_location_is_told_after_the_move(self):
+        state = self._state()
+        _choose(state, "Move to Yard")
+        self.assertIn("[LOCATION] Transferred from Gate to Yard", state.history)
+        self.assertFalse(any(line.startswith("[LOCATION] Current location:") for line in state.history))
+
+    def test_names_take_the_right_article(self):
+        from core_engine import Object
+
+        world = _gate_world()
+        world.add_character(Character("Aurora", ["gate"], unique=True, article=""))
+        world.add_character(Character("Thief", ["gate"], unique=True))
+        world.add_character(Character("Guard", ["gate"]))
+        world.add_character(Character("Exile", ["gate"]))
+        world.objects += [Object("Ancient Map", ["map"]), Object("Gold Coins", ["coin"]),
+                          Object("Heavy Shield", ["shield"], unique=True, location="Gate")]
+        state = GameState(world, _genome(), start="Gate", rng=random.Random(0))
+        self.assertEqual([state._called(n) for n in ("Aurora", "Thief", "Guard", "Exile", "Ancient Map", "Gold Coins", "Heavy Shield")],
+                         ["Aurora", "the Thief", "a Guard", "an Exile", "an Ancient Map", "some Gold Coins", "the Heavy Shield"])
+
+    def test_escapes_are_for_prisoners_and_can_be_retried(self):
+        escape = Action("Search for an exit", [Outcome("You slip out.", tags=["stealth", "escape", "success"], move_to="Yard"),
+                                               Outcome("The bars hold.", tags=["failure"], on_check="fail")],
+                        skill_check={"stat": "stealth"}, source="location", owner="Cell")
+        world = _gate_world()
+        world.locations["Cell"].actions = [escape]
+        world.locations["Gate"].connect(world.locations["Cell"])
+        with patch.dict(config._config["location_constraints"], {"Cell": {"requires_escape": True, "lock_when": "sent",
+                                                                          "escape_tags": ["escape"]}}):
+            visitor = GameState(world, _genome(), start="Cell", rng=random.Random(0))
+            self.assertNotIn("Search for an exit", _names(visitor))           # walked in: nothing to escape
+            prisoner = GameState(_gate_world(), _genome(), start="Gate", rng=random.Random(0))
+            prisoner.world.locations["Cell"].actions = [escape]
+            prisoner.apply(Outcome("You are arrested.", tags=["failure"], send_to="Cell"))
+            self.assertIn("Search for an exit", _names(prisoner))             # sent here: an escape
+            with _rolls(False):
+                _choose(prisoner, "Search for an exit")
+            self.assertEqual(prisoner.current.name, "Cell")
+            self.assertIn("Search for an exit", _names(prisoner))             # failed: try again
+
+    def test_a_repeated_conversation_counts_toward_stalling(self):
+        world = _gate_world()
+        world.add_character(Character("Guard", ["gate"], descriptions=["The guard yawns."], unique=True))
+        state = GameState(world, _genome(), start="Gate", rng=random.Random(0))
+        state.npc_homes["Guard"] = "Gate"
+        state._refresh_scene()
+        talk = "(Guard) Talk with Guard"
+        self.assertIn(talk, _names(state))
+        _choose(state, talk)
+        first = state.consecutive_steps_in_location
+        with patch.dict(config._config["director"], {"enabled": False}):  # the loop filter would hide it
+            _choose(state, talk)
+        self.assertEqual(state.consecutive_steps_in_location, first + 1)  # nothing new was said
+
+    def test_routes_written_into_actions_count_for_planning(self):
+        door = Action("Knock at the side door", [Outcome("A servant lets you into the cell block.", tags=["neutral"], move_to="Cell")],
+                      source="location", owner="Gate")
+        world = _gate_world(door)
+        world.spawn_rules.clear()
+        state = GameState(world, _genome(), start="Gate", rng=random.Random(0))
+        self.assertEqual(state._route_distances({"Cell"}).get("Gate"), 1.0)   # one step, through the door
+
+    def test_a_prisoner_with_a_way_out_is_not_kept_chatting(self):
+        escape = Action("Search for an exit", [Outcome("You slip out.", tags=["stealth", "escape", "success"], move_to="Yard"),
+                                               Outcome("The bars hold.", tags=["failure"], on_check="fail")],
+                        skill_check={"stat": "stealth"}, source="location", owner="Cell")
+        world = _gate_world()
+        world.locations["Cell"].actions = [escape]
+        world.add_character(Character("Jailer", ["cell"], descriptions=["The jailer yawns."], unique=True))
+        with patch.dict(config._config["location_constraints"], {"Cell": {"requires_escape": True, "lock_when": "sent",
+                                                                          "escape_tags": ["escape"]}}):
+            state = GameState(world, _genome(), start="Gate", rng=random.Random(0))
+            state.npc_homes["Jailer"] = "Cell"
+            state.apply(Outcome("You are arrested.", tags=["failure"], send_to="Cell"))
+            state._refresh_scene()
+            _choose(state, "(Jailer) Talk with Jailer")
+            self.assertEqual(_names(state), ["Search for an exit"])       # the chat would only repeat: escape
+
+    def test_no_directions_from_someone_who_just_refused(self):
+        guard = Character("Warden", ["gate"], known_locations=["Yard", "Cell"], unique=True, actions=[
+            Action("(Warden) Bribe the warden", [Outcome("He pockets the coins and still blocks the way.", tags=["social", "failure"])],
+                   character_name="Warden", source="npc", owner="Warden", repeat="always")])
+        world = _gate_world()
+        world.add_character(guard)
+        state = GameState(world, _genome(), start="Gate", rng=random.Random(0))
+        state.npc_homes["Warden"] = "Gate"
+        state._refresh_scene()
+        for _ in range(3):
+            _choose(state, "(Warden) Bribe the warden")
+        self.assertFalse(any("[LEAD]" in line for line in state.history))
+        self.assertEqual(state.current.name, "Gate")
+
+    def test_no_way_here_while_already_here(self):
+        through = Action("Show your pass", [Outcome("The guard waves you through to the yard.", tags=["success"], move_to="Yard"),
+                                            Outcome("He shakes his head.", tags=["failure"], on_check="fail")],
+                         skill_check={"stat": "persuasion"}, source="location", owner="Gate", repeat="always")
+        world = _gate_world(through)
+        world.locations["Yard"].actions = [through]
+        state = GameState(world, _genome(), start="Gate", rng=random.Random(0))
+        self.assertIn("Show your pass", _names(state))
+        _choose(state, "Move to Yard")
+        self.assertNotIn("Show your pass", _names(state))     # it would only bring you where you are
+
+    def test_a_lead_does_not_undo_the_move(self):
+        guide = Character("Guide", ["gate"], known_locations=["Gate", "Yard", "Cell"], unique=True, actions=[
+            Action("(Guide) Follow the guide", [Outcome("You hurry on.", tags=["neutral"], move_to="Yard", lead_to_known=True)],
+                   character_name="Guide", source="npc", owner="Guide")])
+        world = _gate_world()
+        world.add_character(guide)
+        state = GameState(world, _genome(), start="Gate", rng=random.Random(0))
+        state.npc_homes["Guide"] = "Gate"
+        state._refresh_scene()
+        _choose(state, "(Guide) Follow the guide")
+        self.assertEqual(state.current.name, "Yard")
+        self.assertFalse(any("led you to: Gate" in line for line in state.history))
+
+    def test_a_goal_to_raise_a_value_ignores_what_lowers_it(self):
+        moves = GameState._moves_variable
+        self.assertTrue(moves(Outcome("x", change_variables={"reputation": 1}), "reputation", {"gte": 1}))
+        self.assertFalse(moves(Outcome("x", change_variables={"reputation": -1}), "reputation", {"gte": 1}))
+        self.assertTrue(moves(Outcome("x", change_variables={"reputation": -1}), "reputation", {"lt": 0}))
+        self.assertTrue(moves(Outcome("x", set_variables={"reputation": 2}), "reputation", {"gte": 1}))
+        self.assertFalse(moves(Outcome("x", set_variables={"reputation": 0}), "reputation", {"gte": 1}))
+        self.assertTrue(moves(Outcome("x", set_variables={"thief_caught": True}), "thief_caught", True))
+
+    def test_every_story_draws_its_own_connected_map(self):
+        maps = []
+        for seed in (1, 2):
+            state = GameState(engine.build_world(_genome()), _genome(), rng=random.Random(seed))
+            links = {frozenset((a, b)) for a, targets in state.story_map.items() for b in targets}
+            for name, targets in state.story_map.items():
+                self.assertTrue(set(targets) <= set(state.world.spawn_rules.get(name, [])))  # within the spawn rules
+            seen, todo = {state.start_location}, [state.start_location]
+            while todo:
+                here = todo.pop()
+                for link in links:
+                    if here in link and (other := next(iter(link - {here}))) not in seen:
+                        seen.add(other)
+                        todo.append(other)
+            self.assertEqual(seen, set(state.world.locations))                  # one connected map
+            self.assertLess(len(links), sum(len(v) for v in state.world.spawn_rules.values()) / 2)  # sparser than the rules
+            maps.append(links)
+        self.assertNotEqual(maps[0], maps[1])                                  # a different geography per story
+        with patch.dict(config._config["world_definition"], {"story_map": {"enabled": False}}):
+            plain = GameState(engine.build_world(_genome()), _genome(), rng=random.Random(1))
+            self.assertIsNone(plain.story_map)
+            self.assertEqual(plain.spawn_options("Market"), list(plain.world.spawn_rules.get("Market", [])))
+
+
+class StoryArcTests(_Rules):
+    """Quests in stages, hints that end, no engine moves into a failed attempt's goal,
+    and threads closed rather than opened near the end."""
+
+    def _state(self, *actions, mission=None):
+        world = _gate_world(*actions)
+        if mission is not None:
+            world.add_mission(mission)
+        return GameState(world, _genome(), start="Gate", rng=random.Random(0), mission=mission.name if mission else None)
+
+    def test_a_mission_in_stages(self):
+        open_gate = Action("Open the yard gate", [Outcome("The gate swings open.", tags=["success"])], source="location", owner="Yard")
+        mission = Mission("escape", None, title="Escape", stages=[
+            {"title": "Reach the yard", "description": "Get out of the gatehouse.", "goal": {"location": "Yard"}},
+            {"title": "Open the gate", "description": "The yard gate is the way out.", "goal": {"action": "Open the yard gate"}},
+        ])
+        state = self._state(mission=mission)
+        state.world.locations["Yard"].actions = [open_gate]
+        self.assertIn("stage 1/2: Reach the yard", state.mission_status)
+        _choose(state, "Move to Yard")
+        self.assertFalse(state.won)
+        self.assertIn("[QUEST] Reach the yard: done. Next: Open the gate. The yard gate is the way out.", state.history)
+        self.assertIn("stage 2/2: Open the gate", state.mission_status)
+        self.assertEqual(state._pending_goal(), {"action": "Open the yard gate"})
+        progress = _fitness_breakdown(state)["ending"]
+        state.mission_stage = 0
+        self.assertEqual(progress - _fitness_breakdown(state)["ending"], config.get("fitness.base.stage_bonus"))  # a stage counts
+        state.mission_stage = 1
+        _choose(state, "Open the yard gate")
+        self.assertTrue(state.won)
+        self.assertEqual(state.end_kind, "mission")
+        with self.assertRaises(ValueError):
+            Mission("broken", None, stages=[{"title": "x", "goal": {"teleport": "Yard"}}])
+
+    def test_stages_are_validated_like_goals(self):
+        from backend import content
+
+        good = {"m": {"title": "M", "stages": [{"title": "A", "goal": {"location": "Vault"}}, {"title": "B", "goal": {"item": "Heavy Shield"}}]}}
+        self.assertEqual(content.validate_missions(good), [])
+        bad = {"m": {"title": "M", "stages": [{"title": "A", "goal": {"location": "Atlantis"}}]}}
+        self.assertTrue(content.validate_missions(bad))
+
+    def test_hints_have_their_time(self):
+        rumour = Action("Listen to rumours", [
+            Outcome("The tower is haunted, they say.", tags=["social", "setup_7"]),
+            Outcome("Only talk of prices.", tags=["neutral"]),
+        ], source="location", owner="Gate", repeat="always")
+        once_useful = Action("Ask about the old gate", [Outcome("It opens at dawn.", tags=["neutral"])],
+                             source="location", owner="Gate", repeat="always")
+        once_useful.until = {"visited": "Yard"}
+        state = self._state(rumour, once_useful)
+        self.assertFalse(state._stale(rumour.outcomes[0]))          # an open thread: worth telling
+        state.payoff_indices["payoff_7"] = 1                      # the haunting was resolved
+        self.assertTrue(state._stale(rumour.outcomes[0]))
+        self.assertEqual(state._best_outcome(rumour.outcomes, rumour).desc, "Only talk of prices.")
+        self.assertIn("Ask about the old gate", _names(state))
+        _choose(state, "Move to Yard")
+        _choose(state, "Return to Gate")
+        self.assertNotIn("Ask about the old gate", _names(state))   # until: once the yard is known
+        only_rumour = Action("Hear the ghost story", [Outcome("Boo.", tags=["setup_7"])], source="location", owner="Gate")
+        self.assertFalse(state._action_enabled(only_rumour))       # nothing left to tell
+
+    def test_a_failed_attempt_does_not_carry_the_player_there(self):
+        sneak = Action("Sneak into the yard", [Outcome("You slip in.", tags=["stealth", "success"], move_to="Yard"),
+                                               Outcome("Spotted.", tags=["failure"], on_check="fail")],
+                       skill_check={"stat": "stealth"}, source="location", owner="Gate", repeat="always")
+        state = self._state(sneak)
+        with _rolls(False):
+            _choose(state, "Sneak into the yard")
+        self.assertIn("Yard", state._barred_places())
+        self.assertFalse(state._should_commit_to_new_path("Yard"))
+        self.assertNotEqual(state._best_transition_destination(), state.world.locations["Yard"])
+        state.actions_taken += 5
+        self.assertNotIn("Yard", state._barred_places())          # director.barred_turns later
+
+    def test_threads_close_near_the_end(self):
+        plant = Action("Plant a clue", [Outcome("You notice a loose stone.", tags=["setup_9"])], source="location", owner="Gate")
+        state = self._state(plant)
+        early = dict((a.name, w) for w, a in state._rank_actions(state.get_available_actions()))["Plant a clue"]
+        state.actions_taken = 90                                   # the finale
+        late = dict((a.name, w) for w, a in state._rank_actions(state.get_available_actions()))["Plant a clue"]
+        self.assertLess(late, early)
+
+
+class PrisonTests(_Rules):
+    """A prison costs turns, never the story: escapes get easier, and the director
+    releases a prisoner who is still locked in after director.release_after turns."""
+
+    def _prisoner(self):
+        escape = Action("Search for an exit", [Outcome("You slip out.", tags=["stealth", "escape", "success"], move_to="Yard"),
+                                               Outcome("The bars hold.", tags=["failure"], on_check="fail")],
+                        skill_check={"stat": "stealth"}, source="location", owner="Cell")
+        world = _gate_world()
+        world.locations["Cell"].actions = [escape]
+        state = GameState(world, _genome(), start="Gate", rng=random.Random(0))
+        state.apply(Outcome("You are arrested.", tags=["failure"], send_to="Cell"))
+        return state
+
+    def test_escapes_get_easier_and_prisoners_are_released(self):
+        modifiers = []
+
+        def roll(combat, stat, modifier=0, inventory=(), step=0):
+            modifiers.append(modifier)
+            return CheckResult(stat, 100, combat.target(stat, modifier, inventory, step), False, step)
+
+        with patch.dict(config._config["location_constraints"], {"Cell": {"requires_escape": True, "lock_when": "sent",
+                                                                          "escape_tags": ["escape"]}}), \
+                patch("core_engine.combat.CombatSystem.roll", roll):
+            state = self._prisoner()
+            for _ in range(5):
+                if state.current.name != "Cell":
+                    break
+                _choose(state, "Search for an exit")
+        self.assertEqual(modifiers[:3], [0, 15, 30])                       # director.escape_bonus per failure
+        self.assertFalse(state.ended)                                      # not "stalled in the Cell"
+        self.assertNotEqual(state.current.name, "Cell")
+        self.assertTrue(any(line.startswith("[RELEASED]") for line in state.history))
 
 
 if __name__ == "__main__":

@@ -19,6 +19,13 @@ _action_keys = conditions.action_keys  # "(Priest) Seek a blessing" or "Seek a b
 _READS = {}
 
 
+def _meets(value, comparison):
+    """Whether a number meets a comparison mapping ({gte: 1, lt: 5, ...})."""
+    checks = {"gte": lambda a, b: a >= b, "gt": lambda a, b: a > b, "lte": lambda a, b: a <= b,
+              "lt": lambda a, b: a < b, "eq": lambda a, b: a == b, "ne": lambda a, b: a != b}
+    return all(checks[op](value, bound) for op, bound in comparison.items() if op in checks)
+
+
 def _condition_reads(value):
     """conditions.references of a goal's condition, read once per goal value."""
     cached = _READS.get(id(value))
@@ -160,6 +167,9 @@ class GameState:
             self.recent_starts = persistent.VariableStore().recent_starts(self.profile)  # read only
         else:
             self.recent_starts = []
+        # This story's own geography (world_definition.story_map), before the mission and
+        # start are chosen: they must be reachable on it.
+        self.story_map = self._draw_story_map()
         if store is not None:
             self.recent_missions = store.recent_missions(self.profile)
         elif config.get("persistence.simulate_with", "defaults") == "stored":
@@ -489,7 +499,12 @@ class GameState:
             return "No mission"
         if self.won:
             return f"{self.mission.title}: completed"
-        return f"{self.mission.title}: {'failed' if self.ended else 'in progress'}"
+        stages = getattr(self.mission, "stages", None)
+        step = ""
+        if stages:
+            index = getattr(self, "mission_stage", 0)
+            step = f" (stage {index + 1}/{len(stages)}: {stages[index]['title']})"
+        return f"{self.mission.title}{step}: {'failed' if self.ended else 'in progress'}"
 
     # ---- mission and starting location ------------------------------------------
 
@@ -523,7 +538,8 @@ class GameState:
         if key in cache:
             return cache[key]
         saved = self.mission, self.location_counts
-        self.mission, self.location_counts = mission, {start: 1}
+        saved_stage = getattr(self, "mission_stage", 0)
+        self.mission, self.location_counts, self.mission_stage = mission, {start: 1}, 0
         try:
             if self._goal_met(mission):
                 viable = False
@@ -533,6 +549,7 @@ class GameState:
                 viable = start in self._route_distances(frozenset(self._goal_sites()))
         finally:
             self.mission, self.location_counts = saved
+            self.mission_stage = saved_stage
         cache[key] = viable
         return viable
 
@@ -572,6 +589,62 @@ class GameState:
             )
         return mission, starts.draw(candidates, self.recent_starts, self.rng).name
 
+    # ---- the story's own geography ------------------------------------------------------
+
+    def _draw_story_map(self):
+        """Which places can open onto which in this story: every place keeps
+        world_definition.story_map.neighbors of the places its spawn rules allow, drawn per
+        story (more fitting places more often), joined into one connected map. None: the
+        world's spawn rules as they are (story_map.enabled false)."""
+        cfg = config.get("world_definition.story_map") or {}
+        if not cfg.get("enabled", False):
+            return None
+        neighbors = max(1, int(cfg.get("neighbors", 3)))
+        rng = random.Random()
+        rng.setstate(self.rng.getstate())  # seeded by the story, without changing its dice
+        names = sorted(self.world.locations)
+        tags = {name: self.world.locations[name].tags for name in names}
+        story_map = {}
+        for name in names:
+            options = sorted(o for o in set(self.world.spawn_rules.get(name, [])) if o in tags and o != name)
+            weights = {o: 0.05 + max(0.0, semantic_tag_similarity(tags[name], tags[o])) ** 2 for o in options}
+            chosen = []
+            while options and len(chosen) < neighbors:
+                pick = rng.choices(options, weights=[weights[o] for o in options], k=1)[0]
+                chosen.append(pick)
+                options.remove(pick)
+            story_map[name] = chosen
+        # One map: join every part that cannot reach the rest by its most fitting rule.
+        def component(start):
+            seen, todo = {start}, [start]
+            while todo:
+                here = todo.pop()
+                for other in set(story_map.get(here, [])) | {n for n in names if here in story_map.get(n, [])}:
+                    if other not in seen:
+                        seen.add(other)
+                        todo.append(other)
+            return seen
+        main = component(names[0]) if names else set()
+        while len(main) < len(names):
+            links = [(semantic_tag_similarity(tags[a], tags[b]), a, b) for a in sorted(main) for b in names
+                     if b not in main and (b in self.world.spawn_rules.get(a, []) or a in self.world.spawn_rules.get(b, []))]
+            if not links:
+                break  # the spawn rules themselves leave this part apart
+            _, a, b = max(links)
+            if b in self.world.spawn_rules.get(a, []):
+                story_map[a].append(b)
+            else:
+                story_map[b].append(a)
+            main |= component(b)
+        return story_map
+
+    def spawn_options(self, name):
+        """The places ``name`` can open onto in this story."""
+        story_map = getattr(self, "story_map", None)  # games saved before story maps
+        if story_map is not None:
+            return list(story_map.get(name, []))
+        return list(self.world.spawn_rules.get(name, []))
+
     def _mission_weights(self, pool):
         """Draw weights of missions: their ``weight``, x mission_selection.repeat_factor for
         each time the profile played it among its ``recent_missions`` latest stories."""
@@ -591,6 +664,7 @@ class GameState:
     def _start_mission(self, mission):
         """Announce the story's mission (chosen by _choose_mission_and_start)."""
         self.mission = mission
+        self.mission_stage = 0
         if mission is None:
             return
         if self.mission.description:
@@ -605,16 +679,41 @@ class GameState:
         """Whether one goal condition holds (goal keys are condition shorthand)."""
         return self.holds(conditions.goal_condition(key, value))
 
+    def _stage_goal(self, mission=None):
+        """(goal, goal conditions) the story works toward now: the current stage of a
+        staged mission (the first one for a mission not under way), or the goal."""
+        mission = mission or self.mission
+        stages = getattr(mission, "stages", None)
+        if stages:
+            index = getattr(self, "mission_stage", 0) if mission is self.mission else 0
+            stage = stages[min(index, len(stages) - 1)]
+            return stage["goal"], stage["goal_conditions"]
+        return mission.goal, mission.goal_conditions
+
     def _goal_met(self, mission):
-        return all(condition.holds(self.facts) for condition in mission.goal_conditions.values())
+        return all(condition.holds(self.facts) for condition in self._stage_goal(mission)[1].values())
 
     def _pending_goal(self):
         if not self.mission or self.won:
             return {}
-        return {
-            key: value for key, value in self.mission.goal.items()
-            if not self.mission.goal_conditions[key].holds(self.facts)
-        }
+        goal, goal_conditions = self._stage_goal()
+        return {key: value for key, value in goal.items() if not goal_conditions[key].holds(self.facts)}
+
+    def _advance_stages(self):
+        """Complete the stages whose goal holds, in order, up to the last one (which
+        completes the mission): each is announced with the next, and its rewards apply."""
+        stages = getattr(self.mission, "stages", None) if self.mission else None
+        while stages and getattr(self, "mission_stage", 0) < len(stages) - 1 and self._goal_met(self.mission):
+            done = stages[self.mission_stage]
+            self.mission_stage += 1
+            following = stages[self.mission_stage]
+            self._run_effects(done["rewards"])
+            message = self.narrate("stage_complete", done=done["title"], next=following["title"],
+                                   description=following["description"])
+            self.history.append(message)
+            self.tags_seen.append(["milestone"])
+            if self.interactive or self.verbose:
+                print(f"  >>> {message}")
 
     @staticmethod
     def _advances(action, key, value, npc=None, outcomes=None):
@@ -650,6 +749,8 @@ class GameState:
             return any(str(value).lower() in {t.lower() for t in o.tags} for o in outcomes)
         if key == "coins":
             return any(o.coin_change > 0 or ("coins_gain", None) in o.effects.writes for o in outcomes)
+        if key == "variables" and isinstance(value, dict):
+            return any(GameState._moves_variable(o, name, wanted) for o in outcomes for name, wanted in value.items())
         if key not in ("variables", "condition"):
             return False
         reads = _condition_reads(value)
@@ -659,6 +760,31 @@ class GameState:
             or (kind == "action_done" and bool(_action_keys(name) & _action_keys(action.name)))
             for kind, name in reads
         ) or any(GameState._touches(o, npc, reads) for o in outcomes)
+
+    @staticmethod
+    def _moves_variable(outcome, name, wanted):
+        """Whether an outcome moves variable ``name`` toward ``wanted`` (a value, or a
+        comparison such as {gte: 1}): raising it for gte/gt, lowering it for lte/lt."""
+        direction, target = 0, wanted
+        if isinstance(wanted, dict):
+            if wanted.keys() & {"gte", "gt"}:
+                direction = 1
+            elif wanted.keys() & {"lte", "lt"}:
+                direction = -1
+            else:
+                target = wanted.get("eq", wanted.get("value"))
+        for kind, pairs in outcome.effects.items:
+            if kind not in ("change_variable", "set_variable"):
+                continue
+            for variable, amount in pairs:
+                if variable != name:
+                    continue
+                if kind == "change_variable" and direction and isinstance(amount, (int, float)) and amount * direction > 0:
+                    return True
+                if kind == "set_variable" and (amount == target if not direction else
+                                               isinstance(amount, (int, float)) and _meets(amount, wanted)):
+                    return True
+        return False
 
     @staticmethod
     def _touches(outcome, npc, reads):
@@ -897,9 +1023,16 @@ class GameState:
             for neighbour in loc.connected:
                 if neighbour in predecessors and self.is_enabled(self.world.locations[neighbour]):
                     predecessors[neighbour].append((name, 1.0))
+            # Routes the world's own actions open: a place's action that moves the player
+            # there (one step) or reveals it (a discovery).
+            for action in loc.actions:
+                for outcome in action.outcomes:
+                    for target, cost in ((outcome.move_to, 1.0), (outcome.reveal_location, discovery_cost)):
+                        if target in predecessors and target != name and self.is_enabled(self.world.locations[target]):
+                            predecessors[target].append((name, cost))
             if not self._can_discover_from(name):
                 continue
-            for child in self.world.spawn_rules.get(name, []):
+            for child in self.spawn_options(name):
                 if child in predecessors and child not in loc.connected and child != "Dungeon":
                     predecessors[child].append((name, discovery_cost))
 
@@ -941,7 +1074,7 @@ class GameState:
         distances = self._goal_distances()
         here = distances.get(self.current.name, float("inf"))
         undiscovered = [
-            child for child in self.world.spawn_rules.get(self.current.name, [])
+            child for child in self.spawn_options(self.current.name)
             if child not in self.current.connected and child in distances and distances[child] < here
         ]
         best = min(undiscovered, key=lambda child: distances[child], default=None)
@@ -1059,7 +1192,10 @@ class GameState:
         if self.health_player.is_dead:
             return self._end("death", self.narrate("end_death"))
 
-        if self.mission and not self.won and (self._mission_completed or self._goal_met(self.mission)):
+        if self.mission and not self.won:
+            self._advance_stages()
+        if self.mission and not self.won and (self._mission_completed or self._goal_met(self.mission)) and (
+                getattr(self, "mission_stage", 0) >= len(getattr(self.mission, "stages", None) or [None]) - 1):
             self.won = True
             complete = self.narrate("mission_complete", title=self.mission.title)
             self.history.append(complete)
@@ -1243,8 +1379,13 @@ class GameState:
         score += self.goal_route_score(target_name) * self._goal_drive()
         return score
 
+    def _barred_places(self):
+        """Places a failed attempt was meant to reach, for director.barred_turns: the
+        engine does not carry the player there by itself (the player may still go)."""
+        return {name for name, until in getattr(self, "_barred", {}).items() if self.actions_taken < until}
+
     def _should_commit_to_new_path(self, target_name, threshold=None):
-        if not target_name or target_name not in self.world.locations:
+        if not target_name or target_name not in self.world.locations or target_name in self._barred_places():
             return False
         if threshold is None:
             threshold = config.get("game_state.auto_travel_commit_threshold", 1.2)
@@ -1312,6 +1453,22 @@ class GameState:
         allow_special=False,
     ):
         """Choose the highest-value destination without random sampling."""
+        barred = self._barred_places()  # avoided unless nothing else is left
+        if barred:
+            preferred = self._best_transition_destination_core(candidate_names, intent_tags, character,
+                                                               set(exclude or ()) | barred, allow_special)
+            if preferred is not None:
+                return preferred
+        return self._best_transition_destination_core(candidate_names, intent_tags, character, exclude, allow_special)
+
+    def _best_transition_destination_core(
+        self,
+        candidate_names=None,
+        intent_tags=None,
+        character=None,
+        exclude=None,
+        allow_special=False,
+    ):
         exclude = set(exclude or ()) | {self.current.name}
         names = candidate_names or self.world.locations.keys()
         candidates = [
@@ -1385,10 +1542,23 @@ class GameState:
             )
         return score
 
+    def _stale(self, outcome):
+        """An outcome that has had its time: its ``until`` holds, or it plants a numbered
+        clue (setup_N) whose payoff (payoff_N) the story has already told."""
+        if getattr(outcome, "until", None) and self.holds(outcome.until):
+            return True
+        for tag in outcome.tags:
+            tag = str(tag).lower()
+            if tag.startswith("setup_") and tag[6:].isdigit() and f"payoff_{tag[6:]}" in self.payoff_indices:
+                return True
+        return False
+
     def _best_outcome(self, outcomes, action):
-        """The outcome the storyteller prefers among ``outcomes`` (None if empty)."""
+        """The outcome the storyteller prefers among ``outcomes`` (None if empty);
+        stale outcomes only when nothing else is left."""
         if not outcomes:
             return None
+        outcomes = [o for o in outcomes if not self._stale(o)] or outcomes
         return max(outcomes, key=lambda outcome: (self._outcome_objective_score(outcome, action), outcome.desc))
 
     def _resolve_outcome(self, action):
@@ -1404,6 +1574,10 @@ class GameState:
         success = [o for o in action.outcomes if not rules.is_failure(o, failure_tags)]
         failure = [o for o in action.outcomes if rules.is_failure(o, failure_tags)]
         check = self.combat.check_for(action)
+        director = self._director()
+        if check and director is not None and getattr(self, "_escape_attempts", 0) and self._escape_action(action):
+            # Persistence: every failed escape teaches the prisoner something.
+            check = (check[0], check[1] + int(director.get("escape_bonus", 15)) * self._escape_attempts)
         if check:
             attempt = self._best_outcome([o for o in success if o.on_check == "pass"] or success or action.outcomes, action)
         else:
@@ -1469,7 +1643,7 @@ class GameState:
                 obj.name for obj in self.world.objects
                 if obj.stat_bonus or obj.name in needed or obj.associated_tags & needed_tags
             }
-        goal_item = (self.mission.goal.get("item") if self.mission else None)
+        goal_item = (self._stage_goal()[0].get("item") if self.mission else None)
         return cached | ({goal_item} if goal_item else set())
 
     def _payoff_sites(self):
@@ -1529,11 +1703,13 @@ class GameState:
                     1.0 + (float(director.get("threat_weight", 0.0)) * escalation if director else 0.0))
             if "spawn" in all_o_tags:
                 weight += self.genome.spawn_prob * config.get("action_selection.spawn_weight", 1.2)
-            if any(t.startswith("setup_") for t in all_o_tags) and not clues_full:
-                weight += self.genome.setup_prob * config.get("action_selection.setup_weight", 1.0)
-            # An open clue pulls toward the action that pays it off.
+            closing = escalation if director is not None and director.get("close_threads", True) else 0.0
+            if any(t.startswith("setup_") for t in all_o_tags) and not clues_full and not self.in_finale():
+                # New threads are worth less as the story nears its end: there is no time to close them.
+                weight += self.genome.setup_prob * config.get("action_selection.setup_weight", 1.0) * (1.0 - closing)
+            # An open clue pulls toward the action that pays it off, the more so near the end.
             if open_clues and any(str(t).lower().startswith("payoff_") for t in all_o_tags):
-                weight += self.genome.setup_prob * story_rules["payoff_weight"] * min(len(open_clues), 2)
+                weight += self.genome.setup_prob * story_rules["payoff_weight"] * min(len(open_clues), 2) * (1.0 + closing)
             # Items are worth picking up, useful ones more.
             if a.collects_object and a.collects_object not in self.inventory and self._item_obtainable(a.collects_object):
                 weight += self.genome.discovery_bias * story_rules["collect_weight"] * (
@@ -1642,9 +1818,29 @@ class GameState:
             return True
         return bool(a.exclusive_group) and (scope, a.exclusive_group) in self.closed_groups
 
+    def _only_arrives_here(self, a):
+        """Whether an action's successes only bring the player where they already are
+        ("the guard waves you through to the deck", offered on the deck)."""
+        successes = [o for o in a.outcomes
+                     if getattr(o, "on_check", None) != "fail" and "failure" not in {str(t).lower() for t in o.tags}]
+        return bool(successes) and all(o.move_to == self.current.name for o in successes)
+
+    def _escape_action(self, a):
+        """An action that escapes the confinement of this location (an outcome with one of
+        location_constraints.<location>.escape_tags, where requires_escape is set)."""
+        constraint = (config.get("location_constraints") or {}).get(self.current.name) or {}
+        if a.source != "location" or not constraint.get("requires_escape", False):
+            return False
+        escape = {str(tag).lower() for tag in constraint.get("escape_tags", ["escape"])}
+        return any(escape & {str(tag).lower() for tag in o.tags} for o in a.outcomes)
+
     def _is_offered(self, a):
         if self._is_closed(a):
             return False
+        if self._escape_action(a):
+            # Only a player locked in here escapes (lock_when: sent or always), and may try
+            # again until it works.
+            return self._location_is_locked()
         return not (self._repeat_rule(a) == "per_visit" and a.name in self.visit_actions_performed)
 
     @staticmethod
@@ -1742,6 +1938,10 @@ class GameState:
     def _action_enabled(self, a):
         """Whether an action's ``enabled_if`` holds and the event it triggers may start
         (its condition, repeat, max_occurrences and cooldown)."""
+        if getattr(a, "until", None) and self.holds(a.until):
+            return False  # its time is over
+        if a.outcomes and all(self._stale(o) for o in a.outcomes):
+            return False  # it could only tell what the story has moved past
         return self.is_enabled(a) and (not a.triggers_event or self._event_available(a.triggers_event))
 
     def _dialogue_line(self, char):
@@ -1785,6 +1985,22 @@ class GameState:
     def _visit_id(self):
         return (self.current.name, self.location_counts.get(self.current.name, 0))
 
+    def _called(self, name):
+        """A character's or item's name as the story says it: "Aurora", "the Thief",
+        "a Gate Guard", "an Ancient Map", "the Heavy Shield", "some Gold Coins"."""
+        entity = next((c for c in self.world.characters if c.name == name), None)
+        if entity is None:
+            entity = next((o for o in self.world.objects if o.name == name), None)
+        article = getattr(entity, "article", None)
+        if article is None:
+            if entity is not None and getattr(entity, "unique", False):
+                article = "the"
+            elif name.endswith("s") and not name.endswith("ss"):
+                article = "some"
+            else:
+                article = "an" if name[:1].lower() in "aeiou" else "a"
+        return f"{article} {name}".strip()
+
     def _announce_arrival(self):
         """Log the location, its NPCs, and its items once per visit."""
         if self.active_event or self._announced_visit == self._visit_id():
@@ -1793,9 +2009,9 @@ class GameState:
         desc, npc_lines, object_lines = self._describe_visible_scene()
         self.history.append(self.narrate("arrival", location=self.current.name, description=desc))
         for char_name, char_desc in npc_lines:
-            self.history.append(self.narrate("arrival_npc", npc=char_name, description=char_desc))
+            self.history.append(self.narrate("arrival_npc", npc=self._called(char_name), description=char_desc))
         for obj_name, obj_desc in object_lines:
-            self.history.append(self.narrate("arrival_item", item=obj_name, description=obj_desc))
+            self.history.append(self.narrate("arrival_item", item=self._called(obj_name), description=obj_desc))
 
     def _refresh_scene(self):
         """Place NPCs and items when the player enters a location (or the scene emptied)."""
@@ -1862,6 +2078,8 @@ class GameState:
                 raw_actions.extend(char.actions)
                 offset = len(char.name) + self.character_interactions.get(char.name, 0)
                 line = self._dialogue_line(char)
+                if line is None and char.encounter_event:
+                    continue  # a hostile NPC (an ambusher) does not chat, unless dialogue is written for it
                 if line is not None:
                     # Authored dialogue chosen by condition; its effects apply when said.
                     texts = line.text if isinstance(line.text, list) else [line.text]
@@ -1892,8 +2110,9 @@ class GameState:
             if obj.name in self.visible_objects:
                 raw_actions.extend(obj.actions)
 
-        # 3. Process & Template Actions
-        filtered_actions = [copy.deepcopy(a) for a in raw_actions if self._is_offered(a) and self._action_enabled(a)]
+        # 3. Process & Template Actions (not a way here while already here)
+        filtered_actions = [copy.deepcopy(a) for a in raw_actions
+                            if self._is_offered(a) and self._action_enabled(a) and not self._only_arrives_here(a)]
 
         final_actions = [
             a for a in (self._prepare_action(a) for a in filtered_actions) if a is not None
@@ -1929,7 +2148,11 @@ class GameState:
         if director is not None:
             window = int(director.get("loop_window", 6))
             fresh = [a for a in final_actions if not self._would_loop(a, window)]
-            if len(fresh) >= int(director.get("min_options", 2)):
+            # A way to move on (travel, or an escape for a prisoner) is a real choice: with
+            # one, hiding what would only repeat itself leaves enough to do.
+            way_on = any(a.source == "navigation" or self._escape_action(a) for a in fresh)
+            minimum = 1 if way_on else int(director.get("min_options", 2))
+            if len(fresh) >= minimum:
                 final_actions = fresh
         return final_actions
 
@@ -1977,6 +2200,24 @@ class GameState:
         salt = f"{self.start_location}|{self.mission.name if self.mission else ''}|{sorted(self.stats.points.items())}"
         return hashlib.sha1(f"{salt}|{self.actions_taken}|{name}".encode()).hexdigest()
 
+    def _release_if_held_too_long(self):
+        """The director does not let a prison end the story: a player still locked in
+        after director.release_after turns there is let out (and the story goes on)."""
+        director = self._director()
+        if director is None or self.ended or self.active_event or not self._location_is_locked():
+            return False
+        if self.consecutive_steps_in_location < int(director.get("release_after", 5)):
+            return False
+        prison = self.current.name
+        self.confined_in = None
+        self.unlocked_locations.add(prison)
+        self._escape_attempts = 0
+        if self._auto_transfer_when_stuck(message_key="released"):
+            return True
+        self.history.append(self.narrate("released", origin=prison, destination=prison))
+        self.consecutive_steps_in_location = 0
+        return True
+
     def _move_on_if_stalled(self):
         """story_rules.on_stall: move: after narrative_end.max_consecutive_steps_in_location
         in one place the traveler moves on, instead of the story ending there."""
@@ -1995,7 +2236,7 @@ class GameState:
         exclude = set(exclude or ())
         exclude.add(self.current.name)
 
-        configured_targets = self.world.spawn_rules.get(self.current.name, [])
+        configured_targets = self.spawn_options(self.current.name)
         target = self._best_transition_destination(
             candidate_names=configured_targets or None,
             intent_tags=self.current.tags,
@@ -2387,7 +2628,8 @@ class GameState:
         self.actions_taken += 1
         shown = told or attempt
         is_conversation = "conversation" in {tag.lower() for tag in shown.tags}
-        if not is_conversation and not in_event:
+        repeated_talk = is_conversation and self.outcome_counts[shown.desc] > 0  # told before: nothing new
+        if (not is_conversation or repeated_talk) and not in_event:
             self.consecutive_steps_in_location += 1
         
         # Reset stay counter if we move
@@ -2432,6 +2674,13 @@ class GameState:
                     return False
 
         self._record_choice(action, calculated_success, choice_scope, choice_visit)
+        director = self._director()
+        if not calculated_success and director is not None:
+            until = self.actions_taken + int(director.get("barred_turns", 5))
+            barred = self.__dict__.setdefault("_barred", {})
+            for outcome in action.outcomes:
+                if outcome.move_to in self.world.locations and not rules.is_failure(outcome, set(rules.settings()["failure_tags"])):
+                    barred[outcome.move_to] = until
 
         # Any choice inside an event ends it; a successful trigger action starts one.
         if in_event:
@@ -2442,6 +2691,11 @@ class GameState:
         ):
             self._enter_event(action.triggers_event, source_npc=action.character_name)
         self._start_pending_event()  # a start_event effect of the outcome
+        if calculated_success or not self._escape_action(action):
+            pass
+        elif self._location_is_locked():
+            self._escape_attempts = getattr(self, "_escape_attempts", 0) + 1  # the next try is easier
+        self._release_if_held_too_long()
         self._move_on_if_stalled()
 
         if self._finalize_if_ended():
@@ -2577,6 +2831,7 @@ class GameState:
             if rule.get("requires_escape", False):
                 self.confined_in = target_name
                 self.unlocked_locations.discard(target_name)  # every arrest needs a new escape
+                self._escape_attempts = 0
         else:
             origin.connect(target)
         self.last_location_name = origin.name
@@ -2614,7 +2869,6 @@ class GameState:
         if outcome.desc:  # an arrest after a failed attempt tells no outcome text
             self.outcome_counts[outcome.desc] += 1
             self.history.append(self.narrate("result", description=outcome.desc))
-        self.history.append(self.narrate("location_current", location=origin_location))
 
         # 0. Apply Outcome Mechanical Changes. The effect list holds the outcome's
         # variable and stat changes (shorthand fields) and its explicit effects.
@@ -2697,6 +2951,8 @@ class GameState:
                 or any(kind == "location" for kind, _ in outcome.effects.writes)
             )
             lead_due = self.character_interactions[c_name] % every == 0 or "success" in outcome.tags or "social" in outcome.tags
+            if "failure" in lower_tags:
+                lead_due = False  # someone who just refused or beat you gives no directions
             if story_rules["follow_outcome_text"] and (routes_itself or named):
                 lead_due = bool(named) and not routes_itself and named not in self.current.connected
             if lead_due:
@@ -2706,7 +2962,7 @@ class GameState:
                     node_type, node_name = self.discover_new_node(source_npc=c_name)
                 if node_type == "loc":
                     new_loc = self.world.spawn(self.current, force_target=node_name, state=self)
-                    if new_loc:
+                    if new_loc and new_loc.name != self.current.name:
                         self.current.connect(new_loc)
                         lead_msg = self.narrate("lead_path", npc=c_name, location=new_loc.name)
                         self.history.append(lead_msg)
@@ -2739,12 +2995,14 @@ class GameState:
                 self._move_to(target_name)
 
         # 4. Handle Guided Movement (NPC Lead)
-        if getattr(outcome, 'lead_to_known', False) and action and action.character_name:
+        # The outcome's own move wins: a lead does not take the player back where the turn started.
+        if getattr(outcome, 'lead_to_known', False) and action and action.character_name and self.current.name == origin_location:
             char = next((c for c in self.world.characters if c.name == action.character_name), None)
             if char and char.known_locations:
                 candidates = [
                     l for l in char.known_locations
-                    if l in self.world.locations and l != self.current.name and self.is_enabled(self.world.locations[l])
+                    if l in self.world.locations and l not in (self.current.name, origin_location)
+                    and self.is_enabled(self.world.locations[l])
                 ]
                 if candidates:
                     scored = []

@@ -201,7 +201,9 @@ Requests with the header `X-ANE-Client: studio` are recorded with the origin
 - `GET /v1/config` returns the complete merged active configuration.
 - `POST /v1/config/upload` validates and activates a combined YAML upload
   (every section, plus every condition and effect list of its world; a
-  rejected upload leaves the active configuration unchanged);
+  rejected upload leaves the active configuration unchanged). A file may hold
+  only a world: the sections it lacks come from the built-in configuration,
+  and the message names them (see `examples/worlds/`);
   `POST /v1/config/reset` restores the built-in file configuration.
 - `GET|PUT /v1/settings`: basic simulation settings. `max_health` caps
   healing; omit it on `PUT` to keep the stored value.

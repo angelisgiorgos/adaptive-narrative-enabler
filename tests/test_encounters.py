@@ -165,5 +165,14 @@ class EncounterEditingTests(unittest.TestCase):
         self.assertTrue(any("encounter_repeat" in error for error in errors))
 
 
+class HostileTalkTests(unittest.TestCase):
+    def test_a_hostile_npc_is_not_someone_to_chat_with(self):
+        state = _state()
+        _choose(state, "Stand still")                      # the ambush is over; the cutthroat is still here
+        names = _names(state)
+        self.assertIn("(Cutthroat) Haggle", names)          # what the author wrote for it stays
+        self.assertNotIn("(Cutthroat) Talk with Cutthroat", names)   # but no friendly small talk
+
+
 if __name__ == "__main__":
     unittest.main()

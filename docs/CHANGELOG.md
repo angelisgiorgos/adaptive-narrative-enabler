@@ -7,6 +7,75 @@ that introduces them.
 
 ## [Unreleased]
 
+### Quests, hints and threads; worlds in files
+
+#### Added
+- Missions in stages (`stages: [{title, description, goal, rewards}]`):
+  completed in order with a `[QUEST]` message (`stage_complete`), the story
+  pursues the current stage, `mission_status` names it, and the score counts
+  each stage reached (`fitness.base.stage_bonus`). The city's Expose the fence,
+  Break into the Vault and Buy your way into the Palace are staged.
+- `until` on actions and outcomes: no longer offered or told once the
+  condition holds. Numbered clues (`setup_N`) are not told once `payoff_N` has
+  been; an action that could only tell such clues is not offered.
+- After a failed attempt, its success destinations are barred from the
+  engine's own moves for `director.barred_turns`.
+- `director.close_threads`: as the story escalates, setups are worth less and
+  payoffs more; no new clue in the finale.
+- World-only configuration files: `store.complete_config` fills every tuning
+  section a file lacks from the built-in configuration (also used by the
+  artifact import); the upload message names them; places the tuning names
+  must be the world's own.
+- `examples/worlds/`: a frozen monastery and an orbital station.
+- Prisons: `director.escape_bonus` (each failed escape makes the next easier)
+  and `director.release_after` (a prisoner still locked in is released with a
+  `released` message instead of the story ending as stalled).
+- Tests for stages, hints, barred destinations, thread closure and the
+  example worlds.
+
+#### Changed
+- Pacing: `mission_settings.pursuit_start_step` 18 (was 12),
+  `pursuit_full_step` 40 (was 30), `fitness.base.mission_win_min_steps` 25
+  (was 20): stories run about 28 turns instead of 21 with as many wins.
+
+#### Fixed
+- Configuration errors listed "…and -19 more problem(s)" when there were fewer
+  than 20.
+
+### Coherent and unique storyworlds
+
+An audit of 390 generated stories found narration, character and content
+errors in most stories; they are fixed, and each story now has its own map.
+
+#### Added
+- `world_definition.story_map` (`enabled`, `neighbors`): every story draws its
+  own connected geography from the spawn rules (`GameState.story_map`,
+  `spawn_options`); discovery, route planning and mission choice follow it.
+- NPC `article` (`""` for a proper name); `GameState._called` names characters
+  and items with their article.
+- Coherence rules: escape actions only for a locked player (and retried until
+  they succeed); no generic small talk with hostile NPCs; repeated
+  conversations count toward stalling; leads never point to the current place
+  or back where the turn started; actions whose successes only bring the player
+  where they are are not offered; variable goals are pursued only through
+  actions that move the value the right way (`GameState._moves_variable`);
+  no NPC lead after a failure outcome; a way to move on (travel, an escape)
+  is enough when the director hides loops; route planning follows the routes
+  written into location actions (`move_to`, `reveal_location`).
+- Content: descriptions and actions for the Guard and the Gardener (ways to
+  raise reputation, and leads); actions for Gold Coins, the Antique Statue and
+  the Rusty Sword (now a weapon).
+- Tests for every rule and content fix.
+
+#### Changed
+- Messages: `arrival_npc` is "Met {npc}: {description}" and `arrival_item`
+  "Nearby you see {item}: {description}" (the names carry their article); the
+  `[LOCATION] Current location` line after an outcome is gone (the move is told
+  as `Transferred from … to …` or `Still at …`).
+- Content: the three ways past the Gate Guard are not offered where they lead
+  (the Palace, the Vault); a failed coin bribe no longer moves the player into
+  the Vault; Aurora's crown hint ends once the safe is opened.
+
 ### A story that develops like a game
 
 Measured problems (348 games played through the API): training did not make
