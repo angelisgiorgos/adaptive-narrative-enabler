@@ -683,6 +683,16 @@ def run_story(world_path=None):
         print(f"Reasoning: {reason}")
     else:
         score, reason = "N/A", "Evaluation Disabled"
+    if config.get("llm_judge.enabled", False):
+        # Gemma 4 as a game critic: how engaging the playthrough is (evaluator/game_judge.py).
+        try:
+            from evaluator.game_judge import GameJudge
+
+            verdict = GameJudge().judge_state(final_state)
+            print(f"\n--- Game engagement (LLM judge) ---\nEngagement: {verdict['engagement']}/10 "
+                  f"{ {k: round(v, 1) for k, v in verdict['scores'].items()} }\n{verdict['verdict']}")
+        except Exception as exc:  # no model available: the story stands without a verdict
+            print(f"\n[LLM judge] skipped: {exc}")
 
     # --- Save Run Archival ---
     run_file = os.path.join(run_dir, f"story_{timestamp}.txt")

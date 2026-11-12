@@ -17,7 +17,7 @@ class VLLMRuntime:
     def __init__(self, model_name=None):
         self.model_name = model_name or config.get(
             "vllm.model_name",
-            "google/gemma-4-E2B-it",
+            "google/gemma-4-E4B-it",
         )
         self.mode = config.get("vllm.mode", "embedded")
         self._engine = None
@@ -43,7 +43,7 @@ class VLLMRuntime:
             "gpu_memory_utilization": float(
                 config.get("vllm.gpu_memory_utilization", 0.55)
             ),
-            "max_model_len": int(config.get("vllm.max_model_len", 4096)),
+            "max_model_len": int(config.get("vllm.max_model_len", 8192)),
             "max_num_seqs": int(config.get("vllm.max_num_seqs", 1)),
             "enforce_eager": bool(config.get("vllm.enforce_eager", True)),
             "enable_prefix_caching": bool(
@@ -147,7 +147,7 @@ _RUNTIMES_LOCK = threading.Lock()
 def get_llm_runtime(model_name=None):
     active_model = model_name or config.get(
         "vllm.model_name",
-        "google/gemma-4-E2B-it",
+        "google/gemma-4-E4B-it",
     )
     key = (config.get("vllm.mode", "embedded"), active_model)
     with _RUNTIMES_LOCK:

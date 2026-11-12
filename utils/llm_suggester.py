@@ -7,7 +7,7 @@ from utils.llm_model_loader import get_llm_runtime
 
 class LLMSuggester:
     def __init__(self):
-        self.model_name = config.get("vllm.model_name", "google/gemma-4-E2B-it")
+        self.model_name = config.get("vllm.model_name", "google/gemma-4-E4B-it")
         self.max_new_tokens = config.get("editor_suggester.max_new_tokens", 256)
         self.temperature = config.get("editor_suggester.temperature", 0.7)
         self._runtime = None

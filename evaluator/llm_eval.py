@@ -14,7 +14,7 @@ class LLMNarrativeEvaluator:
     ):
         self.model_name = model_name or config.get(
             "vllm.model_name",
-            "google/gemma-4-E2B-it",
+            "google/gemma-4-E4B-it",
         )
         self.max_new_tokens = max_new_tokens or config.get("llm_evaluator.max_new_tokens", 2048)
         self.temperature = temperature or config.get("llm_evaluator.temperature", 0.3)
