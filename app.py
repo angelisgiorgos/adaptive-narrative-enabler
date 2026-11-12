@@ -481,8 +481,13 @@ def _learning_outputs(learning):
     return pd.DataFrame(rows), pd.DataFrame(traits)
 
 
-def _choices(actions):
-    return gr.Radio(choices=actions, value=actions[0] if actions else None, interactive=bool(actions))
+def _choices(actions, details=None):
+    """The choices as radio options: each labelled with the check it involves (the value stays
+    the action's name, which the API takes)."""
+    checks = {item["name"]: item.get("check") for item in details or []}
+    options = [(name + (f"  ·  {checks[name]['stat']} {checks[name]['chance']}%" if checks.get(name) else ""), name)
+               for name in actions]
+    return gr.Radio(choices=options, value=actions[0] if actions else None, interactive=bool(actions))
 
 
 ANY_QUEST = "Any quest (the story draws one)"
@@ -524,9 +529,7 @@ def people_markdown(game):
     """Everyone met in the story: where, how often spoken with, and who is hostile or gone."""
     met = game.get("people_met") or []
     here = {person["name"]: person for person in game.get("people") or []}
-    if not met:
-        return "### People met\nNobody yet."
-    lines = ["### People met"]
+    lines = ["### People met"] + ([] if met else ["Nobody yet."])
     for person in met:
         notes = []
         if person["name"] in here:
@@ -539,8 +542,30 @@ def people_markdown(game):
             notes.append("gone from the story")
         if person["talks"]:
             notes.append(f"spoken with {person['talks']}×")
+        if person.get("ally"):
+            notes.append("♥ ally")
         lines.append(f"- **{person['name']}** · met at {', '.join(person['where'])}"
                      + (f" · {' · '.join(notes)}" if notes else ""))
+    return "\n".join(lines) + "\n\n" + map_markdown(game.get("map"))
+
+
+def map_markdown(known):
+    """The map as the player knows it: each known place with where its paths lead."""
+    if not known:
+        return ""
+    paths = {}
+    for a, b in known.get("paths", []):
+        paths.setdefault(a, []).append(b)
+        paths.setdefault(b, []).append(a)
+    for a, b in known.get("one_way", []):
+        paths.setdefault(a, []).append(f"{b} (one way)")
+    lines = ["### Map"]
+    for place in known.get("places", []):
+        name = place["name"]
+        mark = "📍 " if name == known.get("current") else ""
+        state = "" if place["visited"] else " *(not visited)*"
+        locked = " 🔒" if place["locked"] else ""
+        lines.append(f"- {mark}**{name}**{locked}{state} → {', '.join(sorted(paths.get(name, []))) or 'no known way on'}")
     return "\n".join(lines)
 
 
@@ -548,7 +573,8 @@ def _game_outputs(game):
     """What the play tab shows of a game the API started (simulation, loaded or recorded engine)."""
     curve, traits = _learning_outputs(game.get("learning"))
     generations = [str(stats["generation"]) for stats in (game.get("learning") or {}).get("history", [])]
-    return (game["session_id"], game["report"], game["scene"], _choices(game["actions"]), game.get("last_turn", ""),
+    return (game["session_id"], game["report"], game["scene"], _choices(game["actions"], game.get("choices")),
+            game.get("last_turn", ""),
             API.download(game["config_download_url"]), API.download(game["engine_download_url"]),
             quest_markdown(game.get("quest")), people_markdown(game), curve, traits,
             game.get("run_id"), gr.Dropdown(choices=generations, value=generations[-1] if generations else None))
@@ -607,8 +633,8 @@ def play_action_ui(token, selected_action):
     if not token:
         raise gr.Error("Run a simulation first to start a game.")
     state = API.post(_path("/v1/sessions", token, "actions"), {"action": selected_action or ""})
-    return state["scene"], _choices(state["actions"]), state["last_turn"], quest_markdown(state.get("quest")), \
-        people_markdown(state)
+    return state["scene"], _choices(state["actions"], state.get("choices")), state["last_turn"], \
+        quest_markdown(state.get("quest")), people_markdown(state)
 
 
 def quest_overview(profile):

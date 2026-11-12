@@ -207,9 +207,16 @@ class PlayState(BaseModel):
         "[{title, description, state: done|current|todo}], todo: what the current step still needs, in words}.")
     people: list[dict[str, Any]] = Field(
         default_factory=list, description="The people here: [{name, called, description, wants, hostile, talks, "
-        "quest}] (talks: times spoken with; quest: they can help with the mission now).")
+        "quest, helped, ally}] (talks: times spoken with; quest: they can help with the mission now; helped: times "
+        "helped with their goal; ally: their goal is fulfilled).")
+    map: dict[str, Any] | None = Field(
+        default=None, description="The map as the player knows it: {current, previous, places: [{name, visited, locked}], "
+        "paths: [[a, b]] (both ways), one_way: [[from, to]]}.")
+    choices: list[dict[str, Any]] = Field(
+        default_factory=list, description="The offered actions with the check each involves: [{name, check: {stat, "
+        "chance (0-100), bonus} or null}].")
     people_met: list[dict[str, Any]] = Field(
-        default_factory=list, description="Everyone met in this story: [{name, called, where, talks, hostile, gone}].")
+        default_factory=list, description="Everyone met in this story: [{name, called, where, talks, hostile, gone, ally}].")
     ways_on: list[dict[str, Any]] = Field(
         default_factory=list, description="The places one can travel to from here now: [{name, visited, toward_quest}].")
 
@@ -948,6 +955,42 @@ def list_recorded_stories(run_id: str | None = None, engine_id: str | None = Non
 def get_recorded_story(story_id: str):
     """A story with its parameters, result, transcript and every turn."""
     return _records(records.get_story, story_id)
+
+
+def _judged(work):
+    """A judgement of the LLM judge (evaluator/game_judge.py); 503 when no model is available."""
+    try:
+        result = work()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=f"The language model judge is not available: {exc}") from exc
+    result.pop("raw", None)
+    return result
+
+
+@api.post("/v1/records/stories/{story_id}/judge", tags=["Records"])
+def judge_recorded_story(story_id: str):
+    """Gemma 4 as a game critic: how engaging a recorded playthrough is for a player. Returns
+    ``engagement`` (1-10), ``scores`` (agency, pacing, surprise, payoff, exploration, stakes,
+    coherence, replayability; 1-10), ``spread`` (between the judge's samples), ``verdict``,
+    ``best_moment`` and ``weakest_moment``. 503 when no language model is available."""
+    from evaluator.game_judge import GameJudge, digest_turns
+
+    story = _records(records.get_story, story_id)
+    meta = {key: story.get(key) for key in ("mission", "start_location", "end_kind", "end_reason", "won")}
+    return _judged(lambda: GameJudge().judge_digest(digest_turns(story["turn_records"], meta)))
+
+
+@api.post("/v1/sessions/{session_id}/judge", tags=["Evolution and play"])
+def judge_session(session_id: str):
+    """The LLM judge on the game played so far in this session (as for a recorded story)."""
+    from evaluator.game_judge import GameJudge, digest_state
+
+    with sessions.SESSION_LOCK:
+        state = sessions.SESSIONS.get(session_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail="Play session not found.")
+        digest = digest_state(state)
+    return _judged(lambda: GameJudge().judge_digest(digest))
 
 
 # ---- studio services: everything the studio does goes through these and the endpoints above ----

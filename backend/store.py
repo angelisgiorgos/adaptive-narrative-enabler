@@ -121,6 +121,37 @@ OPTIONAL_CONFIG_PATHS = {
     "player_options.relevance_filter",
     # Gemma 4 on vLLM replaced the Hugging Face loader (llm_evaluator.model_name, llm_fallback).
     "vllm",
+    # Added with locked exits, scenario templates, objective losses, NPC goals and Power in fights.
+    "navigation",
+    "npc_goals",
+    "power_model.combat_stats",
+    "power_model.check_weight",
+    "spawn_selection.target_tag_weight",
+    "player_options.way_back",
+    "story_rules.gate_payoffs",
+    "fitness.objective_losses",
+    "fitness.base.npc_goal_bonus",
+    "director.surprise",
+    "director.surprise_margin",
+    "director.surprise_top_k",
+    "director.boredom_turns",
+    "director.boredom_weight",
+    "director.boredom_event_pressure",
+    "director.payoff_delay",
+    "director.payoff_due_weight",
+    "director.explore_weight",
+    "director.retry_bonus",
+    "director.retry_cooldown",
+    "director.retry_cooldown_penalty",
+    "director.ping_pong_penalty",
+    "director.dead_end_penalty",
+    "mission_settings.momentum_after",
+    "unexpected_events.twist_payoff_delay",
+    "fitness.rhythm",
+    "llm_judge",
+    "evolution.alternatives_weight",
+    "outcome_resolution.hidden_adjustments",
+    "world_definition.scenario_templates",
 }
 
 CONFIG_LOCK = threading.RLock()
@@ -385,7 +416,8 @@ def _validate_complete_config(candidate: object, reference: object, path: str = 
             errors.append(f"`{label}` must be {type(reference).__name__}, not {type(candidate).__name__}.")
     return errors
 
-WORLD_CONTENT = ("locations", "characters", "objects", "events", "missions", "variables", "routes")
+WORLD_CONTENT = ("locations", "characters", "objects", "events", "missions", "variables", "routes",
+                 "scenario_templates")
 LOCATION_KEYED = (("location_constraints",), ("action_selection", "location_penalties"))
 
 
@@ -675,11 +707,13 @@ LOGIC_SECTIONS = {
     "start_selection": "Where stories start: how strongly a player's recent starts are discouraged, and the single start of worlds without starting locations.",
     "action_rules": "How often actions are offered by default (once, per visit, always).",
     "game_state": "Starting health and coins, maximum health, arrests and following new paths.",
-    "power_model": "How the power indicator is derived from health and skills.",
+    "power_model": "Power, the player's fighting strength (health and skills, items included), and how much it eases fight checks.",
     "narrative_end": "When a story ends (action limit, stalling).",
     "director": "How a story builds over its course: escalation of events, threats and damage, the finale before the action limit with an epilogue ending, and options that would only loop.",
     "mission_selection": "How a story's mission is drawn: a player's recent missions are drawn less often.",
     "player_options": "The choices a player sees: how many, and in which order (the scene's order, or the storyteller's ranking).",
+    "navigation": "Player-directed navigation: whether discoveries and hints move the player by themselves.",
+    "npc_goals": "What helping an NPC with their goal takes, and what an ally gives back.",
     "location_constraints": "Prisons: which locations confine a player until an escape.",
     "unexpected_events": "Procedural unexpected events: how often, and their parts.",
     "authored_events": "Authored events: the fallback option.",
@@ -690,6 +724,7 @@ LOGIC_SECTIONS = {
     "simulation": "Console output of the terminal story (verbose, interactive).",
     "vllm": "The shared Gemma 4 language model served by vLLM (embedded in this process, or a vLLM server).",
     "llm_evaluator": "The optional language-model judge of the final story (generation length, temperature).",
+    "llm_judge": "Gemma 4 as a game critic: how engaging a playthrough is, criterion by criterion.",
     "config_editor": "The terminal editor.",
     "editor_suggester": "Language-model suggestions in the terminal editor.",
     "world_definition": "How locations connect when no spawn rules are written (spawn strategy, similarity).",

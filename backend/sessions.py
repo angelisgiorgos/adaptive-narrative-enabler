@@ -60,6 +60,8 @@ def play_state(state: GameState) -> dict:
         "quest": state.quest_log(),
         "people": state.people_here() if not state.ended else [],
         "people_met": state.people_met(),
+        "map": state.map_view(),
+        "choices": choice_details(state),
         "ways_on": state.ways_on() if not state.ended else [],
     }
 
@@ -320,6 +322,14 @@ def _player_options(state: GameState):
     return state.player_options(limit=_option_limit(), order="world" if order == "world" else "ranked")
 
 
+def choice_details(state):
+    """The choices offered now, each with the check it involves ({stat, chance, bonus}, or
+    None): the player sees what is at stake before choosing."""
+    if state.ended:
+        return []
+    return [{"name": action.name, "check": state.check_hint(action)} for action in _player_options(state)]
+
+
 def quest_line(quest):
     """The mission in one line of the scene: title, current stage, what is still to do."""
     stages = quest.get("stages") or []
@@ -343,6 +353,10 @@ def people_text(people):
             notes.append("⚠ hostile")
         if person["quest"]:
             notes.append("★ can help with your quest")
+        if person.get("ally"):
+            notes.append("♥ ally")
+        elif person.get("helped"):
+            notes.append(f"helped {person['helped']}×")
         if person["talks"]:
             notes.append(f"spoken with {person['talks']}×")
         line = f"- **{person['name']}** — {person['description']}"
@@ -375,6 +389,9 @@ def _scene(state: GameState) -> tuple[str, list[str]]:
             f"{name} {value}" + (f" (+{bonuses[name]})" if bonuses.get(name) else "")
             for name, value in state.stats.values(bonuses).items()
         ))
+    checks = [f"{c['name']} — {c['check']['stat']} {c['check']['chance']}%" for c in choice_details(state) if c["check"]]
+    if checks:
+        details.append("**Checks:** " + " · ".join(checks))
     if state.combat.history:
         last = state.combat.history[-1]
         details.append(f"**Last check:** {last.stat} rolled {last.roll} vs {last.target} — {'passed' if last.passed else 'failed'}")

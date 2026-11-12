@@ -232,6 +232,7 @@ OUTCOME_FIELDS = {
     "spawn", "move_to", "move_to_tags", "reveal_npc", "reveal_object", "reveal_location",
     "linked_location", "linked_location_mode", "linked_npc", "linked_item", "lead_to_known",
     "remove_npc", "send_to", "set_variables", "change_variables", "on_check", "change_stats", "effects", "until",
+    "target_tags", "unlock_exit", "return_to_previous", "setup_id", "requires_setup", "payoff_id",
 }
 
 ACTION_REFERENCE = """
@@ -241,7 +242,8 @@ ACTION_REFERENCE = """
 `collects_object` · `consumes_object` · `enabled_if` (a condition: the action is offered only while it holds)
 
 **Outcome fields:** `desc` · `tags` · `success_prob` · `health_change` · `coin_change` · `spawn` ·
-`move_to` · `send_to` (one way) · `move_to_tags` · `reveal_location` · `reveal_npc` · `reveal_object` ·
+`move_to` · `send_to` (one way) · `move_to_tags` · `target_tags` (a discovery led by tags) · `reveal_location` ·
+`reveal_npc` · `reveal_object` · `unlock_exit` · `return_to_previous` · `setup_id` / `requires_setup` / `payoff_id` ·
 `lead_to_known` · `remove_npc` (true or a name) · `set_variables` · `change_variables` ·
 `on_check` (pass / fail) · `change_stats` · `effects` (a list, e.g. `[{give_item: Royal Pass}, {change_variable: {reputation: 1}}]`)
 
