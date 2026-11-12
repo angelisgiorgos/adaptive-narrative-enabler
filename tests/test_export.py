@@ -131,8 +131,11 @@ print(json.dumps({
         self.assertEqual(data["loaded"], [])
         self.assertTrue(data["from_export"])
         state = GameState(build_world(self.genome), self.genome, rng=random.Random(11))
-        for _ in range(100):
-            if state.ended or not state.step(0):
+        for _ in range(100):  # the first of the choices a player sees, as game.choose(0) offline
+            options = [] if state.ended else state.player_options()
+            if not options:
+                break
+            if not state.step([a.name for a in state.ranked_available_actions()].index(options[0].name)):
                 break
         self.assertEqual(data["transcript"], state.get_full_story())  # identical behaviour offline
 

@@ -162,7 +162,7 @@ class LearningInPlayTests(_TempSaves):
         import app
         outputs = app.run_simulation_ui(4, 2, 3, False, "default", "story default", "", 1, False,
                                         progress=lambda *a, **k: None)
-        curve, traits = outputs[7], outputs[8]
+        curve, traits = outputs[9], outputs[10]  # after the scene, the files, the quest and the people
         self.assertEqual(set(curve["series"]), {"benchmark (champion)", "best this generation", "population average"})
         self.assertIn("goal_bias", set(traits["trait"]))
 

@@ -105,14 +105,25 @@ class OneWayTests(unittest.TestCase):
 
 
 class ShippedDungeonTests(unittest.TestCase):
-    def test_dungeon_found_by_a_normal_route_can_be_left(self):
+    def test_the_shipped_dungeon_is_only_reached_by_being_sent(self):
+        # location_constraints.Dungeon.entry: sent; nor does the Palace border the cells.
         genome = _genome()
         state = GameState(engine.build_world(genome), genome, start="Palace", rng=random.Random(0))
-        palace, dungeon = state.world.locations["Palace"], state.world.locations["Dungeon"]
-        palace.connect(dungeon)  # e.g. "Whispers of a prisoner in the Dungeon are heard."
-        state._move_to("Dungeon")
-        self.assertFalse(state._location_is_locked())
-        self.assertIn("Return to Palace", _names(state))
+        self.assertFalse(state._move_to("Dungeon"))
+        state.world.locations["Palace"].connect(state.world.locations["Dungeon"])  # even a known way
+        self.assertFalse(state._move_to("Dungeon"))
+        self.assertEqual(state.current.name, "Palace")
+        self.assertFalse(any(name.endswith("Dungeon") for name in _names(state)))
+
+        state = GameState(engine.build_world(genome), genome, start="Palace", rng=random.Random(0))
+        self.assertTrue(state._move_to("Dungeon", one_way=True))  # an arrest
+        self.assertTrue(state._location_is_locked())
+        self.assertEqual(state.neighbours("Dungeon"), {"Alley", "Sewers"})
+        state.confined_in = None  # escaped: the Palace is reached through the Sewers' basement passage
+        self.assertTrue(state._move_to("Palace"))
+        self.assertEqual(state.current.name, "Sewers")
+        self.assertTrue(any(line.startswith("[ROUTE] No road runs straight from the Dungeon to the Palace")
+                            for line in state.history))
 
     def test_arrest_into_the_dungeon_cannot_be_walked_back(self):
         genome = _genome()
