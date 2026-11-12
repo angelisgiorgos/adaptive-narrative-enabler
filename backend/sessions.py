@@ -17,6 +17,7 @@ from pathlib import Path
 import yaml
 import main as engine
 from core_engine import GameState, Genome, Mission
+from core_engine import variables as persistent
 from core_engine.variables import VariableStore
 from core_engine.evolution import LearningMemory, NarrativeEvolution, evolution_settings
 from core_engine.model import EngineModel
@@ -56,6 +57,10 @@ def play_state(state: GameState) -> dict:
         "stats": state.stats.values(state.combat.item_bonuses(state.inventory)),
         "stat_points": dict(state.stats.points),
         "last_check": vars(state.combat.history[-1]).copy() if state.combat.history else None,
+        "quest": state.quest_log(),
+        "people": state.people_here() if not state.ended else [],
+        "people_met": state.people_met(),
+        "ways_on": state.ways_on() if not state.ended else [],
     }
 
 def _export_run_artifacts(model, candidate_count=0, generations=0, simulation_steps=0):
@@ -173,15 +178,62 @@ def _read_engine_artifact(uploaded_file, model_parameters_file=None):
         )
     return config_data, _validated_genome(genome_values)
 
-def _start_game(genome, profile, points, mode, origin="studio", run_id=None, engine_id=None):
+def _mission_key(world, mission):
+    """The key of the mission a player asked for (its key or its title); None: drawn by the story."""
+    if mission in (None, "") or str(mission).strip().lower() in ("any", "random"):
+        return None
+    wanted = str(mission).strip()
+    for key, entry in world.missions.items():
+        if wanted in (key, entry.title):
+            return key
+    known = ", ".join(f"{entry.title} ({key})" for key, entry in world.missions.items()) or "none"
+    raise AuthoringError(f"This world has no mission '{wanted}'. Its missions: {known}.")
+
+
+def playable_missions(profile=None):
+    """The missions of the current world as a player may choose them: [{key, title,
+    description, stages, available}] where ``available`` says whether the mission is
+    open to this profile now (its enabled_if, read with the profile's stored variables)."""
+    profile = _profile(profile)
+    specs = persistent.definitions()
+    values = VariableStore().load(profile, specs)
+    missions = []
+    for key, entry in (config.get("world_definition.missions") or {}).items():
+        entry = entry or {}
+        condition = entry.get("enabled_if")
+        try:
+            available = condition is None or persistent.check(condition, values)
+        except Exception:
+            available = True  # a condition on the story itself: decided when the story starts
+        missions.append({
+            "key": key, "title": entry.get("title") or key, "description": entry.get("description") or "",
+            "stages": [(stage or {}).get("title") or f"Stage {number}" for number, stage in
+                       enumerate(entry.get("stages") or [], start=1)],
+            "available": bool(available),
+        })
+    return missions
+
+
+def _start_game(genome, profile, points, mode, origin="studio", run_id=None, engine_id=None, mission=None):
     """A playable game for the genome; variable changes are saved to the profile, and
-    the game is recorded (records database) as it is played."""
-    player = GameState(engine.build_world(genome), genome, store=VariableStore(), profile=profile,
-                       stats=points, stats_mode=mode)
+    the game is recorded (records database) as it is played. ``mission``: the mission
+    the player chose (key or title), else the story draws one."""
+    world = engine.build_world(genome)
+    mission = _mission_key(world, mission)
+    if mission is not None and not next((m["available"] for m in playable_missions(profile) if m["key"] == mission), True):
+        raise AuthoringError(f"The mission '{world.missions[mission].title}' is not open to profile '{profile}' "
+                             "now (its enabled_if does not hold, e.g. it was already completed).")
+    try:
+        player = GameState(world, genome, store=VariableStore(), profile=profile,
+                           stats=points, stats_mode=mode, mission=mission)
+    except ValueError as exc:
+        if mission is None:
+            raise
+        raise AuthoringError(str(exc)) from exc
     token = uuid.uuid4().hex
     story_id = records.record_story(
         player, origin, "play", run_id=run_id, engine_id=engine_id, session_id=token,
-        parameters={"profile": profile, "stat_points": points, "stats_mode": mode},
+        parameters={"profile": profile, "stat_points": points, "stats_mode": mode, "mission": mission},
     )
     with SESSION_LOCK:
         while len(SESSIONS) >= MAX_WEB_SESSIONS:
@@ -194,7 +246,7 @@ def _start_game(genome, profile, points, mode, origin="studio", run_id=None, eng
 
 
 def load_best_engine(uploaded_file, model_parameters_file=None, profile=None, stats_choice=None, stats_points=None,
-                     origin="studio"):
+                     origin="studio", mission=None):
     """Start a game with a previously evolved storyteller (no evolution): an engine
     model file, or an older bundle / configuration YAML."""
     profile = _profile(profile)
@@ -220,12 +272,13 @@ def load_best_engine(uploaded_file, model_parameters_file=None, profile=None, st
     records.record_engine(model, origin=origin, source=model.source or "loaded")
     return _game_for(model, profile, points, mode, origin,
                      f"Saved engine loaded. Best recorded score: **{model.score if model.score is not None else 'unknown'}**. "
-                     f"Evolution was skipped.{note}")
+                     f"Evolution was skipped.{note}", mission=mission)
 
 
 def _game_for(model, profile, points, mode, origin, report, run_id=None, candidate_count=0, generations=0,
-              simulation_steps=0):
-    token, player = _start_game(model.genome, profile, points, mode, origin=origin, run_id=run_id, engine_id=model.id)
+              simulation_steps=0, mission=None):
+    token, player = _start_game(model.genome, profile, points, mode, origin=origin, run_id=run_id, engine_id=model.id,
+                                mission=mission)
     scene, actions = _scene(player)
     config_path, bundle_path = _export_run_artifacts(model, candidate_count, generations, simulation_steps)
     return {
@@ -244,7 +297,7 @@ def _recorded_model(engine_id):
         raise AuthoringError(f"Engine `{engine_id}` could not be loaded: {exc}") from exc
 
 
-def play_engine(engine_id, profile=None, stats_choice=None, stats_points=None, origin="studio"):
+def play_engine(engine_id, profile=None, stats_choice=None, stats_points=None, origin="studio", mission=None):
     """Start a game with a recorded engine: its world, tuning and storyteller."""
     profile = _profile(profile)
     points, mode = _player_stats(stats_choice, stats_points)
@@ -252,18 +305,53 @@ def play_engine(engine_id, profile=None, stats_choice=None, stats_points=None, o
     model.activate()
     engine.refresh_runtime_settings()
     return _game_for(model, profile, points, mode, origin,
-                     f"Recorded engine `{engine_id}` loaded. Benchmark score: **{model.score}**.")
+                     f"Recorded engine `{engine_id}` loaded. Benchmark score: **{model.score}**.", mission=mission)
 
 
 def _option_limit():
-    return max(1, int((config.get("player_options") or {}).get("limit", 8)))
+    return max(1, int((config.get("player_options") or {}).get("limit", 6)))
 
 
 def _player_options(state: GameState):
-    """The options a player sees: the storyteller's best (player_options.limit), in the
-    scene's order (player_options.order: world) or best first (ranked)."""
+    """The options a player sees (GameState.player_options): the most relevant of the
+    storyteller's options, at most player_options.limit, in the scene's order
+    (player_options.order: world) or best first (ranked)."""
     order = (config.get("player_options") or {}).get("order", "ranked")
-    return state.ranked_available_actions(limit=_option_limit(), order="world" if order == "world" else "ranked")
+    return state.player_options(limit=_option_limit(), order="world" if order == "world" else "ranked")
+
+
+def quest_line(quest):
+    """The mission in one line of the scene: title, current stage, what is still to do."""
+    stages = quest.get("stages") or []
+    current = next((number for number, stage in enumerate(stages, start=1) if stage["state"] == "current"), None)
+    line = f"**Quest:** {quest['title']}"
+    if current:
+        line += f" · stage {current}/{len(stages)}: *{stages[current - 1]['title']}*"
+    if quest["status"] != "in progress":
+        line += f" · {quest['status']}"
+    elif quest.get("todo"):
+        line += " · to do: " + "; ".join(quest["todo"])
+    return line
+
+
+def people_text(people):
+    """The people here, one line each: who they are, what they want, how you stand with them."""
+    lines = ["**People here:**"]
+    for person in people:
+        notes = []
+        if person["hostile"]:
+            notes.append("⚠ hostile")
+        if person["quest"]:
+            notes.append("★ can help with your quest")
+        if person["talks"]:
+            notes.append(f"spoken with {person['talks']}×")
+        line = f"- **{person['name']}** — {person['description']}"
+        if person.get("wants"):
+            line += f" *Wants:* {person['wants'][:1].lower() + person['wants'][1:]}."
+        if notes:
+            line += " (" + " · ".join(notes) + ")"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _scene(state: GameState) -> tuple[str, list[str]]:
@@ -276,12 +364,11 @@ def _scene(state: GameState) -> tuple[str, list[str]]:
         f"**Health:** {state.health_player.status()} · **Coins:** {state.coins} · **Power:** {state.power:.2f}",
         f"**Inventory:** {inventory}",
     ]
-    if state.mission:
-        details.insert(1, f"**Mission:** {state.mission.title}" + (
-            f" — {state.mission.description}" if state.mission.description else ""
-        ))
-    if npcs:
-        details.append("**People here:** " + ", ".join(name for name, _ in npcs))
+    quest = state.quest_log()
+    if quest:
+        details.insert(1, quest_line(quest))
+    if npcs and not state.ended:
+        details.append(people_text(state.people_here()))
     if state.stats.names:
         bonuses = state.combat.item_bonuses(state.inventory)
         details.append("**Stats:** " + " · ".join(
@@ -304,7 +391,7 @@ def _scene(state: GameState) -> tuple[str, list[str]]:
 
 def run_simulation(candidate_count: int, generations: int, simulation_steps: int, deterministic: bool,
                    profile=None, stats_choice=None, stats_points=None, episodes=None, warm_start=None,
-                   progress=None, origin="studio"):
+                   progress=None, origin="studio", mission=None):
     """Evolve storytellers with the shared evolutionary AI and start a game with the best.
 
     ``progress(generation, total, GenerationStats)`` reports each generation.
@@ -360,11 +447,11 @@ def run_simulation(candidate_count: int, generations: int, simulation_steps: int
         records.finish_run(run_id, None, error=exc)
         raise
     return _finish_training(evolution, result, run_id, origin, profile, points, mode, candidate_count, episodes,
-                            simulation_steps, title="Evolution complete.")
+                            simulation_steps, title="Evolution complete.", mission=mission)
 
 
 def _finish_training(evolution, result, run_id, origin, profile, points, mode, candidate_count, episodes,
-                     simulation_steps, title, parent_id=None, source=None):
+                     simulation_steps, title, parent_id=None, source=None, mission=None):
     """Record a finished run (its generations, champions, best engine with its model
     file, and its preview story) and start a game with the best storyteller."""
     learning = result.summary()
@@ -374,7 +461,8 @@ def _finish_training(evolution, result, run_id, origin, profile, points, mode, c
     records.record_story(simulated, origin, "preview", run_id=run_id, engine_id=model.id,
                          parameters={"benchmark": True})
 
-    token, player = _start_game(genome, profile, points, mode, origin=origin, run_id=run_id, engine_id=model.id)
+    token, player = _start_game(genome, profile, points, mode, origin=origin, run_id=run_id, engine_id=model.id,
+                                mission=mission)
     scene, actions = _scene(player)
     history = result.history
     report = (
@@ -412,7 +500,7 @@ def _training_guard(pop_size, generations, episodes, steps):
 
 
 def continue_engine(engine_id, generations=1, profile=None, stats_choice=None, stats_points=None, origin="studio",
-                    progress=None):
+                    progress=None, mission=None):
     """Continue a recorded engine's training exactly where it stopped, for
     ``generations`` more generations; records the run and starts a game with the result."""
     profile = _profile(profile)
@@ -444,11 +532,11 @@ def continue_engine(engine_id, generations=1, profile=None, stats_choice=None, s
     return _finish_training(evolution, result, run_id, origin, profile, points, mode, settings["pop_size"],
                             settings["episodes_per_genome"], settings["max_steps"],
                             title=f"Training continued for {generations} generation(s) from engine `{engine_id}`.",
-                            parent_id=engine_id, source=f"continued from {engine_id}")
+                            parent_id=engine_id, source=f"continued from {engine_id}", mission=mission)
 
 
 def retrain_engine(engine_id, candidate_count=8, generations=5, simulation_steps=16, episodes=None, deterministic=True,
-                   profile=None, stats_choice=None, stats_points=None, origin="studio", progress=None):
+                   profile=None, stats_choice=None, stats_points=None, origin="studio", progress=None, mission=None):
     """A new run whose first population starts from a recorded engine's storyteller
     and memory, on that engine's world; records it and starts a game with the result."""
     profile = _profile(profile)
@@ -480,7 +568,7 @@ def retrain_engine(engine_id, candidate_count=8, generations=5, simulation_steps
         raise
     return _finish_training(evolution, result, run_id, origin, profile, points, mode, candidate_count, episodes,
                             simulation_steps, title=f"Retrained from engine `{engine_id}`.", parent_id=engine_id,
-                            source=f"retrained from {engine_id}")
+                            source=f"retrained from {engine_id}", mission=mission)
 
 
 # ---- the records database, for the studio ------------------------------------------------
@@ -552,10 +640,10 @@ def play_action(token: str, selected_action: str):
         state = SESSIONS.get(token)
         if state is None:
             raise AuthoringError("Run a simulation first to start a game.")
-        actions = state.ranked_available_actions(limit=_option_limit())  # step() indexes the ranked order
-        names = [action.name for action in actions]
-        if selected_action not in names:
+        offered = [action.name for action in _player_options(state)]
+        if selected_action not in offered:
             raise AuthoringError("That choice is no longer available. Select a current action.")
+        names = [action.name for action in state.ranked_available_actions()]  # step() indexes the ranked order
         before = len(state.history)
         state.step(names.index(selected_action))
         turn_text = "\n\n".join(state.history[before:]).strip()

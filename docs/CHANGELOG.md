@@ -7,6 +7,54 @@ that introduces them.
 
 ## [Unreleased]
 
+### A map that holds, relevant choices, quests to play
+
+#### Added
+- `world_definition.routes`: a world's map (which places border which, both
+  ways), written for the city. Every move follows the map: a far destination is
+  reached through the places between, one turn each (`route_via`), and the story
+  heads on toward it (`action_selection.heading_weight`, `heading_turns`). A far
+  place revealed opens the way toward it, told once (`lead_via`). An NPC's
+  action that would take the player where this place does not lead is not
+  offered here. Without routes, each story's own map (story map plus the places
+  a location's actions lead to) is the map; a world with no spawn rules has none.
+- `location_constraints.<place>.entry: sent` (the Dungeon): a place one only
+  arrives at by being sent, never a travel option, discovery or stop on the way.
+- Relevant choices (`GameState.player_options`, `player_options`: `min`,
+  `relevance`, `focus_relevance`, `travel_limit`, `talk_limit`, `focus_limit`,
+  `tense_tags`, `relevance_filter`): what the moment is about first, then the
+  rest unless they rank among the lowest; fewer in tense moments
+  (`GameState.tension()`). The studio, the API and the offline engine all use it.
+- Quests as playable content: an optional `mission` (key or title) on every
+  start of a game in the API and the studio, `GET /v1/missions/playable`, and the
+  studio's quest picker, *Quests in this world*, quest log and people journal.
+- Play state `quest` (`GameState.quest_log`: stages done, current, to come, and
+  what is still to do in words), `people` (`people_here`: description, wants,
+  hostile, can help with the quest, times spoken with), `people_met`
+  (`people_met`: where each was met) and `ways_on` (`ways_on`); the scene shows
+  the quest line, the people with who they are and the ways on. The offline
+  engine's `view()` has them too.
+- Tests for the map, the choices, quests and people.
+
+#### Changed
+- `player_options.limit` 6 (was 8): the most choices ever shown.
+- The city's map has secret ways the content describes: the Sewers to the
+  Palace basement, the Drowned Archive's current to the Bone Orchard, the
+  ghostline to the Palace and the Storm Observatory.
+
+#### Fixed
+- A move, a discovery or an NPC could carry the player between places that do
+  not border each other: 630 of 1,356 moves in 40 city stories left the story's
+  own map, and on the city's map 140 of 512 moves of the storyteller and 385 of
+  992 of a random player jumped (the Dungeon opened onto the Palace). Now none
+  do; in the example worlds only the way an arrest opened is walked back.
+- A failed attempt to take an item (or an arrest for it) still gave the item.
+- A hostile NPC gave directions right after an ambush.
+- Engine models did not carry the vectors of the tags the engine adds itself
+  (`milestone` when a quest stage completes, `finale`), so a loaded or exported
+  engine told such stories slightly differently from the one that was trained
+  (training continued in another process diverged).
+
 ### Quests, hints and threads; worlds in files
 
 #### Added

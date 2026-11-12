@@ -485,9 +485,13 @@ def _choices(actions):
     return gr.Radio(choices=actions, value=actions[0] if actions else None, interactive=bool(actions))
 
 
-def _player(profile, stats_choice, stats_points):
-    """The player part of a request: profile, and stats (story default, a mode, or own points)."""
-    player = {"profile": profile or None}
+ANY_QUEST = "Any quest (the story draws one)"
+
+
+def _player(profile, stats_choice, stats_points, mission=None):
+    """The player part of a request: profile, the quest to play (else drawn by the story),
+    and stats (story default, a mode, or own points)."""
+    player = {"profile": profile or None, "mission": mission or None}
     if stats_choice == "defined":
         points = from_yaml(stats_points, "The stat points")
         if not isinstance(points, dict):
@@ -498,12 +502,55 @@ def _player(profile, stats_choice, stats_points):
     return player
 
 
+def quest_markdown(quest):
+    """The quest log of a game: the quest, its stages (done, now, still to come) and what to do now."""
+    if not quest:
+        return "### Quest\nThis story has no quest: explore as you like."
+    marks = {"done": "✅", "current": "▶️", "todo": "▫️"}
+    lines = [f"### Quest: {quest['title']}", quest.get("description") or ""]
+    for stage in quest.get("stages") or []:
+        line = f"{marks.get(stage['state'], '▫️')} **{stage['title']}**"
+        if stage["state"] == "current" and stage.get("description"):
+            line += f" — {stage['description']}"
+        lines.append(line)
+    if quest["status"] != "in progress":
+        lines.append(f"**{quest['status'].capitalize()}.**")
+    elif quest.get("todo"):
+        lines.append("**To do now:** " + "; ".join(quest["todo"]))
+    return "\n\n".join(line for line in lines if line)
+
+
+def people_markdown(game):
+    """Everyone met in the story: where, how often spoken with, and who is hostile or gone."""
+    met = game.get("people_met") or []
+    here = {person["name"]: person for person in game.get("people") or []}
+    if not met:
+        return "### People met\nNobody yet."
+    lines = ["### People met"]
+    for person in met:
+        notes = []
+        if person["name"] in here:
+            notes.append("here now")
+            if here[person["name"]].get("quest"):
+                notes.append("★ can help with your quest")
+        if person["hostile"]:
+            notes.append("⚠ hostile")
+        if person["gone"]:
+            notes.append("gone from the story")
+        if person["talks"]:
+            notes.append(f"spoken with {person['talks']}×")
+        lines.append(f"- **{person['name']}** · met at {', '.join(person['where'])}"
+                     + (f" · {' · '.join(notes)}" if notes else ""))
+    return "\n".join(lines)
+
+
 def _game_outputs(game):
     """What the play tab shows of a game the API started (simulation, loaded or recorded engine)."""
     curve, traits = _learning_outputs(game.get("learning"))
     generations = [str(stats["generation"]) for stats in (game.get("learning") or {}).get("history", [])]
     return (game["session_id"], game["report"], game["scene"], _choices(game["actions"]), game.get("last_turn", ""),
-            API.download(game["config_download_url"]), API.download(game["engine_download_url"]), curve, traits,
+            API.download(game["config_download_url"]), API.download(game["engine_download_url"]),
+            quest_markdown(game.get("quest")), people_markdown(game), curve, traits,
             game.get("run_id"), gr.Dropdown(choices=generations, value=generations[-1] if generations else None))
 
 
@@ -533,26 +580,26 @@ def forget_learning_ui():
 
 @ui
 def run_simulation_ui(candidate_count, generations, simulation_steps, deterministic, profile, stats_choice,
-                      stats_points, episodes, warm_start, progress=gr.Progress()):
+                      stats_points, episodes, warm_start, mission=None, progress=gr.Progress()):
     job = API.post("/v1/jobs/simulations", {
         "candidate_count": int(candidate_count), "generations": int(generations),
         "simulation_steps": int(simulation_steps), "deterministic": bool(deterministic),
         "episodes": int(episodes) if episodes else None, "warm_start": bool(warm_start),
-        **_player(profile, stats_choice, stats_points),
+        **_player(profile, stats_choice, stats_points, mission),
     })
     outputs = _game_outputs(API.wait(job, _job_progress(progress)))
-    return (*outputs[:9], learning_memory_text(), *outputs[9:])
+    return (*outputs[:11], learning_memory_text(), *outputs[11:])
 
 
 @ui
-def load_best_engine_ui(uploaded_file, model_parameters_file, profile, stats_choice, stats_points):
+def load_best_engine_ui(uploaded_file, model_parameters_file, profile, stats_choice, stats_points, mission=None):
     if not uploaded_file:
         raise gr.Error("Choose an engine model, an engine ZIP or a configuration YAML first.")
-    player = _player(profile, stats_choice, stats_points)
+    player = _player(profile, stats_choice, stats_points, mission)
     game = API.upload("/v1/engines/load", {"file": uploaded_file, "parameters": model_parameters_file},
-                      profile=player["profile"], stats_mode=player.get("stats_mode"),
+                      profile=player["profile"], stats_mode=player.get("stats_mode"), mission=player["mission"],
                       stats=json.dumps(player["stats"]) if "stats" in player else None)
-    return _game_outputs(game)[:9]
+    return _game_outputs(game)[:11]
 
 
 @ui
@@ -560,7 +607,28 @@ def play_action_ui(token, selected_action):
     if not token:
         raise gr.Error("Run a simulation first to start a game.")
     state = API.post(_path("/v1/sessions", token, "actions"), {"action": selected_action or ""})
-    return state["scene"], _choices(state["actions"]), state["last_turn"]
+    return state["scene"], _choices(state["actions"]), state["last_turn"], quest_markdown(state.get("quest")), \
+        people_markdown(state)
+
+
+def quest_overview(profile):
+    """(choices of the quest picker, Markdown overview of the world's quests) for this profile:
+    the quests open to it now can be chosen; the others are listed, struck through."""
+    quests = API.get("/v1/missions/playable", profile=profile or None)["missions"]
+    choices = [(ANY_QUEST, "")] + [(q["title"], q["key"]) for q in quests if q["available"]]
+    lines = [f"**Quests in this world** (for profile `{profile or 'default'}`):"]
+    for quest in quests:
+        stages = " → ".join(quest["stages"])
+        lines.append(f"- {'**' + quest['title'] + '**' if quest['available'] else '~~' + quest['title'] + '~~ (not open now)'}"
+                     + (f" — {quest['description']}" if quest["description"] else "")
+                     + (f" *Stages:* {stages}" if stages else ""))
+    return choices, "\n".join(lines)
+
+
+@ui
+def playable_quests_ui(profile):
+    choices, text = quest_overview(profile)
+    return gr.Dropdown(choices=choices, value=""), text
 
 
 @ui
@@ -652,31 +720,32 @@ def refresh_records_ui():
 
 
 @ui
-def play_recorded_ui(engine_id, profile, stats_choice, stats_points):
+def play_recorded_ui(engine_id, profile, stats_choice, stats_points, mission=None):
     if not engine_id:
         raise gr.Error("Choose a recorded engine first.")
     return _game_outputs(API.post(_path("/v1/records/engines", engine_id, "play"),
-                                  _player(profile, stats_choice, stats_points)))
+                                  _player(profile, stats_choice, stats_points, mission)))
 
 
 @ui
-def continue_recorded_ui(engine_id, more_generations, profile, stats_choice, stats_points, progress=gr.Progress()):
+def continue_recorded_ui(engine_id, more_generations, profile, stats_choice, stats_points, mission=None,
+                         progress=gr.Progress()):
     if not engine_id:
         raise gr.Error("Choose a recorded engine first.")
     job = API.post(_path("/v1/jobs/engines", engine_id, "continue"),
-                   {"generations": int(more_generations), **_player(profile, stats_choice, stats_points)})
+                   {"generations": int(more_generations), **_player(profile, stats_choice, stats_points, mission)})
     return _game_outputs(API.wait(job, _job_progress(progress)))
 
 
 @ui
 def retrain_recorded_ui(engine_id, candidate_count, more_generations, simulation_steps, episodes, deterministic,
-                        profile, stats_choice, stats_points, progress=gr.Progress()):
+                        profile, stats_choice, stats_points, mission=None, progress=gr.Progress()):
     if not engine_id:
         raise gr.Error("Choose a recorded engine first.")
     job = API.post(_path("/v1/jobs/engines", engine_id, "retrain"), {
         "candidate_count": int(candidate_count), "generations": int(more_generations),
         "simulation_steps": int(simulation_steps), "episodes": int(episodes) if episodes else None,
-        "deterministic": bool(deterministic), **_player(profile, stats_choice, stats_points),
+        "deterministic": bool(deterministic), **_player(profile, stats_choice, stats_points, mission),
     })
     return _game_outputs(API.wait(job, _job_progress(progress)))
 
@@ -1131,6 +1200,14 @@ def build_app():
                         profiles["profiles"], value=profiles["default"], allow_custom_value=True, label="Player profile",
                         info="Persistent variables are saved to this profile. Type a new name for a new player.",
                     )
+                    first_quests, quest_overview_text = quest_overview(profiles["default"])
+                    play_mission = gr.Dropdown(
+                        first_quests, value="", label="Quest to play",
+                        info="Choose the quest of the next game (every way of starting one), or let the story draw it.",
+                    )
+                with gr.Accordion("Quests in this world", open=False):
+                    quest_overview_md = gr.Markdown(quest_overview_text)
+                    refresh_quests = gr.Button("Refresh quests for this profile")
                 with gr.Accordion("Character stats of the player", open=False):
                     allocation = character_stats.get("allocation") or {}
                     gr.Markdown(
@@ -1211,10 +1288,16 @@ def build_app():
                     record_story = gr.Dropdown(recorded_stories(), label="Recorded story")
                     story_view = gr.Markdown()
                     runs_table = gr.Dataframe(recorded_runs(), label="Recorded runs", interactive=False)
-                scene = gr.Markdown("Run a simulation to begin.")
-                choices = gr.Radio([], label="What do you do?", interactive=True)
-                choose = gr.Button("Take action", variant="primary")
-                turn_result = gr.Textbox(label="Last turn", lines=7, interactive=False)
+                with gr.Row():
+                    with gr.Column(scale=3):
+                        scene = gr.Markdown("Run a simulation to begin.")
+                        choices = gr.Radio([], label="What do you do?", interactive=True,
+                                           info="The most relevant choices now: fewer in tense moments.")
+                        choose = gr.Button("Take action", variant="primary")
+                        turn_result = gr.Textbox(label="Last turn", lines=7, interactive=False)
+                    with gr.Column(scale=2):
+                        quest_panel = gr.Markdown("### Quest\nStart a game to see its quest.")
+                        people_panel = gr.Markdown("### People met\nNobody yet.")
                 generated_config = gr.File(label="Generated story configuration", interactive=False, visible=True)
                 generated_engine = gr.File(
                     label="Engine model (world, storyteller, training state, memory, tag vectors)",
@@ -1223,25 +1306,28 @@ def build_app():
 
                 play_outputs = [
                     session_token, simulation_report, scene, choices, turn_result,
-                    generated_config, generated_engine,
+                    generated_config, generated_engine, quest_panel, people_panel,
                 ]
                 run_button.click(
                     run_simulation_ui,
                     [candidates, generations, sim_steps, deterministic_run, play_profile, stats_choice, stats_points,
-                     episodes, warm_start],
+                     episodes, warm_start, play_mission],
                     [*play_outputs, learning_plot, learned_traits, memory_status, run_state, export_generation],
                     concurrency_limit=1,
                     concurrency_id="narrative_evolution",
                 )
                 load_engine_button.click(
                     load_best_engine_ui,
-                    [engine_upload, model_parameters_upload, play_profile, stats_choice, stats_points],
+                    [engine_upload, model_parameters_upload, play_profile, stats_choice, stats_points, play_mission],
                     [*play_outputs, learning_plot, learned_traits],
                     concurrency_limit=1,
                 )
-                choose.click(play_action_ui, [session_token, choices], [scene, choices, turn_result], concurrency_limit=1)
+                choose.click(play_action_ui, [session_token, choices],
+                             [scene, choices, turn_result, quest_panel, people_panel], concurrency_limit=1)
+                play_profile.change(playable_quests_ui, play_profile, [play_mission, quest_overview_md])
+                refresh_quests.click(playable_quests_ui, play_profile, [play_mission, quest_overview_md])
                 record_outputs = [*play_outputs, learning_plot, learned_traits, run_state, export_generation]
-                player_inputs = [play_profile, stats_choice, stats_points]
+                player_inputs = [play_profile, stats_choice, stats_points, play_mission]
                 record_lists = [record_engine, record_story, runs_table, records_status]
                 refresh_records.click(refresh_records_ui, None, record_lists)
                 play_record.click(play_recorded_ui, [record_engine, *player_inputs], record_outputs, concurrency_limit=1)

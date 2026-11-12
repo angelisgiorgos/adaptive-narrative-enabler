@@ -151,6 +151,8 @@ class SimulationRequest(BaseModel):
     stats: dict[str, int] | None = Field(default=None, description="The player's own stat points (overrides stats_mode).")
     episodes: int | None = Field(default=None, ge=1, le=10, description="Stories each storyteller plays per generation.")
     warm_start: bool | None = Field(default=None, description="Continue learning from the storytellers remembered from earlier runs.")
+    mission: str | None = Field(default=None, description="The mission to play (its key or title, see GET "
+                                "/v1/missions/playable); left out, the story draws one.")
 
 
 class ActionRequest(BaseModel):
@@ -200,6 +202,16 @@ class PlayState(BaseModel):
     stats: dict[str, int] = Field(default_factory=dict, description="Skill values (1-100) including item bonuses.")
     stat_points: dict[str, int] = Field(default_factory=dict, description="Allocated points per stat.")
     last_check: dict[str, Any] | None = Field(default=None, description="{stat, roll, target, passed, step} of the last check.")
+    quest: dict[str, Any] | None = Field(
+        default=None, description="The mission as the player follows it: {key, title, description, status, stages: "
+        "[{title, description, state: done|current|todo}], todo: what the current step still needs, in words}.")
+    people: list[dict[str, Any]] = Field(
+        default_factory=list, description="The people here: [{name, called, description, wants, hostile, talks, "
+        "quest}] (talks: times spoken with; quest: they can help with the mission now).")
+    people_met: list[dict[str, Any]] = Field(
+        default_factory=list, description="Everyone met in this story: [{name, called, where, talks, hostile, gone}].")
+    ways_on: list[dict[str, Any]] = Field(
+        default_factory=list, description="The places one can travel to from here now: [{name, visited, toward_quest}].")
 
 
 class SimulationResponse(PlayState):
@@ -666,6 +678,16 @@ def get_missions():
     return Missions(missions=content.load_missions())
 
 
+@api.get("/v1/missions/playable", tags=["Evolution and play"])
+def get_playable_missions(profile: str | None = None):
+    """The missions a player may choose when starting a game (``mission`` in the play requests):
+    [{key, title, description, stages, available}], ``available`` for this profile now."""
+    try:
+        return {"missions": sessions.playable_missions(profile)}
+    except Exception as exc:
+        _fail(exc)
+
+
 @api.put("/v1/missions", response_model=Missions, tags=["World authoring"])
 def put_missions(body: Missions):
     try:
@@ -699,7 +721,7 @@ def simulate(body: SimulationRequest, origin: str = Depends(_origin)):
             profile=body.profile, episodes=body.episodes, warm_start=body.warm_start,
             stats_choice="defined" if body.stats is not None else body.stats_mode,
             stats_points=yaml.safe_dump(body.stats) if body.stats is not None else None,
-            progress=None, origin=origin,
+            progress=None, origin=origin, mission=body.mission,
         )
         return _game_response(game)
     except HTTPException:
@@ -721,10 +743,11 @@ def _game_response(game) -> "SimulationResponse":
 @api.post("/v1/engines/load", response_model=SimulationResponse, tags=["Evolution and play"])
 def load_engine(file: UploadFile = File(...), parameters: UploadFile | None = File(default=None),
                 profile: str | None = None, stats_mode: Literal["defined", "random", "balanced"] | None = None,
-                stats: str | None = None, origin: str = Depends(_origin)):
+                stats: str | None = None, mission: str | None = None, origin: str = Depends(_origin)):
     """Start a game with a saved engine: an engine model file (.ane.zip), an older engine ZIP, or a
     configuration YAML. ``parameters``: a separate model-parameters YAML for a configuration without
-    ``generated_run.genome``. ``stats``: the player's own points as a JSON object (overrides ``stats_mode``)."""
+    ``generated_run.genome``. ``stats``: the player's own points as a JSON object (overrides ``stats_mode``).
+    ``mission``: the mission to play (key or title); left out, the story draws one."""
     path = _save_upload(file, {".yaml", ".yml", ".zip"}, store.MAX_ENGINE_UPLOAD_BYTES)
     parameters_path = None
     try:
@@ -734,7 +757,7 @@ def load_engine(file: UploadFile = File(...), parameters: UploadFile | None = Fi
         game = sessions.load_best_engine(
             str(path), str(parameters_path) if parameters_path else None, profile=profile,
             stats_choice="defined" if points is not None else stats_mode,
-            stats_points=yaml.safe_dump(points) if points is not None else None, origin=origin,
+            stats_points=yaml.safe_dump(points) if points is not None else None, origin=origin, mission=mission,
         )
         return _game_response(game)
     except HTTPException:
@@ -783,6 +806,8 @@ class EnginePlayRequest(BaseModel):
     profile: str | None = Field(default=None, description="Player profile for persistent variables.")
     stats_mode: Literal["defined", "random", "balanced"] | None = None
     stats: dict[str, int] | None = None
+    mission: str | None = Field(default=None, description="The mission to play (its key or title, see GET "
+                                "/v1/missions/playable); left out, the story draws one.")
 
 
 class EngineContinueRequest(EnginePlayRequest):
@@ -799,7 +824,7 @@ class EngineRetrainRequest(EnginePlayRequest):
 
 
 def _player(body):
-    return {"profile": body.profile,
+    return {"profile": body.profile, "mission": body.mission,
             "stats_choice": "defined" if body.stats is not None else body.stats_mode,
             "stats_points": yaml.safe_dump(body.stats) if body.stats is not None else None}
 
@@ -1118,7 +1143,7 @@ def submit_simulation(body: SimulationRequest, origin: str = Depends(_origin)):
             profile=body.profile, episodes=body.episodes, warm_start=body.warm_start,
             stats_choice="defined" if body.stats is not None else body.stats_mode,
             stats_points=yaml.safe_dump(body.stats) if body.stats is not None else None,
-            progress=progress, origin=origin,
+            progress=progress, origin=origin, mission=body.mission,
         )
         return _game_response(game).model_dump()
     return sessions.submit_job("simulation", work, f"{body.generations} generation(s) of {body.candidate_count} storytellers")

@@ -118,8 +118,24 @@ Errors are JSON: `{"detail": "..."}` (or the list of `422`).
 - A game is a session (`session_id`). `POST /v1/sessions/{id}/actions` takes
   one of the `actions` the last response offered; any other choice is refused
   with `400`, and an unknown session is `404`.
-- `actions` are the storyteller's best options (`player_options.limit`, 8),
-  listed in the scene's order (`player_options.order: world`), not best first.
+- `actions` are the most relevant of the storyteller's options
+  (`player_options`): what the moment is about first (a prisoner's way out,
+  the quest's next step, the payoff of an open clue, a way on), then the rest
+  unless they rank among the lowest, at most 3 ways on and 2 conversations.
+  There are at most `limit` (6), and fewer in tense moments (`focus_limit`, 4),
+  so their number varies from turn to turn. They are listed in the scene's
+  order (`player_options.order: world`), not best first. An event's choices are
+  all offered.
+- Every start of a game (`POST /v1/simulations`, `/v1/jobs/simulations`, the
+  records' `play`, `continue` and `retrain`, and `POST /v1/engines/load?mission=`)
+  takes an optional `mission`: the key or title of the quest to play. Left out,
+  the story draws one. `GET /v1/missions/playable?profile=` lists the world's
+  quests with their stages and whether each is open to the profile now
+  (`available`, from its `enabled_if`). An unknown quest, or one not open to
+  the profile (for example one it already completed), is refused with `400`.
+- Moves follow the world's map (`world_definition.routes`, or each story's
+  own map): a far destination is reached through the places between, one
+  turn each (`[ROUTE] …`).
 - With the director (`director` in the configuration), the last
   `finale_actions` turns are a finale, and a story that reaches the action
   limit closes with an epilogue (its record's `end_kind` is `epilogue`) instead
@@ -256,6 +272,9 @@ Requests with the header `X-ANE-Client: studio` are recorded with the origin
   the event to be resolved by a successful action, and `condition`, any
   condition tree), the rewards' effect list, and every referenced location, item, event,
   NPC, stat, and variable are checked.
+- `GET /v1/missions/playable?profile=`: the quests a player may choose when
+  starting a game (`key`, `title`, `description`, `stages` (their titles),
+  `available` for that profile now).
 - `GET|PUT /v1/messages`: story messages, with defaults and allowed
   placeholders.
 
@@ -326,7 +345,7 @@ Requests with the header `X-ANE-Client: studio` are recorded with the origin
   runs, and simulation responses carry their `run_id`.
 - `GET /v1/learning` returns the storytellers the AI remembers from earlier
   runs; `DELETE /v1/learning` forgets them.
-- `POST /v1/engines/load?profile=&stats_mode=&stats=` loads an engine model
+- `POST /v1/engines/load?profile=&stats_mode=&stats=&mission=` loads an engine model
   (`.ane.zip`), an older engine ZIP, or a configuration YAML (form field
   `file`) and begins a session without evolving again. `parameters` (optional
   form field) is a model-parameters YAML for a configuration without
@@ -339,6 +358,20 @@ Requests with the header `X-ANE-Client: studio` are recorded with the origin
   `end_reason`, `profile`, `variables`, `stats` (1-100 values with item bonuses),
   `stat_points`, and `last_check` (`stat`, `roll`, `target`, `passed`, `step`). A won story has `ended: true`
   and offers no more actions.
+- The structured state also has what a game's own interface shows beside the
+  scene:
+  - `quest`: `key`, `title`, `description`, `status` (in progress, completed,
+    failed), `stages` (each `title`, `description`, `state`: done, current or
+    todo) and `todo` (what the current step still needs, in words, such as
+    "Reach the Vault" or "Have 20 coins (you have 12)").
+  - `people`: the people here (`name`, `called` with its article,
+    `description`, `wants`, `hostile`, `talks` (times spoken with) and `quest`
+    (they can help with the mission now)).
+  - `people_met`: everyone met in the story (`name`, `called`, `where`,
+    `talks`, `hostile`, `gone`).
+  - `ways_on`: every place one can travel to from here now, for a map
+    (`name`, `visited`, `toward_quest`); `actions` offer the most relevant of
+    them.
 - `GET /v1/artifacts/{id}` downloads generated config or engine bundles.
 
 The schemas and validation constraints are available in `/docs`.

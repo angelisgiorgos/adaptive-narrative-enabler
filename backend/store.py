@@ -106,6 +106,19 @@ OPTIONAL_CONFIG_PATHS = {
     "world_definition.story_map",
     "mission_selection",
     "player_options",
+    # Added with maps and relevant choices.
+    "world_definition.routes",
+    "action_selection.heading_weight",
+    "action_selection.heading_turns",
+    "location_constraints.Dungeon.entry",
+    "player_options.min",
+    "player_options.relevance",
+    "player_options.focus_relevance",
+    "player_options.travel_limit",
+    "player_options.talk_limit",
+    "player_options.focus_limit",
+    "player_options.tense_tags",
+    "player_options.relevance_filter",
 }
 
 CONFIG_LOCK = threading.RLock()
@@ -370,7 +383,7 @@ def _validate_complete_config(candidate: object, reference: object, path: str = 
             errors.append(f"`{label}` must be {type(reference).__name__}, not {type(candidate).__name__}.")
     return errors
 
-WORLD_CONTENT = ("locations", "characters", "objects", "events", "missions", "variables")
+WORLD_CONTENT = ("locations", "characters", "objects", "events", "missions", "variables", "routes")
 LOCATION_KEYED = (("location_constraints",), ("action_selection", "location_penalties"))
 
 
