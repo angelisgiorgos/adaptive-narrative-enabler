@@ -7,6 +7,24 @@ that introduces them.
 
 ## [Unreleased]
 
+### The language model: Gemma 4 on vLLM
+
+#### Changed
+- Story evaluation, world augmentation and the editor's suggestions share one
+  Gemma 4 runtime (`google/gemma-4-E2B-it`) on vLLM (`utils/llm_model_loader.py`,
+  `vllm` in the configuration), loaded once: `embedded` in this process, or
+  `server` against an OpenAI-compatible `vllm serve`. Text only
+  (`limit_mm_per_prompt`), `max_model_len` 4096.
+- Evolution's worker processes are spawned instead of forked while an embedded
+  vLLM engine holds a GPU context, and receive the active configuration and tag
+  vectors, so they score storytellers exactly as before.
+- `requirements.txt` no longer installs `accelerate` and `bitsandbytes`; vLLM is
+  installed by `environment.yml` (the Docker image uses server mode).
+
+#### Removed
+- The Hugging Face loader with its Llama model and public fallback
+  (`llm_evaluator.model_name`, `llm_fallback`).
+
 ### A map that holds, relevant choices, quests to play
 
 #### Added

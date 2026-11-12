@@ -503,16 +503,32 @@ fitness:
     target: 3
     variety_bonus: 6
     excess_penalty: 4
+# The language model behind story evaluation, world augmentation and the editor's
+# suggestions: one shared Gemma 4 runtime served by vLLM. `embedded` loads the model in
+# this process (needs the `vllm` package and a GPU); `server` calls a separately started
+# OpenAI-compatible server instead (`vllm serve google/gemma-4-E2B-it`), e.g. from Docker.
+vllm:
+  mode: embedded               # embedded | server
+  model_name: google/gemma-4-E2B-it
+  dtype: auto
+  gpu_memory_utilization: 0.55
+  max_model_len: 4096
+  max_num_seqs: 1
+  enforce_eager: true
+  enable_prefix_caching: true
+  limit_mm_per_prompt:         # text only: no image or audio inputs reserve memory
+    image: 0
+    audio: 0
+  quantization: null
+  cpu_offload_gb: 0
+  trust_remote_code: false
+  base_url: http://127.0.0.1:8000/v1   # server mode
+  api_key: local-vllm                  # server mode
+  timeout_seconds: 180                 # server mode
 llm_evaluator:
   enabled: true
-  model_name: meta-llama/Llama-3.2-1B-Instruct
-  max_new_tokens: 2048
+  max_new_tokens: 1024
   temperature: 0.3
-llm_fallback:
-  enabled: true
-  model_name: Qwen/Qwen2.5-0.5B-Instruct
-  local_files_only: false
-  trust_remote_code: false
 config_editor:
   enabled: true
   show_story_browser_on_startup: true

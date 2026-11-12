@@ -1,9 +1,8 @@
 import json
-import torch
 
 
 from utils.config_loader import config
-from utils.llm_model_loader import load_causal_lm_with_fallback
+from utils.llm_model_loader import get_llm_runtime
 
 
 class LLMNarrativeEvaluator:
@@ -13,45 +12,25 @@ class LLMNarrativeEvaluator:
         max_new_tokens=None,
         temperature=None
     ):
-        self.model_name = model_name or config.get("llm_evaluator.model_name", "meta-llama/Llama-3.2-3B-Instruct")
+        self.model_name = model_name or config.get(
+            "vllm.model_name",
+            "google/gemma-4-E2B-it",
+        )
         self.max_new_tokens = max_new_tokens or config.get("llm_evaluator.max_new_tokens", 2048)
         self.temperature = temperature or config.get("llm_evaluator.temperature", 0.3)
 
-        torch.cuda.empty_cache()
-        self.tokenizer, self.model, self.model_name = load_causal_lm_with_fallback(
-            self.model_name,
-            purpose="LLM evaluator",
-            prefer_quantized=True,
-        )
-
-        self.device = self.model.device
+        self.runtime = get_llm_runtime(self.model_name)
 
     # ----------------------------
     # Core generation
     # ----------------------------
     def generate(self, prompt, **kwargs):
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
-        prompt_length = inputs["input_ids"].shape[1]
-
-        gen_params = {
-            "max_new_tokens": self.max_new_tokens,
-            "temperature": self.temperature,
-            "do_sample": True,
-            "pad_token_id": self.tokenizer.eos_token_id
-        }
-        gen_params.update(kwargs)
-
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                **gen_params
-            )
-
-        # Only decode the NEWly generated tokens
-        new_tokens = outputs[0][prompt_length:]
-        text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
-
-        return text
+        return self.runtime.generate(
+            prompt,
+            max_new_tokens=kwargs.pop("max_new_tokens", self.max_new_tokens),
+            temperature=kwargs.pop("temperature", self.temperature),
+            **kwargs,
+        )
 
     # ----------------------------
     # JSON extraction helper

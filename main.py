@@ -229,6 +229,37 @@ def _evaluation_seed(base_seed, generation, genome_index):
     return base_seed + generation * max(1, POP_SIZE) + genome_index
 
 
+def _init_spawned_worker(config_data, tag_vectors):
+    """A spawned evaluation process starts from this process's configuration (an uploaded or
+    augmented world) and tag vectors, as a forked one would inherit them."""
+    from utils.tag_similarity import load_tag_vectors
+
+    config.use_override(config_data)
+    load_tag_vectors(tag_vectors)
+    refresh_runtime_settings()
+
+
+def _new_process_pool(max_workers):
+    """A pool of evaluation processes. They are forked, so they inherit this process's
+    configuration, unless this process holds an embedded vLLM engine (Gemma 4 on the GPU,
+    e.g. after world augmentation): a CUDA context must not be forked, so they are spawned
+    and given the configuration and tag vectors explicitly."""
+    from utils.llm_model_loader import embedded_engine_active
+
+    if not embedded_engine_active():
+        return ProcessPoolExecutor(max_workers=max_workers)
+    import multiprocessing
+
+    from core_engine.model import world_tags
+    from utils.tag_similarity import export_tag_vectors
+
+    active = config.as_dict()
+    return ProcessPoolExecutor(
+        max_workers=max_workers, mp_context=multiprocessing.get_context("spawn"),
+        initializer=_init_spawned_worker, initargs=(active, export_tag_vectors(world_tags(active))),
+    )
+
+
 def _worker_evaluate_genome(args):
     index, genome, rng_seed = args
     score, episode_score, _ = evaluate_genome(genome, rng_seed=rng_seed)
@@ -265,7 +296,7 @@ def evaluate_population(population, generation, base_seed, stop_event=None, exec
             for index, genome in enumerate(population)
         ]
         local_executor = executor is None
-        process_executor = executor or ProcessPoolExecutor(max_workers=max_workers)
+        process_executor = executor or _new_process_pool(max_workers)
         futures = {
             process_executor.submit(_worker_evaluate_genome, task): task[0]
             for task in tasks
@@ -321,8 +352,8 @@ def evolve(stop_event=None, progress=None):
     max_workers = _evaluation_worker_count(POP_SIZE)
     executor = None
     if max_workers > 1:
-        executor_class = ProcessPoolExecutor if PARALLEL_BACKEND == "processes" else ThreadPoolExecutor
-        executor = executor_class(max_workers=max_workers)
+        executor = (_new_process_pool(max_workers) if PARALLEL_BACKEND == "processes"
+                    else ThreadPoolExecutor(max_workers=max_workers))
     map_fn = (lambda function, tasks: list(executor.map(function, tasks))) if executor else None
 
     def report(generation, total, stats):
@@ -698,8 +729,7 @@ def _parallel_map():
     workers = _evaluation_worker_count(POP_SIZE)
     if workers <= 1:
         return None, None
-    executor_class = ProcessPoolExecutor if PARALLEL_BACKEND == "processes" else ThreadPoolExecutor
-    executor = executor_class(max_workers=workers)
+    executor = _new_process_pool(workers) if PARALLEL_BACKEND == "processes" else ThreadPoolExecutor(max_workers=workers)
     return executor, (lambda function, tasks: list(executor.map(function, tasks)))
 
 

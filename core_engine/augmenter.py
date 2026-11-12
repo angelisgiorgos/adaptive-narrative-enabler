@@ -23,9 +23,7 @@ class WorldAugmenter:
     @property
     def llm(self):
         if self._llm is None:
-            import torch
-            torch.cuda.empty_cache() # Clear cache before loading
-            print("Initializing LLM for augmentation...")
+            print("Initializing the shared Gemma 4 runtime (vLLM) for augmentation...")
             self._llm = LLMNarrativeEvaluator()
         return self._llm
 
@@ -135,8 +133,6 @@ class WorldAugmenter:
             print("Updating config in memory with augmented world.")
             config.set_world_definition(final_world)
         
-        import torch
-        torch.cuda.empty_cache() # Clear cache after generation
         
         return final_world, filepath
 

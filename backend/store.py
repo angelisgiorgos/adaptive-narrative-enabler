@@ -119,6 +119,8 @@ OPTIONAL_CONFIG_PATHS = {
     "player_options.focus_limit",
     "player_options.tense_tags",
     "player_options.relevance_filter",
+    # Gemma 4 on vLLM replaced the Hugging Face loader (llm_evaluator.model_name, llm_fallback).
+    "vllm",
 }
 
 CONFIG_LOCK = threading.RLock()
@@ -686,8 +688,8 @@ LOGIC_SECTIONS = {
     "persistence": "Persistent variables: player profile, when to save, what evolution plays with.",
     "reproducibility": "Seeds for reproducible runs.",
     "simulation": "Console output of the terminal story (verbose, interactive).",
-    "llm_evaluator": "The optional language model that judges the final story.",
-    "llm_fallback": "The public language model used when the configured one is unavailable.",
+    "vllm": "The shared Gemma 4 language model served by vLLM (embedded in this process, or a vLLM server).",
+    "llm_evaluator": "The optional language-model judge of the final story (generation length, temperature).",
     "config_editor": "The terminal editor.",
     "editor_suggester": "Language-model suggestions in the terminal editor.",
     "world_definition": "How locations connect when no spawn rules are written (spawn strategy, similarity).",

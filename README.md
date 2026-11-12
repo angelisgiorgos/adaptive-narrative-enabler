@@ -565,33 +565,39 @@ stay where they are.
 - **Tests** record into a temporary folder (`tests/records_sandbox.py`), never
   into the real database.
 
-## LLM Fallback
+## Language model: Gemma 4 on vLLM
 
-LLM features are used by:
+One language model, **Gemma 4** (`google/gemma-4-E2B-it`), serves every LLM feature
+through a single shared runtime ([`utils/llm_model_loader.py`](utils/llm_model_loader.py)),
+so the model is loaded once:
 
-- `llm_evaluator`: final narrative evaluation.
-- `augmentation`: world expansion.
-- `editor_suggester`: editor field suggestions.
+- `llm_evaluator`: the judge of the final story (`evaluator/llm_eval.py`).
+- `augmentation`: world expansion (`core_engine/augmenter.py`).
+- `editor_suggester`: field suggestions in the terminal editor.
 
-The primary model is configured here:
-
-```yaml
-llm_evaluator:
-  enabled: true
-  model_name: "meta-llama/Llama-3.2-1B-Instruct"
-```
-
-If that model is gated, restricted, or unavailable to the current Hugging Face user, the shared loader in [`utils/llm_model_loader.py`](utils/llm_model_loader.py) automatically tries the public fallback:
+It runs on [vLLM](https://docs.vllm.ai), in one of two modes:
 
 ```yaml
-llm_fallback:
-  enabled: true
-  model_name: "Qwen/Qwen2.5-0.5B-Instruct"
-  local_files_only: false
-  trust_remote_code: false
+vllm:
+  mode: embedded               # embedded | server
+  model_name: google/gemma-4-E2B-it
+  gpu_memory_utilization: 0.55
+  max_model_len: 4096
+  limit_mm_per_prompt: {image: 0, audio: 0}   # text only
+  base_url: http://127.0.0.1:8000/v1           # server mode
 ```
 
-This fallback is shared by evaluation, augmentation, and editor suggestions. If you want offline-only behavior, set `llm_fallback.local_files_only: true` and make sure the selected models are already cached locally.
+- **`embedded`** loads the model in this process (needs `pip install "vllm>=0.25.0"`
+  and a GPU; `environment.yml` installs it). Evolution's worker processes are then
+  *spawned* instead of forked, since a GPU context must not be forked; they receive
+  the active configuration and tag vectors explicitly.
+- **`server`** calls a separately started OpenAI-compatible server, e.g.
+  `vllm serve google/gemma-4-E2B-it --max-model-len 4096`. Use it with Docker (the
+  image does not install vLLM) or to share one model between several processes.
+
+Without vLLM (or a server), the LLM features report that the model is unavailable and
+everything else runs as usual. `llm_evaluator` sets the judge's `max_new_tokens` and
+`temperature`, `editor_suggester` the editor's.
 
 For faster non-LLM runs, disable these sections:
 
