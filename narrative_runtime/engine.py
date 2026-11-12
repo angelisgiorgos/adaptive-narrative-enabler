@@ -32,8 +32,11 @@ class Game:
         self.id = game_id or uuid.uuid4().hex
 
     def actions(self) -> list[str]:
+        """The choices the player sees now: the most relevant ones (player_options in the tuning)."""
         if self.state.ended:
             return []
+        if hasattr(self.state, "player_options"):
+            return [action.name for action in self.state.player_options()]
         return [action.name for action in self.state.ranked_available_actions()]
 
     def view(self) -> dict:
@@ -62,6 +65,10 @@ class Game:
             "mission": state.mission.title if state.mission else None,
             "mission_description": state.mission.description if state.mission else None,
             "mission_status": state.mission_status,
+            "quest": state.quest_log() if hasattr(state, "quest_log") else None,
+            "people": state.people_here() if hasattr(state, "people_here") and not state.ended else [],
+            "people_met": state.people_met() if hasattr(state, "people_met") else [],
+            "ways_on": state.ways_on() if hasattr(state, "ways_on") and not state.ended else [],
             "event": state.active_event.title if state.active_event else None,
             "variables": {k: v for k, v in state.variables.items() if k in state.variable_specs or k == "playthroughs"},
             "ended": bool(state.ended),
@@ -78,8 +85,9 @@ class Game:
         index = action if isinstance(action, int) else names.index(action) if action in names else -1
         if not 0 <= index < len(names):
             raise ValueError(f"Unknown action {action!r}. Available: {names}")
+        ranked = [option.name for option in self.state.ranked_available_actions()]  # step() indexes the ranked order
         before = len(self.state.history)
-        self.state.step(index)
+        self.state.step(ranked.index(names[index]))
         turn = "\n".join(line.strip("\n") for line in self.state.history[before:]).strip()
         return {**self.view(), "turn": turn}  # "turn": the story text of this turn
 

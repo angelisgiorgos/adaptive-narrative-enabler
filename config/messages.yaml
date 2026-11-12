@@ -51,6 +51,8 @@ messages:
   auto_transfer: "[AUTO TRANSFER] No actions remained in {origin}, so a new route carried you to {destination}."  # {destination}, {origin}
   stall_move: "[MOVE ON] After lingering in the {origin}, you set out for the {destination}."  # {destination}, {origin}
   released: "[RELEASED] After a long wait the guards lose interest and let you out of the {origin}; you make for the {destination}."  # {origin} {destination}
+  route_via: "[ROUTE] No road runs straight from the {origin} to the {destination}; you set out by way of the {via}."  # {origin}, {destination}, {via}
+  lead_via: "[LEAD] The way to the {destination} runs through the {via}."  # {destination}, {via}
   spawn: "[SPAWN] New path discovered: {location}"  # {location}
   spawn_forced: "[SPAWN] A situational path opens to: {location}"  # {location}
   voyage: "[VOYAGE] The opening draws you toward {location}."  # {location}

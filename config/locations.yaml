@@ -7,6 +7,28 @@
 # mission can be reached; the player's recent starts are drawn less often
 # (start_selection in hyperparameters.yaml).
 world_definition:
+  # The city's map: which places border which (a route holds both ways). A move only
+  # goes to a neighbour; a far place is reached through the places between, one turn
+  # each, and an NPC met elsewhere cannot take you there. Paths are still discovered
+  # as the story goes (story_map draws which ones each story can find). Being sent
+  # (an arrest) is the only jump. Leave `routes` out and every story draws its own map.
+  routes:
+    Harbor: [Market, Tavern, Sewers, Drowned Archive, Festival of Masks]
+    Market: [Harbor, Alley, Palace, Tavern, Sewers, Market of the Ancients, Festival of Masks]
+    Alley: [Market, Dungeon, Tavern, Sewers, Abandoned Church]
+    Palace: [Market, Vault, Secret Garden, Sewers, Storm Observatory, Ghostline Station]
+    Dungeon: [Alley, Sewers]
+    Tavern: [Harbor, Market, Alley]
+    Vault: [Palace, Sewers]
+    Secret Garden: [Palace, Abandoned Church, Bone Orchard]
+    Sewers: [Harbor, Market, Alley, Palace, Dungeon, Vault, Drowned Archive]   # Palace: the basement passage
+    Abandoned Church: [Alley, Secret Garden, Bone Orchard]
+    Market of the Ancients: [Market, Drowned Archive, Ghostline Station, Festival of Masks]
+    Storm Observatory: [Palace, Drowned Archive, Ghostline Station, Festival of Masks]
+    Drowned Archive: [Harbor, Sewers, Market of the Ancients, Storm Observatory, Bone Orchard]   # a hidden current
+    Bone Orchard: [Secret Garden, Abandoned Church, Drowned Archive, Ghostline Station]
+    Ghostline Station: [Palace, Market of the Ancients, Storm Observatory, Bone Orchard]
+    Festival of Masks: [Harbor, Market, Market of the Ancients, Storm Observatory]
   locations:
     Harbor:
       start_eligible: true

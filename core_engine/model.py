@@ -44,8 +44,9 @@ from .genome import TRAIT_BOUNDS, Genome
 FORMAT = "ane-engine-model"
 VERSION = 1
 SUFFIX = ".ane.zip"
-# Tags the engine adds by itself, besides those written in the configuration.
-ENGINE_TAGS = ["failure", "unexpected", "event", "conversation", "social", "neutral", "success"]
+# Tags the engine adds by itself, besides those written in the configuration (milestone: a
+# quest stage completed; finale: the director's finale began); exported with every model.
+ENGINE_TAGS = ["failure", "unexpected", "event", "conversation", "social", "neutral", "success", "milestone", "finale"]
 CODE_DIR = Path(__file__).resolve().parent
 
 

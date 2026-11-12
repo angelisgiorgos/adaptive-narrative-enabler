@@ -71,7 +71,49 @@ def _location_signature(locations_cfg):
         )
     )
 
+def route_map(config_wd):
+    """The world's authored map (``world_definition.routes``): place -> sorted list of
+    the places it borders, both ways (a route written on one side holds for both).
+    None when the world has no routes (every story then draws its own map)."""
+    raw = (config_wd or {}).get("routes")
+    if not raw:
+        return None
+    routes = {}
+    for name, neighbours in raw.items():
+        for other in neighbours or []:
+            if other == name:
+                continue
+            routes.setdefault(name, set()).add(other)
+            routes.setdefault(other, set()).add(name)
+    return {name: sorted(others) for name, others in sorted(routes.items())}
+
+
+def route_errors(config_wd):
+    """Problems with ``world_definition.routes`` (unknown places, wrong shapes)."""
+    raw = (config_wd or {}).get("routes")
+    if raw is None:
+        return []
+    if not isinstance(raw, dict):
+        return ["`world_definition.routes` must map each place to the list of places it borders."]
+    places = set((config_wd.get("locations") or {}))
+    errors = []
+    for name, neighbours in raw.items():
+        if name not in places:
+            errors.append(f"routes: '{name}' is not a location of this world.")
+        if not isinstance(neighbours, list):
+            errors.append(f"routes.{name} must be a list of locations.")
+            continue
+        unknown = [str(other) for other in neighbours if other not in places]
+        if unknown:
+            errors.append(f"routes.{name}: not locations of this world: {', '.join(unknown)}.")
+    return errors
+
+
 def _build_spawn_rules(locations, locations_cfg, config_wd):
+    routes = route_map(config_wd)
+    if routes is not None:
+        # An authored map is the world's geography: new paths only open between neighbours.
+        return {name: list(others) for name, others in routes.items()}
     strategy = config_wd.get("spawn_strategy", "static")
     if strategy == "similarity":
         threshold = config_wd.get("similarity_threshold", 0.2)
@@ -156,7 +198,7 @@ def logic_errors(world):
     items, locations, NPCs, events and missions. Empty when valid."""
     world = world or {}
     refs = conditions.References.from_world(world)
-    errors = []
+    errors = list(route_errors(world))
 
     def condition(raw, where):
         errors.extend(conditions.validate(raw, refs, where=where))
@@ -394,7 +436,9 @@ def build_world(genome):
         loc.actions = actions_list
         world.add_location(loc)
 
-    # 3. Spawn rules (Dynamic Similarity or Static)
+    # 3. Spawn rules (the authored routes, Dynamic Similarity or Static)
+    routes = route_map(config_wd)
+    world.routes = {name: set(others) for name, others in routes.items()} if routes is not None else None
     for parent, children in _build_spawn_rules(world.locations, locations_cfg, config_wd).items():
         for child in children:
             world.allow_spawn(parent, child)

@@ -288,6 +288,8 @@ def _fitness_breakdown(state):
     )
 
     end_score = 0.0
+    # Progress through a staged mission counts, won or not.
+    end_score += getattr(state, "mission_stage", 0) * base_cfg.get("stage_bonus", 0)
     if getattr(state, "won", False):
         # A rushed win is worth less than a win after a full story.
         min_steps = max(1, base_cfg.get("mission_win_min_steps", 20))

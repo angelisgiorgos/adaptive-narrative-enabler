@@ -57,6 +57,8 @@ DEFAULT_MESSAGES = {
     "reveal_npc": "[DISCOVERY] You noticed {npc} in the scene.",
     "reveal_item": "[DISCOVERY] You spotted the {item} nearby.",
     "lead_path": "[LEAD] {npc} told you about the way to: {location}",
+    "route_via": "[ROUTE] No road runs straight from the {origin} to the {destination}; you set out by way of the {via}.",
+    "lead_via": "[LEAD] The way to the {destination} runs through the {via}.",
     "lead_move": "\n >>> [LEAD] {npc} led you to: {location}",
     "npc_removed": "[NPC REMOVED] {npc} is no longer part of the story.",
     "npc_removed_scene": "[NPC REMOVED] {npc} leaves the {location}.",

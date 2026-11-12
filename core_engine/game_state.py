@@ -170,6 +170,8 @@ class GameState:
         # This story's own geography (world_definition.story_map), before the mission and
         # start are chosen: they must be reachable on it.
         self.story_map = self._draw_story_map()
+        self.routes = self._story_routes()  # the map every move follows (None: no map)
+        self.heading = None  # a far place the story set out for (see _set_heading)
         if store is not None:
             self.recent_missions = store.recent_missions(self.profile)
         elif config.get("persistence.simulate_with", "defaults") == "stored":
@@ -389,6 +391,14 @@ class GameState:
             if revealed not in self.current_inhabitants:
                 self.current_inhabitants.append(revealed)
             self._say("reveal_npc", npc=name)
+            self._note_met(revealed.name)
+
+    def _note_met(self, name):
+        """Remember where the player met someone (people_met)."""
+        met = self.__dict__.setdefault("met", {})  # games saved before the journal
+        entry = met.setdefault(name, {"where": [], "first_turn": self.actions_taken})
+        if self.current.name not in entry["where"]:
+            entry["where"].append(self.current.name)
 
     def _reveal_item(self, name):
         if name in self.item_instances and not self._instance_at(name, self.current.name):
@@ -397,7 +407,11 @@ class GameState:
         self._say("reveal_item", item=name)
 
     def _open_route(self, name):
-        """Open a route from the current location to ``name``; the new location, or None."""
+        """Open a route from the current location to ``name`` (or toward it, on the map);
+        the new location, or None."""
+        name = self._lead_toward(name)
+        if name is None:
+            return None
         new_loc = self.world.spawn(self.current, force_target=name, state=self, allow_special=(name == "Dungeon"))
         if new_loc and new_loc.name != self.current.name:
             self.current.connect(new_loc)
@@ -478,6 +492,97 @@ class GameState:
             object_lines.append((obj.name, obj_desc))
 
         return location_desc, npc_lines, object_lines
+
+    # ---- what the player sees of the quest, the people here and the ways on ------------------
+
+    def _goal_words(self, key, value):
+        """One goal condition in words, for the player."""
+        if key == "location":
+            return f"Reach the {value}"
+        if key == "item":
+            called = self._called(value)
+            return f"Get {'the ' + value if called.startswith(('a ', 'an ', 'some ')) else called}"
+        if key == "coins":
+            return f"Have {value} coins (you have {self.coins})"
+        if key in ("action", "event_succeeded"):
+            return str(value)
+        if key == "event":
+            return f"Live through: {value}"
+        if key == "npc_removed":
+            return f"Be rid of {self._called(value)}"
+        if key == "outcome_tag":
+            return f"Bring about: {value}"
+        if key == "variables" and isinstance(value, dict):
+            return "; ".join(f"{name.replace('_', ' ')} {rule}" for name, rule in value.items())
+        return f"{key.replace('_', ' ')}: {value}"
+
+    def quest_log(self):
+        """The story's mission as the player follows it, or None: {key, title, description,
+        status, stages: [{title, description, state: done|current|todo}], todo: what the
+        current step still needs, in words}."""
+        if not self.mission:
+            return None
+        index = getattr(self, "mission_stage", 0)
+        stages = [{
+            "title": stage["title"], "description": stage.get("description") or "",
+            "state": "done" if self.won or number < index else "current" if number == index else "todo",
+        } for number, stage in enumerate(getattr(self.mission, "stages", None) or [])]
+        return {
+            "key": self.mission.name, "title": self.mission.title, "description": self.mission.description or "",
+            "status": "completed" if self.won else "failed" if self.ended else "in progress",
+            "stages": stages,
+            "todo": [self._goal_words(key, value) for key, value in self._pending_goal().items()],
+        }
+
+    def people_here(self):
+        """The people the player sees here: [{name, called, description, wants, hostile,
+        talks (times spoken with in this story), quest (they can help with the mission now)}]."""
+        if "location_objects" not in self.__dict__:
+            return []  # the scene is set with the first options
+        _, npc_lines, _ = self._describe_visible_scene()
+        people = []
+        for name, description in npc_lines:
+            char = next((c for c in self.world.characters if c.name == name), None)
+            people.append({
+                "name": name,
+                "called": self._called(name),
+                "description": description,
+                "wants": char.goals[0] if char is not None and char.goals else None,
+                "hostile": bool(char is not None and char.encounter_event),
+                "talks": int(self.character_interactions.get(name, 0)),
+                "quest": bool(char is not None and self.mission and not self.won and any(
+                    self._mission_affinity(a, npc=name) > 0 for a in char.actions if self._action_enabled(a))),
+            })
+        return people
+
+    def people_met(self):
+        """Everyone the player has met in this story, in order: [{name, called, where (the
+        places met), talks, hostile, gone (left the story)}]."""
+        people = []
+        for name, entry in sorted(self.__dict__.get("met", {}).items(), key=lambda item: item[1]["first_turn"]):
+            char = next((c for c in self.world.characters if c.name == name), None)
+            people.append({
+                "name": name, "called": self._called(name), "where": list(entry["where"]),
+                "talks": int(self.character_interactions.get(name, 0)),
+                "hostile": bool(char is not None and char.encounter_event),
+                "gone": name in self.removed_npcs,
+            })
+        return people
+
+    def ways_on(self):
+        """The places the player can travel to from here now: [{name, visited, toward_quest}]
+        (empty for a prisoner)."""
+        if self._location_is_locked():
+            return []
+        distances = self._goal_distances() if self.mission and not self.won else {}
+        here = distances.get(self.current.name, float("inf"))
+        return [{
+            "name": name,
+            "visited": self.location_counts.get(name, 0) > 0,
+            "toward_quest": distances.get(name, float("inf")) < here,
+        } for name in sorted(self.current.connected)
+            if name in self.world.locations and self.is_enabled(self.world.locations[name])
+            and self._adjacent(self.current.name, name) and not self.sent_only(name)]
 
     def _is_guard_failure(self, action, outcome):
         action_name = (action.name if action else "").lower()
@@ -644,6 +749,139 @@ class GameState:
         if story_map is not None:
             return list(story_map.get(name, []))
         return list(self.world.spawn_rules.get(name, []))
+
+    # ---- the map: which places border which ----------------------------------------------
+
+    def _story_routes(self):
+        """The map every move follows: the world's authored ``routes``, or else this
+        story's map (story_map, both ways) with the places a location's own actions
+        lead to or reveal. None (no routes, story maps off): any move goes, as in older worlds."""
+        authored = getattr(self.world, "routes", None)
+        if authored is not None:
+            return {name: set(others) for name, others in authored.items()}
+        story_map = getattr(self, "story_map", None)
+        if story_map is None or not any(self.world.spawn_rules.get(name) for name in self.world.locations):
+            return None  # no geography to draw from: the places a world connects itself are all there is
+        routes = {name: set() for name in self.world.locations}
+
+        def link(a, b):
+            if a != b and a in routes and b in routes:
+                routes[a].add(b)
+                routes[b].add(a)
+
+        for name, others in story_map.items():
+            for other in others:
+                link(name, other)
+        for name, loc in self.world.locations.items():
+            for action in loc.actions:
+                for outcome in action.outcomes:
+                    for target in (outcome.move_to, outcome.reveal_location):
+                        if target:
+                            link(name, target)
+        return routes
+
+    def neighbours(self, name):
+        """The places ``name`` borders on the story's map (and the ways already known from
+        it, e.g. those a world connects itself); None for a story without a map."""
+        routes = getattr(self, "routes", None)  # games saved before maps
+        if routes is None:
+            return None
+        location = self.world.locations.get(name)
+        return set(routes.get(name, set())) | (set(location.connected) if location is not None else set())
+
+    def _adjacent(self, origin, target):
+        neighbours = self.neighbours(origin)
+        return neighbours is None or target in neighbours
+
+    @staticmethod
+    def sent_only(name):
+        """A place one only arrives at by being sent there (``location_constraints.<place>.entry:
+        sent``, e.g. an arrest's cell): never a travel option, a discovery or a stop on the way."""
+        return (config.get("location_constraints", {}).get(name) or {}).get("entry") == "sent"
+
+    def _route_path(self, origin, target):
+        """The shortest way on the map from ``origin`` to ``target``: the places after the
+        origin, the target last. It passes only through enabled places one may walk
+        into and out of. None when no way leads there on authored routes; on a drawn map
+        a place it cannot reach at all is reached directly."""
+        if target == origin:
+            return []
+        if self.neighbours(origin) is None:
+            return [target]
+        if target not in self.world.locations or self.sent_only(target):
+            return None
+        constraints = config.get("location_constraints", {})
+        previous = {origin: None}
+        frontier = [origin]
+        while frontier:
+            following = []
+            for here in frontier:
+                for step in sorted(self.neighbours(here)):
+                    if step in previous or step not in self.world.locations:
+                        continue
+                    if not self.is_enabled(self.world.locations[step]):
+                        continue
+                    if step != target and (self.sent_only(step) or (constraints.get(step) or {}).get("requires_escape")):
+                        continue  # no one walks through a cell
+                    previous[step] = here
+                    if step == target:
+                        path = [step]
+                        while previous[path[-1]] != origin:
+                            path.append(previous[path[-1]])
+                        return path[::-1]
+                    following.append(step)
+            frontier = following
+        # A drawn map (no authored routes) with no way there at all: the world's own words
+        # (a discovery or a lead naming the place) open one.
+        return [target] if getattr(self.world, "routes", None) is None else None
+
+    def _way_toward(self, target):
+        """Where a move or a lead toward ``target`` goes now: the target when it borders
+        the current place, else the next place on the way there; None when no way leads there."""
+        if target == self.current.name:
+            return target
+        path = self._route_path(self.current.name, target)
+        return path[0] if path else None
+
+    def _set_heading(self, target):
+        """Remember a far destination the story set out for (a move or a lead that had to
+        go through other places first); its next step is favoured until it is reached."""
+        turns = int(config.get("action_selection.heading_turns", 8))
+        self.heading = target
+        self._heading_until = self.actions_taken + turns
+
+    def _learn_way(self, path):
+        """The way along ``path`` (places after the current one) becomes known beyond its
+        first step: one who knows the way to a far place can follow it."""
+        for here, there in zip(path, path[1:]):
+            self.world.locations[here].connect(self.world.locations[there])
+
+    def _lead_toward(self, target):
+        """A discovery or a lead naming ``target``: the place it opens now. That is the
+        target when it borders the current place, else the next place on the way there
+        (told once as a lead; the way becomes known, and the story heads on toward the
+        target); None when no way leads there."""
+        if not target or target not in self.world.locations:
+            return target
+        path = self._route_path(self.current.name, target)
+        if not path:
+            return None
+        if len(path) == 1:
+            return target
+        told = self.__dict__.setdefault("_leads_told", set())  # games saved before
+        if (target, path[0]) not in told:
+            told.add((target, path[0]))
+            self._say("lead_via", destination=target, via=path[0])
+        self._learn_way(path)
+        self._set_heading(target)
+        return path[0]
+
+    def _heading_step(self):
+        """The next place toward the destination the story set out for, if any."""
+        target = getattr(self, "heading", None)
+        if not target or self.actions_taken > getattr(self, "_heading_until", 0) or target == self.current.name:
+            return None
+        return self._way_toward(target)
 
     def _mission_weights(self, pool):
         """Draw weights of missions: their ``weight``, x mission_selection.repeat_factor for
@@ -1017,6 +1255,20 @@ class GameState:
         Dijkstra over known routes and routes still to be discovered)."""
         discovery_cost = float(config.get("mission_settings.discovery_route_cost", 2))
         predecessors = {name: [] for name in self.world.locations}
+        if getattr(self, "routes", None) is not None:
+            # On a map: a known path costs one step, a route still to be found the
+            # discovery cost; nobody walks into a place one is only sent to.
+            for name, loc in self.world.locations.items():
+                if self._location_is_locked(name) or not self.is_enabled(loc):
+                    continue
+                for neighbour in self.neighbours(name):
+                    if neighbour not in predecessors or not self.is_enabled(self.world.locations[neighbour]):
+                        continue
+                    if self.sent_only(neighbour) and neighbour not in sites:
+                        continue
+                    cost = 1.0 if neighbour in loc.connected else discovery_cost
+                    predecessors[neighbour].append((name, cost))
+            return self._dijkstra(sites, predecessors)
         for name, loc in self.world.locations.items():
             if self._location_is_locked(name) or not self.is_enabled(loc):
                 continue
@@ -1036,6 +1288,10 @@ class GameState:
                 if child in predecessors and child not in loc.connected and child != "Dungeon":
                     predecessors[child].append((name, discovery_cost))
 
+        return self._dijkstra(sites, predecessors)
+
+    @staticmethod
+    def _dijkstra(sites, predecessors):
         distances = {name: 0.0 for name in sites}
         queue = [(0.0, name) for name in sites]
         heapq.heapify(queue)
@@ -1477,6 +1733,7 @@ class GameState:
             if name in self.world.locations
             and name not in exclude
             and (name != "Dungeon" or allow_special)
+            and (allow_special or not self.sent_only(name))
             and self.is_enabled(self.world.locations[name])
         ]
         if not candidates:
@@ -1675,6 +1932,7 @@ class GameState:
             goal_pull = max(goal_pull, float(director.get("finale_goal_pull", 1.0)))
         useful_items = self._useful_items()
         previous = self.path[-2] if len(self.path) > 1 else None
+        heading_step = self._heading_step()
         ranked = []
         for a in actions:
             all_o_tags = []
@@ -1740,6 +1998,9 @@ class GameState:
             # Going straight back where one came from (A -> B -> A) is a loop.
             if a.source == "navigation" and previous and a.owner == previous:
                 weight -= story_rules["backtrack_penalty"] * self.genome.novelty_bias
+            # A far place the story set out for pulls toward the next step on the way.
+            if a.source == "navigation" and heading_step and a.owner == heading_step:
+                weight += config.get("action_selection.heading_weight", 1.5)
             # An open clue also pulls toward the place where it can be paid off.
             if a.source == "navigation" and open_clues and a.owner in self._payoff_sites():
                 weight += self.genome.setup_prob * story_rules["payoff_route_weight"]
@@ -1824,6 +2085,17 @@ class GameState:
         successes = [o for o in a.outcomes
                      if getattr(o, "on_check", None) != "fail" and "failure" not in {str(t).lower() for t in o.tags}]
         return bool(successes) and all(o.move_to == self.current.name for o in successes)
+
+    def _out_of_reach(self, a):
+        """Someone's offer to take you to a place this one does not border (a gate guard
+        met in a cell cannot let you into the Palace): it is not offered here. Only for
+        NPCs, who are met in many places; a place's own actions define its routes."""
+        if a.source != "npc" or getattr(self, "routes", None) is None:
+            return False
+        places = {o.move_to for o in a.outcomes if o.move_to}
+        places |= {o.reveal_location for o in a.outcomes if o.reveal_location and o.lead_to_known}
+        places = {p for p in places if p in self.world.locations and p != self.current.name}
+        return bool(places) and not any(self._adjacent(self.current.name, p) for p in places)
 
     def _escape_action(self, a):
         """An action that escapes the confinement of this location (an outcome with one of
@@ -2010,6 +2282,7 @@ class GameState:
         self.history.append(self.narrate("arrival", location=self.current.name, description=desc))
         for char_name, char_desc in npc_lines:
             self.history.append(self.narrate("arrival_npc", npc=self._called(char_name), description=char_desc))
+            self._note_met(char_name)
         for obj_name, obj_desc in object_lines:
             self.history.append(self.narrate("arrival_item", item=self._called(obj_name), description=obj_desc))
 
@@ -2112,7 +2385,8 @@ class GameState:
 
         # 3. Process & Template Actions (not a way here while already here)
         filtered_actions = [copy.deepcopy(a) for a in raw_actions
-                            if self._is_offered(a) and self._action_enabled(a) and not self._only_arrives_here(a)]
+                            if self._is_offered(a) and self._action_enabled(a) and not self._only_arrives_here(a)
+                            and not self._out_of_reach(a)]
 
         final_actions = [
             a for a in (self._prepare_action(a) for a in filtered_actions) if a is not None
@@ -2122,6 +2396,7 @@ class GameState:
         navigation_targets = [] if self._location_is_locked() else sorted(
             name for name in self.current.connected
             if name in self.world.locations and self.is_enabled(self.world.locations[name])
+            and self._adjacent(self.current.name, name) and not self.sent_only(name)
         )
         for loc_name in navigation_targets:
             target_loc = self.world.locations.get(loc_name)
@@ -2162,6 +2437,111 @@ class GameState:
         ``limit`` keeps the storyteller's best; ``order="world"`` lists them in the
         scene's order (activities, people, items, travel) instead of best first, for
         players, so the first option is not always the storyteller's favourite."""
+        actions = self._actions_now()
+        ranked = [action for _, action in self._rank_actions(actions)]
+        chosen = ranked if limit is None else ranked[:limit]
+        if order == "world":
+            position = {id(action): index for index, action in enumerate(actions)}
+            chosen = sorted(chosen, key=lambda action: position.get(id(action), len(position)))
+        return chosen
+
+    # ---- the choices a player sees -------------------------------------------------------
+
+    def player_options(self, limit=None, order=None):
+        """The choices a player sees now (``player_options``): the most relevant of the
+        storyteller's ranked options. What the moment is about comes first (a prisoner's
+        way out, the quest's next step, the payoff of an open clue, a way on); then the
+        rest by rank unless they rank among the lowest (``relevance``, more of them in a
+        tense moment: ``focus_relevance``), a few ways on and a few conversations at
+        most. Their number follows the moment: fewer when little is worth doing and in
+        tense moments (``focus_limit``), never more than ``limit``. An event's choices
+        are shown as they are."""
+        cfg = config.get("player_options") or {}
+        limit = max(1, int(limit if limit is not None else cfg.get("limit", 6)))
+        order = order or cfg.get("order", "ranked")
+        actions = self._actions_now()
+        pairs = self._rank_actions(actions)
+        if self.active_event or not cfg.get("relevance_filter", True):
+            chosen = [action for _, action in pairs[:limit]]
+        else:
+            chosen = self._relevant_options(pairs, limit, cfg)
+        if order == "world":
+            position = {id(action): index for index, action in enumerate(actions)}
+            chosen = sorted(chosen, key=lambda action: position.get(id(action), len(position)))
+        return chosen
+
+    @staticmethod
+    def _option_kind(a):
+        return "navigation" if a.source == "navigation" else "conversation" if a.source == "conversation" else a.source
+
+    def tension(self):
+        """0..1: how pressing the moment is. A prisoner, the finale and danger in the last
+        turn (a threat, a fight, a failure, an escape) are tense (1), low health nearly
+        (0.8); a quest step just completed focuses the story (0.5); otherwise it builds
+        with escalation (up to 0.5)."""
+        cfg = config.get("player_options") or {}
+        danger = {str(tag).lower() for tag in cfg.get("tense_tags", ["threat", "combat", "guards", "escape", "failure"])}
+        last = (getattr(self, "turn_log", None) or [{}])[-1]
+        tension = 0.5 * self.escalation()
+        if self._location_is_locked() or self.in_finale():
+            tension = 1.0
+        if self.health_player.is_low:
+            tension = max(tension, 0.8)
+        if {str(tag).lower() for tag in last.get("tags", [])} & danger or (last and not last.get("succeeded", True)):
+            tension = 1.0  # danger a moment ago
+        if self.tags_seen and "milestone" in self.tags_seen[-1]:
+            tension = max(tension, 0.5)
+        return tension
+
+    def _relevant_options(self, pairs, limit, cfg):
+        floor = min(limit, max(1, int(cfg.get("min", 3))))
+        focus = max(floor, min(limit, int(cfg.get("focus_limit", 4))))
+        tension = self.tension()
+        cap = max(floor, min(limit, round(limit - tension * (limit - focus))))
+        kind_caps = {"navigation": int(cfg.get("travel_limit", 3)), "conversation": int(cfg.get("talk_limit", 2))}
+        chosen = []
+
+        def take(a):
+            if a is not None and all(a is not other for other in chosen):
+                chosen.append(a)
+
+        # What the moment is about comes first.
+        if self._location_is_locked():
+            for _, a in pairs:
+                if self._escape_action(a):
+                    take(a)
+        if self.mission and not self.won:
+            affinity = [(self._mission_affinity(a), -index, a) for index, (_, a) in enumerate(pairs)]
+            best = max(affinity, key=lambda item: (item[0], item[1]), default=(0.0, 0, None))
+            if best[0] > 0:
+                take(best[2])
+        if self._open_clues():
+            take(next((a for _, a in pairs if any(
+                str(tag).lower().startswith("payoff_") for o in a.outcomes for tag in o.tags)), None))
+        take(next((a for _, a in pairs if a.source == "navigation"), None))
+        # Then the rest by rank while relevant enough (beyond `min`: not in the lowest
+        # `relevance` share of the options now, `focus_relevance` in a tense moment),
+        # within the kind limits.
+        scores = sorted(score for score, _ in pairs)
+        calm, tense = (min(1.0, max(0.0, float(cfg.get(key, default))))
+                       for key, default in (("relevance", 0.25), ("focus_relevance", 0.5)))
+        share = calm + tension * (tense - calm)
+        cutoff = scores[min(len(scores) - 1, int(share * len(scores)))] if share > 0 else float("-inf")
+        counts = Counter(self._option_kind(a) for a in chosen)
+        for score, a in pairs:
+            if len(chosen) >= cap:
+                break
+            kind = self._option_kind(a)
+            if any(a is other for other in chosen) or counts[kind] >= kind_caps.get(kind, limit):
+                continue
+            if len(chosen) >= floor and score < cutoff:
+                continue
+            chosen.append(a)
+            counts[kind] += 1
+        return chosen
+
+    def _actions_now(self):
+        """The options now; a player left with none is carried on (auto_transfer_when_stuck)."""
         actions = self.get_available_actions()
         attempted_locations = {self.current.name}
         while (
@@ -2174,12 +2554,7 @@ class GameState:
                 break
             attempted_locations.add(self.current.name)
             actions = self.get_available_actions()
-        ranked = [action for _, action in self._rank_actions(actions)]
-        chosen = ranked if limit is None else ranked[:limit]
-        if order == "world":
-            position = {id(action): index for index, action in enumerate(actions)}
-            chosen = sorted(chosen, key=lambda action: position.get(id(action), len(position)))
-        return chosen
+        return actions
 
     def _record_clues(self, tags):
         """Note when each clue (setup_*) and payoff (payoff_*) first appears."""
@@ -2624,6 +2999,10 @@ class GameState:
             "check": vars(check_result).copy() if check_result is not None else None,
             "succeeded": bool(calculated_success),
             "outcome": told.desc if told is not None else None,
+            # What the turn was about: the outcome told, and the event it happened in.
+            "tags": sorted({str(tag) for tag in (told.tags if told is not None else [])}
+                           | {str(tag) for tag in (self.active_event.tags if self.active_event else [])}
+                           | ({"failure"} if not calculated_success else set())),
         }
         self.actions_taken += 1
         shown = told or attempt
@@ -2751,7 +3130,11 @@ class GameState:
                         l for l in char_obj.known_locations
                         if l not in self.current.connected and l != self.current.name
                         and l in self.world.locations and self.is_enabled(self.world.locations[l])
+                        and not self.sent_only(l)
                     ]
+                    # What borders this place first; a far place is told as the way toward it.
+                    hidden_locs = [l for l in hidden_locs if self._adjacent(self.current.name, l)] or [
+                        l for l in hidden_locs if self._way_toward(l) is not None]
                     if hidden_locs:
                         scored = []
                         for loc_name in hidden_locs:
@@ -2807,6 +3190,17 @@ class GameState:
             return False
         if target_name in self.world.locations and not self.is_enabled(self.world.locations[target_name]):
             return False  # switched off by a persistent variable
+        if not one_way and target_name != self.current.name and target_name in self.world.locations \
+                and not (self._adjacent(self.current.name, target_name) and not self.sent_only(target_name)):
+            # The map holds: a far place is reached through the places between, one at a
+            # time (being sent, e.g. an arrest, is the only jump).
+            path = self._route_path(self.current.name, target_name)
+            if not path:
+                return False
+            self._say("route_via", origin=self.current.name, destination=target_name, via=path[0])
+            self._learn_way(path)
+            self._set_heading(target_name)
+            target_name = path[0]
         if target_name not in self.world.locations:
             forced_loc = self.world.spawn(
                 self.current,
@@ -2825,6 +3219,8 @@ class GameState:
 
         origin = self.current
         target = self.world.locations[target_name]
+        if getattr(self, "heading", None) == target_name:
+            self.heading = None  # arrived where the story set out for
         if one_way:
             origin.connect_one_way(target)
             rule = config.get("location_constraints", {}).get(target_name, {})
@@ -2899,7 +3295,9 @@ class GameState:
         discovery_known = bool(outcome.spawn and not outcome.reveal_location and named in self.current.connected)
         if (outcome.spawn or outcome.reveal_location) and not discovery_known:
             target = outcome.reveal_location or (named if outcome.spawn else None)
-            new_loc = self.world.spawn(
+            named_target = target
+            target = self._lead_toward(target)  # a far place opens the way toward it
+            new_loc = None if named_target and target is None else self.world.spawn(
                 self.current,
                 force_target=target,
                 state=self,
@@ -2942,7 +3340,10 @@ class GameState:
         # 2. NPC-driven leads can unlock travel even if the action itself does not move.
         # With follow_outcome_text, an outcome that routes by itself gives no extra
         # lead, and one whose text names a place leads there (or nowhere new).
-        if action and action.character_name and not self._is_removed(action.character_name):
+        hostile = action is not None and any(
+            c.name == action.character_name and c.encounter_event for c in self.world.characters)
+        # Someone who just ambushed you gives no directions.
+        if action and action.character_name and not self._is_removed(action.character_name) and not hostile:
             c_name = action.character_name
             every = max(1, int(config.get("npc_leads.every_nth_interaction", 2)))
             routes_itself = bool(
@@ -2961,7 +3362,9 @@ class GameState:
                 else:
                     node_type, node_name = self.discover_new_node(source_npc=c_name)
                 if node_type == "loc":
-                    new_loc = self.world.spawn(self.current, force_target=node_name, state=self)
+                    step = self._lead_toward(node_name)  # a far place: the way toward it
+                    new_loc = None if node_name and step is None else self.world.spawn(
+                        self.current, force_target=step, state=self)
                     if new_loc and new_loc.name != self.current.name:
                         self.current.connect(new_loc)
                         lead_msg = self.narrate("lead_path", npc=c_name, location=new_loc.name)
@@ -3002,8 +3405,10 @@ class GameState:
                 candidates = [
                     l for l in char.known_locations
                     if l in self.world.locations and l not in (self.current.name, origin_location)
-                    and self.is_enabled(self.world.locations[l])
+                    and self.is_enabled(self.world.locations[l]) and self._way_toward(l) is not None
                 ]
+                # Someone leads you next door; a far place they know is reached through the places between.
+                candidates = [l for l in candidates if self._adjacent(self.current.name, l)] or candidates
                 if candidates:
                     scored = []
                     for loc_name in candidates:
@@ -3017,7 +3422,7 @@ class GameState:
                         if "urban" in loc.tags: score += self.genome.bias_urban
                         scored.append((score, loc_name))
                     scored.sort(key=lambda x: x[0], reverse=True)
-                    target = scored[0][1]
+                    target = self._lead_toward(scored[0][1])  # the next place on the way to it
                     
                     self.history.append(self.narrate("lead_move", npc=char.name, location=target))
                     if self.interactive: print(f" >>> {char.name} leads the way to the {target}...")
@@ -3045,7 +3450,8 @@ class GameState:
                 self.history.append(coin_msg)
                 if self.interactive or self.verbose: print(f"  >>> {coin_msg}")
             
-            if action.collects_object:
+            # A failed attempt to take something (or an arrest for it) does not get it.
+            if action.collects_object and not rules.is_failure(outcome, set(rules.settings()["failure_tags"])):
                 self._give_item(action.collects_object, how="collected")
             if action.consumes_object and action.active_item:
                 self._take_item(action.active_item, how="used")

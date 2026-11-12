@@ -173,6 +173,7 @@ location_constraints:
     # sent: only a player SENT here (send_to, e.g. an arrest) is confined until an
     # escape; one who found a normal route may walk back. always: everyone.
     lock_when: sent
+    entry: sent              # one only arrives here by being sent: never a travel option or a stop on the way
     escape_tags: [escape]
 persistence:
   # Persistent variables (config/variables.yaml) are saved per player profile.
@@ -307,6 +308,8 @@ action_selection:
   mission_goal_weight: 6.0
   repetition_penalty: 1.0  # per earlier use of the same choice (x genome.novelty_bias)
   skill_fit_weight: 2.0    # x (pass chance - 0.5) of an action's skill check
+  heading_weight: 1.5      # a far place the story set out for: its next step on the map is favoured by this...
+  heading_turns: 8         # ...for this many turns
   location_penalties:
     Dungeon:
       action_terms:
@@ -551,6 +554,14 @@ director:                      # how a story builds over its course, like a game
 mission_selection:             # how a story's mission is drawn for a player profile
   recent_missions: 3           # the profile's latest missions...
   repeat_factor: 0.3           # ...are drawn this much less often, each time they appear
-player_options:                # the choices a player sees (studio, API)
-  limit: 8                     # how many of the storyteller's best options are offered
+player_options:                # the choices a player sees (studio, API, offline engine)
+  limit: 6                     # the most options shown at once
+  min: 3                       # the fewest (when there are that many)
+  relevance: 0.25              # beyond `min`, options ranked in the lowest quarter of those now are not shown...
+  focus_relevance: 0.5         # ...in a tense moment the lower half (in between: in proportion; 0: none hidden)
+  travel_limit: 3              # the most travel options at once: the best ways on
+  talk_limit: 2                # the most "talk with" options at once
+  focus_limit: 4               # tense moments (danger, a prisoner, the finale) show at most this many
+  tense_tags: [threat, combat, guards, escape, failure]   # what in the last turn makes the moment tense
+  relevance_filter: true       # false: simply the storyteller's best `limit` options
   order: world                 # world: in the scene's order (activities, people, items, travel); ranked: best first

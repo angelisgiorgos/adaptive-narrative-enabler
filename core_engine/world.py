@@ -31,8 +31,11 @@ class Character(Conditional):
     def __init__(self, name, associated_tags, goals=None, 
                  descriptions=None, actions=None, 
                  known_locations=None, known_objects=None, unique=False,
-                 encounter_event=None, encounter_repeat=False, enabled_if=None, dialogue=None):
+                 encounter_event=None, encounter_repeat=False, enabled_if=None, dialogue=None, article=None):
         self.name = name
+        # How the story names the NPC: "" for a proper name (Aurora), "the" / "a" / "an";
+        # None: "the" for a unique NPC, "a"/"an" for a generic one.
+        self.article = article
         self.enabled_if = enabled_if  # a condition (conditions.py)
         self.dialogue = list(dialogue or [])
         self.unique = bool(unique)
@@ -170,7 +173,24 @@ class Mission(Conditional):
     GOAL_KEYS = ("action", "location", "item", "event", "event_succeeded", "npc_removed", "outcome_tag", "coins",
                  "variables", "condition")
 
-    def __init__(self, name, goal, title=None, description="", weight=1.0, enabled_if=None, rewards=None):
+    def __init__(self, name, goal, title=None, description="", weight=1.0, enabled_if=None, rewards=None, stages=None):
+        # Stages: a quest in steps, each {title, description, goal, rewards}, completed in
+        # order; the last one completes the mission (its goal is the mission's goal).
+        self.stages = []
+        for number, stage in enumerate(stages or [], start=1):
+            stage_goal = dict((stage or {}).get("goal") or {})
+            bad = sorted(set(stage_goal) - set(self.GOAL_KEYS))
+            if not stage_goal or bad:
+                raise ValueError(f"Mission '{name}' stage {number} needs a goal using only: {', '.join(self.GOAL_KEYS)}")
+            try:
+                stage_conditions = {key: Condition(goal_condition(key, value)) for key, value in stage_goal.items()}
+            except ConditionError as exc:
+                raise ValueError(f"Mission '{name}' stage {number}: {exc}") from exc
+            self.stages.append({"title": stage.get("title") or f"Stage {number}", "description": stage.get("description", ""),
+                                "goal": stage_goal, "goal_conditions": stage_conditions,
+                                "rewards": EffectList.of(stage.get("rewards"))})
+        if self.stages and not goal:
+            goal = self.stages[-1]["goal"]
         unknown = sorted(set(goal or {}) - set(self.GOAL_KEYS))
         if not goal or unknown:
             raise ValueError(
@@ -198,6 +218,7 @@ class WorldGraph:
         self.events = {}
         self.missions = {}
         self.spawn_rules = defaultdict(list)
+        self.routes = None  # authored map (world_definition.routes): place -> set of neighbours
 
     def add_location(self, loc):
         self.locations[loc.name] = loc
@@ -286,11 +307,19 @@ class WorldGraph:
             return None
 
         # 1. Primary Spawn Rules
+        # With a map (the story's routes), a new path only opens to a neighbour, and
+        # never to a place one can only be sent to (an arrest's cell).
+        neighbours = state.neighbours(current.name) if state is not None and hasattr(state, "neighbours") else None
+        sent_only = state.sent_only if state is not None and hasattr(state, "sent_only") else (lambda name: False)
         options = []
         if character:
             options = list(self.locations.keys())
+        elif state is not None and hasattr(state, "spawn_options"):
+            options = state.spawn_options(current.name)  # the story's own geography
         else:
             options = self.spawn_rules.get(current.name, [])
+        if neighbours is not None:
+            options = [o for o in options if o in neighbours and not sent_only(o)]
         if state is not None:
             # Locations switched off by persistent variables cannot be discovered.
             options = [o for o in options if o in self.locations and state.is_enabled(self.locations[o])]
@@ -302,6 +331,8 @@ class WorldGraph:
             for name, loc in self.locations.items():
                 if name == current.name: continue
                 if name in current.connected: continue
+                if neighbours is not None and (name not in neighbours or sent_only(name)):
+                    continue  # the map has no way there from here
                 if name == "Dungeon" and not allow_special:
                     continue
                 if state is not None and not state.is_enabled(loc):
