@@ -1,0 +1,553 @@
+# Orbital Station: an example storyworld for the Adaptive Narrative Enabler.
+#
+# A world-only file: the engine takes every tuning section it does not set from the
+# built-in configuration. Load it in the studio (2 · Simulation settings → Complete
+# configuration file), with POST /v1/config/upload, or train on it from the terminal
+# after copying it over config/. Missions use stages, hints use `until`, and its
+# variables are remembered across playthroughs.
+world_definition:
+  variables:
+    respect:
+      type: int
+      default: 0
+      min: -3
+      max: 5
+      description: The crew's respect for you.
+    reactor_fixed:
+      type: bool
+      default: false
+      description: The reactor was rebooted.
+  locations:
+    Docking Bay:
+      tags:
+      - dock
+      - exploration
+      - industrial
+      - trade
+      descriptions:
+      - Cargo pods drift on magnetic rails under flickering light.
+      actions:
+      - name: Scan the cargo manifests
+        outcomes:
+        - desc: A manifest lists a crate bound for the Cryo Vault.
+          tags:
+          - discovery
+          - setup_1
+          reveal_location: Cryo Vault
+        - desc: The terminal locks you out.
+          tags:
+          - neutral
+      - name: Unload a cargo pod
+        outcomes:
+        - desc: The dockmaster pays you in credits.
+          tags:
+          - trade
+          - success
+          coin_change: 5
+        repeat: once
+      interact_prompts:
+      - Return to the docking bay
+      start_eligible: true
+      start_weight: 1.0
+    Market Ring:
+      tags:
+      - market
+      - social
+      - trade
+      - crowded
+      descriptions:
+      - Stalls spin slowly along the station's outer ring.
+      actions:
+      - name: Haggle for parts
+        outcomes:
+        - desc: You get a power coupling at a fair price.
+          tags:
+          - trade
+          - success
+          coin_change: -2
+      - name: Listen to the traders
+        outcomes:
+        - desc: Traders mutter that the reactor runs too hot.
+          tags:
+          - social
+          - setup_2
+          reveal_location: Reactor Core
+          until:
+            reactor_fixed: true
+        - desc: Talk of prices, nothing more.
+          tags:
+          - neutral
+      interact_prompts:
+      - Ride the lift to the market ring
+      start_eligible: true
+      start_weight: 1.0
+    Hydroponics:
+      tags:
+      - garden
+      - green
+      - quiet
+      - life
+      descriptions:
+      - Rows of lettuce glow under violet lamps.
+      actions:
+      - name: Help harvest
+        outcomes:
+        - desc: The farmers share fresh fruit and a kind word.
+          tags:
+          - social
+          - success
+          health_change: 2
+          change_variables:
+            respect: 1
+        repeat: once
+      - name: Inspect the water pumps
+        outcomes:
+        - desc: A pump is sabotaged with a smuggler's tag.
+          tags:
+          - discovery
+          - setup_3
+          reveal_npc: Smuggler
+      interact_prompts:
+      - Walk into hydroponics
+    Reactor Core:
+      tags:
+      - reactor
+      - industrial
+      - threat
+      - grand
+      descriptions:
+      - The reactor hums behind a wall of blue glass.
+      actions:
+      - name: Reboot the reactor
+        outcomes:
+        - desc: The core steadies; the whole station breathes again.
+          tags:
+          - grand
+          - success
+          - payoff_2
+          set_variables:
+            reactor_fixed: true
+        - desc: A surge throws you against the wall.
+          tags:
+          - threat
+          - failure
+          health_change: -2
+        skill_check:
+          stat: defence
+        retry_on_failure: true
+        repeat: once
+      interact_prompts:
+      - Enter the reactor core
+    Command Deck:
+      tags:
+      - command
+      - grand
+      - guarded
+      - social
+      descriptions:
+      - Screens show the planet turning far below.
+      actions:
+      - name: Report to the captain
+        outcomes:
+        - desc: The captain listens and nods at your findings.
+          tags:
+          - social
+          - success
+          change_variables:
+            respect: 1
+        repeat: once
+      interact_prompts:
+      - Take the lift to the command deck
+    Med Bay:
+      tags:
+      - medical
+      - quiet
+      - life
+      - clean
+      descriptions:
+      - White light and the beep of monitors.
+      actions:
+      - name: Get patched up
+        outcomes:
+        - desc: The medic seals your wounds.
+          tags:
+          - neutral
+          - success
+          health_change: 3
+        repeat: per_visit
+      interact_prompts:
+      - Visit the med bay
+    Maintenance Shafts:
+      tags:
+      - shaft
+      - dark
+      - industrial
+      - exploration
+      descriptions:
+      - Narrow shafts full of cables and steam.
+      actions:
+      - name: Crawl toward the noise
+        outcomes:
+        - desc: The shaft opens above the Cryo Vault.
+          tags:
+          - exploration
+          - stealth
+          move_to: Cryo Vault
+        - desc: Steam scalds your hand.
+          tags:
+          - threat
+          health_change: -1
+      interact_prompts:
+      - Climb into the maintenance shafts
+    Cryo Vault:
+      tags:
+      - vault
+      - cold
+      - secret
+      - guarded
+      descriptions:
+      - Frosted pods hold sleeping colonists and something else.
+      actions:
+      - name: Open the smuggler's pod
+        outcomes:
+        - desc: Inside lies the data shard the smuggler hid.
+          tags:
+          - discovery
+          - payoff_1
+          - payoff_3
+          reveal_object: Data Shard
+        - desc: An alarm wails.
+          tags:
+          - threat
+          - guards
+          - failure
+        skill_check:
+          stat: stealth
+      interact_prompts:
+      - Enter the cryo vault
+    Observatory Dome:
+      tags:
+      - observatory
+      - quiet
+      - grand
+      - exploration
+      descriptions:
+      - Stars wheel past a dome of glass.
+      actions:
+      - name: Chart the debris field
+        outcomes:
+        - desc: You chart a safe route for the next shuttle.
+          tags:
+          - discovery
+          - success
+          change_variables:
+            respect: 1
+      interact_prompts:
+      - Climb to the observatory dome
+    Brig:
+      tags:
+      - prison
+      - guarded
+      - cold
+      descriptions:
+      - A bare cell with a humming force field.
+      actions:
+      - name: Search for an exit
+        outcomes:
+        - desc: You short the force field and slip into the shafts.
+          tags:
+          - stealth
+          - escape
+          - success
+          move_to: Maintenance Shafts
+        - desc: The field holds.
+          tags:
+          - failure
+        skill_check:
+          stat: stealth
+      interact_prompts:
+      - Look into the brig
+  characters:
+  - name: Captain Ilse
+    unique: true
+    article: ''
+    associated_tags:
+    - command
+    - grand
+    known_locations:
+    - Command Deck
+    - Observatory Dome
+    descriptions:
+    - The captain, grey-haired and calm as vacuum.
+    goals:
+    - Keep the station alive
+  - name: Smuggler
+    unique: true
+    associated_tags:
+    - market
+    - dock
+    - secret
+    known_locations:
+    - Market Ring
+    - Cryo Vault
+    descriptions:
+    - A smiling trader with too many pockets.
+    goals:
+    - Get off the station rich
+    actions:
+    - name: Accuse the smuggler
+      outcomes:
+      - desc: The smuggler's smile vanishes.
+        tags:
+        - social
+        - threat
+      triggers_event: interrogation
+  - name: Mechanic
+    unique: false
+    associated_tags:
+    - industrial
+    - shaft
+    - reactor
+    known_locations:
+    - Reactor Core
+    - Maintenance Shafts
+    descriptions:
+    - A mechanic with a wrench in every pocket.
+    goals:
+    - Keep things running
+    actions:
+    - name: Lend a hand with repairs
+      outcomes:
+      - desc: The mechanic grins and shows you a shortcut.
+        tags:
+        - social
+        - success
+        reveal_location: Maintenance Shafts
+        change_variables:
+          respect: 1
+      repeat: once
+  - name: Medic
+    unique: true
+    associated_tags:
+    - medical
+    - life
+    known_locations:
+    - Med Bay
+    descriptions:
+    - A tired medic with steady hands.
+    goals:
+    - Save everyone
+  - name: Security Drone
+    unique: false
+    encounter_event: drone_alarm
+    associated_tags:
+    - vault
+    - secret
+    - threat
+    known_locations:
+    - Cryo Vault
+    - Command Deck
+    descriptions:
+    - A drone with a red sweeping eye.
+    goals:
+    - Detain intruders
+  - name: Security Officer
+    unique: false
+    associated_tags:
+    - guarded
+    - command
+    - prison
+    known_locations:
+    - Brig
+    - Command Deck
+    descriptions:
+    - An officer in scuffed armour.
+    goals:
+    - Keep the peace
+    actions:
+    - name: Show your credentials
+      outcomes:
+      - desc: The officer waves you through to the command deck.
+        tags:
+        - social
+        - success
+        move_to: Command Deck
+      - desc: He does not like your face.
+        tags:
+        - social
+        - guards
+        - failure
+      skill_check:
+        stat: persuasion
+      enabled_if:
+        not:
+          at_location: Brig
+  objects:
+  - name: Data Shard
+    unique: true
+    location: Cryo Vault
+    collectible: true
+    associated_tags:
+    - secret
+    - vault
+    descriptions:
+    - A shard of glass that hums with stolen data.
+    actions:
+    - name: Take the data shard
+      outcomes:
+      - desc: You pocket the shard.
+        tags:
+        - stealth
+        - success
+      collects_object: Data Shard
+  - name: Med Kit
+    collectible: true
+    associated_tags:
+    - medical
+    - life
+    descriptions:
+    - A kit of sealed bandages.
+    actions:
+    - name: Take the med kit
+      outcomes:
+      - desc: You clip the kit to your belt.
+        tags:
+        - neutral
+        health_change: 1
+      collects_object: Med Kit
+  - name: Plasma Cutter
+    collectible: true
+    stat_bonus:
+      attack: 12
+    associated_tags:
+    - industrial
+    - weapon
+    - shaft
+    descriptions:
+    - A cutter meant for hull plates.
+    actions:
+    - name: Take the plasma cutter
+      outcomes:
+      - desc: You take the cutter.
+        tags:
+        - neutral
+        - success
+      collects_object: Plasma Cutter
+  events:
+    drone_alarm:
+      title: A drone sounds the alarm
+      tags:
+      - threat
+      - guards
+      descriptions:
+      - The drone's eye locks onto you.
+      actions:
+      - name: Disable the drone
+        outcomes:
+        - desc: You yank its power cell.
+          tags:
+          - combat
+          - success
+          remove_npc: true
+        - desc: It stuns you and hauls you to the brig.
+          tags:
+          - combat
+          - failure
+          send_to: Brig
+          on_check: fail
+        skill_check:
+          stat: attack
+      - name: Hide behind the pods
+        outcomes:
+        - desc: The drone sweeps past and moves on.
+          tags:
+          - stealth
+          - success
+          remove_npc: true
+    interrogation:
+      title: Accusing the smuggler
+      tags:
+      - social
+      - confrontation
+      descriptions:
+      - The smuggler backs toward the airlock.
+      actions:
+      - name: Lay out the evidence
+        outcomes:
+        - desc: The smuggler confesses to the sabotage.
+          tags:
+          - social
+          - success
+          change_variables:
+            respect: 1
+        - desc: The smuggler laughs and calls security on you.
+          tags:
+          - social
+          - failure
+          send_to: Brig
+          on_check: fail
+        skill_check:
+          stat: persuasion
+      - name: Threaten them
+        outcomes:
+        - desc: They flee toward the docks.
+          tags:
+          - threat
+          - combat
+  missions:
+    reboot_reactor:
+      title: Restore the reactor
+      description: Reboot the overheating reactor.
+      enabled_if:
+        reactor_fixed: false
+      goal:
+        action: Reboot the reactor
+    expose_smuggler:
+      title: Expose the smuggler
+      description: Prove the smuggler's sabotage.
+      stages:
+      - title: Find evidence
+        description: Something is wrong in hydroponics.
+        goal:
+          action: Inspect the water pumps
+      - title: Confront the smuggler
+        description: Lay out what you found.
+        goal:
+          event_succeeded: interrogation
+    steal_shard:
+      title: Recover the data shard
+      description: Find what the smuggler hid.
+      stages:
+      - title: Trace the cargo
+        description: The manifests know where it went.
+        goal:
+          action: Scan the cargo manifests
+      - title: Take the shard
+        description: Get into the cryo vault.
+        goal:
+          item: Data Shard
+    reach_observatory:
+      title: Reach the observatory
+      description: Find your way to the dome.
+      goal:
+        location: Observatory Dome
+    earn_respect:
+      title: Earn the crew's respect
+      description: Be respected aboard.
+      enabled_if:
+        respect:
+          lt: 2
+      goal:
+        variables:
+          respect:
+            gte: 2
+game_state:
+  arrest_location: Brig
+location_constraints:
+  Brig:
+    requires_escape: true
+    lock_when: sent
+    escape_tags:
+    - escape
+start_selection:
+  default_location: Docking Bay

@@ -180,7 +180,7 @@ nothing is written.
 | **3 · Weights** → *Skill Check Resolution* and the rest | Difficulty (easier/harder), difficulty over time, chance floor/ceiling, damage mitigation, and every other weight | `GET/PUT /v1/weights` |
 | **4 · Simulate & play** → evolution | Storytellers, generations, steps, **stories per storyteller**, **continue learning from earlier runs**; the **learning curve** and **what the storyteller learned**; forget the learning memory | `POST /v1/jobs/simulations` and `GET /v1/jobs/{id}` (or `POST /v1/simulations`), `GET/DELETE /v1/learning` |
 | **4 · Simulate & play** → *Load a previous best engine* | An engine model, an older engine ZIP, or a configuration YAML with its model-parameters YAML | `POST /v1/engines/load` (`file`, `parameters`, `profile`, `stats_mode`, `stats`) |
-| **4 · Simulate & play** | **Player profile** and the player's **character stats** (story default, random, balanced, or own points with Randomize/Balance); the scene shows mission, health `x/max`, stats, the last check, and remembered values; taking an action | `POST /v1/stats/allocate`, `POST /v1/sessions/{id}/actions` (structured state) |
+| **4 · Simulate & play** | **Player profile**, the **quest to play** (any quest open to the profile, or one drawn by the story; *Quests in this world* lists them with their stages) and the player's **character stats** (story default, random, balanced, or own points with Randomize/Balance); the scene shows the quest and its current stage, health `x/max`, the **people here** (who they are, what they want, hostile or able to help with the quest, how often spoken with), stats, the last check and remembered values; beside it the **quest log** (stages done, now, to come; what to do now) and the **people met** (where, how often spoken with, gone); taking one of the **most relevant choices** | `GET /v1/missions/playable`, `POST /v1/stats/allocate`, `POST /v1/sessions/{id}/actions` (structured state: `quest`, `people`, `people_met`, `ways_on`) |
 | **4 · Simulate & play** → *Export the engine* | Download the trained engine to run offline in a game: this run's best, any generation's champion, the best remembered storyteller, or the current game's; with or without the learning memory | `POST /v1/exports`, `GET /v1/artifacts/{id}` |
 | **4 · Simulate & play** → *Records* | Recorded engines, runs and stories; play with, continue or retrain an engine; download its model file and world | `GET /v1/records/...`, `POST /v1/records/engines/{id}/play`, `POST /v1/jobs/engines/{id}/continue\|retrain` |
 | **5 · Engine logic** | Every parameter of the engine's logic, section by section (no code editing) | `GET /v1/logic`, `GET/PUT /v1/logic/{section}` |
@@ -704,6 +704,7 @@ location_constraints:
   Dungeon:
     requires_escape: true
     lock_when: sent       # or: always
+    entry: sent           # one only arrives here by being sent (never a travel option)
     escape_tags: [escape]
 ```
 
@@ -1473,27 +1474,77 @@ director:
   min_options: 2
 ```
 
-**What players see** (`player_options`): the storyteller's `limit` best
-options, in the scene's order (`order: world`: activities, people, items,
-travel) rather than best first (`order: ranked`), so the first option is not
-always the storyteller's favourite and following it is not an autopilot.
+**What players see** (`player_options`, `GameState.player_options`): the
+most relevant of the storyteller's options, never more than `limit` (6), so
+their number follows the moment instead of always being the same:
+
+1. What the moment is about comes first: a prisoner's ways out, the action
+   that best advances the quest's current stage (or the step toward it), the
+   payoff of an open clue, and the best way on.
+2. Then the rest in the storyteller's order, at most `travel_limit` (3) ways
+   on and `talk_limit` (2) "Talk with" options, and beyond `min` (3) none that
+   rank in the lowest `relevance` (25%) of the options now.
+3. In a tense moment (`GameState.tension()`: a prisoner, the finale, low
+   health, or a threat, fight, guards, escape or failure in the last turn,
+   `tense_tags`) at most `focus_limit` (4) are shown and the lower
+   `focus_relevance` (50%) is left out; in between, in proportion.
+
+With a random player in 30 stories of each of three worlds, a turn offered 1
+to 6 choices, 3.5 to 4.7 on average and about 3 in tense moments (before: up
+to 8, in the city 6.7 on average and 8 in half the turns, 6.2 in tense
+moments), and the player completed more quests (city 19 of 30 instead of 15,
+monastery 24 instead of 20, station 25 instead of 24). An event's choices are
+shown as they are. They are listed
+in the scene's order (`order: world`: activities, people, items, travel)
+rather than best first (`order: ranked`), so the first option is not always
+the storyteller's favourite. `relevance_filter: false` restores the plain
+`limit` best.
 
 **Missions per player** (`mission_selection`): a profile's
 `recent_missions` latest missions are drawn `repeat_factor` times less often
 each time they appear, as recent starts are, so a returning player meets
 other missions.
 
-### Each story's own geography
+### The map: which places border which
+
+A world's map says which places border which. Every move follows it: one
+cannot go between two places that do not border each other (from the Dungeon
+straight to the Palace, say).
+
+- **`world_definition.routes`** (the city's, in `config/locations.yaml`):
+  each place with the places it borders; a route holds both ways. With routes
+  the spawn rules are the routes, so new paths only open between neighbours.
+- **A far place is reached through the places between**, one turn each. An
+  outcome that moves the player somewhere that does not border their place
+  takes them to the next place on the way, told as `[ROUTE] No road runs
+  straight from the Sewers to the Ghostline Station; you set out by way of the
+  Market.` (`route_via`). The story then heads on toward it (the next step is
+  favoured, `action_selection.heading_weight`, for `heading_turns`).
+- **A far place revealed is the way toward it.** A discovery or a lead that
+  names a far place opens the path to the next place on the way, told once as
+  `[LEAD] The way to the Palace runs through the Market.` (`lead_via`).
+- **People cannot take you where this place does not lead.** An NPC's action
+  that would take the player to a place that does not border this one (a
+  Gate Guard met in a cell "letting you into the Palace") is not offered there.
+- **Places one is only sent to** (`location_constraints.<place>.entry: sent`,
+  the Dungeon) are never a travel option, a discovery or a stop on the way;
+  an arrest (`send_to`) is the only jump on the map.
+- **Without routes**, every story draws its own map (`story_map`, below) and
+  moves follow that, together with the places a location's own actions lead
+  to; a place the drawn map cannot reach at all is opened directly when the
+  world's own words name it. A world with neither (no spawn rules at all) has
+  no map, and any move goes, as before.
+- **The way to a far place becomes known** along the whole path, so the player
+  who set out for it, or heard of it, can follow it.
 
 The spawn rules (`world_definition.spawn_strategy: similarity`) say which
 places *may* open onto which; with `similarity_threshold: 0.5` that is almost
 every pair. With `world_definition.story_map` every story draws its own
-geography from them: each place opens onto `neighbors` (3) of the places it
-fits, more fitting ones more often, joined into one connected map. Discovery,
-route planning, mission choice and moving a stuck traveler all follow it,
-so two stories of the same world have different maps (about a quarter of their
-links in common) and each map stays consistent for the whole story. NPC leads
-still cross it (people know distant places). The map is drawn from the
+geography from them (or from the routes): each place opens onto `neighbors`
+(3) of the places it fits, more fitting ones more often, joined into one
+connected map. Discovery, route planning, mission choice and moving a stuck
+traveler all follow it, so two stories of the same world find different paths
+and each map stays consistent for the whole story. The map is drawn from the
 story's seed, so storytellers compared on the same story share the same map.
 
 ```yaml
@@ -1523,7 +1574,10 @@ Rules found by auditing generated stories, applied to every world:
 - **Leads go somewhere.** An NPC lead never points to the place the player is
   in, and never takes them back where the turn started after the outcome
   moved them. Someone who just refused or beat the player (a `failure`
-  outcome) gives no directions.
+  outcome) gives no directions, and neither does a hostile NPC (one with an
+  `encounter_event`) after an ambush.
+- **A failed theft gets nothing.** An action that collects an item does not
+  give it when its attempt fails (a failure outcome, or an arrest for it).
 - **A way to move on is a real choice.** The director hides what would only
   repeat itself even down to one option, when that option is travel or (for a
   prisoner) an escape; otherwise at least `min_options` stay.

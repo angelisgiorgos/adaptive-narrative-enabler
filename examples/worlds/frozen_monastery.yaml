@@ -1,0 +1,622 @@
+# Frozen Monastery: an example storyworld for the Adaptive Narrative Enabler.
+#
+# A world-only file: the engine takes every tuning section it does not set from the
+# built-in configuration. Load it in the studio (2 · Simulation settings → Complete
+# configuration file), with POST /v1/config/upload, or train on it from the terminal
+# after copying it over config/. Missions use stages, hints use `until`, and its
+# variables are remembered across playthroughs.
+world_definition:
+  variables:
+    trust:
+      type: int
+      default: 0
+      min: -3
+      max: 5
+      description: How far the brothers trust you.
+    relic_returned:
+      type: bool
+      default: false
+      description: The relic is back on the altar.
+  locations:
+    Mountain Gate:
+      tags:
+      - mountain
+      - exploration
+      - cold
+      - gate
+      descriptions:
+      - Snow drifts against the iron gate of the monastery.
+      actions:
+      - name: Ring the gate bell
+        outcomes:
+        - desc: A novice opens the wicket and lets you in.
+          tags:
+          - social
+          - success
+          move_to: Cloister
+        - desc: The wind swallows the sound.
+          tags:
+          - neutral
+      - name: Search the snowbank
+        outcomes:
+        - desc: Under the snow lies a frozen pilgrim's satchel.
+          tags:
+          - discovery
+          reveal_object: Healing Herbs
+        - desc: Only snow, and the cold seeping into your boots.
+          tags:
+          - threat
+          health_change: -1
+      interact_prompts:
+      - Climb back to the gate
+      start_eligible: true
+      start_weight: 1.0
+    Cloister:
+      tags:
+      - cloister
+      - social
+      - quiet
+      - exploration
+      descriptions:
+      - Frost-rimed arches ring a garden of black stone.
+      actions:
+      - name: Listen to the brothers' gossip
+        outcomes:
+        - desc: They whisper that the Abbot visits the Crypt at night.
+          tags:
+          - social
+          - setup_1
+          reveal_location: Crypt
+        - desc: They fall silent as you approach.
+          tags:
+          - neutral
+      - name: Help shovel the paths
+        outcomes:
+        - desc: The brothers thank you; one shares a warm loaf.
+          tags:
+          - social
+          - success
+          health_change: 1
+          change_variables:
+            trust: 1
+        repeat: once
+      interact_prompts:
+      - Walk into the cloister
+      start_eligible: true
+      start_weight: 1.0
+    Library:
+      tags:
+      - library
+      - quiet
+      - discovery
+      - ancient
+      descriptions:
+      - Shelves of chained books creak in the cold.
+      actions:
+      - name: Read the chronicle
+        outcomes:
+        - desc: A page tells of a reliquary hidden below the Bell Tower.
+          tags:
+          - discovery
+          - setup_2
+          reveal_location: Bell Tower
+        - desc: The ink has faded beyond reading.
+          tags:
+          - neutral
+      - name: Copy a forbidden page
+        outcomes:
+        - desc: You copy a map of the glacier tunnels.
+          tags:
+          - stealth
+          - success
+          reveal_location: Glacier Path
+          change_variables:
+            trust: -1
+        - desc: Brother Anselm catches you at it.
+          tags:
+          - stealth
+          - threat
+          - failure
+          health_change: -1
+        skill_check:
+          stat: stealth
+      interact_prompts:
+      - Enter the library
+    Bell Tower:
+      tags:
+      - tower
+      - height
+      - cold
+      - grand
+      descriptions:
+      - The great bell hangs silent above a drop into cloud.
+      actions:
+      - name: Ring the great bell
+        outcomes:
+        - desc: The bell booms over the valley; the whole monastery stirs.
+          tags:
+          - grand
+          - success
+          - payoff_1
+        - desc: The rope is frozen solid.
+          tags:
+          - failure
+        skill_check:
+          stat: attack
+        retry_on_failure: true
+        repeat: once
+      - name: Search beneath the bell
+        outcomes:
+        - desc: Behind a loose stone lies the Silver Reliquary.
+          tags:
+          - discovery
+          - payoff_2
+          reveal_object: Silver Reliquary
+        - desc: Ice cracks under your feet.
+          tags:
+          - threat
+          health_change: -2
+      interact_prompts:
+      - Climb the bell tower
+    Kitchens:
+      tags:
+      - kitchen
+      - warm
+      - social
+      - trade
+      descriptions:
+      - Steam and the smell of barley soup.
+      actions:
+      - name: Share a meal
+        outcomes:
+        - desc: Warm soup restores your strength.
+          tags:
+          - neutral
+          - success
+          health_change: 2
+        repeat: per_visit
+      - name: Trade with the cook
+        outcomes:
+        - desc: The cook swaps a candle for your help with the firewood.
+          tags:
+          - trade
+          - success
+          coin_change: 3
+      interact_prompts:
+      - Follow the smell of soup
+    Crypt:
+      tags:
+      - crypt
+      - dark
+      - underground
+      - threat
+      descriptions:
+      - Stone abbots sleep in rows under the frost.
+      actions:
+      - name: Open the newest tomb
+        outcomes:
+        - desc: The tomb is empty, and the Abbot's seal is broken.
+          tags:
+          - discovery
+          - setup_3
+          reveal_npc: Abbot
+        - desc: A cold draft snuffs out your light.
+          tags:
+          - threat
+          health_change: -1
+      - name: Follow the draft
+        outcomes:
+        - desc: The draft leads to a passage onto the glacier.
+          tags:
+          - exploration
+          move_to: Glacier Path
+      interact_prompts:
+      - Descend into the crypt
+    Abbot's Study:
+      tags:
+      - study
+      - secret
+      - grand
+      - quiet
+      descriptions:
+      - A cold room of maps, keys and a single candle.
+      actions:
+      - name: Search the desk
+        outcomes:
+        - desc: A letter confesses the Abbot sold the relic to a smuggler.
+          tags:
+          - discovery
+          - payoff_3
+          reveal_object: Sealed Letter
+        - desc: The Abbot's dog growls in the corner.
+          tags:
+          - threat
+        skill_check:
+          stat: stealth
+      interact_prompts:
+      - Slip into the Abbot's study
+    Glacier Path:
+      tags:
+      - glacier
+      - mountain
+      - exploration
+      - threat
+      descriptions:
+      - A path of blue ice winds between crevasses.
+      actions:
+      - name: Cross the crevasse
+        outcomes:
+        - desc: You leap the crevasse and land beyond it.
+          tags:
+          - exploration
+          - success
+          move_to: Hermit Cave
+        - desc: You slip and bruise yourself on the ice.
+          tags:
+          - threat
+          - failure
+          health_change: -2
+        skill_check:
+          stat: defence
+      interact_prompts:
+      - Step onto the glacier
+    Hermit Cave:
+      tags:
+      - cave
+      - mountain
+      - secret
+      - quiet
+      descriptions:
+      - A fire burns deep in a cave of icicles.
+      actions:
+      - name: Ask the hermit about the relic
+        outcomes:
+        - desc: The hermit says the relic never left the monastery.
+          tags:
+          - social
+          - discovery
+          reveal_location: Bell Tower
+      interact_prompts:
+      - Enter the hermit's cave
+    Ice Cell:
+      tags:
+      - prison
+      - cold
+      - dark
+      descriptions:
+      - A cell cut into the ice, its door barred from outside.
+      actions:
+      - name: Search for an exit
+        outcomes:
+        - desc: You chip through the ice and crawl out into the Crypt.
+          tags:
+          - stealth
+          - escape
+          - success
+          move_to: Crypt
+        - desc: The ice is too thick.
+          tags:
+          - failure
+        skill_check:
+          stat: stealth
+      - name: Pray for help
+        outcomes:
+        - desc: A novice slips you bread through the bars.
+          tags:
+          - social
+          health_change: 1
+      interact_prompts:
+      - Look into the ice cell
+  characters:
+  - name: Abbot
+    unique: true
+    associated_tags:
+    - grand
+    - secret
+    - study
+    - crypt
+    known_locations:
+    - Abbot's Study
+    - Crypt
+    descriptions:
+    - A tall old man whose smile never reaches his eyes.
+    goals:
+    - Keep the secret
+    actions:
+    - name: Confront the Abbot
+      outcomes:
+      - desc: Confronting the Abbot begins.
+        tags:
+        - social
+        - threat
+      triggers_event: confession
+  - name: Brother Anselm
+    unique: true
+    associated_tags:
+    - library
+    - quiet
+    - ancient
+    known_locations:
+    - Library
+    - Bell Tower
+    descriptions:
+    - The librarian, ink-stained and suspicious.
+    goals:
+    - Guard the books
+    actions:
+    - name: Ask about the chronicle
+      outcomes:
+      - desc: He admits the chronicle was altered last winter.
+        tags:
+        - social
+        - discovery
+        change_variables:
+          trust: 1
+      repeat: once
+  - name: Novice
+    unique: false
+    associated_tags:
+    - cloister
+    - kitchen
+    - social
+    known_locations:
+    - Kitchens
+    - Cloister
+    descriptions:
+    - A young novice with chapped hands.
+    goals:
+    - Finish the chores
+    actions:
+    - name: Help with the chores
+      outcomes:
+      - desc: The novice thanks you shyly.
+        tags:
+        - social
+        - success
+        change_variables:
+          trust: 1
+      repeat: once
+  - name: Hermit
+    unique: true
+    associated_tags:
+    - cave
+    - mountain
+    - secret
+    known_locations:
+    - Hermit Cave
+    - Glacier Path
+    descriptions:
+    - A wild-bearded hermit who speaks to the fire.
+    goals:
+    - Be left alone
+  - name: Snow Wolf
+    unique: false
+    encounter_event: wolf_attack
+    encounter_repeat: false
+    associated_tags:
+    - glacier
+    - mountain
+    - threat
+    known_locations:
+    - Glacier Path
+    - Mountain Gate
+    descriptions:
+    - A grey wolf, ribs showing through its coat.
+    goals:
+    - Hunt
+  - name: Warden
+    unique: false
+    associated_tags:
+    - gate
+    - crypt
+    - prison
+    - guarded
+    known_locations:
+    - Ice Cell
+    - Crypt
+    descriptions:
+    - A lay brother with a heavy staff and heavier keys.
+    goals:
+    - Keep order
+    actions:
+    - name: Slip past the warden
+      outcomes:
+      - desc: You slip past while he dozes.
+        tags:
+        - stealth
+        - success
+        reveal_location: Abbot's Study
+      - desc: He catches your sleeve.
+        tags:
+        - stealth
+        - guards
+        - failure
+      skill_check:
+        stat: stealth
+  objects:
+  - name: Silver Reliquary
+    unique: true
+    location: Bell Tower
+    collectible: true
+    associated_tags:
+    - grand
+    - ancient
+    descriptions:
+    - A silver box, cold enough to burn the fingers.
+    actions:
+    - name: Take the reliquary
+      outcomes:
+      - desc: You wrap the reliquary in your cloak; the brothers will have it back on the altar.
+        tags:
+        - success
+        set_variables:
+          relic_returned: true
+      collects_object: Silver Reliquary
+  - name: Healing Herbs
+    collectible: true
+    associated_tags:
+    - cold
+    - kitchen
+    descriptions:
+    - Dried mountain herbs that smell of summer.
+    actions:
+    - name: Gather the herbs
+      outcomes:
+      - desc: You pocket the herbs.
+        tags:
+        - neutral
+        health_change: 1
+      collects_object: Healing Herbs
+  - name: Sealed Letter
+    unique: true
+    location: Abbot's Study
+    collectible: true
+    associated_tags:
+    - secret
+    - study
+    descriptions:
+    - A letter sealed with the Abbot's ring.
+    actions:
+    - name: Take the letter
+      outcomes:
+      - desc: You hide the letter in your sleeve.
+        tags:
+        - stealth
+        - success
+      collects_object: Sealed Letter
+  - name: Ice Axe
+    collectible: true
+    stat_bonus:
+      attack: 10
+    associated_tags:
+    - mountain
+    - weapon
+    - glacier
+    descriptions:
+    - A climber's axe, its head notched from use.
+    actions:
+    - name: Take the ice axe
+      outcomes:
+      - desc: You heft the axe.
+        tags:
+        - neutral
+        - success
+      collects_object: Ice Axe
+  events:
+    wolf_attack:
+      title: A wolf attacks
+      tags:
+      - threat
+      - ambush
+      descriptions:
+      - The wolf lunges out of the snow.
+      actions:
+      - name: Fight the wolf
+        outcomes:
+        - desc: You drive the wolf off.
+          tags:
+          - combat
+          - success
+          remove_npc: true
+        - desc: Its teeth find your arm before it flees.
+          tags:
+          - combat
+          - threat
+          - failure
+          health_change: -2
+          remove_npc: true
+      - name: Climb out of reach
+        outcomes:
+        - desc: You scramble onto a ledge until it loses interest.
+          tags:
+          - stealth
+          - success
+          remove_npc: true
+    confession:
+      title: Confronting the Abbot
+      tags:
+      - social
+      - confrontation
+      descriptions:
+      - The Abbot's face hardens.
+      actions:
+      - name: Press for the truth
+        outcomes:
+        - desc: He confesses he sold the relic to save the monastery.
+          tags:
+          - social
+          - success
+          change_variables:
+            trust: 1
+        - desc: He calls the warden and has you thrown into the ice.
+          tags:
+          - social
+          - failure
+          send_to: Ice Cell
+          on_check: fail
+        skill_check:
+          stat: persuasion
+      - name: Show him the letter
+        outcomes:
+        - desc: He reads his own letter and sinks into a chair.
+          tags:
+          - social
+          - success
+        required_object: Sealed Letter
+  missions:
+    return_the_relic:
+      title: Find the lost relic
+      description: Find the Silver Reliquary.
+      enabled_if:
+        relic_returned: false
+      stages:
+      - title: Read the chronicle
+        description: The library may say where the relic went.
+        goal:
+          action: Read the chronicle
+      - title: Find the reliquary
+        description: Search where the chronicle points.
+        goal:
+          item: Silver Reliquary
+    ring_the_bell:
+      title: Ring the great bell
+      description: Wake the valley with the great bell.
+      goal:
+        action: Ring the great bell
+    abbots_secret:
+      title: Uncover the Abbot's secret
+      description: Make the Abbot confess.
+      stages:
+      - title: Find proof
+        description: Something in the Abbot's study.
+        goal:
+          item: Sealed Letter
+      - title: Make the Abbot confess
+        description: Confront him with it.
+        goal:
+          event_succeeded: confession
+    reach_the_hermit:
+      title: Reach the hermit
+      description: Cross the glacier to the hermit.
+      goal:
+        location: Hermit Cave
+    earn_trust:
+      title: Earn the brothers' trust
+      description: Be trusted by the brothers.
+      enabled_if:
+        trust:
+          lt: 2
+      goal:
+        variables:
+          trust:
+            gte: 2
+game_state:
+  arrest_location: Ice Cell
+location_constraints:
+  Ice Cell:
+    requires_escape: true
+    lock_when: sent
+    escape_tags:
+    - escape
+start_selection:
+  default_location: Mountain Gate
