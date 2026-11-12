@@ -180,7 +180,7 @@ nothing is written.
 | **3 · Weights** → *Skill Check Resolution* and the rest | Difficulty (easier/harder), difficulty over time, chance floor/ceiling, damage mitigation, and every other weight | `GET/PUT /v1/weights` |
 | **4 · Simulate & play** → evolution | Storytellers, generations, steps, **stories per storyteller**, **continue learning from earlier runs**; the **learning curve** and **what the storyteller learned**; forget the learning memory | `POST /v1/jobs/simulations` and `GET /v1/jobs/{id}` (or `POST /v1/simulations`), `GET/DELETE /v1/learning` |
 | **4 · Simulate & play** → *Load a previous best engine* | An engine model, an older engine ZIP, or a configuration YAML with its model-parameters YAML | `POST /v1/engines/load` (`file`, `parameters`, `profile`, `stats_mode`, `stats`) |
-| **4 · Simulate & play** | **Player profile**, the **quest to play** (any quest open to the profile, or one drawn by the story; *Quests in this world* lists them with their stages) and the player's **character stats** (story default, random, balanced, or own points with Randomize/Balance); the scene shows the quest and its current stage, health `x/max`, the **people here** (who they are, what they want, hostile or able to help with the quest, how often spoken with), stats, the last check and remembered values; beside it the **quest log** (stages done, now, to come; what to do now) and the **people met** (where, how often spoken with, gone); taking one of the **most relevant choices** | `GET /v1/missions/playable`, `POST /v1/stats/allocate`, `POST /v1/sessions/{id}/actions` (structured state: `quest`, `people`, `people_met`, `ways_on`) |
+| **4 · Simulate & play** | **Player profile**, the **quest to play** (any quest open to the profile, or one drawn by the story; *Quests in this world* lists them with their stages) and the player's **character stats** (story default, random, balanced, or own points with Randomize/Balance); the scene shows the quest and its current stage, health `x/max`, the **people here** (who they are, what they want, hostile or able to help with the quest, how often helped and whether an ally, how often spoken with), the **checks** of the choices, stats, the last check and remembered values; beside it the **quest log** (stages done, now, to come; what to do now) the **people met** (where, how often spoken with, allies, gone) and the **map** as the player knows it (places, paths, locked exits); taking one of the **most relevant choices**, each labelled with its check | `GET /v1/missions/playable`, `POST /v1/stats/allocate`, `POST /v1/sessions/{id}/actions` (structured state: `quest`, `people`, `people_met`, `ways_on`) |
 | **4 · Simulate & play** → *Export the engine* | Download the trained engine to run offline in a game: this run's best, any generation's champion, the best remembered storyteller, or the current game's; with or without the learning memory | `POST /v1/exports`, `GET /v1/artifacts/{id}` |
 | **4 · Simulate & play** → *Records* | Recorded engines, runs and stories; play with, continue or retrain an engine; download its model file and world | `GET /v1/records/...`, `POST /v1/records/engines/{id}/play`, `POST /v1/jobs/engines/{id}/continue\|retrain` |
 | **5 · Engine logic** | Every parameter of the engine's logic, section by section (no code editing) | `GET /v1/logic`, `GET/PUT /v1/logic/{section}` |
@@ -308,7 +308,26 @@ curiosity, drive toward the mission, and avoiding repetition. Each generation:
    volatility, interactions, discovery, tone) count **per turn**
    (`mode: rate`, scaled to `story_length.target`; a story shorter than
    `floor_steps` counts as that long), so a longer story is not better merely
-   for being longer and a short won story is not worse. A storyteller's score over its stories is
+   for being longer and a short won story is not worse. **Objective losses**
+   (`fitness.objective_losses`, `core_engine/fitness.objective_losses`) subtract
+   what a story lacks: `transition_quality` (moves between places that fit each
+   other: tag similarity below `target_similarity`), `tag_coverage` (too little of
+   the world's tags shown), `named_transition_dependence` (discoveries and engine
+   moves that only follow an authored name rather than tags, a lead or the map),
+   `scenario_duplication` (the same place, action and outcome told again) and
+   `world_extension` (too little of the world discovered, or a known map without
+   branches). Each shows in the breakdown as `loss_<name>`, and every NPC whose
+   goal the story fulfilled adds `base.npc_goal_bonus`. **Rhythm**
+   (`fitness.rhythm`) rewards what makes a story worth playing turn after turn:
+   `predictability` costs every calm turn in a row beyond `calm_allowed`,
+   `variety_of_play` counts the kinds of development the story offers (new
+   place, event, person, outcome, check, fight, hurt, gain, discovery, payoff),
+   `events_lived` the distinct events, `exploration` the distinct places, and
+   `open_threads` costs every clue still open at the end. **Alternatives**
+   (`evolution.alternatives_weight` x `fitness.alternatives`, 0..1): a
+   storyteller whose stories differ from one another (places, events, people and
+   outcomes; mean Jaccard distance) scores higher than one that tells the same
+   story whatever the start. A storyteller's score over its stories is
    `score_aggregate`: `mean_minus_std` subtracts `consistency_weight` × the
    standard deviation, so a storyteller that tells consistently good stories
    beats one that alternates great and broken ones.
@@ -567,7 +586,7 @@ stay where they are.
 
 ## Language model: Gemma 4 on vLLM
 
-One language model, **Gemma 4** (`google/gemma-4-E2B-it`), serves every LLM feature
+One language model, **Gemma 4 E4B** (`google/gemma-4-E4B-it`), serves every LLM feature
 through a single shared runtime ([`utils/llm_model_loader.py`](utils/llm_model_loader.py)),
 so the model is loaded once:
 
@@ -580,9 +599,9 @@ It runs on [vLLM](https://docs.vllm.ai), in one of two modes:
 ```yaml
 vllm:
   mode: embedded               # embedded | server
-  model_name: google/gemma-4-E2B-it
+  model_name: google/gemma-4-E4B-it
   gpu_memory_utilization: 0.55
-  max_model_len: 4096
+  max_model_len: 8192
   limit_mm_per_prompt: {image: 0, audio: 0}   # text only
   base_url: http://127.0.0.1:8000/v1           # server mode
 ```
@@ -592,12 +611,49 @@ vllm:
   *spawned* instead of forked, since a GPU context must not be forked; they receive
   the active configuration and tag vectors explicitly.
 - **`server`** calls a separately started OpenAI-compatible server, e.g.
-  `vllm serve google/gemma-4-E2B-it --max-model-len 4096`. Use it with Docker (the
+  `vllm serve google/gemma-4-E4B-it --max-model-len 8192`. Use it with Docker (the
   image does not install vLLM) or to share one model between several processes.
 
 Without vLLM (or a server), the LLM features report that the model is unavailable and
 everything else runs as usual. `llm_evaluator` sets the judge's `max_new_tokens` and
 `temperature`, `editor_suggester` the editor's.
+
+### Gemma 4 as the judge of a story, from the view of a video game
+
+`evaluator/game_judge.py` uses the language model as a judge (LLM-as-a-judge):
+it reads a digest of a playthrough (each turn: the place, the choice, what
+happened, checks, events, moves, changes of health and coins) and scores it as
+a game critic would, from 1 to 10, on **agency**, **pacing**, **surprise**,
+**payoff**, **exploration**, **stakes**, **coherence** and **replayability**,
+with the overall **engagement**, the best and the weakest moment and a verdict.
+`llm_judge.samples` judgements are averaged; their spread says how sure the
+judge is.
+
+```python
+from evaluator.game_judge import GameJudge
+result = GameJudge().judge_state(state)   # or judge_turns(recorded turns, meta)
+result["engagement"], result["scores"], result["verdict"]
+```
+
+- API: `POST /v1/records/stories/{id}/judge` (a recorded story) and
+  `POST /v1/sessions/{id}/judge` (the game played so far); `503` without a model.
+- Terminal: `python -m evaluator.game_judge STORY_ID`; with `llm_judge.enabled`
+  the terminal story is judged after it is told.
+- A shared GPU server: `vllm serve google/gemma-4-E4B-it --dtype float16
+  --max-model-len 8192` (float16 on GPUs without bfloat16, such as the TITAN RTX),
+  then `vllm.mode: server` and `vllm.base_url`.
+- Benchmark: `python -m evaluator.judge_benchmark --stories 15 --server
+  http://127.0.0.1:8000/v1` plays stories with the current engine (or `--engine ID`,
+  a recorded one), judges each twice and prints the mean engagement, the criteria,
+  the fitness's agreement with the judge (Spearman) and the judge's test-retest
+  difference.
+
+The judge also calibrated the fitness. Over 50 judged stories, the terms that ran
+against the judge's engagement (volatility -0.38, scene contrast -0.33, combat
+successes -0.31) now count half as much, and those that ran with it (scenario
+duplication +0.44, novelty fading, loops, filler) cost more; repeated failed
+attempts, its most frequent complaint, now ease the next attempt and step back for
+a turn or two (`director.retry_bonus`, `retry_cooldown`).
 
 For faster non-LLM runs, disable these sections:
 
@@ -1465,6 +1521,22 @@ that it rises toward an ending instead of wandering until it is cut off:
 - **No loops.** An action used within `loop_window` turns whose outcomes have
   all been told already is not offered again (unless fewer than
   `min_options` options would remain); events and travel are always offered.
+- **Alternative stories.** Now and then (`surprise` x (1 + the storyteller's
+  `chaos_bias`)) the storyteller takes an option nearly as good as its favourite
+  (within `surprise_margin`, among its `surprise_top_k` best) instead of the
+  favourite itself, drawn from the story's own fixed randomness (a hash of its
+  seed and the turn, never its dice, so skill checks roll as before): a story is
+  still the same for the same seed, but one storyteller tells different stories.
+- **Rhythm.** After `boredom_turns` turns with nothing new (no new place, event,
+  person, outcome, check, or change of health or coins), options that bring
+  something new (an event, a place not visited, a fight, a discovery, an outcome
+  not told) rank higher by `boredom_weight` for every further calm turn, and an
+  unexpected event becomes likelier (`boredom_event_pressure`).
+- **Payoffs come due.** A clue open for `payoff_delay` turns wants its payoff:
+  the action that pays it off, and the way to where it can, rank higher
+  (`payoff_due_weight`).
+- **The pull of the unknown.** A place not visited yet pulls harder the longer
+  since the last new place (`explore_weight`), so stories move across the world.
 
 ```yaml
 director:
@@ -1542,6 +1614,24 @@ straight to the Palace, say).
   no map, and any move goes, as before.
 - **The way to a far place becomes known** along the whole path, so the player
   who set out for it, or heard of it, can follow it.
+- **One graph, both ways.** Every path found joins two places both ways (a place
+  never leads to itself; two places whose names differ only in case or spacing
+  are refused) and stays with the game: the play state's `map` lists the known
+  places and paths, saved games keep them, and the studio shows them. The way
+  back to the place just left is always among the player's choices
+  (`player_options.way_back`).
+- **Player-directed navigation** (`navigation.player_directed: play`). In real
+  play a discovery or an NPC's hint opens a path but never moves the player, and
+  lingering neither moves them on nor ends the story: they choose where to go.
+  The storyteller's simulations keep moving by themselves (`always` / `never`
+  set it for every story).
+- **Locked exits.** A location with `exit_locked: true` cannot be left until an
+  outcome with `unlock_exit: true` (or an escape) opens it (`[UNLOCKED] …`); the
+  action that opens it is offered only while it is locked.
+- **Discoveries led by tags.** An outcome with `target_tags: [nature, secluded]`
+  opens the neighbour that fits them best instead of a named place, and
+  `move_to_tags` moves to the best-fitting neighbour; both count as tag-led in
+  the objective losses.
 
 The spawn rules (`world_definition.spawn_strategy: similarity`) say which
 places *may* open onto which; with `similarity_threshold: 0.5` that is almost
@@ -1618,6 +1708,66 @@ Rules found by auditing generated stories, applied to every world:
   (18) and reaches full strength at `pursuit_full_step` (40), and a win before
   `fitness.base.mission_win_min_steps` (25) counts as rushed: stories run
   about 28 turns instead of 21, with as many missions won.
+
+### Gameplay rules: checks, people, encounters, Power, threads
+
+- **Checks are explicit.** An outcome without a skill check succeeds by its own
+  `success_prob`; the storyteller's traits no longer tip it unseen
+  (`outcome_resolution.hidden_adjustments: false`). An option with a check shows
+  it before the player chooses: the scene lists **Checks** (`Bribe with coins —
+  persuasion 55%`), the studio labels the choice, and the play state's
+  `choices` give `{stat, chance, bonus}`.
+- **NPC goals work.** Helping someone with what they want (an action with them,
+  not small talk or a failure, whose name, text or tags share a word with one of
+  their `goals`) counts; after `npc_goals.progress_needed` (2) times they are an
+  **ally** (`[ALLY] You helped a Gate Guard collect bribes; …`): they show the way
+  to a place they know (`reward: lead`, or `item`, `none`), their own checks get
+  `ally_check_bonus`, and the storyteller is drawn to helping people
+  (`action_weight`). A goal can also be a mapping:
+  `{goal: Protect the palace, tags: [palace, guards], needed: 1, reward: item}`.
+  The play state shows how often each person was helped and who is an ally.
+- **Mandatory encounters are resolvable.** An NPC's `encounter_event` must name an
+  event with actions (the configuration is refused otherwise); while it lasts,
+  only its choices are offered, with the authored fallback when none can be
+  taken; and an outcome with `return_to_previous: true` flees back the way the
+  player came (`[BACK] …`), as the bandit ambush's *Make a run for it* now does.
+- **Power counts in a fight.** Power is the player's fighting strength (health and
+  skills, weapons and armour included). In a fight (a check on `attack` or
+  `defence`, or an action tagged `combat` or `threat`) every point of Power
+  gained since the story began adds `power_model.check_weight` (6) to the check:
+  a sword helps, wounds hurt.
+- **Item labels** in an action's name come from the item: "Give him the
+  {alcohol_desc}" becomes "Give him the Vintage Wine", never its description.
+- **Setups before payoffs** (`story_rules.gate_payoffs`). A payoff (a `payoff_*`
+  clue tag) is told only while a planted clue waits for it (with `clue_matching:
+  numbered`, its own `setup_N`). Named threads: an outcome with `setup_id:
+  palace_route` plants it, one with `requires_setup: palace_route` is told only
+  after, and one with `payoff_id: palace_route` closes it for good (an id that no
+  outcome plants is refused).
+
+### Scenario templates
+
+Places of one kind can share a template, with parameters for what differs.
+Two places with the same template and the same parameters, or with the same
+content, are refused as duplicate scenarios (also among places a language
+model generates).
+
+```yaml
+world_definition:
+  scenario_templates:
+    district_market:
+      tags: [urban, trade, "{district}"]
+      entered_descriptions: ["The {district} market: {name}."]   # {name}: the place's own name
+      actions:
+      - name: Haggle in the {district} stalls
+        outcomes: [{desc: A bargain., tags: [trade]}]
+  locations:
+    North Market: {template: district_market, parameters: {district: north}}
+    South Market: {template: district_market, parameters: {district: south}, start_eligible: true}
+```
+
+A place's own fields win over its template's. A `template_id` without a
+matching template only labels the scenario (as generated places do).
 
 ### Story rules
 

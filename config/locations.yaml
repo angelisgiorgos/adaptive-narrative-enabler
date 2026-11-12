@@ -406,7 +406,8 @@ world_definition:
           - threat
           - guards
           - failure             # told when the attempt fails
-          reveal_npc: Gate Guard
+          effects:
+          - start_event: guards_alerted   # an alarm has consequences: the guards come running
     Secret Garden:
       tags:
       - nature

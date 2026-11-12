@@ -51,10 +51,10 @@ class RuntimeTests(unittest.TestCase):
         with patch.dict(sys.modules, {"vllm": fake}):
             text = runtime.generate("Judge this story.", max_new_tokens=64, temperature=0.2)
         self.assertEqual(text, '{"score": 7}')
-        self.assertEqual(runtime.model_name, "google/gemma-4-E2B-it")
+        self.assertEqual(runtime.model_name, "google/gemma-4-E4B-it")
         kwargs = fake.LLM.last.kwargs
         self.assertEqual(kwargs["limit_mm_per_prompt"], {"image": 0, "audio": 0})
-        self.assertEqual(kwargs["max_model_len"], 4096)
+        self.assertEqual(kwargs["max_model_len"], 8192)
         messages, sampling = fake.LLM.last.calls[0]
         self.assertEqual(messages, [{"role": "user", "content": "Judge this story."}])
         self.assertEqual((sampling["max_tokens"], sampling["temperature"]), (64, 0.2))
@@ -70,7 +70,7 @@ class RuntimeTests(unittest.TestCase):
                 patch("urllib.request.urlopen", fake_urlopen):
             self.assertEqual(get_llm_runtime().generate("Hello", max_new_tokens=8), "fine")
         self.assertEqual(sent["url"], "http://vllm:8000/v1/chat/completions")
-        self.assertEqual(sent["body"]["model"], "google/gemma-4-E2B-it")
+        self.assertEqual(sent["body"]["model"], "google/gemma-4-E4B-it")
         self.assertEqual(sent["body"]["max_tokens"], 8)
 
     def test_one_runtime_is_shared(self):
@@ -104,7 +104,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(spawned._mp_context.get_start_method(), "spawn")
         self.assertIs(spawned._initializer, engine._init_spawned_worker)
         config_data, vectors = spawned._initargs
-        self.assertEqual(config_data["vllm"]["model_name"], "google/gemma-4-E2B-it")
+        self.assertEqual(config_data["vllm"]["model_name"], "google/gemma-4-E4B-it")
         self.assertTrue(vectors)
 
 

@@ -7,6 +7,93 @@ that introduces them.
 
 ## [Unreleased]
 
+### Alternative, unpredictable stories; Gemma 4 as a game critic
+
+#### Added
+- The director's rhythm (`director`): the storyteller now and then takes an option
+  nearly as good as its favourite (`surprise`, from the story's own fixed randomness,
+  never its dice, so a seed still gives one story); after `boredom_turns` calm turns, what brings something new
+  ranks higher and unexpected events are likelier; clues open for `payoff_delay`
+  turns want their payoff; places not visited pull harder the longer since the last
+  new one (`explore_weight`).
+- Fitness `rhythm` terms (predictability, variety of play, events lived,
+  exploration, open threads) and `evolution.alternatives_weight` with
+  `fitness.alternatives`: storytellers whose stories differ from one another score
+  higher.
+- `evaluator/game_judge.py`: Gemma 4 as a game critic (LLM-as-a-judge) scoring a
+  playthrough on agency, pacing, surprise, payoff, exploration, stakes, coherence
+  and replayability, with engagement, verdict and best/weakest moment; `llm_judge`
+  settings; `POST /v1/records/stories/{id}/judge`, `POST /v1/sessions/{id}/judge`;
+  `python -m evaluator.game_judge STORY_ID`.
+- `evaluator/judge_benchmark.py`: play stories with the current engine (or a recorded
+  one), judge each twice, and report engagement, criteria, the fitness's agreement
+  with the judge and the judge's test-retest difference.
+- Failing forward, after the judge's most frequent complaint (the same failed check
+  tried again and again): every failed attempt eases the next (`director.retry_bonus`),
+  a just-failed action steps back while there is something else to do there
+  (`retry_cooldown`), travelling straight back to the place just left costs
+  (`ping_pong_penalty`), and the fitness counts such retries (`rhythm.repeated_failures`).
+- Tests for the rhythm, the alternatives, the judge and the benchmark
+  (`tests/test_game_judge.py`).
+
+#### Changed
+- The model is Gemma 4 E4B (`google/gemma-4-E4B-it`), with `vllm.max_model_len`
+  8192 so that a judged playthrough fits.
+- Fitness weights calibrated with the judge (Spearman of each term with the judged
+  engagement over 50 stories): volatility, scene contrast and combat successes count
+  half as much; scenario duplication, loops, filler and fading novelty cost more;
+  escalation counts less.
+- The alternatives bonus belongs to the engine's own fitness
+  (`fitness.rewards_alternatives`); a fitness passed in by a caller is left as it is.
+
+#### Fixed
+- Two threads loading the tag-embedding model at once (an API request and a story)
+  could break the torch import or briefly fall back to other tag vectors; loading is
+  now done once, under a lock (`utils/tag_similarity.py`).
+
+### A graph to walk both ways, templates, objective losses, rules that hold
+
+#### Added
+- One bidirectional location graph kept with the game (`GameState.map_view`,
+  play state `map`, the studio's map): no place leads to itself, places whose
+  names differ only in case or spacing are refused, and the way back to the
+  place just left is always a choice (`player_options.way_back`).
+- Player-directed navigation (`navigation.player_directed: play`): in real play
+  discoveries and hints open paths without moving the player, and lingering
+  neither moves them on nor ends the story.
+- Locked exits: `exit_locked` on a location, `unlock_exit` on an outcome
+  (`[UNLOCKED] …`).
+- Discoveries led by tags (`target_tags`), choosing among the neighbours on the
+  map; `move_to_tags` also chooses a neighbour.
+- Scenario templates (`world_definition.scenario_templates`, a location's
+  `template` and `parameters`); the same template with the same parameters, the
+  same content, or the same name twice is refused, also among generated places
+  (`WorldAugmenter._new_scenarios`).
+- Objective losses in the fitness (`fitness.objective_losses`): transition
+  quality, tag coverage, named-transition dependence, scenario duplication and
+  world extension, from the story's `transition_records` and `scenario_counts`.
+- NPC goals that work (`npc_goals`): helping someone with their goal makes them
+  an ally who shows the way to a place they know and whose checks are easier;
+  goals may be mappings `{goal, tags, needed, reward}`; `base.npc_goal_bonus`.
+- Explicit checks: the play state's `choices`, the scene's **Checks** and the
+  studio's choice labels show each option's check and chance.
+- Named threads: `setup_id`, `requires_setup`, `payoff_id`; and
+  `story_rules.gate_payoffs`, which tells a payoff only when a planted clue waits
+  for it.
+- `return_to_previous` on outcomes (`[BACK] …`): the bandit ambush's *Make a run
+  for it* flees back the way the player came.
+- `tests/test_gameplay.py` for all of the above.
+
+#### Changed
+- Power counts in fights: every point gained since the story began (weapons,
+  armour, health) adds `power_model.check_weight` to fight checks.
+- Unchecked outcomes succeed by their own `success_prob`; the storyteller's
+  traits no longer tip them unseen (`outcome_resolution.hidden_adjustments`).
+- An NPC's `encounter_event` must name an event with actions.
+
+#### Fixed
+- `move_to_tags` written in the configuration was dropped by the builder.
+
 ### The language model: Gemma 4 on vLLM
 
 #### Changed

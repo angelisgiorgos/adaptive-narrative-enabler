@@ -69,6 +69,9 @@ class Game:
             "people": state.people_here() if hasattr(state, "people_here") and not state.ended else [],
             "people_met": state.people_met() if hasattr(state, "people_met") else [],
             "ways_on": state.ways_on() if hasattr(state, "ways_on") and not state.ended else [],
+            "map": state.map_view() if hasattr(state, "map_view") else None,
+            "choices": [{"name": name, "check": state.check_hint(a)} for name, a in
+                        zip(actions, state.player_options())] if hasattr(state, "check_hint") and actions else [],
             "event": state.active_event.title if state.active_event else None,
             "variables": {k: v for k, v in state.variables.items() if k in state.variable_specs or k == "playthroughs"},
             "ended": bool(state.ended),
