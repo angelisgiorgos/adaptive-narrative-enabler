@@ -89,6 +89,7 @@ DEFAULTS = {
     "stratify_episodes": True,      # every storyteller plays the same spread of start x mission situations
     "score_aggregate": "mean_minus_std",  # mean | mean_minus_std: penalise storytellers whose stories vary in quality
     "consistency_weight": 0.25,     # mean_minus_std: score = mean - this x standard deviation
+    "alternatives_weight": 0.0,     # + this x how different a storyteller's stories are (fitness.alternatives)
 }
 AGGREGATES = ("mean", "mean_minus_std")
 
@@ -124,13 +125,21 @@ def evaluate_task(task):
     options = task[5] if len(task) > 5 else {}
     situations = options.get("situations") or [None] * len(seeds)
     genome = Genome.from_traits(traits)
-    scores = [fitness(play_episode(build_world, genome, seed, max_steps, situation))
+    states = [play_episode(build_world, genome, seed, max_steps, situation)
               for seed, situation in zip(seeds, situations)]
+    scores = [fitness(state) for state in states]
     if not scores:
         return float("-inf")
     score = statistics.mean(scores)
     if options.get("aggregate") == "mean_minus_std" and len(scores) > 1:
         score -= float(options.get("consistency_weight", 0.25)) * statistics.pstdev(scores)
+    # Telling different stories is part of the engine's own fitness (fitness.rewards_alternatives),
+    # not of any fitness a caller passes in.
+    weight = float(options.get("alternatives_weight", 0.0) or 0.0)
+    if weight and len(states) > 1 and getattr(fitness, "rewards_alternatives", False):
+        from .fitness import alternatives
+
+        score += weight * alternatives(states)  # telling different stories, not one story again
     return score
 
 
@@ -320,7 +329,8 @@ class NarrativeEvolution:
 
     def _options(self, situations):
         return {"situations": situations, "aggregate": self.settings["score_aggregate"],
-                "consistency_weight": self.settings["consistency_weight"]}
+                "consistency_weight": self.settings["consistency_weight"],
+                "alternatives_weight": self.settings.get("alternatives_weight", 0.0)}
 
     def _episode_situations(self, generation, count):
         situations = self._situations()

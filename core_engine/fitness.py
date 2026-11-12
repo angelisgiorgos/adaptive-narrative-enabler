@@ -348,7 +348,211 @@ def _fitness_breakdown(state):
             if term in breakdown:
                 breakdown[term] *= scale
 
+    # The story's rhythm: surprises, events lived through, threads closed, places explored.
+    breakdown.update(_rhythm(state, fitness_cfg.get("rhythm", {})))
+    # People helped: each NPC whose goal the story fulfilled (npc_goals).
+    breakdown["npc_goals"] = len(getattr(state, "allies", ())) * base_cfg.get("npc_goal_bonus", 8)
+    # What the story lacks (objective_losses), subtracted.
+    for name, value in objective_losses(state).items():
+        breakdown[f"loss_{name}"] = -value
     return breakdown
 
 def fitness(state):
     return sum(_fitness_breakdown(state).values())
+
+
+fitness.rewards_alternatives = True  # evolution adds evolution.alternatives_weight x alternatives(stories)
+
+
+# ---- rhythm: what makes a story unpredictable and eventful ---------------------------------
+
+def _developments(state):
+    """[(turn, kinds)] of what each turn brought: place (a new one), event, person, outcome
+    (not told before), check, fight (a threat or combat), hurt, gain (coins or an item),
+    discovery (a path opened), payoff, ally. A turn with no kind is calm."""
+    log = getattr(state, "turn_log", None) or []
+    if not log:
+        return []
+    places, events, people, outcomes = {log[0]["location_before"]}, set(), set(), set()
+    discoveries = sorted(r["turn"] for r in getattr(state, "transition_records", []) if r["kind"] == "discovery")
+    result, previous = [], None
+    for turn in log:
+        kinds = set()
+        if turn["location_after"] not in places:
+            places.add(turn["location_after"])
+            kinds.add("place")
+        for event in (turn.get("event"), turn.get("event_after")):
+            if event and event not in events:
+                events.add(event)
+                kinds.add("event")
+        if turn.get("source") in ("npc", "conversation") and turn.get("owner") and turn["owner"] not in people:
+            people.add(turn["owner"])
+            kinds.add("person")
+        if turn.get("outcome") and turn["outcome"] not in outcomes:
+            outcomes.add(turn["outcome"])
+            kinds.add("outcome")
+        if turn.get("check"):
+            kinds.add("check")
+        tags = {str(t).lower() for t in turn.get("tags", [])}
+        if tags & {"threat", "combat"}:
+            kinds.add("fight")
+        if any(t.startswith("payoff_") for t in tags):
+            kinds.add("payoff")
+        if previous is not None and turn["health"] < previous["health"]:
+            kinds.add("hurt")
+        if previous is not None and turn["coins"] > previous["coins"]:
+            kinds.add("gain")
+        if turn["turn"] in discoveries:
+            kinds.add("discovery")
+        result.append((turn["turn"], kinds))
+        previous = turn
+    return result
+
+
+def _rhythm(state, cfg):
+    """What makes a story worth playing turn after turn (fitness.rhythm):
+
+    - predictability: the longest run of calm turns (nothing new) beyond calm_allowed
+      costs predictability_penalty per turn;
+    - variety: each kind of development the story offers (a new place, an event, a fight, a
+      check, a discovery, a payoff, ...) is worth variety_bonus (up to variety_cap kinds);
+    - events: each distinct event lived through is worth event_bonus (up to event_cap);
+    - open_threads: a story that ends with clues still open (planted, never paid off) costs
+      open_thread_penalty for each;
+    - exploration: each distinct place visited beyond the first is worth exploration_bonus
+      (up to exploration_cap)."""
+    if not cfg or not cfg.get("enabled", True):
+        return {}
+    developments = _developments(state)
+    if not developments:
+        return {}
+    longest = run = 0
+    for _, kinds in developments:
+        run = 0 if kinds else run + 1
+        longest = max(longest, run)
+    kinds_seen = set().union(*(kinds for _, kinds in developments))
+    events = {event for turn in state.turn_log for event in (turn.get("event"), turn.get("event_after")) if event}
+    places = {name for name, count in state.location_counts.items() if count}
+    terms = {
+        "predictability": -max(0, longest - int(cfg.get("calm_allowed", 3))) * float(cfg.get("predictability_penalty", 6)),
+        "variety_of_play": min(len(kinds_seen), int(cfg.get("variety_cap", 9))) * float(cfg.get("variety_bonus", 3)),
+        "events_lived": min(len(events), int(cfg.get("event_cap", 4))) * float(cfg.get("event_bonus", 5)),
+        "exploration": min(max(0, len(places) - 1), int(cfg.get("exploration_cap", 8))) * float(cfg.get("exploration_bonus", 2)),
+    }
+    if state.ended and state.end_kind not in (None, "death"):
+        terms["open_threads"] = -len(state._open_clues()) * float(cfg.get("open_thread_penalty", 8))
+    # Trying the same thing again right after it failed reads as padding.
+    retries, failed_at = 0, {}
+    for turn in state.turn_log:
+        name = turn.get("action")
+        if name in failed_at and turn["turn"] - failed_at[name] <= 3:
+            retries += 1
+        if not turn.get("succeeded", True) and turn.get("source") not in ("navigation", "conversation"):
+            failed_at[name] = turn["turn"]
+    terms["repeated_failures"] = -retries * float(cfg.get("repeated_failure_penalty", 6))
+    return terms
+
+
+def story_signature(state):
+    """What a story was made of, for telling stories apart: the places it visited, the events
+    it lived through, the people it met and the outcomes it told."""
+    signature = {("place", name) for name, count in state.location_counts.items() if count}
+    for turn in getattr(state, "turn_log", None) or []:
+        for event in (turn.get("event"), turn.get("event_after")):
+            if event:
+                signature.add(("event", event))
+        if turn.get("source") in ("npc", "conversation") and turn.get("owner"):
+            signature.add(("person", turn["owner"]))
+        if turn.get("outcome"):
+            signature.add(("outcome", turn["outcome"]))
+    return signature
+
+
+def alternatives(states):
+    """0..1: how different a storyteller's stories are from one another (the mean Jaccard
+    distance of their signatures): a storyteller that tells the same story whatever the
+    start is predictable; evolution.alternatives_weight rewards telling alternatives."""
+    signatures = [story_signature(state) for state in states if getattr(state, "actions_taken", 0)]
+    if len(signatures) < 2:
+        return 0.0
+    distances = []
+    for index, first in enumerate(signatures):
+        for second in signatures[index + 1:]:
+            union = first | second
+            distances.append(1.0 - len(first & second) / len(union) if union else 0.0)
+    return sum(distances) / len(distances)
+
+
+# ---- objective losses: what a story lacks ------------------------------------------------
+
+_SETTLED = ("travel", "sent", "auto", "back")  # moves the player chose, or the story's structure made
+
+
+def _world_tags(world):
+    """Every tag the world can show: its places', people's, items' and outcomes' tags."""
+    cached = world.__dict__.get("_tag_universe")
+    if cached is None:
+        tags = set()
+        entities = list(world.locations.values()) + list(world.characters) + list(world.objects) + list(world.events.values())
+        for entity in entities:
+            tags |= {str(t).lower() for t in getattr(entity, "tags", None) or getattr(entity, "associated_tags", ())}
+            for action in getattr(entity, "actions", ()):
+                for outcome in action.outcomes:
+                    tags |= {str(t).lower() for t in outcome.tags if not str(t).lower().startswith(("setup_", "payoff_"))}
+        cached = world._tag_universe = tags
+    return cached
+
+
+def objective_losses(state, cfg=None):
+    """What a story lacks, as non-negative losses subtracted from its score
+    (fitness.objective_losses; each term weight x shortfall):
+
+    - transition_quality: the places of each move should fit each other (tag similarity
+      below target_similarity); a story that never moves costs missing_penalty.
+    - tag_coverage: the share of the world's tags the story shows, below target_ratio.
+    - named_transition_dependence: the share of discoveries and engine-made moves that
+      only follow an authored name (not tags, a lead or the map), above allowed_ratio.
+    - scenario_duplication: the same place, action and outcome told again (share of the
+      turns, to the power `power`).
+    - world_extension: too little of the world discovered (below target_discovery_ratio),
+      or a known map without branches (paths per place below target_branching).
+    """
+    cfg = (config.get("fitness.objective_losses") or {}) if cfg is None else cfg
+    if not cfg.get("enabled", True) or not state.actions_taken:
+        return {}
+    world, losses = state.world, {}
+
+    quality = cfg.get("transition_quality", {})
+    path = [name for index, name in enumerate(state.path) if index == 0 or name != state.path[index - 1]]
+    moves = [(a, b) for a, b in zip(path, path[1:]) if a in world.locations and b in world.locations]
+    if moves:
+        mean = sum(semantic_tag_similarity(world.locations[a].tags, world.locations[b].tags) for a, b in moves) / len(moves)
+        losses["transition_quality"] = max(0.0, float(quality.get("target_similarity", 0.65)) - mean) * float(quality.get("weight", 60.0))
+    else:
+        losses["transition_quality"] = float(quality.get("missing_penalty", 5.0))
+
+    coverage = cfg.get("tag_coverage", {})
+    universe = _world_tags(world)
+    if universe:
+        seen = {str(t).lower() for t in _flatten_seen_tags(state.tags_seen)} & universe
+        losses["tag_coverage"] = max(0.0, float(coverage.get("target_ratio", 0.6)) - len(seen) / len(universe)) * float(coverage.get("weight", 40.0))
+
+    named = cfg.get("named_transition_dependence", {})
+    resolved = [r for r in getattr(state, "transition_records", []) if r["resolution"] not in _SETTLED]
+    if resolved:
+        share = sum(1 for r in resolved if r["resolution"] == "named") / len(resolved)
+        losses["named_transition_dependence"] = max(0.0, share - float(named.get("allowed_ratio", 0.5))) * float(named.get("weight", 30.0))
+
+    duplication = cfg.get("scenario_duplication", {})
+    repeats = sum(count - 1 for count in getattr(state, "scenario_counts", {}).values() if count > 1)
+    losses["scenario_duplication"] = (repeats / state.actions_taken) ** float(duplication.get("power", 2.0)) * float(duplication.get("weight", 80.0))
+
+    extension = cfg.get("world_extension", {})
+    known = state.map_view() if hasattr(state, "map_view") else None
+    if known and world.locations:
+        ratio = len(known["places"]) / len(world.locations)
+        branching = 2 * len(known["paths"]) / max(1, len(known["places"]))
+        losses["world_extension"] = (
+            max(0.0, float(extension.get("target_discovery_ratio", 0.45)) - ratio) * float(extension.get("discovery_weight", 45.0))
+            + max(0.0, float(extension.get("target_branching", 2.4)) - branching) * float(extension.get("branching_weight", 8.0)))
+    return losses

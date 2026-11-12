@@ -97,10 +97,19 @@ class Location(Conditional):
 
     ``start_eligible`` lets a story begin here; ``start_weight`` is its relative
     chance among the eligible locations (see core_engine/starts.py)."""
+    exit_locked = False   # class defaults: games saved before these fields load unchanged
+    template = None
+    parameters = {}
+
     def __init__(self, name, tags, interact_prompts=None, goals=None,
                  distant_descriptions=None, entered_descriptions=None, enabled_if=None,
-                 start_eligible=False, start_weight=1.0):
+                 start_eligible=False, start_weight=1.0, exit_locked=False, template=None, parameters=None):
         self.name = name
+        # Its exits stay locked until an outcome with `unlock_exit` (or an escape) opens them.
+        self.exit_locked = bool(exit_locked)
+        # The scenario template it was made from and its parameters (builder.expand_templates).
+        self.template = template
+        self.parameters = dict(parameters or {})
         self.enabled_if = enabled_if
         self.start_eligible = bool(start_eligible)
         self.start_weight = float(start_weight)
@@ -113,12 +122,19 @@ class Location(Conditional):
         self.connected = set()
 
     def connect(self, other):
+        """A route both ways (a place never leads to itself); True when made."""
+        if other is None or other.name == self.name:
+            return False
         self.connected.add(other.name)
         other.connected.add(self.name)
+        return True
 
     def connect_one_way(self, other):
         """A route from here to ``other`` only; ``other`` does not lead back."""
+        if other is None or other.name == self.name:
+            return False
         self.connected.add(other.name)
+        return True
 
 
 class Event(Conditional):
@@ -220,8 +236,24 @@ class WorldGraph:
         self.spawn_rules = defaultdict(list)
         self.routes = None  # authored map (world_definition.routes): place -> set of neighbours
 
+    @staticmethod
+    def place_key(name):
+        """A place name as compared for duplicates: case and spacing do not count."""
+        return " ".join(str(name).split()).casefold()
+
     def add_location(self, loc):
+        """Add a place; one with the name of a place already there (whatever its case or
+        spacing) is refused with ValueError."""
+        key = self.place_key(loc.name)
+        clash = next((name for name in self.locations if self.place_key(name) == key), None)
+        if clash is not None:
+            raise ValueError(f"Location '{loc.name}' duplicates '{clash}'.")
         self.locations[loc.name] = loc
+
+    def connect(self, first, second):
+        """Connect two places by name, both ways; False for a place and itself or an unknown name."""
+        a, b = self.locations.get(first), self.locations.get(second)
+        return bool(a and b) and a.connect(b)
 
     @property
     def dynamic_conditions(self):
@@ -277,7 +309,13 @@ class WorldGraph:
             return sum(1 for tag in loc_tags if tag in middle_tags) * phases.get("middle_weight", 1.75)
         return sum(1 for tag in loc_tags if tag in climax_tags) * phases.get("climax_weight", 2.0)
 
-    def _score_spawn_candidate(self, current, loc, character=None, state=None):
+    def _score_spawn_candidate(self, current, loc, character=None, state=None, target_tags=None):
+        if target_tags:
+            # What the discovery asked for comes first; the usual scoring breaks ties.
+            wanted = {str(tag).lower() for tag in target_tags}
+            fit = semantic_tag_similarity(wanted, loc.tags) + len(wanted & {t.lower() for t in loc.tags})
+            return fit * config.get("spawn_selection.target_tag_weight", 10.0) + \
+                self._score_spawn_candidate(current, loc, character=character, state=state)
         similarity = semantic_tag_similarity(current.tags, loc.tags)
         contrast = 1.0 - similarity
         score = contrast * config.get("spawn_selection.contrast_weight", 2.5)
@@ -296,7 +334,10 @@ class WorldGraph:
 
         return score
 
-    def spawn(self, current, character=None, force_target=None, state=None, allow_special=False):
+    def spawn(self, current, character=None, force_target=None, state=None, allow_special=False, target_tags=None):
+        """The place a discovery from ``current`` opens (None: none). ``force_target`` names
+        it; ``target_tags`` (a discovery led by tags) chooses the neighbour that fits them
+        best, among those not yet known; otherwise the spawn rules and scoring decide."""
         if force_target:
             if force_target in self.locations:
                 if force_target == "Dungeon" and not allow_special:
@@ -312,7 +353,11 @@ class WorldGraph:
         neighbours = state.neighbours(current.name) if state is not None and hasattr(state, "neighbours") else None
         sent_only = state.sent_only if state is not None and hasattr(state, "sent_only") else (lambda name: False)
         options = []
-        if character:
+        if target_tags:
+            # Led by tags: any place next door (any place, without a map) may answer them.
+            pool = neighbours if neighbours is not None else set(self.locations)
+            options = sorted(o for o in pool if o != current.name and o not in current.connected)
+        elif character:
             options = list(self.locations.keys())
         elif state is not None and hasattr(state, "spawn_options"):
             options = state.spawn_options(current.name)  # the story's own geography
@@ -358,7 +403,7 @@ class WorldGraph:
         scored = []
         for loc_name in available:
             loc = self.locations[loc_name]
-            score = self._score_spawn_candidate(current, loc, character=character, state=state)
+            score = self._score_spawn_candidate(current, loc, character=character, state=state, target_tags=target_tags)
             scored.append((score, loc_name))
         scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
         new_name = scored[0][1]

@@ -24,6 +24,9 @@ Each rule answers a failure measured in simulated stories:
   max_open_clues        While this many clues are open, no new clue is pursued.
   clue_matching         ``any``: a payoff closes the oldest open clue; ``numbered``:
                         payoff_N only closes setup_N.
+  gate_payoffs          A payoff (payoff_* tag) is told only when a planted clue waits for
+                        it (with ``numbered``: its own setup_N); named threads (an outcome's
+                        ``requires_setup``) always wait for their ``setup_id``.
 """
 import math
 import re
@@ -43,6 +46,7 @@ DEFAULTS = {
     "payoff_route_weight": 1.5,
     "max_open_clues": 2,
     "clue_matching": "any",
+    "gate_payoffs": True,
 }
 NUMBERS = ("early_goal_avoidance", "repetition_power", "backtrack_penalty", "tie_epsilon", "collect_weight",
            "payoff_weight", "payoff_route_weight")
@@ -67,6 +71,8 @@ def validate_settings(values):
         errors.append("`story_rules.on_stall` must be move or end.")
     if values.get("clue_matching") not in ("any", "numbered"):
         errors.append("`story_rules.clue_matching` must be any or numbered.")
+    if not isinstance(values.get("gate_payoffs", True), bool):
+        errors.append("`story_rules.gate_payoffs` must be true or false.")
     if not isinstance(values.get("follow_outcome_text"), bool):
         errors.append("`story_rules.follow_outcome_text` must be true or false.")
     tags = values.get("failure_tags")

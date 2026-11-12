@@ -272,6 +272,12 @@ Requests with the header `X-ANE-Client: studio` are recorded with the origin
   the event to be resolved by a successful action, and `condition`, any
   condition tree), the rewards' effect list, and every referenced location, item, event,
   NPC, stat, and variable are checked.
+- `POST /v1/records/stories/{id}/judge` and `POST /v1/sessions/{id}/judge`: Gemma 4
+  as a game critic (`evaluator/game_judge.py`) scores the playthrough from 1 to 10 on
+  `agency`, `pacing`, `surprise`, `payoff`, `exploration`, `stakes`, `coherence` and
+  `replayability`, with `engagement`, `spread` (between its `llm_judge.samples`
+  judgements), `verdict`, `best_moment` and `weakest_moment`. `404` for an unknown story
+  or session, `503` when no language model is available (`vllm`).
 - `GET /v1/missions/playable?profile=`: the quests a player may choose when
   starting a game (`key`, `title`, `description`, `stages` (their titles),
   `available` for that profile now).
@@ -365,13 +371,21 @@ Requests with the header `X-ANE-Client: studio` are recorded with the origin
     todo) and `todo` (what the current step still needs, in words, such as
     "Reach the Vault" or "Have 20 coins (you have 12)").
   - `people`: the people here (`name`, `called` with its article,
-    `description`, `wants`, `hostile`, `talks` (times spoken with) and `quest`
-    (they can help with the mission now)).
+    `description`, `wants`, `hostile`, `talks` (times spoken with), `quest`
+    (they can help with the mission now), `helped` (times helped with their
+    goal) and `ally` (their goal is fulfilled)).
   - `people_met`: everyone met in the story (`name`, `called`, `where`,
-    `talks`, `hostile`, `gone`).
-  - `ways_on`: every place one can travel to from here now, for a map
-    (`name`, `visited`, `toward_quest`); `actions` offer the most relevant of
-    them.
+    `talks`, `hostile`, `gone`, `ally`).
+  - `ways_on`: every place one can travel to from here now (`name`,
+    `visited`, `toward_quest`); `actions` offer the most relevant of them.
+  - `map`: the map as the player knows it, kept with the game: `current`,
+    `previous`, `places` (`name`, `visited`, `locked`), `paths` (pairs open
+    both ways) and `one_way` (`[from, to]`, such as an arrest's).
+  - `choices`: the offered `actions` with the check each involves (`check`:
+    `stat`, `chance` 0-100 and `bonus` from Power or an ally, or `null`).
+- In real play a discovery or a hint never moves the player by itself, and
+  lingering does not end the story (`navigation.player_directed: play`); the
+  way back to the place just left is always among the `actions`.
 - `GET /v1/artifacts/{id}` downloads generated config or engine bundles.
 
 The schemas and validation constraints are available in `/docs`.
