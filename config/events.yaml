@@ -124,13 +124,47 @@ world_definition:
       - name: Make a run for it
         skill_check: {stat: stealth}
         outcomes:
-        - desc: You duck under the blade and lose the bandit in the crowd.
+        - desc: You duck under the blade and run back the way you came.
           on_check: pass
           tags: [stealth, success]
+          return_to_previous: true   # fleeing takes you back where you came from
         - desc: The bandit catches your cloak and slashes before you break free.
           on_check: fail
           tags: [threat, failure]
           health_change: -2
+    guards_alerted:
+      title: The vault guards come running
+      repeat: always   # every alarm brings them
+      tags: [threat, guards]
+      descriptions:
+      - Boots pound down the stairs and lanterns swing toward the vault door.
+      - A bell clangs somewhere above; the guards are coming, and they are not alone.
+      actions:
+      - name: Hide in the shadows
+        skill_check: {stat: stealth}
+        outcomes:
+        - desc: The guards sweep past your hiding place, cursing the faulty alarm.
+          on_check: pass
+          tags: [stealth, success]
+        - desc: A lantern finds your face. "Thief!" Rough hands drag you away.
+          on_check: fail
+          tags: [guards, failure]
+          send_to: Dungeon
+      - name: Bluff that the guild sent you to inspect the lock
+        skill_check: {stat: persuasion}
+        outcomes:
+        - desc: "\"The locksmiths' guild sent me,\" you say; the sergeant waves you on, embarrassed."
+          on_check: pass
+          tags: [social, success]
+        - desc: The sergeant laughs and calls for irons.
+          on_check: fail
+          tags: [guards, failure]
+          send_to: Dungeon
+      - name: Slip down the drain into the Sewers
+        outcomes:
+        - desc: You squeeze through the grate as the vault door bursts open behind you.
+          tags: [stealth, success]
+          move_to: Sewers
     memory_theft:
       title: The Memory Thief strikes
       repeat: once    # unique: whatever starts it, it happens once per story

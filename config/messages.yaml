@@ -57,6 +57,8 @@ messages:
   spawn_forced: "[SPAWN] A situational path opens to: {location}"  # {location}
   voyage: "[VOYAGE] The opening draws you toward {location}."  # {location}
   escape: "[ESCAPE] You found a way out of {location}."  # {location}
+  exit_unlocked: "[UNLOCKED] The way out of the {location} is open now."  # {location}
+  fled_back: "[BACK] You fall back the way you came, to the {location}."  # {location}
   sent: "[SENT] You are taken to the {location}. There is no way back the way you came."  # {location}
 
   # --- People and things (talk_action is the name of the conversation option)
@@ -70,6 +72,9 @@ messages:
   npc_removed: "[NPC REMOVED] {npc} is no longer part of the story."  # {npc}
   npc_removed_scene: "[NPC REMOVED] {npc} leaves the {location}."  # {location}, {npc}
   encounter: "[ENCOUNTER] {npc} confronts you!"  # {npc}
+  npc_goal_done: "[ALLY] You helped {npc} {goal}; they count you a friend now."  # {npc}, {goal}
+  twist_payoff: "[TWIST] {text}"  # {text}: an earlier twist pays off
+  callback: "[CALLBACK] It all fits: what you learned at the {place} pays off - \"{text}\""  # {place}, {text}, {turns}
   item_collected: "You collected the {item}."  # {item}
   item_used: "You have utilized the {item}."  # {item}
   paid: "[RESOURCES] Paid: {coins} coins (Balance: {balance})"  # {balance}, {coins}
