@@ -657,6 +657,20 @@ duplication +0.44, novelty fading, loops, filler) cost more; repeated failed
 attempts, its most frequent complaint, now ease the next attempt and step back for
 a turn or two (`director.retry_bonus`, `retry_cooldown`).
 
+**Measuring with the judge, and learning from it.** Small differences in the judge's 1-10
+scores (about 0.1) sit within run-to-run noise, so compare settings head to head.
+`python -m evaluator.judge_benchmark --pairwise --variant director.surprise=0 --stories 20`
+plays the same seeds with and without the change. Gemma 4 reads each pair twice, in both
+orders, and a story wins only when both readings agree, which cancels the judge's preference
+for whichever story comes first. The result is B's win rate with a 95% Wilson interval and a
+win rate per criterion. `python -m evaluator.calibrate_fitness --stories stories.jsonl
+--judged judged.jsonl --write weights.yaml` fits which fitness terms run with the judge,
+suggests a multiplier per term (`fitness.term_weights`, 0.25-3) and reports how well the fit
+predicts stories it was not fitted on. Finally, `evolution.judge_weight` (0 = off) puts the
+judge in the loop: each generation, the judge reads one story from each of the
+`judge_top_k` best storytellers and adds `judge_weight x (engagement - 5)` to their scores
+before breeding. Without a model the run continues on the fitness alone.
+
 For faster non-LLM runs, disable these sections:
 
 ```yaml
@@ -1611,6 +1625,81 @@ the storyteller's favourite. `relevance_filter: false` restores the plain
 `recent_missions` latest missions are drawn `repeat_factor` times less often
 each time they appear, as recent starts are, so a returning player meets
 other missions.
+
+### Story beats: who matters, the climax, failures, travel, stakes, reveals
+
+The engine makes a story's beats itself (`core_engine/story_beats.py`); each one has its
+own section in `config/hyperparameters.yaml` and can be switched off there. Every beat is
+told with its own tag (`[REVEAL]`, `[CLIMAX]`, ...; the texts are in `config/messages.yaml`)
+and logged in the story's `beat_log`, which the fitness (`fitness.beats`) and the judge's
+digest read.
+
+**Who matters, and how much** (`npc_roles`). Every NPC has a role in a story: its own
+(`role:` in `config/npcs.yaml`), or the first `infer` rule it matches by its tags (the NPC
+the quest is about and that is a threat is the story's **nemesis**; a unique threat a
+**lieutenant**; a unique palace NPC a **power broker**; a unique talker an **informant**;
+guards **henchmen**; everyone else a **bystander**). A role sets:
+
+| Setting | What it does |
+| --- | --- |
+| `importance` 0-3 | shown with the people (`people`, `people_met`); importance 2+ is met with `[REVEAL]` and beaten with `[TRIUMPH]` |
+| `check_modifier` | added to every check against or with them: a nemesis -15, a bystander +10 |
+| `reveal_turns`, `reveal_clues` | out of sight until the story has run this many turns or the player learned this many things (clues, quest steps, allies), unless a lead names them (`leads_name_hidden`), the road speaks of them (first trips) or an outcome reveals them |
+| `defeat_coins` | optional: what beating them is worth |
+
+An NPC may also keep a **secret** that comes out once spoken with `talks` times (and
+`clues` things learned): `[SECRET] text`, its `effects`, and the actions it unlocks with
+`enabled_if: {secret_known: <NPC>}`. In the city the Merchant fences the thief's goods
+(and can be threatened for it) and the Gate Guard is in debt (and lets you in if you
+settle it).
+
+**A climax for every quest** (`climax`). When the last step of a quest that took at least
+`min_turns` turns is reached, the win waits for a showdown, an event of the story's own:
+the antagonist (the quest's own target if hostile, else the most important hostile NPC who
+belongs there or was met) stands in the way, with one choice per stat (`choices`: face them,
+outwit them, talk them down) and, with an ally, `Call on <ally>` (`ally_choice.bonus`). A
+setback costs `failure_damage` and the showdown comes back after `retry_turns`; after
+`max_attempts` setbacks the quest is won at a price (`price_health`, never the last
+point): a quest is never lost at its last step. Winning closes every open thread, the first
+`revelations` told as `[REVELATION]`. Beating someone who matters on the quest's last turn
+is its climax already.
+
+**Failures as beats** (`director`). A failure no complication followed shows
+**another way** with chance `another_way`: a witness here, someone who matters named, or a
+way toward the quest (`[ANOTHER WAY]`); otherwise it is a dead end, which costs fitness. A
+paid attempt that fails returns `failure_refund` of its price (`[REFUND]`). `GET
+/v1/lint/failures` lists the failures a world leaves as dead ends, to write a consequence
+for.
+
+**Variation** (`variation`). An outcome may have `variants`, other ways to tell it, used in
+turn when it is told again; once they are used up, the result line says it happened before
+(`result_again`, `result_habit`). Each earlier success of an action makes its check harder by
+`repeat_check_penalty` (up to `max_repeat_penalty`): people catch on.
+
+**Travel** (`travel`). A place visited before, two or more steps away along known ways and
+still holding something, can be reached in one turn (`Travel by known ways to ...`, at most
+`fast_travel_options`, not within `fast_travel_cooldown` turns of the last); those turns do
+not count toward the action limit (up to `max_free_turns`). A first trip somewhere has a
+scene on the way (`first_trip.by_tag`, with `chance`; an entry may give `coins` or
+`health`) and word on the road of someone who matters to be found there.
+
+**Stakes** (`stakes`). Crimes and failures where the watch is (`alert.watched_tags`) raise
+the **alert** (`raise_on_success`, `raise_on_failure`: an action's words or an outcome's
+tags); from `warn_at` every rise is told (`[ALERT]`), each level makes checks against guards
+harder (`check_penalty`), quiet turns let it fall (`decay_turns`), and at `max` a manhunt
+starts (`manhunt_event`) and the alert drops to `reset_to`. Every choice with a check shows
+what failing costs (`risk`: health, coins, being sent away), in the API and in the studio.
+
+**Reveals** (`consequences`, `memory`). What the player did shows later: beating someone
+who mattered or making an ally is told a few turns on, at a place it belongs to
+(`[CONSEQUENCE]`, with `coins` or `alert`). In real play (a profile) the next story
+remembers the last: `[LAST TIME] Last time you completed ...`, and old friends and foes
+recognise the player.
+
+**Fitness** (`fitness.beats`, `fitness.term_weights`). A climax won, triumphs (by
+importance), reveals and consequences add to a story's fitness, failures that showed another
+way a little, dead ends cost; `term_weights` multiplies any term of the breakdown (written by
+`evaluator/calibrate_fitness.py`).
 
 ### The map: which places border which
 

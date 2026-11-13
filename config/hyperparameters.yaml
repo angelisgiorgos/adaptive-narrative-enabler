@@ -30,6 +30,11 @@ evolution:
   score_aggregate: mean_minus_std  # mean | mean_minus_std: consistent storytellers beat erratic ones
   consistency_weight: 0.25    # mean_minus_std: score = mean - this x standard deviation of the episodes
   alternatives_weight: 40       # + this x how different a storyteller's stories are from one another (0..1)
+  # Judge in the loop: the LLM judge reads one story of each of the judge_top_k best of a
+  # generation and judge_weight x (engagement - 5) is added to their scores before breeding.
+  judge_weight: 0.0            # 0: off (no model needed, runs stay reproducible); ~50 suits this fitness scale
+  judge_top_k: 2
+  judge_workers: 4             # judgements sent to the model at once
 story_rules:
   # Rules that keep stories coherent, paced and varied (core_engine/rules.py).
   failure_tags: [failure]     # these outcomes are told only when the attempt fails (as on_check: fail)
@@ -466,13 +471,25 @@ fitness:
       allowed_ratio: 0.5
       weight: 30.0
     scenario_duplication:      # the same place, action and outcome told again
-      weight: 160.0            # judge-calibrated (was 80): the judge's strongest signal
+      weight: 200.0            # judge-calibrated (was 80, then 160): the judge's strongest signal
       power: 2.0
     world_extension:           # too little of the world discovered, or a map without branches
       target_discovery_ratio: 0.45
       discovery_weight: 45.0
       target_branching: 2.4     # paths per known place, about the median
       branching_weight: 8.0
+  beats:                       # the engine's own beats (core_engine/story_beats.py; fitness._beats)
+    enabled: true
+    climax_bonus: 15           # the quest ended in a climax that was won (half for one won at a price)
+    triumph_bonus: 4           # each NPC who mattered beaten, x their importance (npc_roles)
+    triumph_cap: 3
+    reveal_bonus: 3            # each reveal: someone who matters found or named, a secret told
+    reveal_cap: 4
+    consequence_bonus: 3       # each consequence shown of what the player did
+    consequence_cap: 3
+    another_way_bonus: 2       # each failure that showed another way
+    dead_end_penalty: 4        # each failure that led nowhere (no complication, no other way)
+  term_weights: {}             # multiply any fitness term (a key of the breakdown) by a weight; written by evaluator/calibrate_fitness.py
   rhythm:                      # what makes a story unpredictable and eventful (fitness._rhythm)
     enabled: true
     calm_allowed: 3            # calm turns in a row (nothing new) before predictability costs...
@@ -486,10 +503,10 @@ fitness:
     open_thread_penalty: 8     # each clue still open when the story ends
     repeated_failure_penalty: 6  # each retry of an action that failed within the last 3 turns (padding)
   engagement:                  # what a player feels turn by turn (from the story's turn log)
-    filler_penalty: 80         # x share of turns that brought nothing new (no place, person, event, outcome, check, change)
+    filler_penalty: 100        # x share of turns that brought nothing new (no place, person, event, outcome, check, change)
     loop_window: 6             # an action repeated with the same outcome within this many turns...
-    loop_penalty: 6            # ...costs this per turn
-    novelty_fade_penalty: 75   # x drop of the share of new turns from the first to the last third
+    loop_penalty: 8            # ...costs this per turn
+    novelty_fade_penalty: 100  # x drop of the share of new turns from the first to the last third
     escalation_bonus: 25       # x rise of tension (threats, damage, events) from the first to the last third
   dramatic_arc:
     intro_end: 0.25
@@ -623,6 +640,7 @@ llm_judge:
   max_new_tokens: 700
   max_turns: 80                # longer stories keep their first and last turns
   outcome_chars: 160           # each turn's outcome text is cut to this
+  pair_max_chars: 11000        # pairwise judging: each of the two digests is cut to this (both share the context)
 llm_evaluator:
   enabled: true
   max_new_tokens: 1024
@@ -688,6 +706,11 @@ director:                      # how a story builds over its course, like a game
   retry_cooldown: 2            # turns...
   retry_cooldown_penalty: 3.0  # ...during which a just-failed action ranks this much lower (when there is something else to do there)
   ping_pong_penalty: 2.5       # travelling straight back to the place left on the last turn (A -> B -> A)
+  # Failures as story beats: a failure no complication followed shows another way (a witness
+  # here, someone who matters named, or a way toward the quest), drawn from the story's own
+  # randomness; otherwise it is a dead end (fitness.beats.dead_end_penalty).
+  another_way: 0.6
+  failure_refund: 0.5          # share of a paid price (required_coins) returned when the attempt fails
 mission_selection:             # how a story's mission is drawn for a player profile
   recent_missions: 3           # the profile's latest missions...
   repeat_factor: 0.3           # ...are drawn this much less often, each time they appear
@@ -703,3 +726,113 @@ player_options:                # the choices a player sees (studio, API, offline
   relevance_filter: true       # false: simply the storyteller's best `limit` options
   way_back: true               # backtracking: the way back to the place just left is always a choice
   order: world                 # world: in the scene's order (activities, people, items, travel); ranked: best first
+npc_roles:                     # who matters how much in a story: harder to find, and harder to beat
+  enabled: true
+  leads_name_hidden: true      # a lead may name someone who matters and is still out of sight
+  secrets: true                # NPC secrets (an NPC's `secret`) come out when spoken with often enough
+  # importance 0-3; check_modifier: + easier, - harder to beat or win over; reveal_turns /
+  # reveal_clues: out of sight until the story has run this many turns or the player learned
+  # this many things (clues, quest steps, allies), unless a lead, a reveal or the road names
+  # them; defeat_coins (optional): what beating them is worth. A world sets an NPC's own `role`.
+  roles:
+    bystander: {label: bystander, importance: 0, check_modifier: 10}
+    minion: {label: henchman, importance: 1, check_modifier: 5}
+    informant: {label: informant, importance: 1, check_modifier: 0}
+    patron: {label: power broker, importance: 2, check_modifier: -5, reveal_turns: 3, reveal_clues: 1}
+    lieutenant: {label: lieutenant, importance: 2, check_modifier: -10, reveal_turns: 5, reveal_clues: 1}
+    nemesis: {label: nemesis, importance: 3, check_modifier: -15, reveal_turns: 6, reveal_clues: 1}
+  infer:                       # an NPC without its own role takes the first rule it matches
+  - {role: nemesis, mission_target: true, tags_any: [threat, stealth, deception]}
+  - {role: patron, mission_target: true}
+  - {role: lieutenant, unique: true, tags_any: [threat]}
+  - {role: lieutenant, hostile: true, unique: true}
+  - {role: patron, unique: true, tags_any: [palace, luxury]}
+  - {role: informant, unique: true, tags_any: [social, discovery]}
+  - {role: minion, tags_any: [threat, guarded, protect, prison]}
+  - {role: bystander}
+climax:                        # every quest ends in a confrontation, not a checkbox
+  enabled: true
+  min_turns: 6                 # a quest done in fewer turns needs no showdown
+  title: "Showdown: {title}"
+  description: "{antagonist_cap} stands between you and the end of it all."
+  description_free: "Everything you have done comes down to this moment."
+  check_modifier: 0            # plus the antagonist's role (npc_roles)
+  failure_damage: 2
+  failure_desc: "{antagonist_cap} throws you back, and the moment slips away."
+  failure_desc_free: "It slips through your fingers, for now."
+  max_attempts: 2              # after this many setbacks the climax is won at a price...
+  price_health: 2              # ...of this much health (never the last point)
+  retry_turns: 1               # a setback (or stepping away) brings the climax back after this many turns
+  revelations: 2               # open threads told as revelations when it is won (all are closed)
+  choices:                     # one per stat the player has: {antagonist} / {title}; free_name without an antagonist
+  - {name: "Face {antagonist} head-on", free_name: "Push through with everything you have", stat: attack, tags: [combat],
+     desc: "You meet {antagonist} head-on and do not yield; it is over."}
+  - {name: "Outwit {antagonist}", free_name: "Find the clever way through", stat: stealth, tags: [stealth],
+     desc: "You turn {antagonist}'s own plan against them and slip past to the prize."}
+  - {name: "Talk {antagonist} down", free_name: "Rally the people around you", stat: persuasion, tags: [social],
+     desc: "Your words find the crack in {antagonist}'s resolve; they stand aside."}
+  ally_choice: {name: "Call on {ally}", stat: persuasion, bonus: 20, tags: [social, ally],
+                desc: "{ally_cap} arrives just in time, and together you win through."}
+variation:                     # what is told again is not told the same way
+  enabled: true
+  repeat_lines: true           # an outcome told again (its `variants` used up) says so: result_again, result_habit
+  repeat_check_penalty: 5      # each earlier success of an action makes its check harder by this: people catch on...
+  max_repeat_penalty: 20       # ...up to this
+travel:                        # travel as part of the story
+  fast_travel: true            # travel in one turn to a place visited before, along known ways...
+  fast_travel_options: 2       # ...at most this many such options, to places that still hold something...
+  fast_travel_cooldown: 3      # ...and none within this many turns of the last fast travel
+  max_free_turns: 10           # fast-travel turns do not count toward the action limit, up to this many
+  first_trip:                  # the first trip somewhere: a scene on the way (by the destination's tags)
+    enabled: true
+    chance: 0.5
+    road_word: true            # and word on the road of someone who matters to be found there
+    by_tag:
+      maritime: ["Gulls wheel over the masts; a sailor hums a song about a ship that never came home."]
+      port: ["Porters shoulder past with crates stamped with seals from cities you have never seen."]
+      market: ["A pickpocket's hand brushes your belt; you catch it, and the boy runs off laughing."]
+      commercial: [{text: "A stall-keeper presses a bruised apple into your hand: 'For the road.'", health: 1}]
+      crowded: ["The crowd thickens; somewhere a crier announces a reward for a thief."]
+      dark: ["A lamp gutters out behind you, and footsteps that matched yours stop."]
+      damp: ["Water drips from the vaults; scratched on the wall, an arrow and a single word: 'below'."]
+      foul: ["The stench hits first; a rat the size of a cat watches you pass."]
+      luxury: ["A carriage rattles past; from its window, someone in silk studies your face a moment too long."]
+      palace: ["Banners snap above the walls; the guards at the gate change shift with a clatter."]
+      nature: [{text: "Bees drone over wild thyme; the air itself seems to mend you.", health: 1}]
+      ancient: ["Carved faces on the old stones look worn away on purpose, as if someone feared being remembered."]
+      arcane: ["The air tastes of copper; your shadow lags a heartbeat behind you."]
+      spectral: ["A cold draft passes through you, carrying a whisper of your name."]
+      urban: [{text: "In the gutter, a glint: someone's lost coins.", coins: 2}]
+    default: ["The way is longer than it looked, and the city changes its face as you go."]
+stakes:                        # what is at stake, seen by the player
+  show_failure_costs: true     # a choice's check says what failing costs (health, coins, being sent away)
+  alert:                       # the watch: crimes and failures where it watches raise the alert
+    enabled: true
+    max: 6                     # at the top a manhunt starts...
+    manhunt_event: guards_alerted
+    reset_to: 1                # ...and the alert drops back to this
+    warn_at: 4                 # from this level on every rise is told ([ALERT] ...)
+    decay_turns: 3             # quiet turns after which the alert falls by 1
+    check_penalty: 3           # per level: checks against guards are harder
+    watched_tags: [urban, guarded, palace, market, commercial, crowded, district_citadel, district_docks, district_slums]
+    raise_on_success: {bribe: 1, fight: 2, steal: 2, rob: 2, guards: 1}   # an action's words or an outcome's tags
+    raise_on_failure: {guards: 2, bribe: 2, stealth: 1, fight: 1, combat: 1, threat: 1}
+    warnings:
+    - "The watch is on edge; guards look twice at strangers."
+    - "Patrols are looking for a face like yours; one more slip and it is a manhunt."
+consequences:                  # what the player did shows later ([CONSEQUENCE] ...)
+  enabled: true
+  delay: 2                     # turns before a consequence can show...
+  overdue: 3                   # ...anywhere once this many turns overdue (else where it belongs)
+  kinds:
+    defeated:                  # someone who mattered was beaten (npc_roles importance 1+)
+      coins: 3
+      texts:
+      - "With {npc} gone, people in the {location} breathe easier; someone presses a few coins into your hand."
+      - "Word of {npc}'s fall has reached the {location}; strangers nod to you as you pass."
+    ally:                      # someone became an ally (npc_goals)
+      texts:
+      - "Word gets round that you helped {npc}; in the {location}, people are readier to talk."
+      - "A message from {npc} finds you in the {location}: they have not forgotten what you did."
+memory:                        # a profile's next story remembers the last ("Last time you ...")
+  enabled: true

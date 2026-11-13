@@ -85,6 +85,9 @@ world_definition:
         outcomes:
         - id: harbor_explore_rest
           desc: The traveler relaxes by the sea, watching the ships roll in.
+          variants:
+          - "You sit by the water again; a ship with black sails has joined the others."
+          - "The sea is calm; a gull steals a crust from your hand and you let it."
           tags:
           - neutral
         - id: harbor_explore_brawl
@@ -113,6 +116,9 @@ world_definition:
           linked_location: Palace
         - id: harbor_crates_contraband
           desc: A crate breaks, revealing illegal contraband!
+          variants:
+          - "Another crate splits: the same seal as before. Someone is moving a lot of this."
+          - "A crate cracks open, and a dock boss shouts at everyone to look away."
           tags:
           - threat
           - guards
@@ -122,6 +128,9 @@ world_definition:
         outcomes:
         - id: dockworkers_drunk
           desc: The dockworkers press a cup of rum into your hand and point out a faster route through the waterfront.
+          variants:
+          - "The dockworkers wave you over like an old friend; the rum is worse, the gossip better."
+          - "Another round with the dockworkers; one of them draws a shortcut in spilled rum."
           tags:
           - social
           - spawn
@@ -383,6 +392,9 @@ world_definition:
       - name: Search for loot
         outcomes:
         - desc: A bag of gold coins is found hidden in a corner.
+          variants:
+          - "Behind a loose stone, another purse: somebody uses this place as a bank."
+          - "Coins again, wrapped in a note that says only: 'For the next one.'"
           tags:
           - neutral
           - success
@@ -402,6 +414,9 @@ world_definition:
           - payoff_clue         # the crown everyone whispered about
           reveal_object: Gold Coins
         - desc: The mechanism jams, sounding a silent alarm.
+          variants:
+          - "The mechanism jams again; somewhere far off, a bell you cannot hear is ringing."
+          - "The lock bites back; this time you hear boots on the stairs."
           tags:
           - threat
           - guards
@@ -502,6 +517,9 @@ world_definition:
       - name: Shop for Antiques
         outcomes:
         - desc: The Merchant offers a rare artifact.
+          variants:
+          - "The Merchant lifts a cloth from something that hums: 'Rare. Rarer than last time.'"
+          - "The Merchant leans in: 'For you, something nobody else has seen.'"
           tags: [social, discovery]
           reveal_npc: Merchant
         - desc: A mirror shows tomorrow's palace guard rotation instead of your reflection.
@@ -576,6 +594,9 @@ world_definition:
           reveal_location: Bone Orchard
           spawn: true
         - desc: The returning tide scatters silver coins from a collapsed strongbox.
+          variants:
+          - "The tide gives up another handful of silver, as if paying a debt."
+          - "Half-buried in the wet sand, a coin stamped with a face you almost recognise."
           tags: [success, maritime]
           coin_change: 12
     Bone Orchard:
@@ -596,6 +617,9 @@ world_definition:
           tags: [payoff_1, discovery, social]
           reveal_location: Vault
         - desc: Every tree repeats your own voice confessing a crime you never committed.
+          variants:
+          - "The trees whisper your name now, and a second voice answers that you did it."
+          - "A branch creaks into the shape of a pointing hand; it points at you."
           tags: [unexpected, threat]
           reveal_npc: Memory Thief
       - name: Follow the youngest roots

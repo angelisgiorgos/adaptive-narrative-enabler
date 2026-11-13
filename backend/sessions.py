@@ -63,6 +63,7 @@ def play_state(state: GameState) -> dict:
         "map": state.map_view(),
         "choices": choice_details(state),
         "ways_on": state.ways_on() if not state.ended else [],
+        "stakes": state.stakes() if hasattr(state, "stakes") else None,
     }
 
 def _export_run_artifacts(model, candidate_count=0, generations=0, simulation_steps=0):
@@ -190,6 +191,15 @@ def _mission_key(world, mission):
             return key
     known = ", ".join(f"{entry.title} ({key})" for key, entry in world.missions.items()) or "none"
     raise AuthoringError(f"This world has no mission '{wanted}'. Its missions: {known}.")
+
+
+def failure_lint():
+    """The failures the current world leaves as dead ends (story_beats.failure_lint): actions
+    whose failure changes nothing but health or coins and that no complication event fits."""
+    from core_engine.story_beats import failure_lint as lint
+
+    world = engine.build_world(Genome(rng=random.Random(0)))
+    return lint(world)
 
 
 def playable_missions(profile=None):
@@ -330,6 +340,24 @@ def choice_details(state):
     return [{"name": action.name, "check": state.check_hint(action)} for action in _player_options(state)]
 
 
+def risk_text(risk):
+    """What failing a choice costs, in a few words: "fail: -2 health, -8 coins, sent to the Dungeon"."""
+    if not risk:
+        return ""
+    parts = [f"{risk[key]} {key}" for key in ("health", "coins") if risk.get(key)]
+    if risk.get("sent_to"):
+        parts.append(f"sent to the {risk['sent_to']}")
+    return "fail: " + ", ".join(parts) if parts else ""
+
+
+def check_text(check):
+    """A choice's check in a few words: "stealth 45% (fail: -2 health)"."""
+    if not check:
+        return ""
+    risk = risk_text(check.get("risk"))
+    return f"{check['stat']} {check['chance']}%" + (f" ({risk})" if risk else "")
+
+
 def quest_line(quest):
     """The mission in one line of the scene: title, current stage, what is still to do."""
     stages = quest.get("stages") or []
@@ -353,6 +381,8 @@ def people_text(people):
             notes.append("⚠ hostile")
         if person["quest"]:
             notes.append("★ can help with your quest")
+        if person.get("importance", 0) >= 2:
+            notes.append(f"◆ {person.get('role')}")  # someone who matters in this story (npc_roles)
         if person.get("ally"):
             notes.append("♥ ally")
         elif person.get("helped"):
@@ -389,9 +419,13 @@ def _scene(state: GameState) -> tuple[str, list[str]]:
             f"{name} {value}" + (f" (+{bonuses[name]})" if bonuses.get(name) else "")
             for name, value in state.stats.values(bonuses).items()
         ))
-    checks = [f"{c['name']} — {c['check']['stat']} {c['check']['chance']}%" for c in choice_details(state) if c["check"]]
+    checks = [f"{c['name']} — {check_text(c['check'])}" for c in choice_details(state) if c["check"]]
     if checks:
         details.append("**Checks:** " + " · ".join(checks))
+    stakes = state.stakes() if hasattr(state, "stakes") else None
+    if stakes and stakes["alert"]:
+        details.append(f"**Alert:** {stakes['alert']}/{stakes['max']}" + (" — the watch is looking for you"
+                                                                         if stakes["alert"] >= stakes["warn_at"] else ""))
     if state.combat.history:
         last = state.combat.history[-1]
         details.append(f"**Last check:** {last.stat} rolled {last.roll} vs {last.target} — {'passed' if last.passed else 'failed'}")

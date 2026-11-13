@@ -76,6 +76,9 @@ world_definition:
           remove_npc: true
           set_variables: {fence_exposed: true}
         - desc: The thief laughs in your face and slips your grip, but you will find them in the market again.
+          variants:
+          - "The thief twists free again, quicker this time, and blows you a kiss from the crowd."
+          - "Gone again: only a torn strip of the thief's cloak is left in your hand."
           on_check: fail
           tags: [social, failure]
       - name: Steal from the thief

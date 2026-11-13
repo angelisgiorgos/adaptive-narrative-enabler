@@ -96,3 +96,30 @@ messages:
   unexpected_event: "[UNEXPECTED EVENT] {description}"  # {description}
   unexpected_effect: "[EVENT EFFECT] Health {health:+d}, coins {coins:+d}."  # {coins}, {health}
   unexpected_discovery: "[EVENT DISCOVERY] A path opens to {location}."  # {location}
+
+  # --- The story's beats (core_engine/story_beats.py, npc_roles, climax, travel, stakes, memory)
+  npc_reveal: "[REVEAL] {npc}, the {role} of this story: {description}"  # {npc} {role} {description}: meeting someone who matters (npc_roles importance 2+)
+  npc_named: "[LEAD] {npc} speaks of {target}, a {role} in all this: look for them at the {location}."  # {npc} {target} {role} {location}
+  npc_triumph: "[TRIUMPH] You have beaten {npc}, the {role}."  # {npc} {role}
+  climax_start: "[CLIMAX] {title}: it all comes down to this."  # {title}
+  climax_won: "[CLIMAX] You prevail: {title} is yours."  # {title}
+  climax_setback: "[SETBACK] {antagonist} throws you back. Catch your breath; this is not over."  # {antagonist}
+  climax_price: "[CLIMAX] Bloodied and spent, you prevail at last; {title} cost you dearly."  # {title}
+  revelation: "[REVELATION] At last it makes sense, what you learned at the {place}: \"{text}\""  # {place} {text}: an open thread closed at the climax
+  another_way_witness: "[ANOTHER WAY] Someone saw it all: {npc} beckons you over."  # {npc}
+  another_way_lead: "[ANOTHER WAY] The failure teaches you something: the answer may lie at the {location}."  # {location}
+  refund: "[REFUND] Not everything is lost: you get {coins} coins back (Balance: {balance})."  # {coins} {balance}
+  result_again: "RESULT: {description} It goes much as it did before."  # {description}: an outcome told a second time (variation; a list of texts varies it)
+  result_habit: "RESULT: {description} The same again; people here are starting to know your face."  # {description}: told a third time or more
+  travel_fast: "Travel by known ways to the {location}"  # {location}: the fast-travel option
+  travel_fast_result: "By ways you know, through the {via}, you reach the {location}."  # {location} {via}
+  on_the_way: "[ON THE WAY] {text}"  # {text}: a first trip's scene (travel.first_trip)
+  road_word: "[ON THE WAY] Word on the road: {npc} is to be found in the {location}."  # {npc} {location}
+  alert_up: "[ALERT] {text} (alert {level}/{max})"  # {text} {level} {max}
+  alert_calm: "[ALERT] Things have calmed down (alert {level}/{max})."  # {level} {max}
+  manhunt: "[MANHUNT] The whole watch is after you!"  # (also {location})
+  secret: "[SECRET] {text}"  # {text}: an NPC's secret comes out
+  consequence: "[CONSEQUENCE] {text}"  # {text}: something done earlier shows now
+  last_time: "[LAST TIME] Last time you {text}."  # {text}: the profile's last story (memory)
+  remembered_friend: "[LAST TIME] {npc} remembers you, and smiles."  # {npc}
+  remembered_foe: "[LAST TIME] {npc} remembers you, and not fondly."  # {npc}
