@@ -7,6 +7,33 @@ that introduces them.
 
 ## [Unreleased]
 
+### Everything in the API and in the studio
+
+#### Added
+- API: `GET|PUT /v1/entities/{kind}/{name}/yaml` (every field of an entry, the whole world
+  checked before saving), `role` and `secret` on NPC entities, the `map` document
+  (`world_definition.routes`), `POST /v1/judge/compare` (two stories, both orders),
+  `POST /v1/jobs/judge-benchmark` (absolute, or a pairwise A/B of settings on the same seeds,
+  played in a separate process so games in progress keep their settings),
+  `POST /v1/jobs/calibrate-fitness`, `GET|PUT /v1/fitness/term-weights`; `npc_roles` and
+  `judge_criteria` in `GET /v1/reference`; judge jobs report stories judged as progress.
+- Studio: an NPC's **Role in the story** and **Secret**; *Every field of this entry (YAML)*,
+  *Map* and *Failures that lead nowhere* in the world editor; *Judge this playthrough*;
+  judging and comparing recorded stories, recorded runs' settings and generations, and
+  recorded worlds to download; *The active configuration*; *Background jobs*; and the tab
+  **6 · Evaluate with the judge** (benchmark, A/B, fitting the fitness, term weights).
+- `tests/test_studio_coverage.py`: every endpoint is used by the studio or named with the
+  equivalent the studio uses; the new endpoints and the studio's new controls.
+
+### Continuous integration
+
+#### Added
+- GitHub Actions (`.github/workflows/ci.yml`): on every push and pull request the test suite
+  runs (Python 3.10, CPU-only PyTorch, one process per test module), and the Docker image is
+  built with `docker compose build`, started as deployed (API and studio, waiting for their
+  health checks) and smoke-tested (`.github/scripts/docker_smoke_test.py`: health, missions,
+  failure lint, a short evolution that starts a game, one turn, the studio, a recorded run).
+
 ### Story beats made by the engine, NPC roles, and learning from the judge
 
 Measured pairwise with Gemma 4 E4B (30 City stories, random storytellers, the same seeds

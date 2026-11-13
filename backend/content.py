@@ -8,7 +8,8 @@ from numbers import Number
 import yaml
 import main as engine
 from core_engine import Mission, conditions, effects, starts
-from core_engine.builder import EVENT_POLICY_FIELDS, ITEM_POLICY_FIELDS, event_policy_errors, item_policy_errors, logic_errors
+from core_engine.builder import (EVENT_POLICY_FIELDS, ITEM_POLICY_FIELDS, event_policy_errors, item_policy_errors,
+                                 logic_errors, route_errors)
 from core_engine.actions import REPEAT_RULES, repetition_errors
 from core_engine.stats import MODES as STAT_MODES, CharacterStats, stats_config, validate_settings as validate_stat_settings
 from core_engine.narration import DEFAULT_MESSAGES, validate_messages
@@ -55,8 +56,8 @@ def _conditions_text(conditions) -> str:
 def load_entity(kind: str, name: str):
     """Return name, tags, descriptions, goals, the NPC options unique,
     encounter_event and encounter_repeat (None for other kinds), enabled_if,
-    the event title, the item stat bonus, and the location's start_eligible
-    and start_weight (None for other kinds)."""
+    the event title, the item stat bonus, the location's start_eligible
+    and start_weight, and the NPC's role and secret (None for other kinds)."""
     _, _, records, shape = _entity_records(kind)
     if shape == "mapping":
         record = records.get(name, {})
@@ -80,6 +81,8 @@ def load_entity(kind: str, name: str):
         (record.get("stat_bonus") or None) if kind == "Items" else None,
         bool(record.get("start_eligible", False)) if kind == "Locations" else None,
         record.get("start_weight", 1.0) if kind == "Locations" else None,
+        (record.get("role") or None) if npc else None,
+        (copy.deepcopy(record.get("secret")) or None) if npc else None,
     )
 
 def _apply_start(record: dict, start_eligible, start_weight) -> None:
@@ -109,6 +112,57 @@ def _apply_stat_bonus(record: dict, stat_bonus) -> None:
     else:
         record.pop("stat_bonus", None)
 
+def role_names() -> list[str]:
+    """The roles an NPC may play (npc_roles.roles)."""
+    return list(((config.get("npc_roles") or {}).get("roles") or {}))
+
+
+def secret_errors(secret, where="secret") -> list[str]:
+    """Problems with an NPC's secret ({text, talks, clues, effects}); empty when valid."""
+    if secret is None:
+        return []
+    if not isinstance(secret, dict):
+        return [f"`{where}` must be a mapping {{text, talks, clues, effects}}."]
+    errors = []
+    unknown = sorted(set(secret) - {"text", "talks", "clues", "effects"})
+    if unknown:
+        errors.append(f"`{where}`: unknown field(s) {', '.join(unknown)}; use text, talks, clues, effects.")
+    if not str(secret.get("text", "")).strip():
+        errors.append(f"`{where}.text` (what comes out; {{npc}} names them) is required.")
+    for field in ("talks", "clues"):
+        value = secret.get(field, 0)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            errors.append(f"`{where}.{field}` must be a whole number of 0 or more.")
+    errors.extend(effects.validate(secret.get("effects"), _references(), where=f"{where}.effects"))
+    return errors
+
+
+def _apply_role_and_secret(record: dict, role, secret) -> None:
+    """Set an NPC's role ("" removes it) and secret (a mapping or YAML text; {} or "" removes
+    it); None keeps the stored value."""
+    if role is not None:
+        role = str(role).strip()
+        if role and role not in role_names():
+            raise AuthoringError(f"Unknown role `{role}`; use one of {', '.join(role_names())} (npc_roles.roles).")
+        if role:
+            record["role"] = role
+        else:
+            record.pop("role", None)
+    if secret is not None:
+        if isinstance(secret, str):
+            try:
+                secret = yaml.safe_load(secret) if secret.strip() else None
+            except yaml.YAMLError as exc:
+                raise AuthoringError(f"`Secret` is not valid YAML: {exc}") from exc
+        if secret:
+            errors = secret_errors(secret)
+            if errors:
+                raise AuthoringError("\n".join(errors))
+            record["secret"] = secret
+        else:
+            record.pop("secret", None)
+
+
 def _references() -> conditions.References:
     """The names conditions and effects may refer to in the current world."""
     return conditions.References.from_world(config.get("world_definition") or {})
@@ -133,9 +187,10 @@ def _apply_enabled_if(record: dict, enabled_if) -> None:
 
 def save_entity(kind: str, selected_name: str, name: str, tags, descriptions: str, goals: str,
                 unique=None, encounter_event=None, encounter_repeat=None, enabled_if=None, title=None,
-                stat_bonus=None, start_eligible=None, start_weight=None):
+                stat_bonus=None, start_eligible=None, start_weight=None, role=None, secret=None):
     """Save an entry. An option passed as None keeps its stored value (an NPC's
-    unique defaults to generic); ``encounter_event=""`` removes the encounter."""
+    unique defaults to generic); ``encounter_event=""`` removes the encounter, ``role=""``
+    the NPC's own role (it is then inferred) and ``secret={}`` its secret."""
     name = (name or "").strip()
     if not name:
         raise AuthoringError("Name is required.")
@@ -183,6 +238,7 @@ def save_entity(kind: str, selected_name: str, name: str, tags, descriptions: st
                 if not record.get("encounter_event"):
                     record.pop("encounter_event", None)
                     record.pop("encounter_repeat", None)
+                _apply_role_and_secret(record, role, secret)
             _apply_enabled_if(record, enabled_if)
             if kind == "Items":
                 _apply_stat_bonus(record, stat_bonus)
@@ -269,6 +325,112 @@ def _record(kind: str, name: str):
     if record is None:
         raise AuthoringError(f"`{name}` does not exist in {kind}.")
     return path, data, record
+
+def load_entity_yaml(kind: str, name: str) -> str:
+    """Every field of an entry as YAML, as stored (its actions included)."""
+    if not name:
+        return "{}\n"
+    return yaml.safe_dump(copy.deepcopy(_record(kind, name)[2]), sort_keys=False, allow_unicode=True)
+
+
+def save_entity_yaml(kind: str, name: str, yaml_text: str) -> str:
+    """Validate and save every field of an entry from YAML (the entry keeps its name: rename it
+    with the entry form). The whole world is checked with the entry in place (fields, actions,
+    conditions, effects, references, the NPC's role and secret); nothing is written when it is
+    invalid."""
+    try:
+        record = yaml.safe_load(yaml_text) if (yaml_text or "").strip() else None
+    except yaml.YAMLError as exc:
+        raise AuthoringError(f"Could not read the YAML: {exc}") from exc
+    if not isinstance(record, dict):
+        raise AuthoringError("The entry must be a YAML mapping of its fields.")
+    path, _, records, shape = _entity_records(kind)
+    if shape == "list":
+        if record.setdefault("name", name) != name:
+            raise AuthoringError("Rename an entry with the entry form (Name), not here.")
+    else:
+        record.pop("name", None)
+    errors = validate_entity_actions(kind, record.get("actions") or [])
+    if kind == "NPCs":
+        if record.get("role") is not None and record["role"] not in role_names():
+            errors.append(f"Unknown role `{record['role']}`; use one of {', '.join(role_names())}.")
+        errors.extend(secret_errors(record.get("secret")))
+    errors.extend(conditions.validate(record.get("enabled_if"), _references(), where="enabled_if"))
+    key = ENTITY_FILES[kind][1]
+    world = copy.deepcopy(config.get("world_definition") or {})
+    entries = world.setdefault(key, {} if shape == "mapping" else [])
+    if shape == "mapping":
+        if name not in entries:
+            raise AuthoringError(f"`{name}` does not exist in {kind}.")
+        entries[name] = record
+    else:
+        index = next((i for i, entry in enumerate(entries) if entry.get("name") == name), None)
+        if index is None:
+            raise AuthoringError(f"`{name}` does not exist in {kind}.")
+        entries[index] = record
+    from .store import _validate_complete_config
+
+    errors.extend(_validate_complete_config(entries, None, f"world_definition.{key}"))
+    errors.extend(logic_errors(world))
+    if errors:
+        raise AuthoringError("The entry is invalid:\n" + "\n".join(f"- {e}" for e in dict.fromkeys(errors)))
+    with CONFIG_LOCK:
+        path, data, stored = _record(kind, name)
+        stored.clear()
+        stored.update(record)
+        _write_yaml(path, data)
+        config.clear_override()
+        config.reload()
+    return f"Saved every field of **{name}** to `{path.name}`."
+
+
+MAP_PATH = CONFIG_DIR / "locations.yaml"   # the map lives with the locations (world_definition.routes)
+MAP_HELP = """\
+# The world's map: which places border which (world_definition.routes in locations.yaml).
+# A route holds both ways. A move only goes to a neighbour; a far place is reached through
+# the places between, one turn each; being sent (an arrest) is the only jump.
+# `routes: null` (or no routes): every story draws its own map.
+"""
+
+
+def load_map_yaml() -> str:
+    """The world's map (world_definition.routes) as a YAML document."""
+    routes = ((_read_yaml(MAP_PATH).get("world_definition") or {}).get("routes"))
+    return MAP_HELP + yaml.safe_dump({"routes": routes}, sort_keys=False, allow_unicode=True, width=1 << 16,
+                                     default_flow_style=None)
+
+
+def save_map_yaml(yaml_text: str):
+    """Validate and save the world's map: every place and neighbour must be a location."""
+    try:
+        data = yaml.safe_load(yaml_text) if (yaml_text or "").strip() else {}
+    except yaml.YAMLError as exc:
+        raise AuthoringError(f"Could not read the YAML: {exc}") from exc
+    if not isinstance(data, dict) or set(data) - {"routes"}:
+        raise AuthoringError("The document must contain only `routes:` (a mapping of place: [neighbours], or null).")
+    routes = data.get("routes")
+    world = dict(config.get("world_definition") or {})
+    errors = route_errors({**world, "routes": routes})
+    if errors:
+        raise AuthoringError("The map is invalid:\n" + "\n".join(f"- {e}" for e in errors))
+    path = MAP_PATH
+    with CONFIG_LOCK:
+        stored = _read_yaml(path)
+        definition = stored.setdefault("world_definition", {})
+        if routes:
+            definition["routes"] = routes
+        else:
+            definition.pop("routes", None)
+        # Keep routes first, as written by hand.
+        stored["world_definition"] = {**({"routes": routes} if routes else {}),
+                                      **{k: v for k, v in definition.items() if k != "routes"}}
+        _write_yaml(path, stored)
+        config.clear_override()
+        config.reload()
+    count = len(routes or {})
+    return load_map_yaml(), (f"Saved the map: {count} place(s) with routes." if routes
+                             else "Saved: no authored map; every story draws its own.")
+
 
 def load_entity_actions(kind: str, name: str) -> list:
     """The actions of an entry exactly as stored in its YAML file."""

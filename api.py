@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 import yaml
 
-from backend import content, export, records, sessions, store
+from backend import content, evaluation, export, records, sessions, store
 from core_engine import Mission
 from core_engine.actions import REPEAT_RULES
 from utils.config_loader import config
@@ -55,6 +55,15 @@ class Entity(BaseModel):
     title: str | None = Field(default=None, description="Events only: the title shown while the event is active.")
     stat_bonus: dict[str, int] | None = Field(
         default=None, description="Items only: stat -> bonus while held. Omit on PUT to keep, send {} to remove.",
+    )
+    role: str | None = Field(
+        default=None, description="NPCs only: the NPC's own role in every story (a key of npc_roles.roles, e.g. "
+        "nemesis, lieutenant, informant); null: inferred from its tags. Omit on PUT to keep, send \"\" to remove.",
+    )
+    secret: dict[str, Any] | None = Field(
+        default=None, description="NPCs only: a secret that comes out once spoken with `talks` times and `clues` "
+        "things learned: {text ({npc} names them), talks, clues, effects}; actions it unlocks use "
+        "enabled_if: {secret_known: <NPC>}. Omit on PUT to keep, send {} to remove.",
     )
     start_eligible: bool | None = Field(
         default=None, description="Locations only: a story may start here. Omit on PUT to keep the stored value.",
@@ -493,12 +502,12 @@ def get_entity(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str)
     if name not in names:
         raise HTTPException(status_code=404, detail="Entity not found.")
     (entity_name, tags, descriptions, goals, unique, encounter_event, encounter_repeat, enabled_if, title, stat_bonus,
-     start_eligible, start_weight) = content.load_entity(kind, name)
+     start_eligible, start_weight, role, secret) = content.load_entity(kind, name)
     return Entity(
         name=entity_name, tags=list(tags), descriptions=store._lines(descriptions),
         goals=store._lines(goals), unique=unique,
         encounter_event=encounter_event, encounter_repeat=encounter_repeat, enabled_if=enabled_if, title=title,
-        stat_bonus=stat_bonus, start_eligible=start_eligible, start_weight=start_weight,
+        stat_bonus=stat_bonus, start_eligible=start_eligible, start_weight=start_weight, role=role, secret=secret,
     )
 
 
@@ -510,6 +519,8 @@ def put_entity(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str,
             "\n".join(body.descriptions), "\n".join(body.goals), body.unique,
             body.encounter_event, body.encounter_repeat, body.enabled_if, body.title, body.stat_bonus,
             body.start_eligible, body.start_weight,
+            body.role if "role" in body.model_fields_set else None,
+            body.secret if "secret" in body.model_fields_set else None,
         )
         return get_entity(kind, body.name)
     except Exception as exc:
@@ -1035,12 +1046,20 @@ def get_reference():
         "rule_fields": list(store.RULE_FIELDS),
         "player_stat_choices": content.PLAYER_STAT_CHOICES,
         "documents": {name: description for name, (description, _, _) in DOCUMENTS.items()},
+        "npc_roles": content.role_names(),
+        "judge_criteria": _judge_criteria(),
         "defaults": {
             "episodes_per_genome": int(config.get("evolution.episodes_per_genome", 3)),
             "warm_start": bool(config.get("evolution.warm_start", True)),
             "profile": config.get("persistence.profile", "default"),
         },
     }
+
+
+def _judge_criteria():
+    from evaluator.game_judge import CRITERIA
+
+    return dict(CRITERIA)
 
 
 class AppSettingsBody(BaseModel):
@@ -1075,6 +1094,8 @@ DOCUMENTS = {
                  lambda profile: content.load_messages_yaml(), lambda profile, text: content.save_messages_yaml(text)),
     "variables": ("Persistent variable definitions (config/variables.yaml).",
                   lambda profile: content.load_variables_yaml(), lambda profile, text: content.save_variables_yaml(text)),
+    "map": ("The world's map: which places border which (world_definition.routes in config/locations.yaml).",
+            lambda profile: content.load_map_yaml(), lambda profile, text: content.save_map_yaml(text)),
     "stats": ("Character stats, budget and checks (config/stats.yaml).",
               lambda profile: content.load_stats_yaml(), lambda profile, text: content.save_stats_yaml(text)),
     "stored_values": ("The stored persistent values and playthroughs of a player profile (?profile=).",
@@ -1134,6 +1155,27 @@ def put_entity_actions_yaml(kind: Literal["Locations", "NPCs", "Items", "Events"
     try:
         text, message = content.save_entity_actions_ui(kind, name, body.yaml)
         return {"yaml": text, "message": message}
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.get("/v1/entities/{kind}/{name}/yaml", tags=["World authoring"])
+def get_entity_yaml(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str):
+    """Every field of the entry as YAML, as stored: what the form shows and everything else
+    (an NPC's role, secret, dialogue, known places and items, a location's distant views and
+    exits, its actions...)."""
+    _known_entity(kind, name)
+    return {"yaml": content.load_entity_yaml(kind, name)}
+
+
+@api.put("/v1/entities/{kind}/{name}/yaml", tags=["World authoring"])
+def put_entity_yaml(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str, body: YAMLDocument):
+    """Replace every field of the entry from YAML (the entry keeps its name). The whole world
+    is checked with the entry in place; nothing is written when it is invalid."""
+    _known_entity(kind, name)
+    try:
+        message = content.save_entity_yaml(kind, name, body.yaml)
+        return {"yaml": content.load_entity_yaml(kind, name), "message": message}
     except Exception as exc:
         _fail(exc)
 
@@ -1229,6 +1271,112 @@ def submit_retrain(engine_id: str, body: EngineRetrainRequest, origin: str = Dep
             engine_id, body.candidate_count, body.generations, body.simulation_steps, body.episodes,
             body.deterministic, origin=origin, progress=progress, **_player(body))).model_dump()
     return sessions.submit_job("retrain", work, f"{body.generations} generation(s) from engine {engine_id}")
+
+
+class StoryRef(BaseModel):
+    session_id: str | None = Field(default=None, description="A game in progress.")
+    story_id: str | None = Field(default=None, description="A recorded story (GET /v1/records/stories).")
+
+
+class CompareRequest(BaseModel):
+    a: StoryRef
+    b: StoryRef
+
+
+class JudgeBenchmarkRequest(BaseModel):
+    stories: int = Field(default=10, ge=1, le=evaluation.MAX_STORIES)
+    seed: int = Field(default=0, ge=0, description="The first story's seed (stories use seed, seed+1, ...).")
+    engine_id: str | None = Field(default=None, description="A recorded engine's world and storyteller; "
+                                  "left out: the current settings with random storytellers.")
+    pairwise: bool = Field(default=False, description="Compare the current settings (A) with `variants` (B) on "
+                           "the same seeds, each pair judged in both orders.")
+    variants: dict[str, Any] = Field(default_factory=dict, description="Settings of version B: {dotted.path: value}, "
+                                     "e.g. {\"climax.enabled\": false}.")
+    workers: int = Field(default=4, ge=1, le=8, description="Judgements sent to the model at once.")
+
+
+class CalibrationRequest(BaseModel):
+    stories: int = Field(default=30, ge=10, le=evaluation.MAX_STORIES)
+    seed: int = Field(default=0, ge=0)
+    engine_id: str | None = None
+    alpha: float | None = Field(default=None, gt=0, description="Ridge strength; left out: the one that predicts "
+                                "left-out stories best.")
+    apply: bool = Field(default=False, description="Save the suggested multipliers as fitness.term_weights.")
+    workers: int = Field(default=4, ge=1, le=8)
+
+
+class TermWeights(BaseModel):
+    weights: dict[str, float] = Field(description="Fitness term -> multiplier (1: unchanged); {} removes them all.")
+
+
+def _evaluation_error(exc):
+    if isinstance(exc, evaluation.EvaluationError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if isinstance(exc, RuntimeError):
+        raise HTTPException(status_code=503, detail=f"The language model judge is not available: {exc}") from exc
+    _fail(exc)
+
+
+@api.post("/v1/judge/compare", tags=["Evaluation"])
+def compare_stories(body: CompareRequest):
+    """Gemma 4 as a game critic on two stories (each a game in progress or a recorded story):
+    which is the better game, judged in both orders so that the judge's preference for a
+    position cancels. {winner: A | B | tie (null: unreadable), criteria: {criterion: A | B |
+    tie}, reason, agreed}. 400 for an unknown story, 503 without a language model."""
+    try:
+        return evaluation.compare(body.a.model_dump(), body.b.model_dump())
+    except Exception as exc:
+        _evaluation_error(exc)
+
+
+@api.post("/v1/jobs/judge-benchmark", status_code=202, tags=["Jobs", "Evaluation"])
+def submit_judge_benchmark(body: JudgeBenchmarkRequest):
+    """The judge on the engine's stories, in the background (poll GET /v1/jobs/{id}). Absolute:
+    each story judged ({engagement, criteria, rows}). Pairwise: the same seeds played with the
+    current settings (A) and with `variants` (B), every pair judged in both orders ({pairs,
+    a_wins, b_wins, ties, b_win_rate, wilson_95, criteria, rows}). Stories are played in a
+    separate process: the settings of games in progress never change."""
+    if body.pairwise and not body.variants:
+        raise HTTPException(status_code=400, detail="A pairwise benchmark needs the settings of version B (`variants`).")
+    if body.engine_id:
+        _known_engine(body.engine_id)
+
+    def work(progress):
+        return evaluation.benchmark(body.stories, body.seed, body.engine_id, body.variants or None, body.pairwise,
+                                    body.workers, progress=progress)
+    kind = "pairwise A/B" if body.pairwise else "judge benchmark"
+    return sessions.submit_job("judge-benchmark", work, f"{kind} of {body.stories} stories")
+
+
+@api.post("/v1/jobs/calibrate-fitness", status_code=202, tags=["Jobs", "Evaluation"])
+def submit_calibration(body: CalibrationRequest):
+    """Fit the fitness to the judge in the background: play and judge `stories` stories, fit the
+    judged engagement on the fitness terms and suggest a multiplier per term ({term_weights,
+    terms, spearman, cv_spearman (how well it predicts stories it was not fitted on), alpha, n,
+    yaml, applied}); `apply` saves them as fitness.term_weights."""
+    if body.engine_id:
+        _known_engine(body.engine_id)
+
+    def work(progress):
+        return evaluation.calibrate(body.stories, body.seed, body.engine_id, body.alpha, body.apply, body.workers,
+                                    progress=progress)
+    return sessions.submit_job("calibrate-fitness", work, f"fit the fitness to the judge on {body.stories} stories")
+
+
+@api.get("/v1/fitness/term-weights", tags=["Evaluation"])
+def get_term_weights():
+    """fitness.term_weights: the multiplier of each fitness term (missing: 1)."""
+    return {"weights": dict(config.get("fitness.term_weights") or {})}
+
+
+@api.put("/v1/fitness/term-weights", tags=["Evaluation"])
+def put_term_weights(body: TermWeights):
+    """Save fitness.term_weights (e.g. those a calibration suggested); {} removes them."""
+    try:
+        weights, message = store.set_term_weights(body.weights)
+        return {"weights": weights, "message": message}
+    except Exception as exc:
+        _fail(exc)
 
 
 @api.get("/v1/jobs", tags=["Jobs"])

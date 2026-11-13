@@ -786,6 +786,37 @@ def load_logic_section(name: str) -> str:
     return text[span[0]:span[1]].rstrip() + "\n"
 
 
+def set_term_weights(weights: dict) -> str:
+    """Save ``fitness.term_weights`` (multipliers of fitness terms, e.g. those fitted to the
+    judge by evaluator/calibrate_fitness.py), keeping the rest of hyperparameters.yaml as
+    written. An empty mapping removes every multiplier. Returns (the weights saved, a message)."""
+    try:
+        clean = {str(term): round(float(value), 3) for term, value in dict(weights or {}).items()}
+    except (TypeError, ValueError) as exc:
+        raise AuthoringError(f"Term weights must map fitness terms to numbers: {exc}") from exc
+    if any(value < 0 for value in clean.values()):
+        raise AuthoringError("Term weights cannot be negative.")
+    flow = yaml.safe_dump(clean, default_flow_style=True, sort_keys=True, width=1 << 20).strip() if clean else "{}"
+    line = f"  term_weights: {flow}  # multipliers of fitness terms (evaluator/calibrate_fitness.py)"
+    with CONFIG_LOCK:
+        text = HYPERPARAMETERS_PATH.read_text(encoding="utf-8")
+        span = _section_span(text, "fitness")
+        if span is None:
+            raise AuthoringError("hyperparameters.yaml has no `fitness` section.")
+        section = text[span[0]:span[1]]
+        entry = re.compile(r"^  term_weights:.*(?:\n {4,}\S.*)*", re.M)
+        section = entry.sub(lambda _: line, section, count=1) if entry.search(section) \
+            else section.rstrip("\n") + "\n" + line + "\n"
+        updated = text[:span[0]] + section + text[span[1]:]
+        if ((yaml.safe_load(updated) or {}).get("fitness") or {}).get("term_weights") != clean:
+            raise AuthoringError("Could not write fitness.term_weights.")
+        HYPERPARAMETERS_PATH.write_text(updated, encoding="utf-8")
+        config.clear_override()
+        config.reload()
+        engine.refresh_runtime_settings()
+    return clean, f"Saved {len(clean)} fitness term weight(s). New evolutions score stories with them."
+
+
 def save_logic_section(name: str, section_text: str) -> str:
     """Validate a section against the current one (same keys and value types) and
     replace it in hyperparameters.yaml, keeping every other section untouched."""

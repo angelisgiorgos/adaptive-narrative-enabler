@@ -934,6 +934,9 @@ def submit_job(kind: str, work, description: str = "") -> dict:
 
     def progress(generation, total, stats):
         with _JOBS_LOCK:
+            if isinstance(stats, str):  # a job counting its own steps (stories judged): step n of total
+                job["progress"] = {"generation": generation, "total": total, "label": stats}
+                return
             job["progress"] = {"generation": generation + 1, "total": total, "best": stats.best, "mean": stats.mean,
                                "validation": stats.validation, "improved": bool(stats.improved)}
 

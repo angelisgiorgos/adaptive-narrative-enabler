@@ -166,7 +166,10 @@ nothing is written.
 
 | Studio | What you can change | REST API |
 | --- | --- | --- |
-| **1 · World editor** → an entry | Name, tags, descriptions, goals; NPC **Unique**, **Encounter event**, **Repeat on every visit**; **Enabled if** (locations, NPCs, items); **Event title**; item **Stat bonus while held**; location **Stories can start here** and **Start weight** | `GET /v1/entities/{kind}?fields=names`, `GET/PUT/DELETE /v1/entities/{kind}/{name}` |
+| **1 · World editor** → an entry | Name, tags, descriptions, goals; NPC **Unique**, **Encounter event**, **Repeat on every visit**, **Role in the story** and **Secret**; **Enabled if** (locations, NPCs, items); **Event title**; item **Stat bonus while held**; location **Stories can start here** and **Start weight** | `GET /v1/entities/{kind}?fields=names`, `GET/PUT/DELETE /v1/entities/{kind}/{name}` |
+| **1 · World editor** → *Every field of this entry (YAML)* | The whole entry as stored, including what the form does not show (an NPC's dialogue, known places and items, article; a location's distant views and exits) | `GET/PUT /v1/entities/{kind}/{name}/yaml` |
+| **1 · World editor** → *Map* | Which places border which (`world_definition.routes`), or no authored map | `GET/PUT /v1/documents/map` |
+| **1 · World editor** → *Failures that lead nowhere* | The actions whose failure changes nothing but health or coins and that no complication fits | `GET /v1/lint/failures` |
 | **1 · World editor** → *Actions & outcomes of this entry* | The entry's actions as YAML: `repeat`, `exclusive_group`, `triggers_event`, `skill_check`, requirements, and outcome effects (`on_check`, `change_stats`, `send_to`, `remove_npc`, `set_variables`, `change_variables`, …); one action's **Repeat** and **Retry after failure** | `GET/PUT /v1/entities/{kind}/{name}/actions/yaml` (or `/actions` as JSON), `GET/PUT /v1/entities/{kind}/{name}/actions/{index}/repetition` |
 | **1 · World editor** → *Uniqueness & scheduling* | An event's start rules, an item's uniqueness | `GET/PUT /v1/entities/{Events\|Items}/{name}/policy/yaml` (or `/policy`) |
 | **1 · World editor** → *Missions* | Missions, their goals, weights, and `enabled_if` | `GET/PUT /v1/documents/missions` (or `/v1/missions`) |
@@ -177,18 +180,27 @@ nothing is written.
 | **2** → *Story messages* | Every sentence the engine writes | `GET/PUT /v1/documents/messages` (or `/v1/messages`) |
 | **2** → *Character stats* | Stat names, point budget, allocation mode, tag checks, damage-reduction stat | `GET/PUT /v1/documents/stats` (or `/v1/stats`) |
 | **2** → *Advanced · all hyperparameters* | Every hyperparameter as one YAML document | `GET/PUT /v1/hyperparameters` |
+| **2** → *The active configuration* | What new games and runs use now (every file merged, or the uploaded configuration), read only | `GET /v1/config` |
 | **3 · Weights** → *Skill Check Resolution* and the rest | Difficulty (easier/harder), difficulty over time, chance floor/ceiling, damage mitigation, and every other weight | `GET/PUT /v1/weights` |
 | **4 · Simulate & play** → evolution | Storytellers, generations, steps, **stories per storyteller**, **continue learning from earlier runs**; the **learning curve** and **what the storyteller learned**; forget the learning memory | `POST /v1/jobs/simulations` and `GET /v1/jobs/{id}` (or `POST /v1/simulations`), `GET/DELETE /v1/learning` |
 | **4 · Simulate & play** → *Load a previous best engine* | An engine model, an older engine ZIP, or a configuration YAML with its model-parameters YAML | `POST /v1/engines/load` (`file`, `parameters`, `profile`, `stats_mode`, `stats`) |
 | **4 · Simulate & play** | **Player profile**, the **quest to play** (any quest open to the profile, or one drawn by the story; *Quests in this world* lists them with their stages) and the player's **character stats** (story default, random, balanced, or own points with Randomize/Balance); the scene shows the quest and its current stage, health `x/max`, the **people here** (who they are, what they want, hostile or able to help with the quest, how often helped and whether an ally, how often spoken with), the **checks** of the choices, stats, the last check and remembered values; beside it the **quest log** (stages done, now, to come; what to do now) the **people met** (where, how often spoken with, allies, gone) and the **map** as the player knows it (places, paths, locked exits); taking one of the **most relevant choices**, each labelled with its check | `GET /v1/missions/playable`, `POST /v1/stats/allocate`, `POST /v1/sessions/{id}/actions` (structured state: `quest`, `people`, `people_met`, `ways_on`) |
 | **4 · Simulate & play** → *Export the engine* | Download the trained engine to run offline in a game: this run's best, any generation's champion, the best remembered storyteller, or the current game's; with or without the learning memory | `POST /v1/exports`, `GET /v1/artifacts/{id}` |
-| **4 · Simulate & play** → *Records* | Recorded engines, runs and stories; play with, continue or retrain an engine; download its model file and world | `GET /v1/records/...`, `POST /v1/records/engines/{id}/play`, `POST /v1/jobs/engines/{id}/continue\|retrain` |
+| **4 · Simulate & play** → *Judge this playthrough* | Gemma 4's judgement of the game played so far: engagement, the eight criteria, the best and weakest moments, a verdict | `POST /v1/sessions/{id}/judge` |
+| **4 · Simulate & play** → *Records* | Recorded engines, runs (their settings and every generation), worlds (download one as a configuration to upload) and stories; play with, continue or retrain an engine; download its model file and world; judge a recorded story, or compare two (which is the better game) | `GET /v1/records/...`, `POST /v1/records/engines/{id}/play`, `POST /v1/jobs/engines/{id}/continue\|retrain`, `POST /v1/records/stories/{id}/judge`, `POST /v1/judge/compare` |
 | **5 · Engine logic** | Every parameter of the engine's logic, section by section (no code editing) | `GET /v1/logic`, `GET/PUT /v1/logic/{section}` |
 | **5** → *App parameters* | The studio's limits, defaults, queue, and launch settings | `GET/PUT /v1/app-settings` |
+| **5** → *Background jobs* | Evolutions, continued trainings and judge runs started by any client, with their progress | `GET /v1/jobs` |
+| **6 · Evaluate with the judge** | Judge the engine's stories (current settings or a recorded engine), or compare the current settings with version B on the same seeds (pairwise A/B, both orders, win rate with its 95% interval); fit the fitness to the judge and save the suggested `fitness.term_weights`, or edit them | `POST /v1/jobs/judge-benchmark`, `POST /v1/jobs/calibrate-fitness`, `GET/PUT /v1/fitness/term-weights` |
+
+Every endpoint of the API is reached from the studio, directly or through an equivalent
+one (the YAML form of a JSON endpoint, the job form of a long one);
+[`tests/test_studio_coverage.py`](tests/test_studio_coverage.py) fails when an endpoint is
+added that the studio cannot reach.
 
 What the studio needs to build its forms (entry kinds, suggested tags, the
-action reference, repeat rules, goal keys, rule choices, stat choices) comes
-from `GET /v1/reference`.
+action reference, repeat rules, goal keys, rule choices, stat choices, NPC roles, the
+judge's criteria) comes from `GET /v1/reference`.
 
 Choosing a new **Player profile** name on the play tab starts a new player.
 Stored values can be edited in *Persistent variables*, for example
@@ -2349,6 +2361,22 @@ The presentation conversion path expects LibreOffice's `soffice` command if PPTX
 ## Development Notes
 
 - Record every change in [`docs/CHANGELOG.md`](docs/CHANGELOG.md) under **Unreleased**, in the section of the area it touches, in the same commit.
+
+- **Continuous integration** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every
+  push and pull request (changes to Markdown and `docs/` only are skipped; it can also be started
+  by hand). Two jobs must pass before a change is deployed:
+  - **Tests**: Python 3.10 (the image's), CPU-only PyTorch, every module compiled, and every test
+    module of `tests/` run in its own process, in parallel; the logs of a failed run are kept as
+    an artifact.
+  - **Docker image**: `docker compose build` builds the image from the [`Dockerfile`](Dockerfile),
+    `docker compose up --wait` starts the API and the studio as deployed and waits for their
+    health checks, and [`.github/scripts/docker_smoke_test.py`](.github/scripts/docker_smoke_test.py)
+    checks the API (health, missions, failure lint, a short evolution that starts a game, one
+    turn played) and the studio, and that the run was recorded.
+
+  Run the same checks locally: each test module with `python -m unittest tests.test_<name>` (from
+  the repository root), and, against a running deployment, `python .github/scripts/docker_smoke_test.py
+  --api http://127.0.0.1:8004 --ui http://127.0.0.1:8003`.
 
 - Keep version control active when using augmentation, especially with `augmentation.save_to_source: true`.
 - For reproducible runs, set `reproducibility.seed` in `config/hyperparameters.yaml`.
