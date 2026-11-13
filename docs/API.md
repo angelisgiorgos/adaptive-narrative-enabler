@@ -151,6 +151,21 @@ Errors are JSON: `{"detail": "..."}` (or the list of `422`).
   offered like any other; the story is won when it is won (or, after setbacks,
   at a price). Fast travel (`Travel by known ways to …`) reaches a visited place
   in one turn that does not count toward the action limit (`travel`).
+- **Sessions and the save game.** Every session starts with a start and a goal (`location`,
+  `quest`); a profile's starts vary (`start_selection.recency_factors`: the latest start
+  is the least likely) and an achieved goal leaves the profile's pool (each goal once per
+  save game; `GET /v1/missions/playable` marks it `achieved`). `cast` says what this
+  session leaves out (`session_scope`: what its goal does not need), `unique_actions` every
+  attempt at a one-time action (`succeeded`, `kept`: a failed retryable attempt stays on
+  offer, anything else is used up). When a session ends, by itself or with
+  `POST /v1/sessions/{id}/end` (the player stops), the player's progression is saved and
+  its `report` (goal and `outcome`: `achieved` or `failed`, the player's stats, inventory,
+  health and coins, the goals achieved in the save game) is sent to the UNP:
+  `session_report.url` or `ANE_UNP_URL` (POST, JSON; `ANE_UNP_TOKEN` adds a bearer token).
+  `GET /v1/sessions/{id}/report` returns it (`409` while the session goes on),
+  `GET /v1/progression?profile=` the save game (goals achieved, playthroughs, session
+  reports with their `delivery`), and `POST /v1/progression/reports/{id}/send?profile=`
+  sends a kept report again.
 - A finished story has `ended: true` and offers no more actions.
 - Real play saves persistent variables to its `profile` (`save_on` in the
   story rules). Evaluated stories during evolution do not

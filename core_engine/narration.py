@@ -116,6 +116,8 @@ DEFAULT_MESSAGES = {
     "last_time": "[LAST TIME] Last time you {text}.",
     "remembered_friend": "[LAST TIME] {npc} remembers you, and smiles.",
     "remembered_foe": "[LAST TIME] {npc} remembers you, and not fondly.",
+    "mission_pool_done": "[MISSION] Every goal of this world has been achieved in this save game: explore freely.",
+    "end_abandoned": "The traveler sets the story aside for now.",
 }
 
 

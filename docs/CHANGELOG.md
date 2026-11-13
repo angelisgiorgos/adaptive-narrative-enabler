@@ -7,6 +7,26 @@ that introduces them.
 
 ## [Unreleased]
 
+### Sessions, the save game and the UNP
+
+#### Added
+- Session reports (`core_engine/progression.py`): when a session of real play ends, by itself
+  or with `POST /v1/sessions/{id}/end`, the player's progression is saved in the profile and
+  the report (goal and outcome achieved or failed, stats, inventory, health, coins, goals
+  achieved) is sent to the UNP (`session_report.url`, `ANE_UNP_URL`, `ANE_UNP_TOKEN`), its
+  delivery noted. `GET /v1/sessions/{id}/report`, `GET /v1/progression`,
+  `POST /v1/progression/reports/{id}/send`; in the offline engine `POST /games/<id>/end`,
+  `GET /games/<id>/report`, `GET /progression/<profile>`.
+- Each goal once per save game (`progression.goals_once`): achieved goals leave the profile's
+  pool; `GET /v1/missions/playable` marks them `achieved`.
+- One-time actions remembered: `unique_actions` (every attempt, its success, and whether a
+  failed retryable attempt stays on offer).
+- A session's cast (`session_scope`, `core_engine/scope.py`): what the goal needs stays, the
+  most valuable share of the rest joins, the rest stays out (`cast`).
+- Start variety by recency (`start_selection.recency_factors`, `mission_variety`).
+- Studio: *End this session*, the session's cast, one-time actions and report beside the game,
+  and *Save game* (reports, UNP delivery, send again).
+
 ### Everything in the API and in the studio
 
 #### Added

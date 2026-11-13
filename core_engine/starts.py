@@ -22,7 +22,7 @@ import math
 from utils.config_loader import config
 
 HISTORY_LIMIT = 20  # starts remembered per profile; recent_starts may not exceed it
-DEFAULTS = {"default_location": "Harbor", "recent_starts": 3, "repeat_factor": 0.25}
+DEFAULTS = {"default_location": "Harbor", "recent_starts": 3, "repeat_factor": 0.25, "recency_factors": None}
 
 
 def settings(cfg=None):
@@ -44,6 +44,11 @@ def validate_settings(values):
     factor = values.get("repeat_factor")
     if not _is_number(factor) or not 0 < factor <= 1:
         errors.append("`start_selection.repeat_factor` must be above 0 (0 would forbid repeats) and at most 1.")
+    factors = values.get("recency_factors")
+    if factors is not None and (not isinstance(factors, list)
+                                or not all(_is_number(f) and 0 < f <= 1 for f in factors)):
+        errors.append("`start_selection.recency_factors` must be a list of factors above 0 and at most 1 "
+                      "(the most recent start first).")
     if not isinstance(values.get("default_location"), str):
         errors.append("`start_selection.default_location` must be a location name.")
     return errors
@@ -61,12 +66,23 @@ def location_errors(data, where):
 
 
 def weights(candidates, recent=(), values=None):
-    """Location name -> draw weight: ``start_weight`` x ``repeat_factor`` per recent start there."""
+    """Location name -> draw weight: ``start_weight`` x a factor per recent start there. With
+    ``recency_factors`` (the most recent start first, e.g. [0.1, 0.35, 0.7]) the latest start
+    is discouraged most and older ones less, so the start before last is not as unlikely as the
+    last one; otherwise ``repeat_factor`` for each."""
     values = settings() if values is None else values
     window = int(values["recent_starts"])
     recent = list(recent)[-window:] if window > 0 else []
     factor = float(values["repeat_factor"])
-    return {loc.name: loc.start_weight * factor ** recent.count(loc.name) for loc in candidates}
+    by_age = [float(f) for f in values.get("recency_factors") or []]
+    result = {}
+    for loc in candidates:
+        weight = loc.start_weight
+        for age, name in enumerate(reversed(recent)):
+            if name == loc.name:
+                weight *= by_age[age] if age < len(by_age) else factor
+        result[loc.name] = weight
+    return result
 
 
 def probabilities(candidates, recent=(), values=None):

@@ -221,6 +221,58 @@ class VariableStore:
             data["version"] = 1
             self._write(data)
 
+    # ---- progression: the goals a save game achieved, and its sessions (core_engine/progression.py)
+
+    def completed_goals(self, name="default"):
+        """The goals (mission keys) this save game has achieved, in order; each only once."""
+        return _start_names(self._read().get("profiles", {}).get(name, {}), "goals_achieved")
+
+    def complete_goal(self, name, goal):
+        """Add a goal to the save game's achieved goals (once)."""
+        with self._lock:
+            data = self._read()
+            record = data.setdefault("profiles", {}).setdefault(name, {"values": {}, "playthroughs": 0})
+            achieved = _start_names(record, "goals_achieved")
+            if str(goal) not in achieved:
+                record["goals_achieved"] = achieved + [str(goal)]
+            record["updated"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+            data["version"] = 1
+            self._write(data)
+
+    def record_session(self, name, report, limit=50):
+        """Keep a session's report in the save game (the latest ``limit``)."""
+        with self._lock:
+            data = self._read()
+            record = data.setdefault("profiles", {}).setdefault(name, {"values": {}, "playthroughs": 0})
+            sessions = [s for s in record.get("sessions") or [] if isinstance(s, dict)]
+            record["sessions"] = (sessions + [report])[-max(1, int(limit)):]
+            record["updated"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+            data["version"] = 1
+            self._write(data)
+
+    def note_delivery(self, name, report_id, delivery):
+        """Note whether a session's report reached the UNP."""
+        with self._lock:
+            data = self._read()
+            record = data.get("profiles", {}).get(name)
+            for report in (record or {}).get("sessions") or []:
+                if isinstance(report, dict) and report.get("report_id") == report_id:
+                    report["delivery"] = delivery
+                    self._write(data)
+                    return True
+        return False
+
+    def sessions(self, name="default"):
+        """The save game's session reports, oldest first."""
+        record = self._read().get("profiles", {}).get(name, {})
+        return [s for s in record.get("sessions") or [] if isinstance(s, dict)]
+
+    def progression(self, name="default"):
+        """The save game: {profile, playthroughs, goals_achieved, sessions, values, updated}."""
+        stored = self.profile(name)
+        return {"profile": name, "playthroughs": stored["playthroughs"], "goals_achieved": self.completed_goals(name),
+                "sessions": self.sessions(name), "values": stored["values"], "updated": stored["updated"]}
+
     def _remember(self, name, key, value, limit=None):
         with self._lock:
             data = self._read()

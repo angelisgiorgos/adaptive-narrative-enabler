@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import uuid
 import heapq
 import math
 from collections import Counter
@@ -13,6 +14,8 @@ from .stats import CharacterStats
 from .combat import CombatSystem
 from .narration import Narrator
 from .story_beats import StoryBeats
+from .scope import SessionScope
+from . import progression
 from . import conditions, effects, rules, starts, variables as persistent
 from utils.tag_similarity import semantic_tag_similarity
 
@@ -41,7 +44,7 @@ def _condition_reads(value):
 # GAME STATE
 # ============================
 
-class GameState(StoryBeats):
+class GameState(StoryBeats, SessionScope):
     def __init__(self, world, genome, start=None, verbose=False, interactive=False, rng=None, mission=None,
                  variables=None, store=None, profile=None, stats=None, stats_mode=None, recent_starts=None):
         """``store`` (a persistent.VariableStore) marks real play: variable changes
@@ -195,6 +198,15 @@ class GameState(StoryBeats):
             self.recent_missions = persistent.VariableStore().recent_missions(self.profile)  # read only
         else:
             self.recent_missions = []
+        # A save game achieves every goal once: achieved goals leave the pool (progression.goals_once).
+        if not (config.get("progression") or {}).get("goals_once", True):
+            self.completed_goals = []
+        elif store is not None:
+            self.completed_goals = store.completed_goals(self.profile)
+        elif config.get("persistence.simulate_with", "defaults") == "stored":
+            self.completed_goals = persistent.VariableStore().completed_goals(self.profile)  # read only
+        else:
+            self.completed_goals = []
         mission, start = self._choose_mission_and_start(mission, start)
         # Route planning caches filled by the choice are rebuilt on first use in play.
         for cache in ("_viability_cache", "_item_sites_cache", "_site_index", "_goal_sites_cache", "_route_cache"):
@@ -208,6 +220,13 @@ class GameState(StoryBeats):
             if mission is not None:
                 self._store.record_mission(self.profile, mission.name)
         self._start_mission(mission)
+        # The session's cast (session_scope): what its goal does not need may stay out.
+        self._apply_scope()
+        # The session as the player's progression records it (core_engine/progression.py).
+        self.session_id = uuid.uuid4().hex
+        self.started_at = progression._now()
+        self.unique_log = []         # every attempt at a one-time (repeat: once) action
+        self.session_report = None   # the report of the ended session (real play)
         # Who matters how much in this story (npc_roles): the quest's target is its nemesis.
         self.npc_roles = self._assign_roles()
         self.revealed_npcs = set()   # important NPCs brought into the story by a reveal or a lead
@@ -227,7 +246,10 @@ class GameState(StoryBeats):
 
     def is_enabled(self, entity):
         """Whether a location, NPC, item, event, action, dialogue line or mission is
-        switched on by its ``enabled_if`` (one evaluator for every condition)."""
+        switched on by its ``enabled_if`` (one evaluator for every condition), and in this
+        session's cast (session_scope)."""
+        if self._left_out(entity):
+            return False
         condition = getattr(entity, "condition", None)
         return condition is None or condition.holds(self.facts)
 
@@ -766,18 +788,32 @@ class GameState(StoryBeats):
 
         mission = None
         if config.get("mission_settings.enabled", True) and self.world.missions:
+            completed = set(self.__dict__.get("completed_goals") or ())
             if requested_mission is not None:
                 if requested_mission not in self.world.missions:
                     raise ValueError(f"Unknown mission '{requested_mission}'.")
+                if requested_mission in completed:
+                    raise ValueError(f"The goal '{self.world.missions[requested_mission].title}' was already achieved "
+                                     "in this save game; every goal can be achieved once.")
                 mission = self.world.missions[requested_mission]
             else:
-                enabled = [m for m in self.world.missions.values() if self.is_enabled(m)]
+                enabled = [m for m in self.world.missions.values() if self.is_enabled(m) and m.name not in completed]
+                self.goal_pool_done = bool(completed) and not enabled
                 pool = [m for m in enabled if any(self._mission_viable_from(m, loc.name) for loc in candidates)]
                 if not pool:
                     # No route the planner can see: keep any goal that does not already hold.
                     pool = [m for m in enabled if any(not self._goal_met_at(m, loc.name) for loc in candidates)]
                 if pool:
-                    mission = self.rng.choices(pool, weights=self._mission_weights(pool), k=1)[0]
+                    weights = self._mission_weights(pool)
+                    if starts.settings().get("mission_variety", True) and len(candidates) > 1:
+                        # A goal reachable from starts the player has not used lately is likelier,
+                        # so that the start varies between sessions too.
+                        start_weights = starts.weights(candidates, self.recent_starts)
+                        total = sum(start_weights.values()) or 1.0
+                        weights = [w * max(0.05, sum(start_weights[loc.name] for loc in candidates
+                                                     if self._mission_viable_from(m, loc.name)) / total)
+                                   for w, m in zip(weights, pool)]
+                    mission = self.rng.choices(pool, weights=weights, k=1)[0]
 
         if mission is not None and len(candidates) > 1:
             candidates = (
@@ -998,6 +1034,8 @@ class GameState(StoryBeats):
         self.mission = mission
         self.mission_stage = 0
         if mission is None:
+            if self.__dict__.get("goal_pool_done"):
+                self._say("mission_pool_done")  # every goal of the save game is achieved
             return
         if self.mission.description:
             message = self.narrate("mission_start", title=self.mission.title, description=self.mission.description)
@@ -1621,7 +1659,25 @@ class GameState(StoryBeats):
         self._remember_story()  # for the profile's next story (memory)
         if self._store is not None:
             self._store.save(self.profile, self.variables, finished=True)
+            # The player's progression is saved and the session reported (core_engine/progression.py).
+            self.session_report = progression.finish_session(self)
         return True
+
+    def end_session(self, reason=None):
+        """End the session where it stands (the player stops): it counts as a session, its goal
+        not reached unless it was, and the progression is saved and reported like any end."""
+        if self.ended:
+            return False
+        if "location_objects" not in self.__dict__:
+            self._refresh_scene()  # a session stopped before its first scene was shown still has one
+        self._end("abandoned", reason or self.narrate("end_abandoned"))
+        self.history.append(self.narrate("end_line", reason=self.end_reason))
+        return True
+
+    def unique_actions(self):
+        """Every attempt at a one-time action in this session: [{turn, action, owner, where,
+        succeeded, kept (a failed retryable attempt: still on offer)}]."""
+        return [dict(entry) for entry in self.__dict__.get("unique_log", [])]
 
     def _finalize_if_ended(self):
         if self._check_end_conditions():
@@ -1708,9 +1764,11 @@ class GameState(StoryBeats):
         for char in self.world.characters:
             if not char.unique:
                 continue
-            candidates = [loc for loc in self.world.locations.values() if self._npc_fits_location(char, loc)]
+            candidates = [loc for loc in self.world.locations.values()
+                          if self._npc_fits_location(char, loc) and not self._left_out(loc)]
             if not candidates:
-                candidates = [self.world.locations[name] for name in char.known_locations if name in self.world.locations]
+                candidates = [self.world.locations[name] for name in char.known_locations
+                              if name in self.world.locations and not self._left_out(self.world.locations[name])]
             if candidates:
                 homes[char.name] = max(
                     candidates,
@@ -2420,6 +2478,13 @@ class GameState(StoryBeats):
         rule, retry = self._repeat_rule(a), getattr(a, "retry_on_failure", False)
         if rule == "once" and (succeeded or not retry):
             self.spent_actions.add((scope, a.name))
+        if rule == "once":
+            # Remembered: what was tried, how it went, and whether it is still on offer (a failed
+            # attempt at a retryable action stays in the session; anything else is used up).
+            self.__dict__.setdefault("unique_log", []).append({
+                "turn": self.actions_taken, "action": a.name, "source": a.source, "owner": a.owner,
+                "where": self.current.name, "succeeded": bool(succeeded),
+                "kept": bool(not succeeded and retry)})
         if rule == "per_visit" and retry and not succeeded and visit == self._visit_id():
             self.visit_actions_performed.discard(a.name)  # marked when it was taken (step)
         if succeeded and a.exclusive_group:
