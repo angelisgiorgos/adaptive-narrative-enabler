@@ -12,7 +12,5 @@ dependencies:
   - pip:
       - gradio>=6.0
       - torch
-      - transformers
-      - accelerate
+      - vllm>=0.25.0
       - sentence-transformers
-      - bitsandbytes

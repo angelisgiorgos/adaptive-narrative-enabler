@@ -119,6 +119,56 @@ OPTIONAL_CONFIG_PATHS = {
     "player_options.focus_limit",
     "player_options.tense_tags",
     "player_options.relevance_filter",
+    # Gemma 4 on vLLM replaced the Hugging Face loader (llm_evaluator.model_name, llm_fallback).
+    "vllm",
+    # Added with locked exits, scenario templates, objective losses, NPC goals and Power in fights.
+    "navigation",
+    "npc_goals",
+    "power_model.combat_stats",
+    "power_model.check_weight",
+    "spawn_selection.target_tag_weight",
+    "player_options.way_back",
+    "story_rules.gate_payoffs",
+    "fitness.objective_losses",
+    "fitness.base.npc_goal_bonus",
+    "director.surprise",
+    "director.surprise_margin",
+    "director.surprise_top_k",
+    "director.boredom_turns",
+    "director.boredom_weight",
+    "director.boredom_event_pressure",
+    "director.payoff_delay",
+    "director.payoff_due_weight",
+    "director.explore_weight",
+    "director.retry_bonus",
+    "director.retry_cooldown",
+    "director.retry_cooldown_penalty",
+    "director.ping_pong_penalty",
+    "director.dead_end_penalty",
+    "director.fail_forward",
+    "mission_settings.momentum_after",
+    "unexpected_events.twist_payoff_delay",
+    "fitness.rhythm",
+    "llm_judge",
+    "evolution.alternatives_weight",
+    "outcome_resolution.hidden_adjustments",
+    "world_definition.scenario_templates",
+    # Added with the story's beats (core_engine/story_beats.py) and NPC roles.
+    "npc_roles",
+    "climax",
+    "variation",
+    "travel",
+    "stakes",
+    "consequences",
+    "memory",
+    "director.another_way",
+    "director.failure_refund",
+    "fitness.beats",
+    "fitness.term_weights",
+    "evolution.judge_weight",
+    "evolution.judge_top_k",
+    "evolution.judge_workers",
+    "llm_judge.pair_max_chars",
 }
 
 CONFIG_LOCK = threading.RLock()
@@ -278,6 +328,8 @@ def save_weights(paths, *values):
 FREE_FORM_PATHS = {
     "location_constraints", "scene.location_npc_tags", "action_selection.location_penalties",
     "genome_bounds", "action_rules.default_repeat",
+    "npc_roles.roles", "travel.first_trip.by_tag", "fitness.term_weights", "consequences.kinds",
+    "stakes.alert.raise_on_success", "stakes.alert.raise_on_failure",
 }
 
 
@@ -354,6 +406,11 @@ def _validate_complete_config(candidate: object, reference: object, path: str = 
                 errors.append(f"`{path}[{index}].encounter_repeat` must be true or false.")
             elif entry.get("encounter_event") is not None and not isinstance(entry["encounter_event"], str):
                 errors.append(f"`{path}[{index}].encounter_event` must be an event name.")
+            elif entry.get("role") is not None and not isinstance(entry["role"], str):
+                errors.append(f"`{path}[{index}].role` must be the name of a role in npc_roles.roles.")
+            elif entry.get("secret") is not None and not (
+                    isinstance(entry["secret"], dict) and str(entry["secret"].get("text", "")).strip()):
+                errors.append(f"`{path}[{index}].secret` must be a mapping with a `text`.")
         return errors
     if isinstance(reference, dict):
         if not isinstance(candidate, dict):
@@ -383,7 +440,8 @@ def _validate_complete_config(candidate: object, reference: object, path: str = 
             errors.append(f"`{label}` must be {type(reference).__name__}, not {type(candidate).__name__}.")
     return errors
 
-WORLD_CONTENT = ("locations", "characters", "objects", "events", "missions", "variables", "routes")
+WORLD_CONTENT = ("locations", "characters", "objects", "events", "missions", "variables", "routes",
+                 "scenario_templates")
 LOCATION_KEYED = (("location_constraints",), ("action_selection", "location_penalties"))
 
 
@@ -673,11 +731,13 @@ LOGIC_SECTIONS = {
     "start_selection": "Where stories start: how strongly a player's recent starts are discouraged, and the single start of worlds without starting locations.",
     "action_rules": "How often actions are offered by default (once, per visit, always).",
     "game_state": "Starting health and coins, maximum health, arrests and following new paths.",
-    "power_model": "How the power indicator is derived from health and skills.",
+    "power_model": "Power, the player's fighting strength (health and skills, items included), and how much it eases fight checks.",
     "narrative_end": "When a story ends (action limit, stalling).",
     "director": "How a story builds over its course: escalation of events, threats and damage, the finale before the action limit with an epilogue ending, and options that would only loop.",
     "mission_selection": "How a story's mission is drawn: a player's recent missions are drawn less often.",
     "player_options": "The choices a player sees: how many, and in which order (the scene's order, or the storyteller's ranking).",
+    "navigation": "Player-directed navigation: whether discoveries and hints move the player by themselves.",
+    "npc_goals": "What helping an NPC with their goal takes, and what an ally gives back.",
     "location_constraints": "Prisons: which locations confine a player until an escape.",
     "unexpected_events": "Procedural unexpected events: how often, and their parts.",
     "authored_events": "Authored events: the fallback option.",
@@ -686,12 +746,20 @@ LOGIC_SECTIONS = {
     "persistence": "Persistent variables: player profile, when to save, what evolution plays with.",
     "reproducibility": "Seeds for reproducible runs.",
     "simulation": "Console output of the terminal story (verbose, interactive).",
-    "llm_evaluator": "The optional language model that judges the final story.",
-    "llm_fallback": "The public language model used when the configured one is unavailable.",
+    "vllm": "The shared Gemma 4 language model served by vLLM (embedded in this process, or a vLLM server).",
+    "llm_evaluator": "The optional language-model judge of the final story (generation length, temperature).",
+    "llm_judge": "Gemma 4 as a game critic: how engaging a playthrough is, criterion by criterion.",
     "config_editor": "The terminal editor.",
     "editor_suggester": "Language-model suggestions in the terminal editor.",
     "world_definition": "How locations connect when no spawn rules are written (spawn strategy, similarity).",
     "augmentation": "Optional language-model expansion of the world.",
+    "npc_roles": "Who matters how much in a story: roles by importance, inferred from tags or set per NPC; how hard each is to find (reveal after turns or clues) and to beat (check modifier), and NPC secrets.",
+    "climax": "Every quest ends in a confrontation: the antagonist, the choices (one per stat, calling on an ally), setbacks and a win at a price, and the open threads revealed at the end.",
+    "variation": "What is told again is not told the same way: outcome variants, lines that know a result was told before, and checks that grow harder the more an action is repeated.",
+    "travel": "Travel as part of the story: fast travel along known ways (not counted toward the action limit) and first trips with a scene on the way and word of who is to be found there.",
+    "stakes": "What is at stake, seen by the player: the alert level that ends in a manhunt, and what failing costs, shown with each choice's check.",
+    "consequences": "What the player did shows later: beating someone who mattered, making an ally.",
+    "memory": "A profile's next story remembers the last: what happened, and who was a friend or a foe.",
 }
 
 
@@ -716,6 +784,37 @@ def load_logic_section(name: str) -> str:
     if span is None:
         raise AuthoringError(f"Unknown engine logic section `{name}`.")
     return text[span[0]:span[1]].rstrip() + "\n"
+
+
+def set_term_weights(weights: dict) -> str:
+    """Save ``fitness.term_weights`` (multipliers of fitness terms, e.g. those fitted to the
+    judge by evaluator/calibrate_fitness.py), keeping the rest of hyperparameters.yaml as
+    written. An empty mapping removes every multiplier. Returns (the weights saved, a message)."""
+    try:
+        clean = {str(term): round(float(value), 3) for term, value in dict(weights or {}).items()}
+    except (TypeError, ValueError) as exc:
+        raise AuthoringError(f"Term weights must map fitness terms to numbers: {exc}") from exc
+    if any(value < 0 for value in clean.values()):
+        raise AuthoringError("Term weights cannot be negative.")
+    flow = yaml.safe_dump(clean, default_flow_style=True, sort_keys=True, width=1 << 20).strip() if clean else "{}"
+    line = f"  term_weights: {flow}  # multipliers of fitness terms (evaluator/calibrate_fitness.py)"
+    with CONFIG_LOCK:
+        text = HYPERPARAMETERS_PATH.read_text(encoding="utf-8")
+        span = _section_span(text, "fitness")
+        if span is None:
+            raise AuthoringError("hyperparameters.yaml has no `fitness` section.")
+        section = text[span[0]:span[1]]
+        entry = re.compile(r"^  term_weights:.*(?:\n {4,}\S.*)*", re.M)
+        section = entry.sub(lambda _: line, section, count=1) if entry.search(section) \
+            else section.rstrip("\n") + "\n" + line + "\n"
+        updated = text[:span[0]] + section + text[span[1]:]
+        if ((yaml.safe_load(updated) or {}).get("fitness") or {}).get("term_weights") != clean:
+            raise AuthoringError("Could not write fitness.term_weights.")
+        HYPERPARAMETERS_PATH.write_text(updated, encoding="utf-8")
+        config.clear_override()
+        config.reload()
+        engine.refresh_runtime_settings()
+    return clean, f"Saved {len(clean)} fitness term weight(s). New evolutions score stories with them."
 
 
 def save_logic_section(name: str, section_text: str) -> str:

@@ -24,6 +24,14 @@ def repetition_errors(repeat, retry_on_failure, label="Action"):
     return errors
 
 class Outcome:
+    # Class defaults: games saved before these fields existed load unchanged.
+    target_tags = ()          # a discovery led by tags: the neighbour that fits them best opens
+    unlock_exit = False       # opens the exits of a location locked with `exit_locked`
+    return_to_previous = False  # flee back to where the player came from
+    setup_id = None           # plants this setup (story_rules: named setups and payoffs)
+    requires_setup = None     # told only once this setup has been planted
+    payoff_id = None          # pays this setup off (its thread closes)
+    variants = ()             # other ways to tell it, used in turn when it is told again
     def __init__(self, desc, tags=None,
                  success_prob=1.0,
                  health_change=0,
@@ -41,7 +49,13 @@ class Outcome:
                  change_variables=None,
                  on_check=None,
                  change_stats=None,
-                 effects=None):
+                 effects=None,
+                 target_tags=None,
+                 unlock_exit=False,
+                 return_to_previous=False,
+                 setup_id=None,
+                 requires_setup=None,
+                 payoff_id=None):
         self.desc = desc
         self.tags = tags or []
         self.success_prob = success_prob
@@ -73,6 +87,12 @@ class Outcome:
             from_outcome_fields(self.set_variables, self.change_variables, self.change_stats)
             + normalize_effects(effects)
         )
+        self.target_tags = tuple(target_tags or ())
+        self.unlock_exit = bool(unlock_exit)
+        self.return_to_previous = bool(return_to_previous)
+        self.setup_id = setup_id
+        self.requires_setup = requires_setup
+        self.payoff_id = payoff_id
 
     def _clamp(self, value, low=None, high=None):
         low = config.get("outcome_resolution.probability_floor", 0.05) if low is None else low
@@ -151,8 +171,12 @@ class Outcome:
 
     def success_probability(self, genome=None, state=None, action=None):
         probability = self.success_prob
-        probability += self._genome_adjustment(genome)
-        probability += self._fitness_constraint_adjustment(state)
+        # Checks are explicit: an outcome without a skill check succeeds by its own
+        # `success_prob`, unless outcome_resolution.hidden_adjustments lets the
+        # storyteller's traits and the story's state tip it (the old behaviour).
+        if config.get("outcome_resolution.hidden_adjustments", False):
+            probability += self._genome_adjustment(genome)
+            probability += self._fitness_constraint_adjustment(state)
 
         # Fights and other risky moves are decided by a skill check instead
         # (core_engine/combat.py); this probability covers everything else.

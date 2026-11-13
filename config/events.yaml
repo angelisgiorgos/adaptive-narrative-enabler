@@ -76,6 +76,9 @@ world_definition:
           remove_npc: true
           set_variables: {fence_exposed: true}
         - desc: The thief laughs in your face and slips your grip, but you will find them in the market again.
+          variants:
+          - "The thief twists free again, quicker this time, and blows you a kiss from the crowd."
+          - "Gone again: only a torn strip of the thief's cloak is left in your hand."
           on_check: fail
           tags: [social, failure]
       - name: Steal from the thief
@@ -90,7 +93,8 @@ world_definition:
           move_to: Alley
     bandit_ambush:
       title: Ambushed by a bandit
-      cooldown: 6     # bandits lurk on every visit, but not on every turn
+      cooldown: 8         # bandits lurk on every visit, but not on every turn...
+      max_occurrences: 3  # ...and not all story long (a fourth ambush is padding)
       tags: [threat, ambush]
       descriptions:
       - A hooded figure steps out of the shadows, blade first. "Your purse or your life."
@@ -107,14 +111,14 @@ world_definition:
           health_change: -4
       - name: Hand over your coins
         outcomes:
-        - desc: The bandit snatches your purse and melts back into the dark.
-          tags: [threat]
+        - desc: The bandit snatches your purse, counts it with a sneer, and lets slip that the fence in the Sewers pays better than you do.
+          tags: [threat, setup_clue]
           coin_change: -10
           remove_npc: true
       - name: Plead for mercy
         outcomes:
-        - desc: They take your coins and leave you bruised but alive.
-          tags: [threat]
+        - desc: They take your coins and leave you bruised but alive, with a warning that the guards below the Vault are paid to look away.
+          tags: [threat, setup_clue]
           coin_change: -20
           health_change: -1
           remove_npc: true
@@ -124,13 +128,49 @@ world_definition:
       - name: Make a run for it
         skill_check: {stat: stealth}
         outcomes:
-        - desc: You duck under the blade and lose the bandit in the crowd.
+        - desc: You duck under the blade and run back the way you came.
           on_check: pass
           tags: [stealth, success]
+          return_to_previous: true   # fleeing takes you back where you came from
         - desc: The bandit catches your cloak and slashes before you break free.
           on_check: fail
           tags: [threat, failure]
           health_change: -2
+    guards_alerted:
+      title: The guards come running
+      repeat: always   # any alarm, any botched bribe can bring them...
+      cooldown: 4      # ...but not turn after turn
+      # complication: it may follow a failed attempt that otherwise led nowhere (director.fail_forward)
+      tags: [threat, guards, complication]
+      descriptions:
+      - Boots pound closer and lanterns swing toward you.
+      - A whistle shrills somewhere close; the guards are coming, and they are not alone.
+      actions:
+      - name: Hide in the shadows
+        skill_check: {stat: stealth}
+        outcomes:
+        - desc: The guards sweep past your hiding place, cursing whoever raised the alarm.
+          on_check: pass
+          tags: [stealth, success]
+        - desc: A lantern finds your face. "There!" Rough hands drag you away.
+          on_check: fail
+          tags: [guards, failure]
+          send_to: Dungeon
+      - name: Bluff that you have every right to be here
+        skill_check: {stat: persuasion}
+        outcomes:
+        - desc: "\"The magistrate sent me,\" you say; the sergeant hesitates, then waves you on, embarrassed."
+          on_check: pass
+          tags: [social, success]
+        - desc: The sergeant laughs and calls for irons.
+          on_check: fail
+          tags: [guards, failure]
+          send_to: Dungeon
+      - name: Slip away down a drain into the Sewers
+        outcomes:
+        - desc: You squeeze through a grate just as the first lantern turns the corner.
+          tags: [stealth, success]
+          move_to: Sewers
     memory_theft:
       title: The Memory Thief strikes
       repeat: once    # unique: whatever starts it, it happens once per story

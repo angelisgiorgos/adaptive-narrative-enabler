@@ -20,8 +20,9 @@ messages:
   end_line: "[END] {reason}"  # {reason}
   end_death: "The traveler can no longer continue."
   end_mission: "Mission complete: {title}."  # {title}
+  end_victory: "[EPILOGUE] {title}: done. {recap}"  # {title} {recap}: the road, the quest's steps, the friends made, the turns of fate (also {turns} {places} {people})
   end_action_limit: "The story reached its action limit of {limit} steps."  # {limit}
-  end_epilogue: "[EPILOGUE] The day draws to a close after {turns} turns. {mission}You saw {places} places, met {people} people and leave with {items} items."  # {turns} {mission} {places} {people} {items}
+  end_epilogue: "[EPILOGUE] The day draws to a close after {turns} turns. {mission}{recap}"  # {turns} {mission} {recap} (also {places} {people} {items})
   epilogue_mission_open: "{title} is left for another day. "  # {title}
   finale_start: "[FINALE] Time is running out: {title} must be settled now."  # {title}
   stage_complete: "[QUEST] {done}: done. Next: {next}. {description}"  # {done} {next} {description}
@@ -45,6 +46,7 @@ messages:
   travel_new: "Move to {location}"  # {location}
   travel_return: "Return to {location}"  # {location}
   travel_result: "You travel to {location}."  # {location}
+  travel_first: "You set out for the {location}. {view}"  # {location}, {view}: what one sees on the way there (first time)
   location_current: "[LOCATION] Current location: {location}"  # {location}
   location_moved: "[LOCATION] Transferred from {origin} to {destination}"  # {destination}, {origin}
   location_stayed: "[LOCATION] Still at {location}"  # {location}
@@ -57,6 +59,8 @@ messages:
   spawn_forced: "[SPAWN] A situational path opens to: {location}"  # {location}
   voyage: "[VOYAGE] The opening draws you toward {location}."  # {location}
   escape: "[ESCAPE] You found a way out of {location}."  # {location}
+  exit_unlocked: "[UNLOCKED] The way out of the {location} is open now."  # {location}
+  fled_back: "[BACK] You fall back the way you came, to the {location}."  # {location}
   sent: "[SENT] You are taken to the {location}. There is no way back the way you came."  # {location}
 
   # --- People and things (talk_action is the name of the conversation option)
@@ -70,6 +74,9 @@ messages:
   npc_removed: "[NPC REMOVED] {npc} is no longer part of the story."  # {npc}
   npc_removed_scene: "[NPC REMOVED] {npc} leaves the {location}."  # {location}, {npc}
   encounter: "[ENCOUNTER] {npc} confronts you!"  # {npc}
+  npc_goal_done: "[ALLY] You helped {npc} {goal}; they count you a friend now."  # {npc}, {goal}
+  twist_payoff: "[TWIST] {text}"  # {text}: an earlier twist pays off
+  callback: "[CALLBACK] It all fits: what you learned at the {place} pays off - \"{text}\""  # {place}, {text}, {turns}
   item_collected: "You collected the {item}."  # {item}
   item_used: "You have utilized the {item}."  # {item}
   paid: "[RESOURCES] Paid: {coins} coins (Balance: {balance})"  # {balance}, {coins}
@@ -89,3 +96,30 @@ messages:
   unexpected_event: "[UNEXPECTED EVENT] {description}"  # {description}
   unexpected_effect: "[EVENT EFFECT] Health {health:+d}, coins {coins:+d}."  # {coins}, {health}
   unexpected_discovery: "[EVENT DISCOVERY] A path opens to {location}."  # {location}
+
+  # --- The story's beats (core_engine/story_beats.py, npc_roles, climax, travel, stakes, memory)
+  npc_reveal: "[REVEAL] {npc}, the {role} of this story: {description}"  # {npc} {role} {description}: meeting someone who matters (npc_roles importance 2+)
+  npc_named: "[LEAD] {npc} speaks of {target}, a {role} in all this: look for them at the {location}."  # {npc} {target} {role} {location}
+  npc_triumph: "[TRIUMPH] You have beaten {npc}, the {role}."  # {npc} {role}
+  climax_start: "[CLIMAX] {title}: it all comes down to this."  # {title}
+  climax_won: "[CLIMAX] You prevail: {title} is yours."  # {title}
+  climax_setback: "[SETBACK] {antagonist} throws you back. Catch your breath; this is not over."  # {antagonist}
+  climax_price: "[CLIMAX] Bloodied and spent, you prevail at last; {title} cost you dearly."  # {title}
+  revelation: "[REVELATION] At last it makes sense, what you learned at the {place}: \"{text}\""  # {place} {text}: an open thread closed at the climax
+  another_way_witness: "[ANOTHER WAY] Someone saw it all: {npc} beckons you over."  # {npc}
+  another_way_lead: "[ANOTHER WAY] The failure teaches you something: the answer may lie at the {location}."  # {location}
+  refund: "[REFUND] Not everything is lost: you get {coins} coins back (Balance: {balance})."  # {coins} {balance}
+  result_again: "RESULT: {description} It goes much as it did before."  # {description}: an outcome told a second time (variation; a list of texts varies it)
+  result_habit: "RESULT: {description} The same again; people here are starting to know your face."  # {description}: told a third time or more
+  travel_fast: "Travel by known ways to the {location}"  # {location}: the fast-travel option
+  travel_fast_result: "By ways you know, through the {via}, you reach the {location}."  # {location} {via}
+  on_the_way: "[ON THE WAY] {text}"  # {text}: a first trip's scene (travel.first_trip)
+  road_word: "[ON THE WAY] Word on the road: {npc} is to be found in the {location}."  # {npc} {location}
+  alert_up: "[ALERT] {text} (alert {level}/{max})"  # {text} {level} {max}
+  alert_calm: "[ALERT] Things have calmed down (alert {level}/{max})."  # {level} {max}
+  manhunt: "[MANHUNT] The whole watch is after you!"  # (also {location})
+  secret: "[SECRET] {text}"  # {text}: an NPC's secret comes out
+  consequence: "[CONSEQUENCE] {text}"  # {text}: something done earlier shows now
+  last_time: "[LAST TIME] Last time you {text}."  # {text}: the profile's last story (memory)
+  remembered_friend: "[LAST TIME] {npc} remembers you, and smiles."  # {npc}
+  remembered_foe: "[LAST TIME] {npc} remembers you, and not fondly."  # {npc}

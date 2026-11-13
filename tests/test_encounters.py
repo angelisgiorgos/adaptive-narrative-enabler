@@ -60,6 +60,13 @@ def _choose(state, name):
 
 
 class EncounterTests(unittest.TestCase):
+    def setUp(self):
+        # A hostile NPC is in sight at once here (NPC roles, which keep someone who matters out of
+        # sight for a while, are tested in test_story_beats).
+        patcher = patch.dict(config._config, {"npc_roles": {**(config.get("npc_roles") or {}), "enabled": False}})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_hostile_npc_confronts_before_anything_else(self):
         state = _state()
         self.assertCountEqual(_names(state), ["Fight", "Stand still"])  # no travel, no looking around

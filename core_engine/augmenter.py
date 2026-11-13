@@ -2,6 +2,7 @@ import os
 import json
 import yaml
 import datetime
+import copy
 from utils.config_loader import config
 from evaluator.llm_eval import LLMNarrativeEvaluator
 
@@ -23,9 +24,7 @@ class WorldAugmenter:
     @property
     def llm(self):
         if self._llm is None:
-            import torch
-            torch.cuda.empty_cache() # Clear cache before loading
-            print("Initializing LLM for augmentation...")
+            print("Initializing the shared Gemma 4 runtime (vLLM) for augmentation...")
             self._llm = LLMNarrativeEvaluator()
         return self._llm
 
@@ -77,7 +76,9 @@ class WorldAugmenter:
 1. **NPCS AS HUB**: Every NEW character MUST have exactly one `known_locations` (list of location names) and one `known_objects` (list of object names) key.
 2. **TAG REUSE**: Give NPCs broad tags (e.g. "urban", "guarded") so they appear in multiple locations. Give new locations at least 2 tags from the TAG CLOUD.
 3. **ONLY NEW NODES**: Return ONLY new characters, items, and locations. Do NOT re-define Harbor or other existing items.
-4. **FORMAT**:
+4. **PARAMETERIZED LOCATIONS**: Give every new location a `template_id` (its kind of place) and `parameters` (what makes this one differ). Variants of one template are welcome; the same template with the same parameters twice is rejected.
+5. **TAG-LED DISCOVERY**: An outcome that opens a new path should say what kind of place it leads to with `target_tags` (e.g. ["nature", "secluded"]) rather than naming a place.
+6. **FORMAT**:
 {{
   "locations": {{
     "Alchemy Lab": {{ "tags": ["urban", "research"], "actions": [...] }}
@@ -118,12 +119,14 @@ class WorldAugmenter:
         raw_objs = new_data.get('objects', new_data.get('new_objects', []))
         raw_chars = new_data.get('characters', new_data.get('new_characters', []))
 
+        raw_locs = self._new_scenarios(current_world.get("locations", {}), raw_locs)
+
         if not raw_locs and not raw_objs and not raw_chars:
             print("  WARNING: Augmented data is empty. Skipping file update to prevent corruption.")
             return None
 
-        # Deep merge
-        final_world = current_world.copy()
+        # Deep merge (a deep copy: the world in memory is not changed in place)
+        final_world = copy.deepcopy(current_world)
         final_world['locations'] = {**current_world.get('locations', {}), **raw_locs}
         final_world['objects'] = current_world.get('objects', []) + raw_objs
         final_world['characters'] = current_world.get('characters', []) + raw_chars
@@ -135,10 +138,33 @@ class WorldAugmenter:
             print("Updating config in memory with augmented world.")
             config.set_world_definition(final_world)
         
-        import torch
-        torch.cuda.empty_cache() # Clear cache after generation
         
         return final_world, filepath
+
+    @staticmethod
+    def _new_scenarios(existing, generated):
+        """The generated locations that are new scenarios: not a place already there (whatever
+        its case or spacing), not the same template with the same parameters, not the same
+        content (builder.scenario_key), and not twice within the generation."""
+        from core_engine.builder import scenario_key
+        from core_engine.world import WorldGraph
+
+        if not isinstance(generated, dict):
+            return {}
+        names = {WorldGraph.place_key(name) for name in existing}
+        scenarios = {scenario_key(name, data) for name, data in (existing or {}).items()}
+        accepted = {}
+        for name, data in generated.items():
+            if not isinstance(data, dict):
+                continue
+            key, scenario = WorldGraph.place_key(name), scenario_key(name, data)
+            if key in names or scenario in scenarios:
+                print(f"  Skipping a generated location that repeats one already there: {name}")
+                continue
+            names.add(key)
+            scenarios.add(scenario)
+            accepted[name] = data
+        return accepted
 
     def save_augmentation(self, data):
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

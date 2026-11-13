@@ -178,7 +178,10 @@ class RouteConfigTests(unittest.TestCase):
             state = GameState(engine.build_world(genome), genome, rng=random.Random(seed))
             for _ in range(40):
                 for action in state.player_options():
-                    if action.source == "navigation":
+                    if getattr(action, "fast_travel", None):  # a known way, every step on the map
+                        steps = [state.current.name, *action.fast_travel]
+                        self.assertTrue(all(b in state.neighbours(a) for a, b in zip(steps, steps[1:])))
+                    elif action.source == "navigation":
                         self.assertIn(action.owner, state.neighbours(state.current.name))
                 path = len(state.path)
                 if not state.step():

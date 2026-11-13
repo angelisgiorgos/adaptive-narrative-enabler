@@ -15,13 +15,19 @@ stories are recorded with the studio as their origin. Errors arrive as ``APIErro
 with the API's message and are shown as UI errors. Files the API offers for
 download are fetched into a temporary folder, since the file widgets need local paths.
 
-    Tab 1 · World editor           /v1/entities/..., /v1/documents/missions
+    Tab 1 · World editor           /v1/entities/... (form, actions, rules, every field as YAML),
+                                   /v1/documents/missions, /v1/documents/map, /v1/lint/failures
     Tab 2 · Simulation settings    /v1/config/..., /v1/settings, /v1/documents/..., /v1/variables/...,
                                    /v1/rules, /v1/hyperparameters
     Tab 3 · Weights                /v1/weights
-    Tab 4 · Simulate & play        /v1/jobs/..., /v1/engines/load, /v1/sessions/..., /v1/stats/...,
-                                   /v1/learning, /v1/exports, /v1/records/...
+    Tab 4 · Simulate & play        /v1/jobs/..., /v1/engines/load, /v1/sessions/... (and its judge),
+                                   /v1/stats/..., /v1/learning, /v1/exports, /v1/records/... (and their
+                                   judge), /v1/judge/compare
     Tab 5 · Engine logic & app     /v1/logic/..., /v1/app-settings
+    Tab 6 · Evaluate with judge    /v1/jobs/judge-benchmark, /v1/jobs/calibrate-fitness, /v1/fitness/term-weights
+
+tests/test_studio_api.py checks that every endpoint of the API is used here, or is named there
+as one other clients use (the studio reaches the same function through another endpoint).
 """
 
 from __future__ import annotations
@@ -202,7 +208,8 @@ CSS = """
 """
 EMPTY_ENTITY = {"name": "", "tags": [], "descriptions": [], "goals": [], "unique": False, "encounter_event": None,
                 "encounter_repeat": False, "enabled_if": None, "title": None, "stat_bonus": None,
-                "start_eligible": False, "start_weight": 1.0}
+                "start_eligible": False, "start_weight": 1.0, "role": None, "secret": None}
+INFERRED_ROLE = "inferred from its tags"
 
 
 # ---- tab 1 · world editor (/v1/entities, /v1/documents/missions) -----------------------------
@@ -233,6 +240,9 @@ def _entry_values(kind, entity):
         gr.Textbox(value=to_yaml(entity.get("stat_bonus"), flow=True), visible=kind == "Items"),
         gr.Checkbox(value=bool(entity.get("start_eligible")), visible=location),
         gr.Number(value=1.0 if start_weight is None else start_weight, visible=location),
+        gr.Dropdown(choices=[INFERRED_ROLE, *REFERENCE.get("npc_roles", [])], value=entity.get("role") or INFERRED_ROLE,
+                    visible=npc),
+        gr.Textbox(value=to_yaml(entity.get("secret"), flow=True), visible=npc),
     )
 
 
@@ -249,7 +259,7 @@ def load_entity_ui(kind, name):
 
 
 def new_entity():
-    return gr.Dropdown(value=None), "", [], "", "", False, "", False, "", "", "", False, 1.0
+    return gr.Dropdown(value=None), "", [], "", "", False, "", False, "", "", "", False, 1.0, INFERRED_ROLE, ""
 
 
 def _lines(text):
@@ -258,7 +268,7 @@ def _lines(text):
 
 @ui
 def save_entity_ui(kind, selected_name, name, tags, descriptions, goals, unique, encounter_event, encounter_repeat,
-                   enabled_if, title, stat_bonus, start_eligible, start_weight):
+                   enabled_if, title, stat_bonus, start_eligible, start_weight, role=None, secret=None):
     name = (name or "").strip()
     if not name:
         raise gr.Error("Name is required.")
@@ -274,6 +284,10 @@ def save_entity_ui(kind, selected_name, name, tags, descriptions, goals, unique,
         "start_eligible": bool(start_eligible) if location else None,
         "start_weight": start_weight if location else None,
     }
+    if npc and role is not None:  # the NPC's own role ("" removes it: inferred from its tags)
+        body["role"] = "" if role == INFERRED_ROLE else role
+    if npc and secret is not None:
+        body["secret"] = from_yaml(secret, "`Secret`") or {}  # {} removes it
     saved = API.put(_path(f"/v1/entities/{kind}", selected_name or name), body)
     return gr.Dropdown(choices=_entity_names(kind), value=saved["name"]), f"Saved **{saved['name']}**."
 
@@ -340,6 +354,33 @@ def save_repetition_ui(kind, name, index, repeat, retry):
     result = API.put(_path(f"/v1/entities/{kind}", name, "actions", index, "repetition"),
                      {"repeat": repeat or REFERENCE["repeat_default"], "retry_on_failure": bool(retry)})
     return result["yaml"], result["message"]
+
+
+@ui
+def load_entity_yaml_ui(kind, name):
+    return API.get(_path(f"/v1/entities/{kind}", name, "yaml"))["yaml"] if name else "{}\n"
+
+
+@ui
+def save_entity_yaml_ui(kind, name, yaml_text):
+    if not name:
+        raise gr.Error("Choose an entry first.")
+    result = API.put(_path(f"/v1/entities/{kind}", name, "yaml"), {"yaml": yaml_text})
+    return result["yaml"], result["message"]
+
+
+@ui
+def failure_lint_ui():
+    """The failures the world leaves as dead ends (GET /v1/lint/failures)."""
+    found = API.get("/v1/lint/failures")["dead_ends"]
+    if not found:
+        return ("No dead ends: every action that can fail leads somewhere when it fails (a consequence, or a "
+                "complication event that fits it). During play the engine still shows another way "
+                "(`director.another_way`).")
+    rows = "\n".join(f"| {d['owner']} | {d['action']} | {d['why']} |" for d in found)
+    return (f"**{len(found)} failure(s) lead nowhere.** Give them a consequence (a move, a reveal, a setup, an "
+            "effect) or write an event tagged `complication` that shares a tag with them.\n\n"
+            f"| where | action | why |\n|---|---|---|\n{rows}")
 
 
 # ---- configuration documents (/v1/documents/{name}) -------------------------------------------
@@ -481,8 +522,22 @@ def _learning_outputs(learning):
     return pd.DataFrame(rows), pd.DataFrame(traits)
 
 
-def _choices(actions):
-    return gr.Radio(choices=actions, value=actions[0] if actions else None, interactive=bool(actions))
+def _check_text(check):
+    """A choice's check in a few words: "stealth 45% (fail: -2 health, sent to the Dungeon)"."""
+    risk = check.get("risk") or {}
+    parts = [f"{risk[key]} {key}" for key in ("health", "coins") if risk.get(key)]
+    if risk.get("sent_to"):
+        parts.append(f"sent to the {risk['sent_to']}")
+    return f"{check['stat']} {check['chance']}%" + (f" (fail: {', '.join(parts)})" if parts else "")
+
+
+def _choices(actions, details=None):
+    """The choices as radio options: each labelled with the check it involves (the value stays
+    the action's name, which the API takes)."""
+    checks = {item["name"]: item.get("check") for item in details or []}
+    options = [(name + (f"  ·  {_check_text(checks[name])}" if checks.get(name) else ""), name)
+               for name in actions]
+    return gr.Radio(choices=options, value=actions[0] if actions else None, interactive=bool(actions))
 
 
 ANY_QUEST = "Any quest (the story draws one)"
@@ -524,9 +579,7 @@ def people_markdown(game):
     """Everyone met in the story: where, how often spoken with, and who is hostile or gone."""
     met = game.get("people_met") or []
     here = {person["name"]: person for person in game.get("people") or []}
-    if not met:
-        return "### People met\nNobody yet."
-    lines = ["### People met"]
+    lines = ["### People met"] + ([] if met else ["Nobody yet."])
     for person in met:
         notes = []
         if person["name"] in here:
@@ -539,8 +592,32 @@ def people_markdown(game):
             notes.append("gone from the story")
         if person["talks"]:
             notes.append(f"spoken with {person['talks']}×")
+        if person.get("ally"):
+            notes.append("♥ ally")
+        if (person.get("importance") or 0) >= 2:
+            notes.append(f"◆ {person.get('role')}")  # someone who matters in this story (npc_roles)
         lines.append(f"- **{person['name']}** · met at {', '.join(person['where'])}"
                      + (f" · {' · '.join(notes)}" if notes else ""))
+    return "\n".join(lines) + "\n\n" + map_markdown(game.get("map"))
+
+
+def map_markdown(known):
+    """The map as the player knows it: each known place with where its paths lead."""
+    if not known:
+        return ""
+    paths = {}
+    for a, b in known.get("paths", []):
+        paths.setdefault(a, []).append(b)
+        paths.setdefault(b, []).append(a)
+    for a, b in known.get("one_way", []):
+        paths.setdefault(a, []).append(f"{b} (one way)")
+    lines = ["### Map"]
+    for place in known.get("places", []):
+        name = place["name"]
+        mark = "📍 " if name == known.get("current") else ""
+        state = "" if place["visited"] else " *(not visited)*"
+        locked = " 🔒" if place["locked"] else ""
+        lines.append(f"- {mark}**{name}**{locked}{state} → {', '.join(sorted(paths.get(name, []))) or 'no known way on'}")
     return "\n".join(lines)
 
 
@@ -548,7 +625,8 @@ def _game_outputs(game):
     """What the play tab shows of a game the API started (simulation, loaded or recorded engine)."""
     curve, traits = _learning_outputs(game.get("learning"))
     generations = [str(stats["generation"]) for stats in (game.get("learning") or {}).get("history", [])]
-    return (game["session_id"], game["report"], game["scene"], _choices(game["actions"]), game.get("last_turn", ""),
+    return (game["session_id"], game["report"], game["scene"], _choices(game["actions"], game.get("choices")),
+            game.get("last_turn", ""),
             API.download(game["config_download_url"]), API.download(game["engine_download_url"]),
             quest_markdown(game.get("quest")), people_markdown(game), curve, traits,
             game.get("run_id"), gr.Dropdown(choices=generations, value=generations[-1] if generations else None))
@@ -607,8 +685,8 @@ def play_action_ui(token, selected_action):
     if not token:
         raise gr.Error("Run a simulation first to start a game.")
     state = API.post(_path("/v1/sessions", token, "actions"), {"action": selected_action or ""})
-    return state["scene"], _choices(state["actions"]), state["last_turn"], quest_markdown(state.get("quest")), \
-        people_markdown(state)
+    return state["scene"], _choices(state["actions"], state.get("choices")), state["last_turn"], \
+        quest_markdown(state.get("quest")), people_markdown(state)
 
 
 def quest_overview(profile):
@@ -714,6 +792,65 @@ def recorded_runs():
     ])
 
 
+@ui
+def recorded_run_choices():
+    return [(f"{r['created_at'][:16]} · {r['origin']} {r['kind']} · {r['status']}"
+             + (f" · best {r['best_score']:.1f}" if r["best_score"] is not None else "") + f" · {r['id'][:8]}", r["id"])
+            for r in _recorded("/v1/records/runs", "runs")]
+
+
+@ui
+def recorded_world_choices():
+    return [(f"{w['created_at'][:16]} · {w['locations']} locations, {w['npcs']} NPCs, {w['missions']} missions"
+             f" · {w['id'][:8]}", w["id"]) for w in _recorded("/v1/records/worlds", "worlds")]
+
+
+@ui
+def run_detail_ui(run_id):
+    """A recorded run: its settings and every generation (GET /v1/records/runs/{id})."""
+    if not run_id:
+        return "", pd.DataFrame()
+    run = API.get(_path("/v1/records/runs", run_id))
+    best = f"{run['best_score']:.1f}" if isinstance(run.get("best_score"), (int, float)) else "-"
+    head = (f"**{run['origin']} {run['kind']}** · {run['status']} · best score {best} · "
+            f"{run.get('generations_run') or 0} generation(s) · world `{run.get('world_id')}` · "
+            f"{len(run.get('engines') or [])} engine(s), {len(run.get('stories') or [])} story(ies)"
+            + (f"\n\n**Error:** {run['error']}" if run.get("error") else ""))
+    settings = {key: run.get(key) for key in ("settings", "parameters") if run.get(key)}
+    generations = pd.DataFrame([{key: g.get(key) for key in ("generation", "best", "mean", "worst", "validation",
+                                                             "diversity", "mutation_step", "improved")}
+                                for g in run.get("generations") or []])
+    return head + (f"\n\n```yaml\n{to_yaml(settings)}```" if settings else ""), generations
+
+
+@ui
+def download_world_ui(world_id):
+    if not world_id:
+        raise gr.Error("Choose a recorded world first.")
+    return API.download(_path("/v1/records/worlds", world_id) + "?format=yaml")
+
+
+@ui
+def jobs_table_ui():
+    """The background jobs the API keeps (GET /v1/jobs): evolutions, continued trainings, judge runs."""
+    rows = []
+    for job in API.get("/v1/jobs")["jobs"]:
+        progress = job.get("progress") or {}
+        rows.append({"job": job["id"][:8], "kind": job["kind"], "what": job["description"], "status": job["status"],
+                     "created": (job.get("created_at") or "")[:19],
+                     "progress": f"{progress['generation']}/{progress['total']}" if progress else "",
+                     "error": job.get("error") or ""})
+    return pd.DataFrame(rows, columns=["job", "kind", "what", "status", "created", "progress", "error"])
+
+
+@ui
+def active_config_ui():
+    """The configuration games and runs use now (GET /v1/config): every file merged, or an upload."""
+    data = API.get("/v1/config")
+    source = "an uploaded configuration" if data["using_override"] else "the configuration files"
+    return f"Active now: **{source}**.", to_yaml(data["config"])
+
+
 def refresh_records_ui():
     return (gr.Dropdown(choices=recorded_engines()), gr.Dropdown(choices=recorded_stories()), recorded_runs(),
             records_status_text())
@@ -775,6 +912,121 @@ def story_view_ui(story_id):
             f"Start: {story['start_location']} · seed: {story['seed']} · engine: `{story['engine_id']}` · "
             f"run: `{story['run_id']}`\n\n| turn | action | where | success | outcome |\n|---|---|---|---|---|\n"
             f"{turns}\n\n<details><summary>Transcript</summary>\n\n```\n{story['transcript']}\n```\n</details>")
+
+
+# ---- the judge (Gemma 4 as a game critic: /v1/sessions/{id}/judge, /v1/records/stories/{id}/judge,
+# /v1/judge/compare) -------------------------------------------------------------------------------
+
+def judgement_markdown(result, title="Judgement"):
+    """A judgement of one story: engagement, the criteria, the best and weakest moments, the verdict."""
+    if result.get("engagement") is None:
+        return f"### {title}\nThe judge's reply could not be read; try again."
+    scores = " · ".join(f"{name} **{value:.1f}**" for name, value in (result.get("scores") or {}).items())
+    spread = f" (spread {result['spread']:.1f})" if isinstance(result.get("spread"), (int, float)) else ""
+    return "\n\n".join(line for line in (
+        f"### {title}: engagement {result['engagement']:.1f}/10{spread}", scores,
+        f"**Best moment:** {result.get('best_moment') or '-'}", f"**Weakest moment:** {result.get('weakest_moment') or '-'}",
+        f"> {result.get('verdict') or ''}",
+    ) if line)
+
+
+@ui
+def judge_session_ui(token):
+    if not token:
+        raise gr.Error("Start a game first.")
+    return judgement_markdown(API.post(_path("/v1/sessions", token, "judge")), "This playthrough")
+
+
+@ui
+def judge_story_ui(story_id):
+    if not story_id:
+        raise gr.Error("Choose a recorded story first.")
+    return judgement_markdown(API.post(_path("/v1/records/stories", story_id, "judge")), "This story")
+
+
+def comparison_markdown(result, a="A", b="B"):
+    winner = {"A": a, "B": b, "tie": "neither: a tie"}.get(result.get("winner"), "unreadable")
+    criteria = " · ".join(f"{name} → {({'A': a, 'B': b}).get(side, side)}" for name, side in (result.get("criteria") or {}).items())
+    agreed = "both readings agreed" if result.get("agreed") else "the two readings did not agree (a tie)"
+    return f"### The better game: {winner}\n{agreed}\n\n{criteria}\n\n> {result.get('reason') or ''}"
+
+
+@ui
+def compare_stories_ui(story_a, story_b):
+    if not story_a or not story_b or story_a == story_b:
+        raise gr.Error("Choose two different recorded stories.")
+    result = API.post("/v1/judge/compare", {"a": {"story_id": story_a}, "b": {"story_id": story_b}})
+    return comparison_markdown(result, "the first story", "the second story")
+
+
+# ---- tab 6 · evaluation with the judge (/v1/jobs/judge-benchmark, /v1/jobs/calibrate-fitness,
+# /v1/fitness/term-weights) --------------------------------------------------------------------------
+
+def _variants(text):
+    variants = from_yaml(text, "Version B's settings") or {}
+    if not isinstance(variants, dict):
+        raise gr.Error("Version B's settings must be a mapping of dotted.path: value.")
+    return variants
+
+
+@ui
+def judge_benchmark_ui(stories, seed, engine_id, pairwise, variants_text, workers, progress=gr.Progress()):
+    variants = _variants(variants_text) if pairwise else {}
+    job = API.post("/v1/jobs/judge-benchmark", {
+        "stories": int(stories), "seed": int(seed or 0), "engine_id": engine_id or None, "pairwise": bool(pairwise),
+        "variants": variants, "workers": int(workers),
+    })
+    result = API.wait(job, _job_progress(progress, "Judged"))
+    if pairwise:
+        rate = result.get("b_win_rate")
+        low, high = result["wilson_95"]
+        a_rate = None if rate is None else 1 - rate
+        criteria = " · ".join(f"{name} {1 - value:.0%}" for name, value in result["criteria"].items() if value is not None)
+        summary = (f"### Current settings (A) vs version B: A won {result['a_wins']}, B won {result['b_wins']}, "
+                   f"{result['ties']} tie(s)\n"
+                   + (f"A's win rate **{a_rate:.0%}** of decided pairs (95% interval {1 - high:.0%}-{1 - low:.0%})."
+                      if a_rate is not None else "No pair was decided.")
+                   + (f"\n\nA's win rate per criterion: {criteria}" if criteria else ""))
+        table = pd.DataFrame([{"seed": r["seed"], "winner": r["winner"], "agreed": r["agreed"],
+                               "fitness A": round(r["fitness_a"], 1), "fitness B": round(r["fitness_b"], 1),
+                               "reason": r["reason"]} for r in result["rows"]])
+    else:
+        engagement = result.get("engagement")
+        criteria = " · ".join(f"{name} {value:.1f}" for name, value in result["criteria"].items())
+        summary = (f"### Engagement {engagement:.2f}/10 over {result['judged']} judged stories\n{criteria}"
+                   if engagement is not None else "### No judgement could be read.")
+        table = pd.DataFrame([{"seed": r["seed"], "engagement": r["engagement"], "fitness": round(r["fitness"], 1),
+                               "turns": r["turns"], "won": r["won"], "verdict": r["verdict"]} for r in result["rows"]])
+    return summary, table
+
+
+@ui
+def calibrate_fitness_ui(stories, seed, engine_id, apply, progress=gr.Progress()):
+    job = API.post("/v1/jobs/calibrate-fitness", {"stories": int(stories), "seed": int(seed or 0),
+                                                  "engine_id": engine_id or None, "apply": bool(apply)})
+    result = API.wait(job, _job_progress(progress, "Judged"))
+    cv = result.get("cv_spearman")
+    summary = (f"### Fitted on {result['n']} judged stories\nAgreement with the judge (Spearman): "
+               f"{result['spearman']:+.2f} on the stories fitted, "
+               + (f"**{cv:+.2f} on stories left out**" if cv is not None else "not cross-validated (too few stories)")
+               + f" (ridge strength {result['alpha']:g}). "
+               + ("The weights were saved as `fitness.term_weights`." if result["applied"]
+                  else "Apply them below, or edit them first."))
+    return summary, to_yaml(result["term_weights"])
+
+
+@ui
+def load_term_weights_ui():
+    return to_yaml(API.get("/v1/fitness/term-weights")["weights"])
+
+
+@ui
+def save_term_weights_ui(text):
+    weights = from_yaml(text, "Term weights") or {}
+    if not isinstance(weights, dict):
+        raise gr.Error("Term weights must be a mapping of fitness term: multiplier.")
+    result = API.put("/v1/fitness/term-weights", {"weights": weights})
+    return to_yaml(result["weights"]), result["message"]
 
 
 # ---- tab 5 · engine logic and app parameters (/v1/logic, /v1/app-settings) ---------------------
@@ -887,6 +1139,20 @@ def build_app():
                         "less often (`start_selection` in the engine logic).",
                     )
                 with gr.Row():
+                    npc_role = gr.Dropdown(
+                        [INFERRED_ROLE, *REFERENCE.get("npc_roles", [])], value=INFERRED_ROLE, label="Role in the story",
+                        visible=False,
+                        info="How much the NPC matters: importance, how hard they are to find and to beat "
+                        "(`npc_roles` in the engine logic). Inferred: the first `npc_roles.infer` rule its tags match "
+                        "(the quest's hostile target is its nemesis).",
+                    )
+                    npc_secret = gr.Textbox(
+                        label="Secret", visible=False,
+                        placeholder="e.g. {text: '{npc} fences the stolen goods.', talks: 2, effects: [{reveal_location: Sewers}]}",
+                        info="Comes out once spoken with `talks` times (and `clues` things learned): [SECRET] text, its "
+                        "effects, and actions with `enabled_if: {secret_known: <this NPC>}`. Empty: no secret.",
+                    )
+                with gr.Row():
                     save_entry = gr.Button("Save entry", variant="primary")
                     delete_entry = gr.Button("Delete entry", variant="stop")
                 editor_status = gr.Markdown()
@@ -952,8 +1218,42 @@ def build_app():
                     save_missions_button.click(save_missions_yaml, missions_editor, [missions_editor, missions_status])
                     reload_missions_button.click(load_missions_yaml, None, missions_editor)
 
+                with gr.Accordion("Every field of this entry (YAML)", open=False):
+                    gr.Markdown(
+                        "The whole entry as stored: what the form shows and everything else (an NPC's role, secret, "
+                        "dialogue, known places and items; a location's distant views, exits and prompts; its "
+                        "actions). The whole world is checked with the entry in place before it is saved; rename "
+                        "an entry with the form above."
+                    )
+                    entity_yaml_editor = gr.Code(value=load_entity_yaml_ui("Locations", selected_name), language="yaml",
+                                                 label="entry")
+                    with gr.Row():
+                        save_entity_yaml_button = gr.Button("Validate & save the entry", variant="primary")
+                        reload_entity_yaml_button = gr.Button("Reload from disk")
+                    entity_yaml_status = gr.Markdown()
+
+                with gr.Accordion("Map: which places border which", open=False):
+                    gr.Markdown(REFERENCE["documents"].get("map", "") + " A route holds both ways; a far place is "
+                                "reached through the places between. `routes: null`: every story draws its own map.")
+                    map_editor = gr.Code(value=load_document("map"), language="yaml", label="map")
+                    with gr.Row():
+                        save_map_button = gr.Button("Validate & save the map", variant="primary")
+                        reload_map_button = gr.Button("Reload from disk")
+                    map_status = gr.Markdown()
+                    save_map_button.click(lambda text: save_document("map", text), map_editor, [map_editor, map_status])
+                    reload_map_button.click(lambda: load_document("map"), None, map_editor)
+
+                with gr.Accordion("Failures that lead nowhere", open=False):
+                    gr.Markdown(
+                        "Actions that can fail (a skill check, or failure outcomes) where failing changes nothing but "
+                        "health or coins and no complication event fits: the failures worth writing a consequence for."
+                    )
+                    lint_button = gr.Button("Check the world's failures")
+                    lint_report = gr.Markdown()
+                    lint_button.click(failure_lint_ui, None, lint_report)
+
                 npc_fields = [unique, encounter_event, encounter_repeat, enabled_if, event_title, stat_bonus,
-                              start_eligible, start_weight]
+                              start_eligible, start_weight, npc_role, npc_secret]
                 entry_fields = [name, tags, descriptions, goals, *npc_fields]
                 repetition_fields = [action_pick, action_repeat, action_retry]
                 kind.change(entity_names, kind, [entity, *entry_fields]).then(
@@ -967,6 +1267,12 @@ def build_app():
                     save_repetition_ui, [kind, entity, *repetition_fields], [actions_editor, actions_status],
                 )
                 entity.change(load_entity_ui, [kind, entity], entry_fields)
+                entity.change(load_entity_yaml_ui, [kind, entity], entity_yaml_editor)
+                save_entity_yaml_button.click(save_entity_yaml_ui, [kind, entity, entity_yaml_editor],
+                                              [entity_yaml_editor, entity_yaml_status]).then(
+                    load_entity_ui, [kind, entity], entry_fields,
+                ).then(load_entity_actions_yaml, [kind, entity], actions_editor)
+                reload_entity_yaml_button.click(load_entity_yaml_ui, [kind, entity], entity_yaml_editor)
                 entity.change(load_entity_actions_yaml, [kind, entity], actions_editor)
                 entity.change(load_entity_policy_yaml, [kind, entity], policy_editor)
                 save_policy_button.click(save_entity_policy_ui, [kind, entity, policy_editor], [policy_editor, policy_status])
@@ -976,7 +1282,9 @@ def build_app():
                 ).then(action_picker, [kind, entity], repetition_fields)
                 reload_actions_button.click(load_entity_actions_yaml, [kind, entity], actions_editor)
                 add_entry.click(new_entity, None, [entity, *entry_fields])
-                save_entry.click(save_entity_ui, [kind, entity, *entry_fields], [entity, editor_status])
+                save_entry.click(save_entity_ui, [kind, entity, *entry_fields], [entity, editor_status]).then(
+                    load_entity_yaml_ui, [kind, entity], entity_yaml_editor,
+                )
                 delete_entry.click(delete_entity_ui, [kind, entity], [entity, *entry_fields, editor_status])
 
             with gr.Tab("2 · Simulation settings"):
@@ -1139,6 +1447,13 @@ def build_app():
                     advanced_status = gr.Markdown()
                     save_all_config.click(save_all_hyperparameters, hyperparameters_editor,
                                           [*setting_components, hyperparameters_editor, advanced_status])
+                with gr.Accordion("The active configuration (read only)", open=False):
+                    gr.Markdown("Every configuration file merged (or the uploaded configuration): what new games "
+                                "and runs use now.")
+                    show_config = gr.Button("Show")
+                    config_source = gr.Markdown()
+                    active_config = gr.Code(language="yaml", label="active configuration", interactive=False)
+                    show_config.click(active_config_ui, None, [config_source, active_config])
 
             with gr.Tab("3 · Weights"):
                 gr.Markdown(
@@ -1286,8 +1601,20 @@ def build_app():
                         record_model_file = gr.File(label="Engine model (.ane.zip)", interactive=False)
                         record_world_file = gr.File(label="World and tuning (YAML)", interactive=False)
                     record_story = gr.Dropdown(recorded_stories(), label="Recorded story")
+                    with gr.Row():
+                        judge_story_button = gr.Button("Judge this story (Gemma 4)")
+                        compare_story = gr.Dropdown(recorded_stories(), label="Compare with another recorded story")
+                        compare_button = gr.Button("Which is the better game?")
+                    story_judgement = gr.Markdown()
                     story_view = gr.Markdown()
                     runs_table = gr.Dataframe(recorded_runs(), label="Recorded runs", interactive=False)
+                    record_run = gr.Dropdown(recorded_run_choices(), label="Recorded run: its settings and generations")
+                    run_detail = gr.Markdown()
+                    run_generations = gr.Dataframe(label="Generations", interactive=False)
+                    with gr.Row():
+                        record_world = gr.Dropdown(recorded_world_choices(), label="Recorded world")
+                        download_world = gr.Button("Download it as a configuration to upload")
+                    record_world_download = gr.File(label="World and tuning (YAML)", interactive=False)
                 with gr.Row():
                     with gr.Column(scale=3):
                         scene = gr.Markdown("Run a simulation to begin.")
@@ -1295,6 +1622,9 @@ def build_app():
                                            info="The most relevant choices now: fewer in tense moments.")
                         choose = gr.Button("Take action", variant="primary")
                         turn_result = gr.Textbox(label="Last turn", lines=7, interactive=False)
+                        with gr.Accordion("Judge this playthrough (Gemma 4 as a game critic)", open=False):
+                            judge_game_button = gr.Button("Judge the game played so far")
+                            game_judgement = gr.Markdown()
                     with gr.Column(scale=2):
                         quest_panel = gr.Markdown("### Quest\nStart a game to see its quest.")
                         people_panel = gr.Markdown("### People met\nNobody yet.")
@@ -1329,7 +1659,17 @@ def build_app():
                 record_outputs = [*play_outputs, learning_plot, learned_traits, run_state, export_generation]
                 player_inputs = [play_profile, stats_choice, stats_points, play_mission]
                 record_lists = [record_engine, record_story, runs_table, records_status]
-                refresh_records.click(refresh_records_ui, None, record_lists)
+                refresh_records.click(refresh_records_ui, None, record_lists).then(
+                    lambda: gr.Dropdown(choices=recorded_stories()), None, compare_story,
+                )
+                judge_game_button.click(judge_session_ui, session_token, game_judgement)
+                refresh_records.click(lambda: (gr.Dropdown(choices=recorded_run_choices()),
+                                               gr.Dropdown(choices=recorded_world_choices())), None,
+                                      [record_run, record_world])
+                record_run.change(run_detail_ui, record_run, [run_detail, run_generations])
+                download_world.click(download_world_ui, record_world, record_world_download)
+                judge_story_button.click(judge_story_ui, record_story, story_judgement)
+                compare_button.click(compare_stories_ui, [record_story, compare_story], story_judgement)
                 play_record.click(play_recorded_ui, [record_engine, *player_inputs], record_outputs, concurrency_limit=1)
                 continue_record.click(continue_recorded_ui, [record_engine, more_generations, *player_inputs],
                                       record_outputs, concurrency_limit=1, concurrency_id="narrative_evolution")
@@ -1379,6 +1719,61 @@ def build_app():
                     save_parameters = gr.Button("Save app parameters", variant="primary")
                     parameters_status = gr.Markdown()
                     save_parameters.click(save_app_parameters, parameter_inputs, parameters_status)
+                with gr.Accordion("Background jobs", open=False):
+                    gr.Markdown("Evolutions, continued trainings and judge runs started from here or by any client "
+                                "of the API, newest first.")
+                    refresh_jobs = gr.Button("Refresh")
+                    jobs_table = gr.Dataframe(label="Jobs", interactive=False, wrap=True)
+                    refresh_jobs.click(jobs_table_ui, None, jobs_table)
+
+            with gr.Tab("6 · Evaluate with the judge"):
+                gr.Markdown(
+                    "Gemma 4 as a game critic (`vllm` in the engine logic: an embedded model or a vLLM server). "
+                    "Stories are played in a separate process, so the games in progress keep their settings. "
+                    "The judge also runs in the loop of evolution when `evolution.judge_weight` > 0 (Engine logic)."
+                )
+                with gr.Accordion("Judge the engine's stories", open=True):
+                    with gr.Row():
+                        bench_stories = gr.Slider(1, 60, value=10, step=1, label="Stories")
+                        bench_seed = gr.Number(value=0, precision=0, label="First seed")
+                        bench_workers = gr.Slider(1, 8, value=4, step=1, label="Judgements at once")
+                    bench_engine = gr.Dropdown([("Current settings, random storytellers", "")] + recorded_engines(),
+                                               value="", label="Storyteller")
+                    bench_pairwise = gr.Checkbox(
+                        label="Compare with version B (pairwise A/B on the same seeds, each pair judged in both orders)")
+                    bench_variants = gr.Code(value="# version B: dotted.path: value\nclimax.enabled: false\n",
+                                             language="yaml", label="Version B's settings")
+                    bench_button = gr.Button("Play and judge", variant="primary")
+                    bench_summary = gr.Markdown()
+                    bench_table = gr.Dataframe(label="Stories", interactive=False, wrap=True)
+                    bench_button.click(judge_benchmark_ui, [bench_stories, bench_seed, bench_engine, bench_pairwise,
+                                                            bench_variants, bench_workers], [bench_summary, bench_table],
+                                       concurrency_limit=1, concurrency_id="judge")
+                with gr.Accordion("Fit the fitness to the judge", open=False):
+                    gr.Markdown(
+                        "Plays and judges stories, fits the judged engagement on the fitness terms and suggests a "
+                        "multiplier per term (`fitness.term_weights`). Trust it as far as its agreement on stories "
+                        "left out goes."
+                    )
+                    with gr.Row():
+                        calib_stories = gr.Slider(10, 60, value=30, step=1, label="Stories")
+                        calib_seed = gr.Number(value=0, precision=0, label="First seed")
+                        calib_engine = gr.Dropdown([("Current settings, random storytellers", "")] + recorded_engines(),
+                                                   value="", label="Storyteller")
+                        calib_apply = gr.Checkbox(label="Save the suggested weights at once")
+                    calib_button = gr.Button("Play, judge and fit", variant="primary")
+                    calib_summary = gr.Markdown()
+                    term_weights_editor = gr.Code(value=load_term_weights_ui(), language="yaml",
+                                                  label="fitness.term_weights (term: multiplier)")
+                    with gr.Row():
+                        save_weights_terms = gr.Button("Save term weights", variant="primary")
+                        reload_weights_terms = gr.Button("Reload")
+                    term_weights_status = gr.Markdown()
+                    calib_button.click(calibrate_fitness_ui, [calib_stories, calib_seed, calib_engine, calib_apply],
+                                       [calib_summary, term_weights_editor], concurrency_limit=1, concurrency_id="judge")
+                    save_weights_terms.click(save_term_weights_ui, term_weights_editor,
+                                             [term_weights_editor, term_weights_status])
+                    reload_weights_terms.click(load_term_weights_ui, None, term_weights_editor)
 
     demo.launch_settings = limits
     return demo

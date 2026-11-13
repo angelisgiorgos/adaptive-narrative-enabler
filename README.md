@@ -166,7 +166,10 @@ nothing is written.
 
 | Studio | What you can change | REST API |
 | --- | --- | --- |
-| **1 · World editor** → an entry | Name, tags, descriptions, goals; NPC **Unique**, **Encounter event**, **Repeat on every visit**; **Enabled if** (locations, NPCs, items); **Event title**; item **Stat bonus while held**; location **Stories can start here** and **Start weight** | `GET /v1/entities/{kind}?fields=names`, `GET/PUT/DELETE /v1/entities/{kind}/{name}` |
+| **1 · World editor** → an entry | Name, tags, descriptions, goals; NPC **Unique**, **Encounter event**, **Repeat on every visit**, **Role in the story** and **Secret**; **Enabled if** (locations, NPCs, items); **Event title**; item **Stat bonus while held**; location **Stories can start here** and **Start weight** | `GET /v1/entities/{kind}?fields=names`, `GET/PUT/DELETE /v1/entities/{kind}/{name}` |
+| **1 · World editor** → *Every field of this entry (YAML)* | The whole entry as stored, including what the form does not show (an NPC's dialogue, known places and items, article; a location's distant views and exits) | `GET/PUT /v1/entities/{kind}/{name}/yaml` |
+| **1 · World editor** → *Map* | Which places border which (`world_definition.routes`), or no authored map | `GET/PUT /v1/documents/map` |
+| **1 · World editor** → *Failures that lead nowhere* | The actions whose failure changes nothing but health or coins and that no complication fits | `GET /v1/lint/failures` |
 | **1 · World editor** → *Actions & outcomes of this entry* | The entry's actions as YAML: `repeat`, `exclusive_group`, `triggers_event`, `skill_check`, requirements, and outcome effects (`on_check`, `change_stats`, `send_to`, `remove_npc`, `set_variables`, `change_variables`, …); one action's **Repeat** and **Retry after failure** | `GET/PUT /v1/entities/{kind}/{name}/actions/yaml` (or `/actions` as JSON), `GET/PUT /v1/entities/{kind}/{name}/actions/{index}/repetition` |
 | **1 · World editor** → *Uniqueness & scheduling* | An event's start rules, an item's uniqueness | `GET/PUT /v1/entities/{Events\|Items}/{name}/policy/yaml` (or `/policy`) |
 | **1 · World editor** → *Missions* | Missions, their goals, weights, and `enabled_if` | `GET/PUT /v1/documents/missions` (or `/v1/missions`) |
@@ -177,18 +180,27 @@ nothing is written.
 | **2** → *Story messages* | Every sentence the engine writes | `GET/PUT /v1/documents/messages` (or `/v1/messages`) |
 | **2** → *Character stats* | Stat names, point budget, allocation mode, tag checks, damage-reduction stat | `GET/PUT /v1/documents/stats` (or `/v1/stats`) |
 | **2** → *Advanced · all hyperparameters* | Every hyperparameter as one YAML document | `GET/PUT /v1/hyperparameters` |
+| **2** → *The active configuration* | What new games and runs use now (every file merged, or the uploaded configuration), read only | `GET /v1/config` |
 | **3 · Weights** → *Skill Check Resolution* and the rest | Difficulty (easier/harder), difficulty over time, chance floor/ceiling, damage mitigation, and every other weight | `GET/PUT /v1/weights` |
 | **4 · Simulate & play** → evolution | Storytellers, generations, steps, **stories per storyteller**, **continue learning from earlier runs**; the **learning curve** and **what the storyteller learned**; forget the learning memory | `POST /v1/jobs/simulations` and `GET /v1/jobs/{id}` (or `POST /v1/simulations`), `GET/DELETE /v1/learning` |
 | **4 · Simulate & play** → *Load a previous best engine* | An engine model, an older engine ZIP, or a configuration YAML with its model-parameters YAML | `POST /v1/engines/load` (`file`, `parameters`, `profile`, `stats_mode`, `stats`) |
-| **4 · Simulate & play** | **Player profile**, the **quest to play** (any quest open to the profile, or one drawn by the story; *Quests in this world* lists them with their stages) and the player's **character stats** (story default, random, balanced, or own points with Randomize/Balance); the scene shows the quest and its current stage, health `x/max`, the **people here** (who they are, what they want, hostile or able to help with the quest, how often spoken with), stats, the last check and remembered values; beside it the **quest log** (stages done, now, to come; what to do now) and the **people met** (where, how often spoken with, gone); taking one of the **most relevant choices** | `GET /v1/missions/playable`, `POST /v1/stats/allocate`, `POST /v1/sessions/{id}/actions` (structured state: `quest`, `people`, `people_met`, `ways_on`) |
+| **4 · Simulate & play** | **Player profile**, the **quest to play** (any quest open to the profile, or one drawn by the story; *Quests in this world* lists them with their stages) and the player's **character stats** (story default, random, balanced, or own points with Randomize/Balance); the scene shows the quest and its current stage, health `x/max`, the **people here** (who they are, what they want, hostile or able to help with the quest, how often helped and whether an ally, how often spoken with), the **checks** of the choices, stats, the last check and remembered values; beside it the **quest log** (stages done, now, to come; what to do now) the **people met** (where, how often spoken with, allies, gone) and the **map** as the player knows it (places, paths, locked exits); taking one of the **most relevant choices**, each labelled with its check | `GET /v1/missions/playable`, `POST /v1/stats/allocate`, `POST /v1/sessions/{id}/actions` (structured state: `quest`, `people`, `people_met`, `ways_on`) |
 | **4 · Simulate & play** → *Export the engine* | Download the trained engine to run offline in a game: this run's best, any generation's champion, the best remembered storyteller, or the current game's; with or without the learning memory | `POST /v1/exports`, `GET /v1/artifacts/{id}` |
-| **4 · Simulate & play** → *Records* | Recorded engines, runs and stories; play with, continue or retrain an engine; download its model file and world | `GET /v1/records/...`, `POST /v1/records/engines/{id}/play`, `POST /v1/jobs/engines/{id}/continue\|retrain` |
+| **4 · Simulate & play** → *Judge this playthrough* | Gemma 4's judgement of the game played so far: engagement, the eight criteria, the best and weakest moments, a verdict | `POST /v1/sessions/{id}/judge` |
+| **4 · Simulate & play** → *Records* | Recorded engines, runs (their settings and every generation), worlds (download one as a configuration to upload) and stories; play with, continue or retrain an engine; download its model file and world; judge a recorded story, or compare two (which is the better game) | `GET /v1/records/...`, `POST /v1/records/engines/{id}/play`, `POST /v1/jobs/engines/{id}/continue\|retrain`, `POST /v1/records/stories/{id}/judge`, `POST /v1/judge/compare` |
 | **5 · Engine logic** | Every parameter of the engine's logic, section by section (no code editing) | `GET /v1/logic`, `GET/PUT /v1/logic/{section}` |
 | **5** → *App parameters* | The studio's limits, defaults, queue, and launch settings | `GET/PUT /v1/app-settings` |
+| **5** → *Background jobs* | Evolutions, continued trainings and judge runs started by any client, with their progress | `GET /v1/jobs` |
+| **6 · Evaluate with the judge** | Judge the engine's stories (current settings or a recorded engine), or compare the current settings with version B on the same seeds (pairwise A/B, both orders, win rate with its 95% interval); fit the fitness to the judge and save the suggested `fitness.term_weights`, or edit them | `POST /v1/jobs/judge-benchmark`, `POST /v1/jobs/calibrate-fitness`, `GET/PUT /v1/fitness/term-weights` |
+
+Every endpoint of the API is reached from the studio, directly or through an equivalent
+one (the YAML form of a JSON endpoint, the job form of a long one);
+[`tests/test_studio_coverage.py`](tests/test_studio_coverage.py) fails when an endpoint is
+added that the studio cannot reach.
 
 What the studio needs to build its forms (entry kinds, suggested tags, the
-action reference, repeat rules, goal keys, rule choices, stat choices) comes
-from `GET /v1/reference`.
+action reference, repeat rules, goal keys, rule choices, stat choices, NPC roles, the
+judge's criteria) comes from `GET /v1/reference`.
 
 Choosing a new **Player profile** name on the play tab starts a new player.
 Stored values can be edited in *Persistent variables*, for example
@@ -308,7 +320,26 @@ curiosity, drive toward the mission, and avoiding repetition. Each generation:
    volatility, interactions, discovery, tone) count **per turn**
    (`mode: rate`, scaled to `story_length.target`; a story shorter than
    `floor_steps` counts as that long), so a longer story is not better merely
-   for being longer and a short won story is not worse. A storyteller's score over its stories is
+   for being longer and a short won story is not worse. **Objective losses**
+   (`fitness.objective_losses`, `core_engine/fitness.objective_losses`) subtract
+   what a story lacks: `transition_quality` (moves between places that fit each
+   other: tag similarity below `target_similarity`), `tag_coverage` (too little of
+   the world's tags shown), `named_transition_dependence` (discoveries and engine
+   moves that only follow an authored name rather than tags, a lead or the map),
+   `scenario_duplication` (the same place, action and outcome told again) and
+   `world_extension` (too little of the world discovered, or a known map without
+   branches). Each shows in the breakdown as `loss_<name>`, and every NPC whose
+   goal the story fulfilled adds `base.npc_goal_bonus`. **Rhythm**
+   (`fitness.rhythm`) rewards what makes a story worth playing turn after turn:
+   `predictability` costs every calm turn in a row beyond `calm_allowed`,
+   `variety_of_play` counts the kinds of development the story offers (new
+   place, event, person, outcome, check, fight, hurt, gain, discovery, payoff),
+   `events_lived` the distinct events, `exploration` the distinct places, and
+   `open_threads` costs every clue still open at the end. **Alternatives**
+   (`evolution.alternatives_weight` x `fitness.alternatives`, 0..1): a
+   storyteller whose stories differ from one another (places, events, people and
+   outcomes; mean Jaccard distance) scores higher than one that tells the same
+   story whatever the start. A storyteller's score over its stories is
    `score_aggregate`: `mean_minus_std` subtracts `consistency_weight` × the
    standard deviation, so a storyteller that tells consistently good stories
    beats one that alternates great and broken ones.
@@ -565,33 +596,92 @@ stay where they are.
 - **Tests** record into a temporary folder (`tests/records_sandbox.py`), never
   into the real database.
 
-## LLM Fallback
+## Language model: Gemma 4 on vLLM
 
-LLM features are used by:
+One language model, **Gemma 4 E4B** (`google/gemma-4-E4B-it`), serves every LLM feature
+through a single shared runtime ([`utils/llm_model_loader.py`](utils/llm_model_loader.py)),
+so the model is loaded once:
 
-- `llm_evaluator`: final narrative evaluation.
-- `augmentation`: world expansion.
-- `editor_suggester`: editor field suggestions.
+- `llm_evaluator`: the judge of the final story (`evaluator/llm_eval.py`).
+- `augmentation`: world expansion (`core_engine/augmenter.py`).
+- `editor_suggester`: field suggestions in the terminal editor.
 
-The primary model is configured here:
-
-```yaml
-llm_evaluator:
-  enabled: true
-  model_name: "meta-llama/Llama-3.2-1B-Instruct"
-```
-
-If that model is gated, restricted, or unavailable to the current Hugging Face user, the shared loader in [`utils/llm_model_loader.py`](utils/llm_model_loader.py) automatically tries the public fallback:
+It runs on [vLLM](https://docs.vllm.ai), in one of two modes:
 
 ```yaml
-llm_fallback:
-  enabled: true
-  model_name: "Qwen/Qwen2.5-0.5B-Instruct"
-  local_files_only: false
-  trust_remote_code: false
+vllm:
+  mode: embedded               # embedded | server
+  model_name: google/gemma-4-E4B-it
+  gpu_memory_utilization: 0.55
+  max_model_len: 8192
+  limit_mm_per_prompt: {image: 0, audio: 0}   # text only
+  base_url: http://127.0.0.1:8000/v1           # server mode
 ```
 
-This fallback is shared by evaluation, augmentation, and editor suggestions. If you want offline-only behavior, set `llm_fallback.local_files_only: true` and make sure the selected models are already cached locally.
+- **`embedded`** loads the model in this process (needs `pip install "vllm>=0.25.0"`
+  and a GPU; `environment.yml` installs it). Evolution's worker processes are then
+  *spawned* instead of forked, since a GPU context must not be forked; they receive
+  the active configuration and tag vectors explicitly.
+- **`server`** calls a separately started OpenAI-compatible server, e.g.
+  `vllm serve google/gemma-4-E4B-it --max-model-len 8192`. Use it with Docker (the
+  image does not install vLLM) or to share one model between several processes.
+
+Without vLLM (or a server), the LLM features report that the model is unavailable and
+everything else runs as usual. `llm_evaluator` sets the judge's `max_new_tokens` and
+`temperature`, `editor_suggester` the editor's.
+
+### Gemma 4 as the judge of a story, from the view of a video game
+
+`evaluator/game_judge.py` uses the language model as a judge (LLM-as-a-judge):
+it reads a digest of a playthrough (each turn: the place, the choice, what
+happened, checks, events, moves, changes of health and coins, the story beats
+the player saw - a quest step, a twist, a callback, an ally, a new path, an
+arrest - and the choices passed up) and scores it as
+a game critic would, from 1 to 10, on **agency**, **pacing**, **surprise**,
+**payoff**, **exploration**, **stakes**, **coherence** and **replayability**,
+with the overall **engagement**, the best and the weakest moment and a verdict.
+`llm_judge.samples` judgements are averaged; their spread says how sure the
+judge is.
+
+```python
+from evaluator.game_judge import GameJudge
+result = GameJudge().judge_state(state)   # or judge_turns(recorded turns, meta)
+result["engagement"], result["scores"], result["verdict"]
+```
+
+- API: `POST /v1/records/stories/{id}/judge` (a recorded story) and
+  `POST /v1/sessions/{id}/judge` (the game played so far); `503` without a model.
+- Terminal: `python -m evaluator.game_judge STORY_ID`; with `llm_judge.enabled`
+  the terminal story is judged after it is told.
+- A shared GPU server: `vllm serve google/gemma-4-E4B-it --dtype float16
+  --max-model-len 8192` (float16 on GPUs without bfloat16, such as the TITAN RTX),
+  then `vllm.mode: server` and `vllm.base_url`.
+- Benchmark: `python -m evaluator.judge_benchmark --stories 15 --server
+  http://127.0.0.1:8000/v1` plays stories with the current engine (or `--engine ID`,
+  a recorded one), judges each twice and prints the mean engagement, the criteria,
+  the fitness's agreement with the judge (Spearman) and the judge's test-retest
+  difference.
+
+The judge also calibrated the fitness. Over 50 judged stories, the terms that ran
+against the judge's engagement (volatility -0.38, scene contrast -0.33, combat
+successes -0.31) now count half as much, and those that ran with it (scenario
+duplication +0.44, novelty fading, loops, filler) cost more; repeated failed
+attempts, its most frequent complaint, now ease the next attempt and step back for
+a turn or two (`director.retry_bonus`, `retry_cooldown`).
+
+**Measuring with the judge, and learning from it.** Small differences in the judge's 1-10
+scores (about 0.1) sit within run-to-run noise, so compare settings head to head.
+`python -m evaluator.judge_benchmark --pairwise --variant director.surprise=0 --stories 20`
+plays the same seeds with and without the change. Gemma 4 reads each pair twice, in both
+orders, and a story wins only when both readings agree, which cancels the judge's preference
+for whichever story comes first. The result is B's win rate with a 95% Wilson interval and a
+win rate per criterion. `python -m evaluator.calibrate_fitness --stories stories.jsonl
+--judged judged.jsonl --write weights.yaml` fits which fitness terms run with the judge,
+suggests a multiplier per term (`fitness.term_weights`, 0.25-3) and reports how well the fit
+predicts stories it was not fitted on. Finally, `evolution.judge_weight` (0 = off) puts the
+judge in the loop: each generation, the judge reads one story from each of the
+`judge_top_k` best storytellers and adds `judge_weight x (engagement - 5)` to their scores
+before breeding. Without a model the run continues on the fitness alone.
 
 For faster non-LLM runs, disable these sections:
 
@@ -1459,6 +1549,49 @@ that it rises toward an ending instead of wandering until it is cut off:
 - **No loops.** An action used within `loop_window` turns whose outcomes have
   all been told already is not offered again (unless fewer than
   `min_options` options would remain); events and travel are always offered.
+- **Alternative stories.** Now and then (`surprise` x (1 + the storyteller's
+  `chaos_bias`)) the storyteller takes an option nearly as good as its favourite
+  (within `surprise_margin`, among its `surprise_top_k` best) instead of the
+  favourite itself, drawn from the story's own fixed randomness (a hash of its
+  seed and the turn, never its dice, so skill checks roll as before): a story is
+  still the same for the same seed, but one storyteller tells different stories.
+- **Rhythm.** After `boredom_turns` turns with nothing new (no new place, event,
+  person, outcome, check, or change of health or coins), options that bring
+  something new (an event, a place not visited, a fight, a discovery, an outcome
+  not told) rank higher by `boredom_weight` for every further calm turn, and an
+  unexpected event becomes likelier (`boredom_event_pressure`).
+- **Payoffs come due.** A clue open for `payoff_delay` turns wants its payoff:
+  the action that pays it off, and the way to where it can, rank higher
+  (`payoff_due_weight`).
+- **The pull of the unknown.** A place not visited yet pulls harder the longer
+  since the last new place (`explore_weight`), so stories move across the world.
+- **No dead ends.** Going back to a place with nothing left there (no quest step,
+  no payoff, no untold outcome, nobody unmet) costs `dead_end_penalty`.
+- **Failing forward.** A failure that led nowhere may turn into a complication
+  (`fail_forward`): an authored event tagged `complication` whose tags fit the
+  failure starts once the turn is done. A botched bribe or a jammed safe brings
+  *The guards come running*: hide, bluff, or slip away into the Sewers.
+- **Quest momentum.** A quest idle for `mission_settings.momentum_after` turns (no
+  stage done) pulls harder, at full strength after twice that, so the main quest
+  keeps the story going instead of fading behind side paths.
+
+**Twists that keep their word** (`unexpected_events.effects`): every procedural
+twist is told with a text that matches what it does (a purse pressed into your
+hand pays; a trap hurts). A mystery (`payoff`) plants a thread that a later twist
+pays off, `twist_payoff_delay` turns later or in the finale (`[TWIST] The one
+who followed you since the Harbor makes their move at last ...`). A **bargain** is
+a choice: taking it pays now, and its price comes due later; refusing it closes
+the matter.
+
+**Payoffs that call back.** A payoff that closes a clue it belongs with (told at
+the same place, or sharing a word) says so: `[CALLBACK] It all fits: what you
+learned at the Harbor pays off - "A drunk sailor swears ..."`. A won story ends
+with an **epilogue** of its journey (`end_victory`): the road from its first place
+to its last by way of those that mattered, the quest's steps, the friends made and
+the turns of fate, told as a story rather than a tally (counts of places and
+threads made the judge rate the same stories lower: exploration 7.46 -> 6.88); the
+epilogue of a story that reaches the action limit is told the same way. A first
+journey somewhere says what one sees on the way (`travel_first`).
 
 ```yaml
 director:
@@ -1505,6 +1638,81 @@ the storyteller's favourite. `relevance_filter: false` restores the plain
 each time they appear, as recent starts are, so a returning player meets
 other missions.
 
+### Story beats: who matters, the climax, failures, travel, stakes, reveals
+
+The engine makes a story's beats itself (`core_engine/story_beats.py`); each one has its
+own section in `config/hyperparameters.yaml` and can be switched off there. Every beat is
+told with its own tag (`[REVEAL]`, `[CLIMAX]`, ...; the texts are in `config/messages.yaml`)
+and logged in the story's `beat_log`, which the fitness (`fitness.beats`) and the judge's
+digest read.
+
+**Who matters, and how much** (`npc_roles`). Every NPC has a role in a story: its own
+(`role:` in `config/npcs.yaml`), or the first `infer` rule it matches by its tags (the NPC
+the quest is about and that is a threat is the story's **nemesis**; a unique threat a
+**lieutenant**; a unique palace NPC a **power broker**; a unique talker an **informant**;
+guards **henchmen**; everyone else a **bystander**). A role sets:
+
+| Setting | What it does |
+| --- | --- |
+| `importance` 0-3 | shown with the people (`people`, `people_met`); importance 2+ is met with `[REVEAL]` and beaten with `[TRIUMPH]` |
+| `check_modifier` | added to every check against or with them: a nemesis -15, a bystander +10 |
+| `reveal_turns`, `reveal_clues` | out of sight until the story has run this many turns or the player learned this many things (clues, quest steps, allies), unless a lead names them (`leads_name_hidden`), the road speaks of them (first trips) or an outcome reveals them |
+| `defeat_coins` | optional: what beating them is worth |
+
+An NPC may also keep a **secret** that comes out once spoken with `talks` times (and
+`clues` things learned): `[SECRET] text`, its `effects`, and the actions it unlocks with
+`enabled_if: {secret_known: <NPC>}`. In the city the Merchant fences the thief's goods
+(and can be threatened for it) and the Gate Guard is in debt (and lets you in if you
+settle it).
+
+**A climax for every quest** (`climax`). When the last step of a quest that took at least
+`min_turns` turns is reached, the win waits for a showdown, an event of the story's own:
+the antagonist (the quest's own target if hostile, else the most important hostile NPC who
+belongs there or was met) stands in the way, with one choice per stat (`choices`: face them,
+outwit them, talk them down) and, with an ally, `Call on <ally>` (`ally_choice.bonus`). A
+setback costs `failure_damage` and the showdown comes back after `retry_turns`; after
+`max_attempts` setbacks the quest is won at a price (`price_health`, never the last
+point): a quest is never lost at its last step. Winning closes every open thread, the first
+`revelations` told as `[REVELATION]`. Beating someone who matters on the quest's last turn
+is its climax already.
+
+**Failures as beats** (`director`). A failure no complication followed shows
+**another way** with chance `another_way`: a witness here, someone who matters named, or a
+way toward the quest (`[ANOTHER WAY]`); otherwise it is a dead end, which costs fitness. A
+paid attempt that fails returns `failure_refund` of its price (`[REFUND]`). `GET
+/v1/lint/failures` lists the failures a world leaves as dead ends, to write a consequence
+for.
+
+**Variation** (`variation`). An outcome may have `variants`, other ways to tell it, used in
+turn when it is told again; once they are used up, the result line says it happened before
+(`result_again`, `result_habit`). Each earlier success of an action makes its check harder by
+`repeat_check_penalty` (up to `max_repeat_penalty`): people catch on.
+
+**Travel** (`travel`). A place visited before, two or more steps away along known ways and
+still holding something, can be reached in one turn (`Travel by known ways to ...`, at most
+`fast_travel_options`, not within `fast_travel_cooldown` turns of the last); those turns do
+not count toward the action limit (up to `max_free_turns`). A first trip somewhere has a
+scene on the way (`first_trip.by_tag`, with `chance`; an entry may give `coins` or
+`health`) and word on the road of someone who matters to be found there.
+
+**Stakes** (`stakes`). Crimes and failures where the watch is (`alert.watched_tags`) raise
+the **alert** (`raise_on_success`, `raise_on_failure`: an action's words or an outcome's
+tags); from `warn_at` every rise is told (`[ALERT]`), each level makes checks against guards
+harder (`check_penalty`), quiet turns let it fall (`decay_turns`), and at `max` a manhunt
+starts (`manhunt_event`) and the alert drops to `reset_to`. Every choice with a check shows
+what failing costs (`risk`: health, coins, being sent away), in the API and in the studio.
+
+**Reveals** (`consequences`, `memory`). What the player did shows later: beating someone
+who mattered or making an ally is told a few turns on, at a place it belongs to
+(`[CONSEQUENCE]`, with `coins` or `alert`). In real play (a profile) the next story
+remembers the last: `[LAST TIME] Last time you completed ...`, and old friends and foes
+recognise the player.
+
+**Fitness** (`fitness.beats`, `fitness.term_weights`). A climax won, triumphs (by
+importance), reveals and consequences add to a story's fitness, failures that showed another
+way a little, dead ends cost; `term_weights` multiplies any term of the breakdown (written by
+`evaluator/calibrate_fitness.py`).
+
 ### The map: which places border which
 
 A world's map says which places border which. Every move follows it: one
@@ -1536,6 +1744,24 @@ straight to the Palace, say).
   no map, and any move goes, as before.
 - **The way to a far place becomes known** along the whole path, so the player
   who set out for it, or heard of it, can follow it.
+- **One graph, both ways.** Every path found joins two places both ways (a place
+  never leads to itself; two places whose names differ only in case or spacing
+  are refused) and stays with the game: the play state's `map` lists the known
+  places and paths, saved games keep them, and the studio shows them. The way
+  back to the place just left is always among the player's choices
+  (`player_options.way_back`).
+- **Player-directed navigation** (`navigation.player_directed: play`). In real
+  play a discovery or an NPC's hint opens a path but never moves the player, and
+  lingering neither moves them on nor ends the story: they choose where to go.
+  The storyteller's simulations keep moving by themselves (`always` / `never`
+  set it for every story).
+- **Locked exits.** A location with `exit_locked: true` cannot be left until an
+  outcome with `unlock_exit: true` (or an escape) opens it (`[UNLOCKED] …`); the
+  action that opens it is offered only while it is locked.
+- **Discoveries led by tags.** An outcome with `target_tags: [nature, secluded]`
+  opens the neighbour that fits them best instead of a named place, and
+  `move_to_tags` moves to the best-fitting neighbour; both count as tag-led in
+  the objective losses.
 
 The spawn rules (`world_definition.spawn_strategy: similarity`) say which
 places *may* open onto which; with `similarity_threshold: 0.5` that is almost
@@ -1612,6 +1838,66 @@ Rules found by auditing generated stories, applied to every world:
   (18) and reaches full strength at `pursuit_full_step` (40), and a win before
   `fitness.base.mission_win_min_steps` (25) counts as rushed: stories run
   about 28 turns instead of 21, with as many missions won.
+
+### Gameplay rules: checks, people, encounters, Power, threads
+
+- **Checks are explicit.** An outcome without a skill check succeeds by its own
+  `success_prob`; the storyteller's traits no longer tip it unseen
+  (`outcome_resolution.hidden_adjustments: false`). An option with a check shows
+  it before the player chooses: the scene lists **Checks** (`Bribe with coins —
+  persuasion 55%`), the studio labels the choice, and the play state's
+  `choices` give `{stat, chance, bonus}`.
+- **NPC goals work.** Helping someone with what they want (an action with them,
+  not small talk or a failure, whose name, text or tags share a word with one of
+  their `goals`) counts; after `npc_goals.progress_needed` (2) times they are an
+  **ally** (`[ALLY] You helped a Gate Guard collect bribes; …`): they show the way
+  to a place they know (`reward: lead`, or `item`, `none`), their own checks get
+  `ally_check_bonus`, and the storyteller is drawn to helping people
+  (`action_weight`). A goal can also be a mapping:
+  `{goal: Protect the palace, tags: [palace, guards], needed: 1, reward: item}`.
+  The play state shows how often each person was helped and who is an ally.
+- **Mandatory encounters are resolvable.** An NPC's `encounter_event` must name an
+  event with actions (the configuration is refused otherwise); while it lasts,
+  only its choices are offered, with the authored fallback when none can be
+  taken; and an outcome with `return_to_previous: true` flees back the way the
+  player came (`[BACK] …`), as the bandit ambush's *Make a run for it* now does.
+- **Power counts in a fight.** Power is the player's fighting strength (health and
+  skills, weapons and armour included). In a fight (a check on `attack` or
+  `defence`, or an action tagged `combat` or `threat`) every point of Power
+  gained since the story began adds `power_model.check_weight` (6) to the check:
+  a sword helps, wounds hurt.
+- **Item labels** in an action's name come from the item: "Give him the
+  {alcohol_desc}" becomes "Give him the Vintage Wine", never its description.
+- **Setups before payoffs** (`story_rules.gate_payoffs`). A payoff (a `payoff_*`
+  clue tag) is told only while a planted clue waits for it (with `clue_matching:
+  numbered`, its own `setup_N`). Named threads: an outcome with `setup_id:
+  palace_route` plants it, one with `requires_setup: palace_route` is told only
+  after, and one with `payoff_id: palace_route` closes it for good (an id that no
+  outcome plants is refused).
+
+### Scenario templates
+
+Places of one kind can share a template, with parameters for what differs.
+Two places with the same template and the same parameters, or with the same
+content, are refused as duplicate scenarios (also among places a language
+model generates).
+
+```yaml
+world_definition:
+  scenario_templates:
+    district_market:
+      tags: [urban, trade, "{district}"]
+      entered_descriptions: ["The {district} market: {name}."]   # {name}: the place's own name
+      actions:
+      - name: Haggle in the {district} stalls
+        outcomes: [{desc: A bargain., tags: [trade]}]
+  locations:
+    North Market: {template: district_market, parameters: {district: north}}
+    South Market: {template: district_market, parameters: {district: south}, start_eligible: true}
+```
+
+A place's own fields win over its template's. A `template_id` without a
+matching template only labels the scenario (as generated places do).
 
 ### Story rules
 
@@ -2075,6 +2361,22 @@ The presentation conversion path expects LibreOffice's `soffice` command if PPTX
 ## Development Notes
 
 - Record every change in [`docs/CHANGELOG.md`](docs/CHANGELOG.md) under **Unreleased**, in the section of the area it touches, in the same commit.
+
+- **Continuous integration** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every
+  push and pull request (changes to Markdown and `docs/` only are skipped; it can also be started
+  by hand). Two jobs must pass before a change is deployed:
+  - **Tests**: Python 3.10 (the image's), CPU-only PyTorch, every module compiled, and every test
+    module of `tests/` run in its own process, in parallel; the logs of a failed run are kept as
+    an artifact.
+  - **Docker image**: `docker compose build` builds the image from the [`Dockerfile`](Dockerfile),
+    `docker compose up --wait` starts the API and the studio as deployed and waits for their
+    health checks, and [`.github/scripts/docker_smoke_test.py`](.github/scripts/docker_smoke_test.py)
+    checks the API (health, missions, failure lint, a short evolution that starts a game, one
+    turn played) and the studio, and that the run was recorded.
+
+  Run the same checks locally: each test module with `python -m unittest tests.test_<name>` (from
+  the repository root), and, against a running deployment, `python .github/scripts/docker_smoke_test.py
+  --api http://127.0.0.1:8004 --ui http://127.0.0.1:8003`.
 
 - Keep version control active when using augmentation, especially with `augmentation.save_to_source: true`.
 - For reproducible runs, set `reproducibility.seed` in `config/hyperparameters.yaml`.

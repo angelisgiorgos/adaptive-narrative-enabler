@@ -114,7 +114,8 @@ class RepeatAndExclusiveTests(unittest.TestCase):
         groups = {a.name: a.exclusive_group for a in guard.actions}
         self.assertEqual(
             {name for name, group in groups.items() if group == "get_past_gate_guard"},
-            {"(Gate Guard) Give him the {alcohol_desc}", "(Gate Guard) Bribe with coins", "(Gate Guard) Fight the guard"},
+            {"(Gate Guard) Give him the {alcohol_desc}", "(Gate Guard) Bribe with coins", "(Gate Guard) Fight the guard",
+             "(Gate Guard) Offer to settle the guard's debt quietly"},
         )
         study = next(a for o in world.objects if o.name == "Ancient Map" for a in o.actions)
         self.assertEqual(GameState(world, _genome())._repeat_rule(study), "once")

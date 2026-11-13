@@ -15,6 +15,10 @@ _TAG_EMBED_CACHE = {}
 _TAG_SET_CENTROID_CACHE = {}
 _TAG_SIMILARITY_CACHE = {}
 _TAG_CACHE_LOCK = threading.Lock()
+# Loading the embedding model (sentence-transformers, torch) happens once, under this lock:
+# two threads importing torch at once break the import, and one that finds the model
+# "loading" must wait for it rather than fall back to other vectors.
+_TAG_MODEL_LOCK = threading.Lock()
 _TAG_HASHING_VECTORIZER = None
 _TAG_HASHING_READY = False
 _PRELOADED_DIMENSION = None  # set when pre-computed vectors are loaded
@@ -22,13 +26,16 @@ _PRELOADED_DIMENSION = None  # set when pre-computed vectors are loaded
 
 def _hashing_vectorizer():
     global _TAG_HASHING_VECTORIZER, _TAG_HASHING_READY
-    if not _TAG_HASHING_READY:
-        _TAG_HASHING_READY = True
-        try:
-            from sklearn.feature_extraction.text import HashingVectorizer
-            _TAG_HASHING_VECTORIZER = HashingVectorizer(analyzer="char_wb", ngram_range=(2, 5), n_features=256, norm=None)
-        except ImportError:
-            _TAG_HASHING_VECTORIZER = None
+    if _TAG_HASHING_READY:
+        return _TAG_HASHING_VECTORIZER
+    with _TAG_MODEL_LOCK:
+        if not _TAG_HASHING_READY:
+            try:
+                from sklearn.feature_extraction.text import HashingVectorizer
+                _TAG_HASHING_VECTORIZER = HashingVectorizer(analyzer="char_wb", ngram_range=(2, 5), n_features=256, norm=None)
+            except Exception:  # not installed, or a broken install
+                _TAG_HASHING_VECTORIZER = None
+            _TAG_HASHING_READY = True
     return _TAG_HASHING_VECTORIZER
 
 
@@ -67,22 +74,21 @@ def _get_tag_embedding_model():
     global _TAG_EMBEDDING_MODEL, _TAG_EMBEDDING_MODEL_READY
     if _TAG_EMBEDDING_MODEL_READY:
         return _TAG_EMBEDDING_MODEL
+    with _TAG_MODEL_LOCK:
+        if _TAG_EMBEDDING_MODEL_READY:  # another thread loaded it while this one waited
+            return _TAG_EMBEDDING_MODEL
+        try:
+            from sentence_transformers import SentenceTransformer
 
-    _TAG_EMBEDDING_MODEL_READY = True
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError:
-        return None
-
-    model_name = config.get(
-        "semantic_similarity.model_name",
-        "sentence-transformers/all-MiniLM-L6-v2",
-    )
-    try:
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            _TAG_EMBEDDING_MODEL = SentenceTransformer(model_name, local_files_only=True)
-    except Exception:
-        _TAG_EMBEDDING_MODEL = None
+            model_name = config.get(
+                "semantic_similarity.model_name",
+                "sentence-transformers/all-MiniLM-L6-v2",
+            )
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                _TAG_EMBEDDING_MODEL = SentenceTransformer(model_name, local_files_only=True)
+        except Exception:  # not installed, not cached, or a broken install: the fallback vectors
+            _TAG_EMBEDDING_MODEL = None
+        _TAG_EMBEDDING_MODEL_READY = True
     return _TAG_EMBEDDING_MODEL
 
 

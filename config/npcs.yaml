@@ -49,7 +49,20 @@ world_definition:
     - He looks like he'd rather be anywhere else but here.
     - He's always watching for troublemakers with a cynical eye.
     - He's secretly hoping for a quiet shift so he can nap.
+    secret:
+      text: "{npc} admits under his breath that he owes money to the wrong people; that is why he takes bribes."
+      talks: 2
     actions:
+    - id: gate_guard_settle_debt
+      name: Offer to settle the guard's debt quietly
+      exclusive_group: get_past_gate_guard
+      enabled_if: {all: [{secret_known: Gate Guard}, {not: {at_location: Vault}}]}
+      required_coins: 8
+      outcomes:
+      - desc: Relief floods his face; he pockets the coins and shows you the way in.
+        tags: [social, success]
+        lead_to_known: true
+        linked_location: Vault
     - id: gate_guard_give_drink
       name: Give him the {alcohol_desc}
       # One way past the guard: once any of these succeeds, the others disappear.
@@ -98,6 +111,9 @@ world_definition:
       outcomes:
       - id: gate_guard_friendly
         desc: The guard is unexpectedly friendly and gives you directions.
+        variants:
+        - "The guard recognises you and nods you on, a little warier than before."
+        - "The guard sighs, 'You again,' and points the way without looking up."
         tags:
         - neutral
       - id: gate_guard_rude
@@ -263,7 +279,24 @@ world_definition:
     known_objects: [Ancient Map, Vintage Wine, Gold Coins]
     descriptions:
     - A many-ringed dealer who prices every object in coins, favors, and secrets.
+    secret:                    # comes out after two dealings with them ([SECRET]; enabled_if: {secret_known: Merchant})
+      text: "{npc} lets it slip: the goods the market thief steals are sold on in the Sewers, to a fence who keeps a ledger."
+      talks: 2
+      effects:
+      - reveal_location: Sewers
     actions:
+    - name: Threaten to expose the merchant's trade
+      repeat: once
+      enabled_if: {secret_known: Merchant}
+      skill_check: {stat: persuasion}
+      outcomes:
+      - desc: The merchant pales and pays for your silence.
+        on_check: pass
+        tags: [social, success, risk]
+        coin_change: 6
+      - desc: The merchant shouts for the guards before you can finish.
+        on_check: fail
+        tags: [guards, threat, failure]
     - name: Ask about forbidden merchandise
       outcomes:
       - desc: The merchant produces a map whose coastline changes whenever you blink.

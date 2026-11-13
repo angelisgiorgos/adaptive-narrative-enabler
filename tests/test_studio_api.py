@@ -251,7 +251,7 @@ class StudioServiceTests(_Sandbox):
 
     def test_documents(self):
         names = [d["name"] for d in self.client.get("/v1/documents").json()["documents"]]
-        self.assertEqual(names, ["missions", "messages", "variables", "stats", "stored_values"])
+        self.assertEqual(names, ["missions", "messages", "variables", "map", "stats", "stored_values"])
         for name in names:
             with self.subTest(document=name):
                 response = self.client.get(f"/v1/documents/{name}", params={"profile": "erin"})

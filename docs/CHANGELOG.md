@@ -7,6 +7,232 @@ that introduces them.
 
 ## [Unreleased]
 
+### Everything in the API and in the studio
+
+#### Added
+- API: `GET|PUT /v1/entities/{kind}/{name}/yaml` (every field of an entry, the whole world
+  checked before saving), `role` and `secret` on NPC entities, the `map` document
+  (`world_definition.routes`), `POST /v1/judge/compare` (two stories, both orders),
+  `POST /v1/jobs/judge-benchmark` (absolute, or a pairwise A/B of settings on the same seeds,
+  played in a separate process so games in progress keep their settings),
+  `POST /v1/jobs/calibrate-fitness`, `GET|PUT /v1/fitness/term-weights`; `npc_roles` and
+  `judge_criteria` in `GET /v1/reference`; judge jobs report stories judged as progress.
+- Studio: an NPC's **Role in the story** and **Secret**; *Every field of this entry (YAML)*,
+  *Map* and *Failures that lead nowhere* in the world editor; *Judge this playthrough*;
+  judging and comparing recorded stories, recorded runs' settings and generations, and
+  recorded worlds to download; *The active configuration*; *Background jobs*; and the tab
+  **6 · Evaluate with the judge** (benchmark, A/B, fitting the fitness, term weights).
+- `tests/test_studio_coverage.py`: every endpoint is used by the studio or named with the
+  equivalent the studio uses; the new endpoints and the studio's new controls.
+
+### Continuous integration
+
+#### Added
+- GitHub Actions (`.github/workflows/ci.yml`): on every push and pull request the test suite
+  runs (Python 3.10, CPU-only PyTorch, one process per test module), and the Docker image is
+  built with `docker compose build`, started as deployed (API and studio, waiting for their
+  health checks) and smoke-tested (`.github/scripts/docker_smoke_test.py`: health, missions,
+  failure lint, a short evolution that starts a game, one turn, the studio, a recorded run).
+
+### Story beats made by the engine, NPC roles, and learning from the judge
+
+Measured pairwise with Gemma 4 E4B (30 City stories, random storytellers, the same seeds
+with the new beats on and off, each pair judged in both orders): the stories with the beats
+won 19, lost 3 and tied 8, a win rate of 86% of decided pairs (95% Wilson interval 67-95%).
+They won on pacing and coherence in every decided pair, payoff 95%, surprise 90%,
+replayability 86%, stakes 84%, agency 75%; exploration was even (50%), and the three losses
+were stories whose journey the judge found more varied without fast travel.
+
+#### Added
+- NPC roles (`npc_roles`): every NPC has a role in a story, its own (`role:`) or inferred
+  from its tags (the quest's hostile target is its nemesis; lieutenants, power brokers,
+  informants, henchmen, bystanders). A role's `importance` (0-3), `check_modifier` (harder or
+  easier to beat) and `reveal_turns` / `reveal_clues` (out of sight until then, unless a lead
+  or the road names them). `[REVEAL]` on meeting, `[TRIUMPH]` on beating someone who matters;
+  `role` and `importance` in `people` and `people_met`.
+- NPC secrets (`secret: {text, talks, clues, effects}`), told as `[SECRET]`, and the
+  `secret_known` condition for the actions they unlock; the city's Merchant and Gate Guard
+  have one.
+- A climax for every quest (`climax`): a showdown before the last step completes, with one
+  choice per stat and calling on an ally; setbacks bring it back, and after `max_attempts` it is
+  won at a price. Open threads close as `[REVELATION]`s.
+- Failures as beats: another way after a failure no complication followed
+  (`director.another_way`: a witness, someone named, a way toward the quest), refunds of
+  failed paid attempts (`director.failure_refund`), and `GET /v1/lint/failures`.
+- Variation (`variation`): outcome `variants`, result lines that know an outcome was told
+  before (`result_again`, `result_habit`), and checks that grow harder with each success of
+  the same action.
+- Travel (`travel`): fast travel along known ways (not counted toward the action limit), and
+  first trips with a scene on the way and word of who is to be found there.
+- Stakes (`stakes`): the alert level (`[ALERT]`, a manhunt at the top, harder checks
+  against guards), `stakes` in the play state, and what failing costs (`risk`) with every
+  check, shown in the studio's choices.
+- Consequences (`consequences`) told a few turns later, and memory (`memory`): in real play
+  the next story starts with `[LAST TIME] ...` and old friends and foes recognise the player.
+- Fitness: `fitness.beats` (climax, triumphs, reveals, consequences, failures that led on,
+  dead ends) and `fitness.term_weights`, multipliers of any term.
+- Pairwise judging: `GameJudge.compare_states` / `compare_digests` judge a pair in both
+  orders and declare a winner only when both agree.
+- `judge_benchmark --pairwise --variant key.path=value`: A/B of any setting on the same
+  seeds, with win rate, 95% Wilson interval and per-criterion win rates.
+- `evaluator/calibrate_fitness.py`: fits judged engagement on the fitness terms and suggests
+  `fitness.term_weights` multipliers, choosing the ridge strength by cross-validation and
+  reporting how well the fit predicts unseen stories.
+- Judge in the loop: `evolution.judge_weight` (default 0, off), `judge_top_k` (2),
+  `judge_workers` (4); per-generation `judge_engagement` in the history; the run never stops
+  when no model is available.
+
+#### Changed
+- Repetition costs more: `fitness.engagement` filler 80 -> 100, loops 6 -> 8, novelty fade
+  75 -> 100, and `objective_losses.scenario_duplication` 160 -> 200.
+- The Gate Guard has a fourth way past him (settling his debt, once his secret is out).
+- The judge's digest shows an outcome as the player read it (its variant) and the new beats.
+
+### Stories that keep their word: twists, callbacks, failing forward
+
+Measured with Gemma 4 E4B as the judge (60 stories per version, City and Monastery,
+random and evolved storytellers, each judged twice, with the same digest): engagement
+7.20 -> 7.23, payoff 6.72 -> 7.11, stakes 6.32 -> 6.52, coherence 7.85 -> 7.98,
+exploration 7.51 -> 7.60; the monastery's stories rose (random storytellers 6.98 ->
+7.32), the city's random ones dipped within the judge's session-to-session noise
+(7.55 -> 7.27, 7.43 when judged again). Letting the judge see the beats a player sees
+raised every score (engagement about 6.0 -> 7.2).
+
+#### Added
+- Twists matched to what they do, mystery twists that pay off later (`[TWIST]`,
+  `unexpected_events.twist_payoff_delay`), and bargains as choices with a price
+  that comes due (`bargain` effects).
+- Callbacks: a payoff that closes a related clue says what it pays off (`[CALLBACK]`).
+- Failing forward (`director.fail_forward`): a failure that led nowhere may start a
+  complication, an event tagged `complication`; the city's *The guards come running*
+  (hide, bluff, slip into the Sewers) follows a jammed safe or a botched bribe.
+- Quest momentum (`mission_settings.momentum_after`), a dead-end travel penalty
+  (`director.dead_end_penalty`), first-journey views (`travel_first`) and a victory
+  epilogue of the journey (`end_victory`).
+
+#### Changed (epilogues)
+- Both epilogues tell the journey (the road, the quest's steps, the friends made, the
+  turns of fate) instead of counting places, people and items; `{places}`, `{people}`
+  and `{items}` stay available to custom messages.
+- The judge's digest shows the story beats the player saw and the choices passed up;
+  every turn of the turn log keeps its best alternatives (`options`).
+
+#### Changed
+- The bandit ambush strikes at most 3 times per story, every 8 turns at most, and
+  its losses tell something (who buys the loot, who the guards are paid by).
+
+#### Fixed
+- Procedural twists told one thing and did another ("offers a dangerous bargain",
+  then +8 coins), and their mysteries were never followed up.
+- Someone already in view was "noticed" again, and an item already seen "spotted".
+- An event could offer to slip away to the place one is in, and a move to the
+  current place entered it into the path again.
+
+### Alternative, unpredictable stories; Gemma 4 as a game critic
+
+#### Added
+- The director's rhythm (`director`): the storyteller now and then takes an option
+  nearly as good as its favourite (`surprise`, from the story's own fixed randomness,
+  never its dice, so a seed still gives one story); after `boredom_turns` calm turns, what brings something new
+  ranks higher and unexpected events are likelier; clues open for `payoff_delay`
+  turns want their payoff; places not visited pull harder the longer since the last
+  new one (`explore_weight`).
+- Fitness `rhythm` terms (predictability, variety of play, events lived,
+  exploration, open threads) and `evolution.alternatives_weight` with
+  `fitness.alternatives`: storytellers whose stories differ from one another score
+  higher.
+- `evaluator/game_judge.py`: Gemma 4 as a game critic (LLM-as-a-judge) scoring a
+  playthrough on agency, pacing, surprise, payoff, exploration, stakes, coherence
+  and replayability, with engagement, verdict and best/weakest moment; `llm_judge`
+  settings; `POST /v1/records/stories/{id}/judge`, `POST /v1/sessions/{id}/judge`;
+  `python -m evaluator.game_judge STORY_ID`.
+- `evaluator/judge_benchmark.py`: play stories with the current engine (or a recorded
+  one), judge each twice, and report engagement, criteria, the fitness's agreement
+  with the judge and the judge's test-retest difference.
+- Failing forward, after the judge's most frequent complaint (the same failed check
+  tried again and again): every failed attempt eases the next (`director.retry_bonus`),
+  a just-failed action steps back while there is something else to do there
+  (`retry_cooldown`), travelling straight back to the place just left costs
+  (`ping_pong_penalty`), and the fitness counts such retries (`rhythm.repeated_failures`).
+- Tests for the rhythm, the alternatives, the judge and the benchmark
+  (`tests/test_game_judge.py`).
+
+#### Changed
+- The model is Gemma 4 E4B (`google/gemma-4-E4B-it`), with `vllm.max_model_len`
+  8192 so that a judged playthrough fits.
+- Fitness weights calibrated with the judge (Spearman of each term with the judged
+  engagement over 50 stories): volatility, scene contrast and combat successes count
+  half as much; scenario duplication, loops, filler and fading novelty cost more;
+  escalation counts less.
+- The alternatives bonus belongs to the engine's own fitness
+  (`fitness.rewards_alternatives`); a fitness passed in by a caller is left as it is.
+
+#### Fixed
+- Two threads loading the tag-embedding model at once (an API request and a story)
+  could break the torch import or briefly fall back to other tag vectors; loading is
+  now done once, under a lock (`utils/tag_similarity.py`).
+
+### A graph to walk both ways, templates, objective losses, rules that hold
+
+#### Added
+- One bidirectional location graph kept with the game (`GameState.map_view`,
+  play state `map`, the studio's map): no place leads to itself, places whose
+  names differ only in case or spacing are refused, and the way back to the
+  place just left is always a choice (`player_options.way_back`).
+- Player-directed navigation (`navigation.player_directed: play`): in real play
+  discoveries and hints open paths without moving the player, and lingering
+  neither moves them on nor ends the story.
+- Locked exits: `exit_locked` on a location, `unlock_exit` on an outcome
+  (`[UNLOCKED] …`).
+- Discoveries led by tags (`target_tags`), choosing among the neighbours on the
+  map; `move_to_tags` also chooses a neighbour.
+- Scenario templates (`world_definition.scenario_templates`, a location's
+  `template` and `parameters`); the same template with the same parameters, the
+  same content, or the same name twice is refused, also among generated places
+  (`WorldAugmenter._new_scenarios`).
+- Objective losses in the fitness (`fitness.objective_losses`): transition
+  quality, tag coverage, named-transition dependence, scenario duplication and
+  world extension, from the story's `transition_records` and `scenario_counts`.
+- NPC goals that work (`npc_goals`): helping someone with their goal makes them
+  an ally who shows the way to a place they know and whose checks are easier;
+  goals may be mappings `{goal, tags, needed, reward}`; `base.npc_goal_bonus`.
+- Explicit checks: the play state's `choices`, the scene's **Checks** and the
+  studio's choice labels show each option's check and chance.
+- Named threads: `setup_id`, `requires_setup`, `payoff_id`; and
+  `story_rules.gate_payoffs`, which tells a payoff only when a planted clue waits
+  for it.
+- `return_to_previous` on outcomes (`[BACK] …`): the bandit ambush's *Make a run
+  for it* flees back the way the player came.
+- `tests/test_gameplay.py` for all of the above.
+
+#### Changed
+- Power counts in fights: every point gained since the story began (weapons,
+  armour, health) adds `power_model.check_weight` to fight checks.
+- Unchecked outcomes succeed by their own `success_prob`; the storyteller's
+  traits no longer tip them unseen (`outcome_resolution.hidden_adjustments`).
+- An NPC's `encounter_event` must name an event with actions.
+
+#### Fixed
+- `move_to_tags` written in the configuration was dropped by the builder.
+
+### The language model: Gemma 4 on vLLM
+
+#### Changed
+- Story evaluation, world augmentation and the editor's suggestions share one
+  Gemma 4 runtime (`google/gemma-4-E2B-it`) on vLLM (`utils/llm_model_loader.py`,
+  `vllm` in the configuration), loaded once: `embedded` in this process, or
+  `server` against an OpenAI-compatible `vllm serve`. Text only
+  (`limit_mm_per_prompt`), `max_model_len` 4096.
+- Evolution's worker processes are spawned instead of forked while an embedded
+  vLLM engine holds a GPU context, and receive the active configuration and tag
+  vectors, so they score storytellers exactly as before.
+- `requirements.txt` no longer installs `accelerate` and `bitsandbytes`; vLLM is
+  installed by `environment.yml` (the Docker image uses server mode).
+
+#### Removed
+- The Hugging Face loader with its Llama model and public fallback
+  (`llm_evaluator.model_name`, `llm_fallback`).
+
 ### A map that holds, relevant choices, quests to play
 
 #### Added

@@ -56,10 +56,12 @@ def _choose(state, name):
 
 class MissionTests(unittest.TestCase):
     def setUp(self):
-        # Mission logic is tested without skill-check dice.
-        patcher = patch.dict(config._config["world_definition"]["character_stats"], {"tag_checks": {}})
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        # Mission logic is tested without skill-check dice, and with every NPC in sight from the
+        # start (NPC roles are tested in test_story_beats).
+        for patcher in (patch.dict(config._config["world_definition"]["character_stats"], {"tag_checks": {}}),
+                        patch.dict(config._config, {"npc_roles": {**(config.get("npc_roles") or {}), "enabled": False}})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def _state(self, *missions, **kwargs):
         return GameState(_world(*missions), _genome(), start="Market", rng=random.Random(2), **kwargs)
@@ -82,7 +84,7 @@ class MissionTests(unittest.TestCase):
         self.assertFalse(state.won)
         self.assertFalse(_choose(state, "Browse the stalls"))
         self.assertTrue(state.won and state.ended)
-        self.assertEqual(state.end_reason, "Mission complete: Go shopping.")
+        self.assertTrue(state.end_reason.startswith("Mission complete: Go shopping. [EPILOGUE] Go shopping: done."))
         self.assertEqual(state.mission_status, "Go shopping: completed")
         self.assertIn("[MISSION COMPLETE] Go shopping", state.history)
         self.assertFalse(state.step(), "a finished story takes no further steps")
@@ -122,6 +124,10 @@ class MissionTests(unittest.TestCase):
             self.assertEqual(state.ranked_available_actions()[0].name, "(Thief) Confront the thief")
 
     def test_goal_pursuit_is_paced_like_a_story_arc(self):
+        # The arc alone (quest momentum, which pulls an idle quest harder, is tested in test_gameplay).
+        patcher = patch.dict(config._config["mission_settings"], {"momentum_after": 0})
+        patcher.start()
+        self.addCleanup(patcher.stop)
         state = self._state(Mission("thief", {"npc_removed": "Thief"}))
         start = config.get("mission_settings.pursuit_start_step")
         full = config.get("mission_settings.pursuit_full_step")

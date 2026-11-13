@@ -128,7 +128,8 @@ class RetryOnFailureTests(unittest.TestCase):
             _go(state, "Gate")
             _choose(state, "Pick the lock")                      # succeeds on the third try
         self.assertEqual(self._offered_everywhere(state), (False, False, False))
-        self.assertEqual(state.history.count("RESULT: The pick snaps."), 2)
+        # (told the second time with a line that knows it happened before: story_beats.variation)
+        self.assertEqual(sum(line.startswith("RESULT: The pick snaps.") for line in state.history), 2)
         self.assertEqual(state.history.count("RESULT: The lock clicks open."), 1)
 
     def test_per_visit_actions(self):

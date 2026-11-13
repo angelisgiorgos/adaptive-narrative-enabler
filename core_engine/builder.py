@@ -71,6 +71,88 @@ def _location_signature(locations_cfg):
         )
     )
 
+TEMPLATE_KEYS = ("template", "template_id", "parameters")
+
+
+def _fill(value, parameters, where):
+    """``value`` with ``{parameter}`` placeholders filled in, in every string it holds."""
+    if isinstance(value, str):
+        try:
+            return value.format_map(parameters) if "{" in value else value
+        except KeyError as exc:
+            raise ValueError(f"{where}: the template needs the parameter {exc.args[0]!r}.") from exc
+        except (ValueError, IndexError):
+            return value  # braces that are not placeholders
+    if isinstance(value, list):
+        return [_fill(item, parameters, where) for item in value]
+    if isinstance(value, dict):
+        return {key: _fill(item, parameters, where) for key, item in value.items()}
+    return value
+
+
+def scenario_key(name, data):
+    """What makes a location's scenario: its template and parameters, or else its own
+    content (tags, descriptions, actions). Two places with the same key are duplicates."""
+    import json
+
+    data = data or {}
+    template = data.get("template") or data.get("template_id")
+    if template:
+        return ("template", str(template), json.dumps(data.get("parameters") or {}, sort_keys=True, default=str))
+    content = {key: data.get(key) for key in ("tags", "entered_descriptions", "distant_descriptions", "descriptions",
+                                                "actions")}
+    if not any(content.values()):
+        return ("place", WorldGraph.place_key(name))  # nothing written but the name
+    return ("content", json.dumps(content, sort_keys=True, default=str))
+
+
+def expand_templates(config_wd):
+    """(locations, errors): the world's locations with their scenario templates filled in.
+
+    A location may name one of ``world_definition.scenario_templates`` (``template``) with
+    ``parameters``: it gets the template's fields with ``{parameter}`` (and ``{name}``, the
+    place's own name) filled in; its own fields win. A ``template_id`` without such a
+    template only labels the scenario. Two places with the same template and parameters,
+    the same content, or names that differ only in case or spacing are refused."""
+    config_wd = config_wd or {}
+    templates = config_wd.get("scenario_templates") or {}
+    locations, errors = {}, []
+    if not isinstance(templates, dict):
+        return dict(config_wd.get("locations") or {}), ["`world_definition.scenario_templates` must be a mapping."]
+    for name, data in (config_wd.get("locations") or {}).items():
+        data = dict(data or {})
+        template = data.get("template")
+        parameters = data.get("parameters") or {}
+        if template is not None or "parameters" in data:
+            if not isinstance(parameters, dict):
+                errors.append(f"Location '{name}': `parameters` must be a mapping.")
+                parameters = {}
+            if template is not None and template not in templates:
+                errors.append(f"Location '{name}': no scenario template '{template}' "
+                              f"(known: {', '.join(templates) or 'none'}).")
+            elif template is not None:
+                try:
+                    filled = _fill(copy.deepcopy(templates[template] or {}), {"name": name, **parameters},
+                                   f"Location '{name}' (template '{template}')")
+                except ValueError as exc:
+                    errors.append(str(exc))
+                    filled = {}
+                data = {**filled, **{key: value for key, value in data.items()}}
+        locations[name] = data
+    seen_names, seen_scenarios = {}, {}
+    for name, data in locations.items():
+        key = WorldGraph.place_key(name)
+        if key in seen_names:
+            errors.append(f"Locations '{seen_names[key]}' and '{name}' have the same name.")
+        seen_names.setdefault(key, name)
+        scenario = scenario_key(name, data)
+        if scenario in seen_scenarios:
+            what = "the same template with the same parameters" if scenario[0] == "template" else "the same content"
+            errors.append(f"Locations '{seen_scenarios[scenario]}' and '{name}' are the same scenario ({what}).")
+        seen_scenarios.setdefault(scenario, name)
+    return locations, errors
+
+
 def route_map(config_wd):
     """The world's authored map (``world_definition.routes``): place -> sorted list of
     the places it borders, both ways (a route written on one side holds for both).
@@ -199,6 +281,9 @@ def logic_errors(world):
     world = world or {}
     refs = conditions.References.from_world(world)
     errors = list(route_errors(world))
+    expanded, template_errors = expand_templates(world)
+    errors.extend(template_errors)
+    world = {**world, "locations": expanded}
 
     def condition(raw, where):
         errors.extend(conditions.validate(raw, refs, where=where))
@@ -218,19 +303,40 @@ def logic_errors(world):
                 if not isinstance(o_data, dict):
                     continue
                 condition(o_data.get("until"), f"{label} / outcome {number}.until")
+                for field in ("setup_id", "requires_setup", "payoff_id"):
+                    if o_data.get(field) is not None:
+                        threads.append((field, o_data[field], f"{label} / outcome {number}.{field}"))
+                for field in ("target_tags", "move_to_tags"):
+                    if o_data.get(field) is not None and not isinstance(o_data[field], (list, str)):
+                        errors.append(f"{label} / outcome {number}.{field} must be a list of tags.")
                 errors.extend(variables.validate_changes(
                     o_data.get("set_variables"), o_data.get("change_variables"), refs.variables, where=label,
                 ))
                 effect_list(o_data.get("effects"), f"{label} / outcome {number}.effects")
 
+    threads = []  # (field, setup id, where) of named setups and payoffs
     for name, data in (world.get("locations") or {}).items():
         condition((data or {}).get("enabled_if"), f"Location '{name}'.enabled_if")
         actions(data or {}, f"Location '{name}'")
+        if "exit_locked" in (data or {}) and not isinstance(data["exit_locked"], bool):
+            errors.append(f"Location '{name}'.exit_locked must be true or false.")
+    events = world.get("events") or {}
     for entry in world.get("characters") or []:
         where = f"NPC '{entry.get('name')}'"
         condition(entry.get("enabled_if"), f"{where}.enabled_if")
         actions(entry, where)
         errors.extend(_dialogue_errors(entry.get("dialogue"), where, condition, effect_list))
+        errors.extend(npc_goal_errors(entry.get("goals"), where))
+        secret = entry.get("secret")
+        if isinstance(secret, dict) and secret.get("effects"):
+            effect_list(secret["effects"], f"{where}.secret.effects")
+        encounter = entry.get("encounter_event")
+        if encounter:
+            # A mandatory encounter must be one the player can resolve.
+            if encounter not in events:
+                errors.append(f"{where}.encounter_event: no event '{encounter}'.")
+            elif not (events[encounter] or {}).get("actions"):
+                errors.append(f"{where}.encounter_event: the event '{encounter}' has no actions to resolve it.")
     for entry in world.get("objects") or []:
         condition(entry.get("enabled_if"), f"Item '{entry.get('name')}'.enabled_if")
         actions(entry, f"Item '{entry.get('name')}'")
@@ -251,6 +357,52 @@ def logic_errors(world):
         effect_list(data.get("rewards"), f"Mission '{name}'.rewards")
         for number, stage in enumerate(data.get("stages") or [], start=1):
             effect_list((stage or {}).get("rewards"), f"Mission '{name}'.stages[{number}].rewards")
+    planted = {str(value) for field, value, _ in threads if field == "setup_id"}
+    for field, value, where in threads:
+        if field != "setup_id" and str(value) not in planted:
+            errors.append(f"{where}: no outcome plants the setup '{value}' (setup_id).")
+    return errors
+
+
+def npc_goals(raw):
+    """An NPC's goals as [{text, keywords, needed, reward}]: a goal is a sentence ("Collect
+    bribes"; its words are its keywords) or a mapping {goal, tags, needed, reward}."""
+    import re
+
+    stop = {"the", "a", "an", "of", "to", "and", "or", "for", "in", "on", "at", "with", "his", "her", "their",
+            "your", "my", "one", "be", "is", "are", "from", "into", "every", "all"}
+    goals = []
+    for entry in raw or []:
+        if isinstance(entry, dict):
+            text = str(entry.get("goal") or entry.get("text") or "")
+            words = [str(tag).lower() for tag in _coerce_list(entry.get("tags"))]
+            needed, reward = entry.get("needed", None), entry.get("reward")
+        else:
+            text, words, needed, reward = str(entry), [], None, None
+        if not words:
+            words = [w for w in re.findall(r"[a-z]+", text.lower()) if w not in stop and len(w) > 2]
+        goals.append({"text": text, "keywords": sorted(set(words)), "needed": needed, "reward": reward})
+    return goals
+
+
+def npc_goal_errors(raw, where):
+    errors = []
+    if raw is None:
+        return errors
+    if not isinstance(raw, list):
+        return [f"{where}.goals must be a list."]
+    for number, entry in enumerate(raw, start=1):
+        if isinstance(entry, dict):
+            if not (entry.get("goal") or entry.get("text")):
+                errors.append(f"{where}.goals[{number}] needs a `goal` (its text).")
+            needed = entry.get("needed")
+            if needed is not None and (not isinstance(needed, int) or needed < 1):
+                errors.append(f"{where}.goals[{number}].needed must be a whole number of at least 1.")
+            reward = entry.get("reward")
+            if reward is not None and reward not in ("lead", "item", "none"):
+                errors.append(f"{where}.goals[{number}].reward must be lead, item or none.")
+        elif not isinstance(entry, str):
+            errors.append(f"{where}.goals[{number}] must be a sentence or a mapping.")
     return errors
 
 
@@ -275,6 +427,15 @@ def _dialogue_errors(lines, where, condition, effect_list):
         condition(line.get("enabled_if"), f"{label}.enabled_if")
         effect_list(line.get("effects"), f"{label}.effects")
     return errors
+
+
+def _secret(spec):
+    """An NPC's secret ({text, talks, clues, effects}) with its effects as a checked effect list."""
+    if not isinstance(spec, dict) or not str(spec.get("text", "")).strip():
+        return None
+    secret = dict(spec)
+    secret["effects"] = _checked(effects.EffectList(spec.get("effects"))) if spec.get("effects") else None
+    return secret
 
 
 def _checked(effect_list):
@@ -330,6 +491,7 @@ def _build_outcome(o_data, genome, tags=None):
         coin_change=o_data.get("coin_change", 0),
         spawn=o_data.get("spawn", False),
         move_to=move_to,
+        move_to_tags=_coerce_list(o_data.get("move_to_tags")),
         reveal_location=reveal_location,
         reveal_npc=reveal_npc,
         reveal_object=reveal_object,
@@ -341,8 +503,16 @@ def _build_outcome(o_data, genome, tags=None):
         on_check=o_data.get("on_check"),
         change_stats=o_data.get("change_stats"),
         effects=o_data.get("effects"),
+        target_tags=_coerce_list(o_data.get("target_tags")),
+        unlock_exit=o_data.get("unlock_exit", False),
+        return_to_previous=o_data.get("return_to_previous", False),
+        setup_id=o_data.get("setup_id"),
+        requires_setup=o_data.get("requires_setup"),
+        payoff_id=o_data.get("payoff_id"),
     )
     outcome.until = o_data.get("until")
+    # Other ways to tell it, used in turn when it is told again (story_beats.variation).
+    outcome.variants = [str(text) for text in o_data.get("variants") or [] if str(text).strip()]
     _checked(outcome.effects)
     return outcome
 
@@ -406,8 +576,8 @@ def build_world(genome):
         raise ValueError("; ".join(start_errors))
     events_cfg = config_wd.get("events") or {}
     
-    # 1. Locations
-    locations_cfg = config_wd.get("locations", {})
+    # 1. Locations (scenario templates filled in; duplicates were refused by logic_errors)
+    locations_cfg, _ = expand_templates(config_wd)
     for name, data in locations_cfg.items():
         loc = Location(
             name, 
@@ -419,6 +589,9 @@ def build_world(genome):
             enabled_if=data.get("enabled_if"),
             start_eligible=data.get("start_eligible", False),
             start_weight=data.get("start_weight", 1.0),
+            exit_locked=data.get("exit_locked", False),
+            template=data.get("template") or data.get("template_id"),
+            parameters=data.get("parameters"),
         )
         
         # 2. Actions/Outcomes
@@ -461,10 +634,11 @@ def build_world(genome):
                 owner=char_data['name'],
             ))
         
+        goal_specs = npc_goals(char_data.get("goals"))
         char = Character(
             char_data["name"], 
             char_data.get("associated_tags", []), 
-            goals=char_data.get("goals", []),
+            goals=[goal["text"] for goal in goal_specs],
             descriptions=char_data.get("descriptions", []),
             actions=char_actions_list,
             known_locations=char_data.get("known_locations", []),
@@ -474,11 +648,14 @@ def build_world(genome):
             encounter_repeat=char_data.get("encounter_repeat", False),
             enabled_if=char_data.get("enabled_if"),
             article=char_data.get("article"),
+            role=char_data.get("role"),
+            secret=_secret(char_data.get("secret")),
             dialogue=[
                 DialogueLine(line.get("text"), line.get("enabled_if"), _checked(effects.EffectList(line.get("effects"))))
                 for line in char_data.get("dialogue") or []
             ],
         )
+        char.goal_specs = goal_specs  # what helps them, and what they give back (GameState npc goals)
         world.add_character(char)
 
     # 5. Objects

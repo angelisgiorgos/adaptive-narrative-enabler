@@ -140,6 +140,17 @@ Errors are JSON: `{"detail": "..."}` (or the list of `422`).
   `finale_actions` turns are a finale, and a story that reaches the action
   limit closes with an epilogue (its record's `end_kind` is `epilogue`) instead
   of being cut off. Damage grows as the story escalates, so a player can die.
+- Every choice with a check says what is at stake before it is taken
+  (`choices[].check`: `stat`, `chance`, `bonus`, and `risk`: `{health, coins,
+  sent_to}` that failing costs, or `null`). `stakes` is the watch's alert level
+  (`{alert, max, warn_at}`; at `max` a manhunt starts), `null` with
+  `stakes.alert` off. `people` and `people_met` carry each NPC's `role` and
+  `importance` (0-3) in this story (`npc_roles`); someone who matters may stay
+  out of sight until a lead, the road or enough turns bring them in.
+- A quest's last step is a showdown (`climax`): an event whose choices are
+  offered like any other; the story is won when it is won (or, after setbacks,
+  at a price). Fast travel (`Travel by known ways to …`) reaches a visited place
+  in one turn that does not count toward the action limit (`travel`).
 - A finished story has `ended: true` and offers no more actions.
 - Real play saves persistent variables to its `profile` (`save_on` in the
   story rules). Evaluated stories during evolution do not
@@ -171,18 +182,24 @@ Every write is validated before anything is saved. Invalid requests return
 Requests with the header `X-ANE-Client: studio` are recorded with the origin
 `studio` (the studio sends it); all others with the origin `api`.
 
-**Studio services** (what the studio is built on; any client can use them)
+**Studio services** (what the studio is built on; any client can use them).
+The studio (`app.py`) is a client of this API and reaches every endpoint, directly or
+through an equivalent one (the YAML form of a JSON endpoint, the job form of a long
+one); `tests/test_studio_coverage.py` checks it.
 - `GET /v1/reference`: what an authoring UI needs: `entity_kinds`,
   `common_tags`, `action_reference`, `repeat_rules` and `repeat_default`,
   mission `goal_keys`, `rule_choices` and `rule_fields` (the story-rule form),
-  `player_stat_choices`, the editable `documents`, and the `defaults` of a new
+  `player_stat_choices`, the editable `documents`, the roles an NPC may play
+  (`npc_roles`), the judge's criteria (`judge_criteria`), and the `defaults` of a new
   run (`episodes_per_genome`, `warm_start`, `profile`).
 - `GET|PUT /v1/app-settings`: the studio's app parameters
   (`config/ui_settings.yml`: limits, defaults, queue, launch) with their
   `defaults`. A `PUT` (`{"settings": {...}}`) changes the parameters it names,
   validates all of them, and rejects unknown ones. They apply after a restart.
 - `GET /v1/documents` lists the configuration documents edited as YAML text
-  with their comments kept: `missions`, `messages`, `variables`, `stats`, and
+  with their comments kept: `missions`, `messages`, `variables`, `map` (the world's
+  map, `world_definition.routes`: `{routes: {place: [neighbours]}}`, or `routes: null`
+  for a map each story draws; every place must be a location), `stats`, and
   `stored_values` (a player profile's values, `?profile=`).
   `GET /v1/documents/{name}` returns `{"name", "yaml"}`;
   `PUT /v1/documents/{name}` with `{"yaml": "..."}` validates and saves it and
@@ -191,6 +208,12 @@ Requests with the header `X-ANE-Client: studio` are recorded with the origin
   `stored_values` document.
 - `GET|PUT /v1/entities/{kind}/{name}/actions/yaml`: the entry's actions as YAML
   text, validated like `.../actions`.
+- `GET|PUT /v1/entities/{kind}/{name}/yaml`: every field of the entry as YAML, as
+  stored: what `GET .../{name}` returns and everything else (an NPC's `dialogue`,
+  `known_locations`, `known_objects`, `article`, `role`, `secret`; a location's
+  distant views and exits; the actions). A `PUT` checks the whole world with the
+  entry in place and writes nothing when it is invalid; the entry keeps its name
+  (rename it with `PUT .../{name}`).
 - `GET /v1/entities/{kind}/{name}/policy/yaml` and
   `PUT /v1/entities/{Events|Items}/{name}/policy/yaml`: an event's start rules or
   an item's uniqueness as YAML text, validated like `.../policy`.
@@ -206,6 +229,9 @@ Requests with the header `X-ANE-Client: studio` are recorded with the origin
   `POST /v1/jobs/engines/{id}/continue` and
   `POST /v1/jobs/engines/{id}/retrain` (bodies as the records endpoints) start
   the work in the background and return `202` with the job.
+- `POST /v1/jobs/judge-benchmark` and `POST /v1/jobs/calibrate-fitness` (see
+  **Evaluation**) run the judge in the background; their `progress` is
+  `{generation: stories judged so far, total, label}`.
 - `GET /v1/jobs/{id}`: `status` (`queued`, `running`, `finished`, `failed`),
   `progress` (`generation`, `total`, `best`, `mean`, `validation`, `improved`),
   and, when finished, `result` (what the synchronous endpoint returns: the
@@ -253,6 +279,10 @@ Requests with the header `X-ANE-Client: studio` are recorded with the origin
   - `start_eligible` and `start_weight` (above 0): locations only. Stories
     start at the eligible locations (see the README, Starting locations).
   - `title`: events.
+  - `role` (a key of `npc_roles.roles`; `""` removes it and the role is then
+    inferred from the NPC's tags) and `secret` (`{text, talks, clues, effects}`,
+    `{}` removes it): NPCs only. Actions a secret unlocks use
+    `enabled_if: {secret_known: <NPC>}`.
 - `GET|PUT /v1/entities/{Events|Items}/{name}/policy`: an event's start rules
   (`trigger`: action or random, `chance`, `weight`, `cooldown`,
   `max_occurrences`, `repeat`: once, per_location, per_visit or always) or an
@@ -272,9 +302,45 @@ Requests with the header `X-ANE-Client: studio` are recorded with the origin
   the event to be resolved by a successful action, and `condition`, any
   condition tree), the rewards' effect list, and every referenced location, item, event,
   NPC, stat, and variable are checked.
+- `POST /v1/records/stories/{id}/judge` and `POST /v1/sessions/{id}/judge`: Gemma 4
+  as a game critic (`evaluator/game_judge.py`) scores the playthrough from 1 to 10 on
+  `agency`, `pacing`, `surprise`, `payoff`, `exploration`, `stakes`, `coherence` and
+  `replayability`, with `engagement`, `spread` (between its `llm_judge.samples`
+  judgements), `verdict`, `best_moment` and `weakest_moment`. `404` for an unknown story
+  or session, `503` when no language model is available (`vllm`).
 - `GET /v1/missions/playable?profile=`: the quests a player may choose when
   starting a game (`key`, `title`, `description`, `stages` (their titles),
   `available` for that profile now).
+- `GET /v1/lint/failures`: the failures the current world leaves as dead ends,
+  `{dead_ends: [{action, owner, why}]}`: actions that can fail (a skill check, or
+  failure outcomes) where failing changes nothing but health or coins and no
+  complication event (tagged `complication`) shares a tag with them. During play the
+  engine still shows another way (`director.another_way`).
+
+**Evaluation** (Gemma 4 as the judge; `503` when no language model is available)
+- `POST /v1/judge/compare` with `{"a": {"session_id" | "story_id": ...}, "b": {...}}`:
+  which of two stories (a game in progress or a recorded story each) is the better
+  game. The pair is judged in both orders and a side wins only where both agree:
+  `{winner: A | B | tie (null: unreadable), criteria: {criterion: A | B | tie},
+  reason, agreed}`. `400` for an unknown story or session.
+- `POST /v1/jobs/judge-benchmark` (`stories` 1-60, `seed`, `engine_id` (a recorded
+  engine; left out: the current settings with random storytellers), `pairwise`,
+  `variants` (`{dotted.path: value}`: version B), `workers`): the judge on the
+  engine's stories. Absolute: `{engagement, criteria, judged, rows}`. Pairwise: the
+  same seeds with the current settings (A) and with `variants` (B), each pair judged
+  in both orders: `{pairs, a_wins, b_wins, ties, b_win_rate, wilson_95, criteria,
+  rows}`. The stories are played in a separate process, so the settings of games
+  in progress never change.
+- `POST /v1/jobs/calibrate-fitness` (`stories` 10-60, `seed`, `engine_id`, `alpha`,
+  `apply`, `workers`): plays and judges the stories, fits the judged engagement on
+  the fitness terms and suggests a multiplier per term: `{term_weights, terms,
+  spearman, cv_spearman (agreement on stories left out), alpha, n, yaml,
+  applied}`; `apply: true` saves them.
+- `GET|PUT /v1/fitness/term-weights` (`{"weights": {term: multiplier}}`, `{}`
+  removes them): `fitness.term_weights`, the multiplier of each fitness term.
+- The judge in the loop of evolution is a setting: `evolution.judge_weight`
+  (`PUT /v1/logic/evolution`).
+
 - `GET|PUT /v1/messages`: story messages, with defaults and allowed
   placeholders.
 
@@ -365,13 +431,21 @@ Requests with the header `X-ANE-Client: studio` are recorded with the origin
     todo) and `todo` (what the current step still needs, in words, such as
     "Reach the Vault" or "Have 20 coins (you have 12)").
   - `people`: the people here (`name`, `called` with its article,
-    `description`, `wants`, `hostile`, `talks` (times spoken with) and `quest`
-    (they can help with the mission now)).
+    `description`, `wants`, `hostile`, `talks` (times spoken with), `quest`
+    (they can help with the mission now), `helped` (times helped with their
+    goal) and `ally` (their goal is fulfilled)).
   - `people_met`: everyone met in the story (`name`, `called`, `where`,
-    `talks`, `hostile`, `gone`).
-  - `ways_on`: every place one can travel to from here now, for a map
-    (`name`, `visited`, `toward_quest`); `actions` offer the most relevant of
-    them.
+    `talks`, `hostile`, `gone`, `ally`).
+  - `ways_on`: every place one can travel to from here now (`name`,
+    `visited`, `toward_quest`); `actions` offer the most relevant of them.
+  - `map`: the map as the player knows it, kept with the game: `current`,
+    `previous`, `places` (`name`, `visited`, `locked`), `paths` (pairs open
+    both ways) and `one_way` (`[from, to]`, such as an arrest's).
+  - `choices`: the offered `actions` with the check each involves (`check`:
+    `stat`, `chance` 0-100 and `bonus` from Power or an ally, or `null`).
+- In real play a discovery or a hint never moves the player by itself, and
+  lingering does not end the story (`navigation.player_directed: play`); the
+  way back to the place just left is always among the `actions`.
 - `GET /v1/artifacts/{id}` downloads generated config or engine bundles.
 
 The schemas and validation constraints are available in `/docs`.

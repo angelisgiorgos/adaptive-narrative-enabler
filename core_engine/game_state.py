@@ -12,6 +12,7 @@ from .health import HealthPlayer
 from .stats import CharacterStats
 from .combat import CombatSystem
 from .narration import Narrator
+from .story_beats import StoryBeats
 from . import conditions, effects, rules, starts, variables as persistent
 from utils.tag_similarity import semantic_tag_similarity
 
@@ -40,7 +41,7 @@ def _condition_reads(value):
 # GAME STATE
 # ============================
 
-class GameState:
+class GameState(StoryBeats):
     def __init__(self, world, genome, start=None, verbose=False, interactive=False, rng=None, mission=None,
                  variables=None, store=None, profile=None, stats=None, stats_mode=None, recent_starts=None):
         """``store`` (a persistent.VariableStore) marks real play: variable changes
@@ -92,6 +93,18 @@ class GameState:
         self.tags_seen = []
         self.history = []
         self.turn_log = []  # one entry per turn taken (step): what was chosen and what came of it
+        # How the map grew and was travelled: one record per move or discovery, with how it
+        # was resolved (travel, named, tags, spawn, lead, back, sent, auto) - see fitness.objective_losses.
+        self.transition_records = []
+        self.scenario_counts = Counter()   # (place, action, outcome text) told: duplicates are a loss
+        self.setups_planted = set()        # named setups (outcome setup_id)
+        self.completed_payoffs = set()     # named setups paid off (outcome payoff_id)
+        self.npc_goal_progress = {}        # NPC -> {goal index: times helped}
+        self.allies = set()                # NPCs whose goal the player fulfilled
+        # Player-directed navigation (navigation.player_directed): in real play a discovery
+        # or a lead opens a path but never moves the player; they choose where to go.
+        directed = str((config.get("navigation") or {}).get("player_directed", "play")).lower()
+        self.player_directed = directed == "always" or (directed == "play" and store is not None)
         self.narrate = Narrator()  # customisable story text (config/messages.yaml)
         
         # Track location visits
@@ -149,6 +162,7 @@ class GameState:
         self._announced_visit = None   # visit whose arrival text is in the history
         self._printed_visit = None     # visit whose scene step() last printed
         self.npc_homes = self._assign_npc_homes()
+        self.start_power = self.update_power()  # Power counts in fights from here (power_model.check_weight)
         self.item_instances = self._place_unique_items()  # unique items: one instance each
         self._scheduled_turn = None  # turn whose random events were already rolled
         self.update_power()
@@ -170,6 +184,9 @@ class GameState:
         # This story's own geography (world_definition.story_map), before the mission and
         # start are chosen: they must be reachable on it.
         self.story_map = self._draw_story_map()
+        # The story's own fixed randomness for the director's choices (surprises): taken from
+        # the state of its dice, without rolling them, so that skill checks roll as before.
+        self._story_salt = hashlib.sha256(repr(self.rng.getstate()).encode()).hexdigest()[:16]
         self.routes = self._story_routes()  # the map every move follows (None: no map)
         self.heading = None  # a far place the story set out for (see _set_heading)
         if store is not None:
@@ -191,6 +208,20 @@ class GameState:
             if mission is not None:
                 self._store.record_mission(self.profile, mission.name)
         self._start_mission(mission)
+        # Who matters how much in this story (npc_roles): the quest's target is its nemesis.
+        self.npc_roles = self._assign_roles()
+        self.revealed_npcs = set()   # important NPCs brought into the story by a reveal or a lead
+        self.defeated = []           # important NPCs beaten: [{npc, role, turn}]
+        # The story's beats (story_beats.py): the engine's own beats, the alert level, turns of
+        # fast travel (not counted toward the limit), successes per action, secrets told and
+        # consequences still to show.
+        self.beat_log = []
+        self.alert = 0
+        self.free_turns = 0
+        self.success_counts = Counter()
+        self.revealed_secrets = {}
+        self.consequences_due = []
+        self._recall_last_time()
 
     # ---- persistent variables -------------------------------------------------
 
@@ -216,6 +247,7 @@ class GameState:
             sum(1 for entry in self.event_log if "action" in entry), len(self.item_log), frozenset(self.succeeded_actions),
             frozenset(self.succeeded_outcome_tags), self.coins, self.health, self.actions_taken,
             tuple(sorted(self.stats.changes.items())), self.mission.name if self.mission else None,
+            frozenset(self.__dict__.get("revealed_secrets", ())),
         )
 
     # ---- effects ----------------------------------------------------------------
@@ -386,12 +418,34 @@ class GameState:
 
     def _reveal_npc(self, name):
         revealed = next((c for c in self.world.characters if c.name == name), None)
+        if revealed is not None:
+            self.__dict__.setdefault("revealed_npcs", set()).add(revealed.name)
         if revealed and self._npc_can_appear_here(revealed, explicit=True):
+            already = revealed.name in self.visible_inhabitants and revealed in self.current_inhabitants
             self.visible_inhabitants.add(revealed.name)
             if revealed not in self.current_inhabitants:
                 self.current_inhabitants.append(revealed)
-            self._say("reveal_npc", npc=name)
+            if not already:  # someone already in view is not "noticed" again
+                self._say("reveal_npc", npc=name)
             self._note_met(revealed.name)
+
+    def _meet(self, char_name, char_desc):
+        """Meet someone on arrival; finding someone who matters (importance >= 2) is a moment of its own."""
+        role, settings = self.role_of(char_name)
+        first = char_name not in self.__dict__.get("met", {})
+        if int(settings.get("importance", 0)) >= 2 and first:
+            self._say("npc_reveal", npc=self._called(char_name)[:1].upper() + self._called(char_name)[1:],
+                      role=settings.get("label", role), description=char_desc)
+            self.tags_seen.append(["discovery", "milestone"])
+            self._beat("reveal", npc=char_name, via="met")
+        else:
+            self.history.append(self.narrate("arrival_npc", npc=self._called(char_name), description=char_desc))
+        lead = f"setup_lead_{char_name.lower().replace(' ', '_')}"
+        if first and lead in self.setup_indices and self.setup_indices[lead] < self.actions_taken:
+            self._record_clues([lead.replace("setup_", "payoff_", 1)])  # the one a lead named, found
+        if first:
+            self._recognised(char_name)
+        self._note_met(char_name)
 
     def _note_met(self, name):
         """Remember where the player met someone (people_met)."""
@@ -403,6 +457,8 @@ class GameState:
     def _reveal_item(self, name):
         if name in self.item_instances and not self._instance_at(name, self.current.name):
             return  # the one copy of a unique item lies elsewhere (or is held or gone)
+        if name in self.visible_objects or name in self.inventory:
+            return  # already in view (or held): not "spotted" again
         self.visible_objects.add(name)
         self._say("reveal_item", item=name)
 
@@ -552,6 +608,13 @@ class GameState:
                 "talks": int(self.character_interactions.get(name, 0)),
                 "quest": bool(char is not None and self.mission and not self.won and any(
                     self._mission_affinity(a, npc=name) > 0 for a in char.actions if self._action_enabled(a))),
+                # What helping them takes: times helped with their goal so far, and whether
+                # they are an ally now (npc_goals).
+                "helped": sum(self.__dict__.get("npc_goal_progress", {}).get(name, {}).values()),
+                "ally": name in self.__dict__.get("allies", set()),
+                # How much they matter in this story (npc_roles): a role and its importance 0-3.
+                "role": self.role_of(name)[0],
+                "importance": self.importance(name),
             })
         return people
 
@@ -566,8 +629,38 @@ class GameState:
                 "talks": int(self.character_interactions.get(name, 0)),
                 "hostile": bool(char is not None and char.encounter_event),
                 "gone": name in self.removed_npcs,
+                "ally": name in self.__dict__.get("allies", set()),
+                "role": self.role_of(name)[0],
+                "importance": self.importance(name),
             })
         return people
+
+    def map_view(self):
+        """The map as the player knows it: {current, previous, places: [{name, visited,
+        locked}], paths: [[a, b], ...] (each path once, both ways open unless one_way),
+        one_way: [[from, to], ...]}. Places known are those visited and those a known path
+        leads to; it is kept with the game (saved games keep it)."""
+        visited = [name for name in self.world.locations if self.location_counts.get(name, 0) > 0]
+        known = set(visited)
+        for name in visited:
+            known |= {other for other in self.world.locations[name].connected if other in self.world.locations}
+        paths, one_way = set(), set()
+        for name in sorted(known):
+            for other in self.world.locations[name].connected:
+                if other not in known:
+                    continue
+                if name in self.world.locations[other].connected:
+                    paths.add(tuple(sorted((name, other))))
+                else:
+                    one_way.add((name, other))
+        return {
+            "current": self.current.name,
+            "previous": self.path[-2] if len(self.path) > 1 else None,
+            "places": [{"name": name, "visited": self.location_counts.get(name, 0) > 0,
+                        "locked": self._location_is_locked(name)} for name in sorted(known)],
+            "paths": [list(pair) for pair in sorted(paths)],
+            "one_way": [list(pair) for pair in sorted(one_way)],
+        }
 
     def ways_on(self):
         """The places the player can travel to from here now: [{name, visited, toward_quest}]
@@ -821,7 +914,8 @@ class GameState:
                         continue
                     if not self.is_enabled(self.world.locations[step]):
                         continue
-                    if step != target and (self.sent_only(step) or (constraints.get(step) or {}).get("requires_escape")):
+                    if step != target and (self.sent_only(step) or (constraints.get(step) or {}).get("requires_escape")
+                                           or getattr(self.world.locations[step], "exit_locked", False)):
                         continue  # no one walks through a cell
                     previous[step] = here
                     if step == target:
@@ -944,6 +1038,7 @@ class GameState:
         while stages and getattr(self, "mission_stage", 0) < len(stages) - 1 and self._goal_met(self.mission):
             done = stages[self.mission_stage]
             self.mission_stage += 1
+            self.last_quest_progress = self.actions_taken
             following = stages[self.mission_stage]
             self._run_effects(done["rewards"])
             message = self.narrate("stage_complete", done=done["title"], next=following["title"],
@@ -1314,6 +1409,12 @@ class GameState:
         start = config.get("mission_settings.pursuit_start_step", 12)
         full = max(start + 1, config.get("mission_settings.pursuit_full_step", 30))
         pacing = min(1.0, max(0.0, (self.actions_taken - start) / (full - start)))
+        # Momentum: a quest that has not moved for a while pulls harder (the main quest keeps
+        # the story going), from momentum_after turns since its last progress up to full at twice that.
+        after = config.get("mission_settings.momentum_after", 0)
+        if after and self.mission and not self.won:
+            idle = self.actions_taken - self.__dict__.get("last_quest_progress", 0)
+            pacing = max(pacing, min(1.0, max(0.0, (idle - after) / float(after))))
         return self.genome.goal_bias * pacing
 
     def _goal_route_pull(self, location_name):
@@ -1384,7 +1485,9 @@ class GameState:
         return cfg if cfg.get("enabled", False) else None
 
     def _max_actions(self):
-        return max(100, int(config.get("narrative_end.max_actions", 100)))
+        """The action limit, plus the turns spent in fast travel (travel.max_free_turns at most)."""
+        free = min(int(self.__dict__.get("free_turns", 0)), int((config.get("travel") or {}).get("max_free_turns", 10)))
+        return max(100, int(config.get("narrative_end.max_actions", 100))) + free
 
     def escalation(self):
         """0 until director.escalation_start (share of the action limit), then rising to 1
@@ -1436,13 +1539,33 @@ class GameState:
             if self.interactive or self.verbose:
                 print(f"  >>> {message}")
 
+    def _recap(self):
+        """The journey in a few words, for the epilogue of a won story: the quest's steps, the
+        friends made, the threads tied up and the turns of fate."""
+        parts = []
+        # The journey as a road, not a tally: where it began, where it ended, the places that mattered.
+        route = list(dict.fromkeys(self.path))
+        if len(route) > 2:
+            middle = sorted(route[1:-1], key=lambda name: (-self.location_counts.get(name, 0), route.index(name)))[:3]
+            parts.append(f"From the {route[0]} to the {route[-1]}, by way of the {', the '.join(middle)}.")
+        stages = [stage["title"] for stage in getattr(self.mission, "stages", None) or []] if self.mission else []
+        if len(stages) > 1:
+            parts.append("Step by step: " + ", then ".join(stages) + ".")
+        allies = sorted(self.__dict__.get("allies", set()))
+        if allies:
+            parts.append("Friends made: " + ", ".join(self._called(name) for name in allies) + ".")
+        twists = [t for t in self.__dict__.get("twist_threads", []) if t["resolved"]]
+        if twists:
+            parts.append("The turns of fate: " + "; ".join(f"{t['actor']} {t['text']}" for t in twists[:2]) + ".")
+        return " ".join(parts) + (" " if parts else "")
+
     def _epilogue(self):
         """The closing text of a story that reaches the action limit with the director on."""
         mission = self.narrate("epilogue_mission_open", title=self.mission.title) if self.mission and not self.won else ""
         return self.narrate(
-            "end_epilogue", turns=self.actions_taken, mission=mission, places=len(set(self.path)),
+            "end_epilogue", turns=self.actions_taken, mission=mission, recap=self._recap(), places=len(set(self.path)),
             people=len(self.character_interactions), items=len(self.inventory),
-        )
+        ).strip()
 
     def _check_end_conditions(self):
         if self.health_player.is_dead:
@@ -1451,6 +1574,10 @@ class GameState:
         if self.mission and not self.won:
             self._advance_stages()
         if self.mission and not self.won and (self._mission_completed or self._goal_met(self.mission)) and (
+                getattr(self, "mission_stage", 0) >= len(getattr(self.mission, "stages", None) or [None]) - 1) and (
+                self._climax_holds_win()):
+            self._arm_climax()  # the quest's last step is a confrontation (climax): the win waits for it
+        elif self.mission and not self.won and (self._mission_completed or self._goal_met(self.mission)) and (
                 getattr(self, "mission_stage", 0) >= len(getattr(self.mission, "stages", None) or [None]) - 1):
             self.won = True
             complete = self.narrate("mission_complete", title=self.mission.title)
@@ -1459,7 +1586,10 @@ class GameState:
                 print(f"  >>> {complete}")
             self._run_effects(self.mission.rewards)  # quest rewards
             if config.get("mission_settings.end_on_goal", True):
-                return self._end("mission", self.narrate("end_mission", title=self.mission.title))
+                ending = self.narrate("end_mission", title=self.mission.title)
+                self._say("end_victory", title=self.mission.title, turns=self.actions_taken, recap=self._recap(),
+                          places=len(set(self.path)), people=len(self.character_interactions))
+                return self._end("mission", ending + " " + self.history[-1] if self.history else ending)
 
         if self._story_end:
             return self._end("story_end", self._story_end)
@@ -1467,14 +1597,15 @@ class GameState:
             return self._end("death", self.narrate("end_death"))
 
         end_cfg = config.get("narrative_end", {})
-        max_actions = max(100, end_cfg.get("max_actions", 100))
+        max_actions = self._max_actions()
         if self.actions_taken >= max_actions:
             if self._director() is not None:  # a finale was played: the story closes with an epilogue
                 return self._end("epilogue", self._epilogue())
             return self._end("action_limit", self.narrate("end_action_limit", limit=max_actions))
 
         max_consecutive = end_cfg.get("max_consecutive_steps_in_location", 5)
-        if self.consecutive_steps_in_location >= max_consecutive:
+        # A player directs their own way: lingering is their choice (the action limit still ends the story).
+        if self.consecutive_steps_in_location >= max_consecutive and not self.__dict__.get("player_directed", False):
             return self._end("stalled", self.narrate("end_stalled", location=self.current.name))
 
         if self.current.name == "Dungeon" and end_cfg.get("end_on_dungeon", False):
@@ -1487,6 +1618,7 @@ class GameState:
         self.ended = True
         self.end_kind = kind
         self.end_reason = reason
+        self._remember_story()  # for the profile's next story (memory)
         if self._store is not None:
             self._store.save(self.profile, self.variables, finished=True)
         return True
@@ -1586,6 +1718,112 @@ class GameState:
                 ).name
         return homes
 
+    # ---- NPC roles: who matters how much, how hard they are to find and to beat ----------------
+
+    @staticmethod
+    def _roles_cfg():
+        return config.get("npc_roles") or {}
+
+    def _mission_targets(self):
+        """The NPCs the story's quest is about: removed by a goal, or whose actions (or the
+        events they start) are a goal's action."""
+        if not self.mission:
+            return set()
+        goals = [dict(self.mission.goal or {})] + [dict(stage["goal"]) for stage in getattr(self.mission, "stages", None) or []]
+        names, actions = set(), set()
+        for goal in goals:
+            if goal.get("npc_removed"):
+                names.add(str(goal["npc_removed"]))
+            if goal.get("action"):
+                actions.add(str(goal["action"]).split(") ", 1)[-1])
+        for char in self.world.characters:
+            for action in char.actions:
+                event = self.world.events.get(action.triggers_event) if action.triggers_event else None
+                if action.name.split(") ", 1)[-1] in actions or (
+                        event is not None and any(a.name.split(") ", 1)[-1] in actions for a in event.actions)):
+                    names.add(char.name)
+        return names
+
+    def _assign_roles(self):
+        """{npc: role} for this story: an NPC's own `role`, else the first npc_roles.infer rule
+        it matches (mission_target: the quest is about them; unique; tags_any; hostile)."""
+        cfg = self._roles_cfg()
+        if not cfg.get("enabled", False):
+            return {}
+        roles = cfg.get("roles") or {}
+        targets = self._mission_targets()
+        assigned = {}
+        for char in self.world.characters:
+            own = getattr(char, "role", None)
+            if own in roles:
+                assigned[char.name] = own
+                continue
+            tags = {str(t).lower() for t in char.associated_tags}
+            for rule in cfg.get("infer") or []:
+                if rule.get("mission_target") and char.name not in targets:
+                    continue
+                if "unique" in rule and bool(rule["unique"]) != bool(char.unique):
+                    continue
+                wanted = {str(t).lower() for t in rule.get("tags_any") or []}
+                if wanted and not wanted & tags:
+                    continue
+                if rule.get("hostile") and not char.encounter_event:
+                    continue
+                if rule.get("role") in roles:
+                    assigned[char.name] = rule["role"]
+                    break
+        return assigned
+
+    def role_of(self, name):
+        """(role, its npc_roles settings) of an NPC in this story; (None, {}) without one."""
+        role = self.__dict__.get("npc_roles", {}).get(name)
+        return role, dict((self._roles_cfg().get("roles") or {}).get(role) or {})
+
+    def importance(self, name):
+        """0 (a bystander) .. 3 (the story's nemesis): how much an NPC matters in this story."""
+        return int(self.role_of(name)[1].get("importance", 0))
+
+    def _knowledge(self):
+        """What the player has learned: clues planted, quest steps done, allies made."""
+        return len(self.setup_indices) + getattr(self, "mission_stage", 0) + len(self.__dict__.get("allies", ()))
+
+    def _role_revealed(self, char):
+        """Whether an NPC may appear in scenes yet: an important role stays out of sight until
+        the story has run its reveal_turns turns, or the player has learned reveal_clues
+        things (_knowledge), or a reveal or a lead names them."""
+        role, settings = self.role_of(char.name)
+        if not settings or char.name in self.__dict__.get("revealed_npcs", set()) or char.name in self.__dict__.get("met", {}):
+            return True
+        turns, clues = settings.get("reveal_turns"), settings.get("reveal_clues")
+        if not turns and not clues:
+            return True
+        return bool((turns and self.actions_taken >= int(turns)) or (clues and self._knowledge() >= int(clues)))
+
+    def _hidden_important(self):
+        """Important NPCs (importance >= 1) not revealed yet, the most important first."""
+        hidden = [c for c in self.world.characters if self.importance(c.name) >= 1 and not self._role_revealed(c)
+                  and not self._is_removed(c.name) and self.is_enabled(c)]
+        return sorted(hidden, key=lambda c: (-self.importance(c.name), c.name))
+
+    def _name_hidden_npc(self, source_npc):
+        """A lead about someone who matters (npc_roles.leads_name_hidden): the source names an
+        important NPC still out of sight, who can be found from now on. The name, or None."""
+        if not self._roles_cfg().get("leads_name_hidden", True):
+            return None
+        hidden = [c for c in self._hidden_important() if c.name != source_npc]
+        if not hidden:
+            return None
+        char = hidden[0]
+        self.revealed_npcs.add(char.name)
+        home = self.npc_homes.get(char.name)
+        source = self._called(source_npc)
+        self._say("npc_named", npc=source[:1].upper() + source[1:], target=self._called(char.name),
+                  role=self.role_of(char.name)[1].get("label", self.role_of(char.name)[0]),
+                  location=home or "the city")
+        self._record_clues([f"setup_lead_{char.name.lower().replace(' ', '_')}"], note=f"{source_npc} named {char.name}")
+        self._beat("reveal", npc=char.name, via="lead")
+        return char.name
+
     def _npc_can_appear_here(self, char, explicit=False):
         """Unique NPCs only appear at their home; generic ones wherever they fit.
 
@@ -1593,6 +1831,8 @@ class GameState:
         """
         if self._is_removed(char.name) or not self.is_enabled(char):
             return False
+        if not explicit and not self._role_revealed(char):
+            return False  # someone who matters, not found yet (npc_roles)
         if char.unique:
             return self.npc_homes.get(char.name) == self.current.name
         return explicit or self._npc_fits_location(char)
@@ -1605,6 +1845,10 @@ class GameState:
         route may leave. ``lock_when: always`` confines everyone until an escape.
         """
         location_name = location_name or self.current.name
+        location = self.world.locations.get(location_name)
+        if location is not None and getattr(location, "exit_locked", False):
+            # exit_locked: nobody leaves until an outcome opens the exits (unlock_exit, an escape).
+            return location_name not in self.unlocked_locations
         rule = config.get("location_constraints", {}).get(location_name, {})
         if not rule.get("requires_escape", False):
             return False
@@ -1835,6 +2079,9 @@ class GameState:
         if check and director is not None and getattr(self, "_escape_attempts", 0) and self._escape_action(action):
             # Persistence: every failed escape teaches the prisoner something.
             check = (check[0], check[1] + int(director.get("escape_bonus", 15)) * self._escape_attempts)
+        elif check and director is not None and self.__dict__.get("failed_attempts", {}).get(action.name):
+            # So does every failed attempt at anything: trying again is not the same attempt.
+            check = (check[0], check[1] + int(director.get("retry_bonus", 15)) * self.failed_attempts[action.name])
         if check:
             attempt = self._best_outcome([o for o in success if o.on_check == "pass"] or success or action.outcomes, action)
         else:
@@ -1850,6 +2097,8 @@ class GameState:
 
         result = None
         if check:
+            tags = list(attempt.tags) + [t for o in action.outcomes for t in o.tags]
+            check = (check[0], check[1] + self._check_bonus(action, check[0], tags))
             result = self.combat.roll(*check, inventory=self.inventory, step=self.actions_taken)
             self.history.append(self.narrate(
                 "check_passed" if result.passed else "check_failed",
@@ -1872,7 +2121,8 @@ class GameState:
         the deterministic success probability of unchecked outcomes."""
         check = self.combat.check_for(action, outcome)
         if check:
-            return self.combat.pass_chance(*check, inventory=self.inventory, step=self.actions_taken)
+            bonus = self._check_bonus(action, check[0], outcome.tags)
+            return self.combat.pass_chance(check[0], check[1] + bonus, inventory=self.inventory, step=self.actions_taken)
         return outcome.success_probability(self.genome, self, action)
 
     def update_power(self):
@@ -1933,6 +2183,8 @@ class GameState:
         useful_items = self._useful_items()
         previous = self.path[-2] if len(self.path) > 1 else None
         heading_step = self._heading_step()
+        boredom = self._boredom()
+        due = self._due_clues()
         ranked = []
         for a in actions:
             all_o_tags = []
@@ -1998,6 +2250,42 @@ class GameState:
             # Going straight back where one came from (A -> B -> A) is a loop.
             if a.source == "navigation" and previous and a.owner == previous:
                 weight -= story_rules["backtrack_penalty"] * self.genome.novelty_bias
+            # Helping someone with what they want (npc_goals.action_weight).
+            if a.character_name and a.source not in ("conversation", "navigation"):
+                char = next((c for c in self.world.characters if c.name == a.character_name), None)
+                if char is not None and not char.encounter_event and any(
+                        self._helps_goal(char, o, a) is not None for o in a.outcomes):
+                    weight += float((config.get("npc_goals") or {}).get("action_weight", 0.5)) * (
+                        0.5 + self.genome.bias_social)
+            # A failed attempt is not retried at once (director.retry_cooldown turns): something
+            # else happens first, and the next try is easier (retry_bonus).
+            # Only when there is something else to do here: leaving and coming straight back
+            # would be worse filler than trying again.
+            if director is not None and a.name in self.__dict__.get("_last_failure", {}) and not self._escape_action(a):
+                if self.actions_taken - self._last_failure[a.name] < int(director.get("retry_cooldown", 2)) and any(
+                        other is not a and other.source not in ("navigation", "conversation") for other in actions):
+                    weight -= float(director.get("retry_cooldown_penalty", 3.0))
+            # Ping-pong: straight back to the place left on the last turn, after a turn of travel.
+            if (director is not None and a.source == "navigation" and a.owner == previous
+                    and (self.__dict__.get("turn_log") or [{}])[-1].get("source") == "navigation"):
+                weight -= float(director.get("ping_pong_penalty", 2.5))
+            # The director's rhythm: after turns with nothing new, what brings something new
+            # pulls harder; a clue left open too long wants its payoff (and the way to it);
+            # a place not visited yet pulls more the longer since the last new place.
+            if director is not None:
+                if boredom and self._brings_something_new(a):
+                    weight += float(director.get("boredom_weight", 0.0)) * boredom
+                if due and (any(str(t).lower().startswith("payoff_") for o in a.outcomes for t in o.tags)
+                            or (a.source == "navigation" and a.owner in self._payoff_sites())):
+                    weight += float(director.get("payoff_due_weight", 0.0)) * min(len(due), 2)
+                if (a.source == "navigation" and self.location_counts.get(a.owner, 0) > 0
+                        and not self._place_promise(a.owner)):
+                    # A dead end: back to a place with nothing left to do, see or settle there.
+                    weight -= float(director.get("dead_end_penalty", 0.0))
+                if a.source == "navigation" and self.location_counts.get(a.owner, 0) == 0:
+                    since = self.actions_taken - self.__dict__.get("last_new_place_turn", 0)
+                    weight += float(director.get("explore_weight", 0.0)) * min(1.0, since / 5.0) * (
+                        0.5 + self.genome.voyage_bias)
             # A far place the story set out for pulls toward the next step on the way.
             if a.source == "navigation" and heading_step and a.owner == heading_step:
                 weight += config.get("action_selection.heading_weight", 1.5)
@@ -2100,6 +2388,9 @@ class GameState:
     def _escape_action(self, a):
         """An action that escapes the confinement of this location (an outcome with one of
         location_constraints.<location>.escape_tags, where requires_escape is set)."""
+        if a.source == "location" and getattr(self.current, "exit_locked", False) and any(
+                getattr(o, "unlock_exit", False) for o in a.outcomes):
+            return True  # the way to open a locked exit
         constraint = (config.get("location_constraints") or {}).get(self.current.name) or {}
         if a.source != "location" or not constraint.get("requires_escape", False):
             return False
@@ -2135,8 +2426,38 @@ class GameState:
             # The choice has been made: the other options of the group disappear.
             self.closed_groups.add((scope, a.exclusive_group))
 
+    def _outcome_open(self, o):
+        """Whether an outcome can be told now: a payoff needs its setup planted first
+        (requires_setup; with story_rules.gate_payoffs a payoff_* clue tag also needs an
+        open clue, or with clue_matching: numbered its own setup_N), and a named thread
+        already paid off is not paid again."""
+        needed = getattr(o, "requires_setup", None)
+        if needed and str(needed) not in self.__dict__.get("setups_planted", set()):
+            return False
+        paid = getattr(o, "payoff_id", None)
+        if paid and str(paid) in self.__dict__.get("completed_payoffs", set()):
+            return False
+        story_rules = rules.settings()
+        if story_rules.get("gate_payoffs", True):
+            payoffs = [str(tag).lower() for tag in o.tags if str(tag).lower().startswith("payoff_")]
+            if payoffs:
+                if story_rules.get("clue_matching", "any") == "numbered":
+                    # payoff_N pays off setup_N only: it waits for it.
+                    if any(f"setup_{tag[len('payoff_'):]}" not in self.setup_indices for tag in payoffs):
+                        return False
+                elif not self._open_clues():
+                    return False  # nothing planted is waiting to be paid off
+        return True
+
     def _prepare_action(self, a):
-        """Resolve item/coin requirements on a copied action; return None if unavailable."""
+        """Resolve item/coin requirements on a copied action; return None if unavailable.
+        Outcomes that cannot be told yet (a payoff before its setup) are left out; an
+        action left with none is not offered."""
+        if a.outcomes and a.source not in ("navigation", "conversation"):
+            open_outcomes = [o for o in a.outcomes if self._outcome_open(o)]
+            if not open_outcomes:
+                return None
+            a.outcomes = open_outcomes
         # Check for required object/tag
         if a.required_tag:
             matching_items = [obj for obj in self.world.objects
@@ -2232,6 +2553,8 @@ class GameState:
         for template in self.active_event.actions:
             if not self._is_offered(template) or not self._action_enabled(template):
                 continue
+            if self._only_arrives_here(template):
+                continue  # "slip away into the Sewers" while in the Sewers
             a = self._prepare_action(copy.deepcopy(template))
             if a is None:
                 continue
@@ -2281,8 +2604,7 @@ class GameState:
         desc, npc_lines, object_lines = self._describe_visible_scene()
         self.history.append(self.narrate("arrival", location=self.current.name, description=desc))
         for char_name, char_desc in npc_lines:
-            self.history.append(self.narrate("arrival_npc", npc=self._called(char_name), description=char_desc))
-            self._note_met(char_name)
+            self._meet(char_name, char_desc)
         for obj_name, obj_desc in object_lines:
             self.history.append(self.narrate("arrival_item", item=self._called(obj_name), description=obj_desc))
 
@@ -2406,10 +2728,16 @@ class GameState:
             elif target_loc and target_loc.interact_prompts:
                 name = self._pick_text(target_loc.interact_prompts, offset=len(loc_name))
             
+            # A first journey somewhere says what one sees on the way (the place's distant view).
+            view = None
+            if self.location_counts.get(loc_name, 0) == 0 and target_loc is not None and target_loc.distant_descriptions:
+                view = self._pick_text(target_loc.distant_descriptions, offset=len(loc_name))
+            travel_text = (self.narrate("travel_first", stable=loc_name, location=loc_name, view=view) if view
+                           else self.narrate("travel_result", stable=loc_name, location=loc_name))
             navigation_action = Action(
                 name=name,
                 outcomes=[Outcome(
-                    desc=self.narrate("travel_result", stable=loc_name, location=loc_name),
+                    desc=travel_text,
                     move_to=loc_name,
                 )],
                 repeat="always",
@@ -2417,6 +2745,7 @@ class GameState:
                 owner=loc_name,
             )
             final_actions.append(navigation_action)
+        final_actions.extend(self._fast_travel_options(navigation_targets))  # known ways, in one turn (travel)
 
         # The director does not offer what can only repeat itself (events and travel stay).
         director = self._director()
@@ -2491,6 +2820,9 @@ class GameState:
             tension = 1.0  # danger a moment ago
         if self.tags_seen and "milestone" in self.tags_seen[-1]:
             tension = max(tension, 0.5)
+        stakes = self.stakes()
+        if stakes and stakes["alert"] >= stakes["warn_at"]:
+            tension = max(tension, 0.7)  # the watch is looking for the player
         return tension
 
     def _relevant_options(self, pairs, limit, cfg):
@@ -2519,6 +2851,10 @@ class GameState:
             take(next((a for _, a in pairs if any(
                 str(tag).lower().startswith("payoff_") for o in a.outcomes for tag in o.tags)), None))
         take(next((a for _, a in pairs if a.source == "navigation"), None))
+        # Backtracking: the way back where one came from stays a choice.
+        previous = self.path[-2] if len(self.path) > 1 else None
+        if previous and previous != self.current.name and cfg.get("way_back", True):
+            take(next((a for _, a in pairs if a.source == "navigation" and a.owner == previous), None))
         # Then the rest by rank while relevant enough (beyond `min`: not in the lowest
         # `relevance` share of the options now, `focus_relevance` in a tense moment),
         # within the kind limits.
@@ -2556,14 +2892,41 @@ class GameState:
             actions = self.get_available_actions()
         return actions
 
-    def _record_clues(self, tags):
-        """Note when each clue (setup_*) and payoff (payoff_*) first appears."""
+    def _record_clues(self, tags, note=None):
+        """Note when each clue (setup_*) and payoff (payoff_*) first appears; ``note`` (what
+        the setup said) is kept for the callback its payoff tells."""
         for tag in tags:
             tag = str(tag).lower()
             if tag.startswith("setup_"):
+                if tag not in self.setup_indices and note:
+                    self.__dict__.setdefault("clue_notes", {})[tag] = {
+                        "text": str(note), "place": self.current.name, "turn": self.actions_taken}
                 self.setup_indices.setdefault(tag, self.actions_taken)
             elif tag.startswith("payoff_"):
                 self.payoff_indices.setdefault(tag, self.actions_taken)
+
+    _CALLBACK_STOP = {"there", "their", "which", "where", "while", "about", "after", "before", "under", "through",
+                      "something", "someone", "every", "never", "always", "again"}
+
+    def _related(self, note, payoff_text):
+        """Whether a setup and a payoff belong together: told at the same place, or sharing
+        a word of five letters or more (not a common one)."""
+        if note["place"] == self.current.name:
+            return True
+        words = lambda text: {w for w in re.findall(r"[a-z]{5,}", text.lower()) if w not in self._CALLBACK_STOP}  # noqa: E731
+        return bool(words(note["text"]) & words(payoff_text))
+
+    def _tell_callbacks(self, closed, payoff_text=""):
+        """A payoff that closes a clue it belongs with says what it pays off ([CALLBACK] ...),
+        so the player sees the thread from the setup to the payoff."""
+        notes = self.__dict__.get("clue_notes", {})
+        for tag in sorted(closed, key=lambda t: self.setup_indices.get(t, 0)):
+            note = notes.get(tag)
+            if not note or tag.startswith("setup_twist") or not self._related(note, payoff_text):
+                continue  # a twist's payoff tells its own story; unrelated threads are not tied together
+            text = note["text"].strip().split(". ")[0].rstrip(".")
+            text = text if len(text) <= 110 else text[:107].rstrip() + "..."
+            self._say("callback", place=note["place"], text=text, turns=self.actions_taken - note["turn"])
 
     def _open_clues(self):
         """Clues planted and not yet paid off (story_rules.clue_matching)."""
@@ -2600,6 +2963,7 @@ class GameState:
         if (
             rules.settings()["on_stall"] != "move" or self.ended or self.active_event
             or self.consecutive_steps_in_location < limit or self.health_player.is_dead
+            or self.__dict__.get("player_directed", False)  # a player chooses when to move on
         ):
             return False
         return self._auto_transfer_when_stuck(message_key="stall_move")
@@ -2622,7 +2986,7 @@ class GameState:
 
         origin = self.current.name
         self.current.connect(target)
-        if not self._move_to(target.name):
+        if not self._move_to(target.name, cause="auto"):
             return False
 
         message = self.narrate(message_key, origin=origin, destination=target.name)
@@ -2632,14 +2996,20 @@ class GameState:
         return True
 
     def _maybe_trigger_unexpected_event(self):
-        """Create a lightweight procedural event from configurable narrative parts."""
+        """A procedural twist: an omen, a passer-by and what they do, told to match what
+        it does (a gain, a hurt, a discovery, a mystery that pays off later, a bargain to
+        take or refuse). A mystery planted earlier comes due first: after
+        unexpected_events.twist_payoff_delay turns (or in the finale) its payoff is told."""
         event_cfg = config.get("unexpected_events", {})
         if not event_cfg.get("enabled", True):
             return None
-        if len(self.unexpected_events) >= int(event_cfg.get("max_per_story", 4)):
-            return None
         cooldown = int(event_cfg.get("cooldown_steps", 2))
         if self.actions_taken - self._last_event_step < cooldown:
+            return None
+        due = self._due_twist(event_cfg)
+        if due is not None:
+            return self._pay_off_twist(due)
+        if len(self.unexpected_events) >= int(event_cfg.get("max_per_story", 4)):
             return None
 
         base_chance = float(event_cfg.get("base_chance", 0.12))
@@ -2653,12 +3023,14 @@ class GameState:
         director = self._director()
         if director is not None:
             event_pressure *= 1.0 + float(director.get("event_pressure", 0.0)) * self.escalation()
+            # Nothing new for a while: something should happen.
+            event_pressure += float(director.get("boredom_event_pressure", 0.0)) * self._boredom()
         if event_pressure < event_cfg.get("objective_threshold", 0.24):
             return None
 
         actors = event_cfg.get("actors", ["a masked courier", "a frightened witness"])
         omens = event_cfg.get("omens", ["a bell rings backwards", "the lights suddenly fail"])
-        twists = event_cfg.get("twists", ["offers a dangerous bargain", "reveals a hidden route"])
+        generic_twists = event_cfg.get("twists", ["offers a dangerous bargain", "reveals a hidden route"])
         objective_index = (
             self.actions_taken
             + self.location_counts.get(self.current.name, 0)
@@ -2670,21 +3042,13 @@ class GameState:
         def fresh(options, start, kind):
             for offset in range(len(options)):
                 choice = options[(start + offset) % len(options)]
-                if choice not in used[kind]:
-                    used[kind].add(choice)
+                key = choice.get("text") if isinstance(choice, dict) else choice
+                if key not in used[kind]:
+                    used[kind].add(key)
                     return choice
             return options[start % len(options)]
 
-        actor = fresh(actors, objective_index, "actor")
-        omen = fresh(omens, objective_index + len(self.path), "omen")
-        twist = fresh(twists, objective_index + len(self.tags_seen), "twist")
-        if event_cfg.get("name_location", True):
-            description = f"In the {self.current.name}, {omen}. {actor.capitalize()} {twist}."
-        else:
-            description = f"{omen.capitalize()}. {actor.capitalize()} {twist}."
-
         effects = event_cfg.get("effects", [{"tags": ["unexpected", "social"]}])
-
         objective = event_cfg.get("objective") or {}
 
         def effect_objective(effect):
@@ -2724,6 +3088,18 @@ class GameState:
             key=lambda pair: (effect_objective(pair[1]) - uses[pair[0]] * repeat_penalty, str(pair[1])),
         )
         uses[index] += 1
+
+        # The twist is told to match what it does (the effect's own twists, else the generic ones).
+        actor = fresh(actors, objective_index, "actor")
+        omen = fresh(omens, objective_index + len(self.path), "omen")
+        entry = fresh(effect.get("twists") or generic_twists, objective_index + len(self.tags_seen), "twist")
+        twist = entry.get("text", "") if isinstance(entry, dict) else str(entry)
+        twist = twist.replace("{place}", self.current.name).replace("{actor}", actor)
+        if event_cfg.get("name_location", True):
+            description = f"In the {self.current.name}, {omen}. {actor.capitalize()} {twist}."
+        else:
+            description = f"{omen.capitalize()}. {actor.capitalize()} {twist}."
+
         tags = list(effect.get("tags", ["unexpected"]))
         if "unexpected" not in tags:
             tags.append("unexpected")
@@ -2735,7 +3111,7 @@ class GameState:
         health_change = self.health_player.change(-self._scaled_damage(-raw_health) if raw_health < 0 else raw_health)
         self.coins = max(0, self.coins + coin_change)  # a purse cannot go below empty
         self.update_power()
-        self.tags_seen.append(tags)
+        self.tags_seen.append([t for t in tags if t != "setup_clue"])
         self.unexpected_events.append(description)
         self._last_event_step = self.actions_taken
         message = self.narrate("unexpected_event", description=description)
@@ -2747,11 +3123,88 @@ class GameState:
             new_location = self.world.spawn(self.current, state=self)
             if new_location:
                 self.current.connect(new_location)
+                self._record_transition("discovery", self.current.name, new_location.name, "spawn")
                 self.history.append(self.narrate("unexpected_discovery", location=new_location.name))
+
+        # A mystery leaves a thread to pay off; a bargain is a choice to take or refuse.
+        if effect.get("bargain"):
+            self._offer_bargain(effect["bargain"], actor, description)
+        elif isinstance(entry, dict) and entry.get("payoff"):
+            self._plant_twist(actor, twist, entry["payoff"], entry.get("payoff_effect") or {}, planted=True)
 
         if self.interactive or self.verbose:
             print(f"  >>> {message}")
         return description
+
+    # ---- twist threads: what a twist sets up, a later twist pays off ---------------------
+
+    def _plant_twist(self, actor, text, payoff, payoff_effect, planted=True):
+        threads = self.__dict__.setdefault("twist_threads", [])
+        thread = {"id": len(threads) + 1, "turn": self.actions_taken, "actor": actor, "place": self.current.name,
+                  "text": text, "payoff": payoff, "effect": dict(payoff_effect), "resolved": False}
+        threads.append(thread)
+        if planted:
+            self.__dict__.setdefault("setups_planted", set()).add(f"twist{thread['id']}")
+            self._record_clues([f"setup_twist{thread['id']}"], note=f"{actor} {text}")
+        return thread
+
+    def _due_twist(self, event_cfg):
+        """An open twist thread whose payoff is due: planted unexpected_events.twist_payoff_delay
+        turns ago, or any planted one once the finale has begun."""
+        delay = int(event_cfg.get("twist_payoff_delay", 6))
+        for thread in self.__dict__.get("twist_threads", []):
+            if thread["resolved"] or f"twist{thread['id']}" not in self.__dict__.get("setups_planted", set()):
+                continue
+            if self.actions_taken - thread["turn"] >= delay or self.in_finale():
+                return thread
+        return None
+
+    def _pay_off_twist(self, thread):
+        """Tell a twist's payoff ([TWIST] ...) and apply what it does."""
+        thread["resolved"] = True
+        actor = thread["actor"]
+        text = str(thread["payoff"]).format(actor=actor, actor_cap=actor[:1].upper() + actor[1:], place=thread["place"])
+        effect = thread["effect"]
+        raw_health = int(effect.get("health_change", 0))
+        health_change = self.health_player.change(-self._scaled_damage(-raw_health) if raw_health < 0 else raw_health)
+        coin_change = int(effect.get("coin_change", 0))
+        self.coins = max(0, self.coins + coin_change)
+        self.update_power()
+        tags = [t for t in effect.get("tags", []) if not str(t).startswith("payoff_")] + ["unexpected"]
+        self.tags_seen.append(tags)
+        self.__dict__.setdefault("completed_payoffs", set()).add(f"twist{thread['id']}")
+        self._record_clues([f"payoff_twist{thread['id']}"])
+        self._last_event_step = self.actions_taken
+        self._say("twist_payoff", text=text)
+        if health_change or coin_change:
+            self.history.append(self.narrate("unexpected_effect", health=health_change, coins=coin_change))
+        return text
+
+    def _offer_bargain(self, spec, actor, description):
+        """A bargain as a choice (an event of the story's own): taking it pays now and plants a
+        debt that comes due later; refusing it closes the matter."""
+        from .world import Event
+
+        actor_cap = actor[:1].upper() + actor[1:]
+        fmt = lambda text: str(text).format(actor=actor, actor_cap=actor_cap)  # noqa: E731
+        thread = self._plant_twist(actor, "a bargain", (spec.get("accept") or {}).get("payoff", "{actor_cap} comes to collect."),
+                                   (spec.get("accept") or {}).get("payoff_effect") or {}, planted=False)
+        accept, refuse = spec.get("accept") or {}, spec.get("refuse") or {}
+        actions = [
+            Action(fmt(accept.get("name", "Take the bargain")), [Outcome(
+                fmt(accept.get("desc", "You shake on it.")), tags=list(accept.get("tags", ["social", "risk"])),
+                coin_change=int(accept.get("coin_change", 0)), health_change=int(accept.get("health_change", 0)),
+                setup_id=f"twist{thread['id']}")], source="event", owner="bargain", repeat="always"),
+            Action(fmt(refuse.get("name", "Refuse the bargain")), [Outcome(
+                fmt(refuse.get("desc", "You refuse.")), tags=list(refuse.get("tags", ["social"])))],
+                source="event", owner="bargain", repeat="always"),
+        ]
+        name = f"_bargain_{thread['id']}"
+        self.world.events[name] = Event(name, title=fmt(spec.get("title", "A dangerous bargain")),
+                                        tags=["unexpected", "social"], descriptions=[description], actions=actions,
+                                        repeat="once")
+        if self._pending_event is None:
+            self._pending_event = (name, None)  # offered once this turn's action is done
 
     def _enter_event(self, event_name, source_npc=None, cause="action"):
         """Start an authored Event anchored to the current location, if its rules
@@ -2867,6 +3320,18 @@ class GameState:
         else:
             message = self.narrate("npc_removed", npc=npc_name)
         self.history.append(message)
+        role, settings = self.role_of(npc_name)
+        if int(settings.get("importance", 0)) >= 1:
+            # Beating someone who matters is a turning point (fitness: npc_triumphs).
+            self.__dict__.setdefault("defeated", []).append({"npc": npc_name, "role": role, "turn": self.actions_taken})
+            if int(settings.get("importance", 0)) >= 2:
+                self._say("npc_triumph", npc=self._called(npc_name), role=settings.get("label", role))
+                self.tags_seen.append(["success", "milestone"])
+            reward = int(settings.get("defeat_coins", 0))
+            if reward:
+                self.coins += reward
+            self._beat("triumph", npc=npc_name, importance=int(settings.get("importance", 0)))
+            self._queue_consequence("defeated", npc_name)
         if self.interactive or self.verbose:
             print(f"  >>> {message}")
 
@@ -2888,7 +3353,144 @@ class GameState:
                 "end_kind": self.end_kind,
                 "history": [history_start, len(self.history)],  # this turn's lines of the story
             })
+            self._update_rhythm(self.turn_log[-1])
         return result
+
+    # ---- the director's sense of rhythm: what is new, what is due ------------------------
+
+    def _update_rhythm(self, turn):
+        """Keep the story's rhythm: how many turns in a row brought nothing new (calm_streak)
+        and when the last new place was reached. A turn is new when it brings a place, an
+        event, a person, an outcome not told before, a skill check, or a change of health or
+        coins (as fitness's engagement counts it)."""
+        seen = self.__dict__.setdefault("_rhythm_seen", {"places": {self.start_location}, "events": set(),
+                                                         "people": set(), "outcomes": set()})
+        log = self.turn_log
+        previous = log[-2] if len(log) > 1 else None
+        new = False
+        if turn["location_after"] not in seen["places"]:
+            seen["places"].add(turn["location_after"])
+            self.last_new_place_turn = self.actions_taken
+            new = True
+        for event in (turn.get("event"), turn.get("event_after")):
+            if event and event not in seen["events"]:
+                seen["events"].add(event)
+                new = True
+        if turn.get("source") in ("npc", "conversation") and turn.get("owner") and turn["owner"] not in seen["people"]:
+            seen["people"].add(turn["owner"])
+            new = True
+        if turn.get("outcome") and turn["outcome"] not in seen["outcomes"]:
+            seen["outcomes"].add(turn["outcome"])
+            new = True
+        if turn.get("check") or (previous is not None and (
+                turn["health"] != previous["health"] or turn["coins"] != previous["coins"])):
+            new = True
+        self.calm_streak = 0 if new else self.__dict__.get("calm_streak", 0) + 1
+
+    def _boredom(self):
+        """How far past director.boredom_turns the story has gone with nothing new (0: not bored)."""
+        director = self._director()
+        if director is None:
+            return 0
+        return max(0, self.__dict__.get("calm_streak", 0) - int(director.get("boredom_turns", 3)) + 1)
+
+    def _due_clues(self):
+        """Open clues planted at least director.payoff_delay turns ago: their payoff is due."""
+        director = self._director()
+        if director is None:
+            return []
+        delay = int(director.get("payoff_delay", 6))
+        return [tag for tag in self._open_clues() if self.actions_taken - self.setup_indices.get(tag, self.actions_taken) >= delay]
+
+    def _place_promise(self, name):
+        """Whether a place still holds something: a step of the quest, the payoff of an open
+        clue, an action whose outcomes have not all been told, or someone not yet met there."""
+        if name in self._goal_sites() or (self._open_clues() and name in self._payoff_sites()):
+            return True
+        location = self.world.locations.get(name)
+        if location is None:
+            return False
+        for action in location.actions:
+            if self._repeat_rule(action) == "once" and self._is_closed(action, name):
+                continue
+            if any(o.desc and not self.outcome_counts[o.desc] for o in action.outcomes):
+                return True
+        met = self.__dict__.get("met", {})
+        return any(home == name and npc not in met for npc, home in self.npc_homes.items())
+
+    def _brings_something_new(self, a):
+        """Whether an option promises something new: an event, a place not visited, a fight,
+        a discovery, or an outcome not told yet (not small talk)."""
+        if a.source == "conversation":
+            return False
+        if a.triggers_event:
+            return True
+        if a.source == "navigation":
+            return self.location_counts.get(a.owner, 0) == 0
+        for o in a.outcomes:
+            tags = {str(t).lower() for t in o.tags}
+            if o.spawn or o.reveal_location or getattr(o, "target_tags", None) or o.reveal_npc or o.reveal_object:
+                return True
+            if tags & {"threat", "combat", "unexpected"} or (o.desc and not self.outcome_counts[o.desc]):
+                return True
+        return False
+
+    def _story_draw(self, *keys):
+        """0..1, fixed for this story and these keys: the story's own randomness, which never
+        rolls its dice (only skill checks do)."""
+        salt = self.__dict__.get("_story_salt") or self.start_location  # games saved before
+        digest = hashlib.sha256(f"{salt}|{'|'.join(map(str, keys))}".encode()).hexdigest()
+        return int(digest[:13], 16) / float(16 ** 13)
+
+    def _fail_forward(self, action, outcome):
+        """After a failure that changed nothing but health or coins, start (with chance
+        director.fail_forward, from the story's own randomness) a complication: an event
+        tagged `complication` that can start here and shares a tag with the failure (a
+        botched bribe brings the guards). Not when the player was moved, sent or caught up
+        in an event already. Without a complication the story may show another way
+        (story_beats._another_way, director.another_way)."""
+        director = self._director()
+        chance = float(director.get("fail_forward", 0.0)) if director else 0.0
+        if (director is None or self.active_event or self._pending_event or self._location_is_locked()
+                or (outcome is not None and (outcome.move_to or outcome.send_to or outcome.spawn
+                                             or outcome.reveal_location or list(outcome.effects.writes)))
+                or self.path[-1] != self.current.name or self.ended):
+            return False
+        failed = {str(t).lower() for t in (outcome.tags if outcome is not None else [])} | {
+            str(t).lower() for o in action.outcomes for t in o.tags}
+        candidates = sorted(name for name, event in self.world.events.items()
+                            if "complication" in event.tags and (set(event.tags) - {"complication"}) & failed
+                            and self._event_available(name)) if chance > 0 else []
+        if not candidates or self._story_draw("fail_forward", self.actions_taken) >= chance:
+            return self._another_way(action)  # no complication: another way forward, or a dead end
+        self._pending_event = (candidates[0], action.character_name)
+        return True
+
+    def _storyteller_pick(self, actions):
+        """The index of the option the storyteller takes: its favourite, or now and then
+        (director.surprise x (1 + chaos_bias), drawn from the story's own randomness) another
+        option nearly as good (within director.surprise_margin of the best, among its
+        surprise_top_k), so that one start and one storyteller can tell different stories.
+        A story is still the same for the same seed."""
+        director = self._director()
+        if director is None or len(actions) < 2:
+            return 0
+        chance = float(director.get("surprise", 0.0)) * (1.0 + self.genome.chaos_bias)
+        if chance <= 0 or self._story_draw("surprise", self.actions_taken) >= chance:
+            return 0
+        pairs = self._rank_actions(actions)
+        best = pairs[0][0]
+        margin = float(director.get("surprise_margin", 1.0))
+        top_k = max(2, int(director.get("surprise_top_k", 3)))
+        last = (self.__dict__.get("turn_log") or [{}])[-1].get("action")
+        previous = self.path[-2] if len(self.path) > 1 else None
+        # A surprise is something else: not the last action again, not straight back where one came from.
+        near = [a for score, a in pairs[1:top_k] if best - score <= margin and a.name != last
+                and not (a.source == "navigation" and a.owner == previous)]
+        if not near:
+            return 0
+        chosen = near[int(self._story_draw("pick", self.actions_taken) * len(near))]
+        return next(index for index, a in enumerate(actions) if a is chosen)
 
     def turn_text(self, entry):
         """The story text of one ``turn_log`` entry."""
@@ -2968,7 +3570,7 @@ class GameState:
             action = options[choice]
         else:
             if action_index is None:
-                action_index = 0
+                action_index = self._storyteller_pick(actions)  # a player's choice is taken as given
             if action_index < 0 or action_index >= len(actions):
                 raise IndexError(f"Action index {action_index} is out of range.")
             action = actions[action_index]
@@ -2987,6 +3589,7 @@ class GameState:
         # the outcomes written for that result; otherwise the chosen outcome's
         # tags may call for a check (character_stats.tag_checks).
         location_before = self.current.name
+        climax_turn = in_event and self.active_event.name == self._climax_state()["armed"]
         attempt, told, check_result, calculated_success = self._resolve_outcome(action)
         if attempt is None:
             return False
@@ -3000,10 +3603,15 @@ class GameState:
             "succeeded": bool(calculated_success),
             "outcome": told.desc if told is not None else None,
             # What the turn was about: the outcome told, and the event it happened in.
+            # What else the player could have done (the best alternatives, for a reader of the story).
+            "options": [option.name for option in actions[:6] if option is not action][:4],
             "tags": sorted({str(tag) for tag in (told.tags if told is not None else [])}
                            | {str(tag) for tag in (self.active_event.tags if self.active_event else [])}
                            | ({"failure"} if not calculated_success else set())),
         }
+        if getattr(action, "fast_travel", None):
+            self._turn["fast_travel"] = True  # not counted toward the action limit (travel)
+            self.free_turns = self.__dict__.get("free_turns", 0) + 1
         self.actions_taken += 1
         shown = told or attempt
         is_conversation = "conversation" in {tag.lower() for tag in shown.tags}
@@ -3053,7 +3661,24 @@ class GameState:
                     return False
 
         self._record_choice(action, calculated_success, choice_scope, choice_visit)
+        if calculated_success and action.source not in ("navigation", "conversation"):
+            self.__dict__.setdefault("success_counts", Counter())[action.name] += 1
+        self._update_alert(action, told if told is not None else attempt, calculated_success)
+        if action.source == "navigation" and self.current.name != location_before \
+                and self.location_counts.get(self.current.name, 0) == 1:
+            self._first_trip(self.current.name)
         director = self._director()
+        # Failing forward: a failed attempt that led nowhere (no move, discovery or event) may turn
+        # into a complication: an authored event tagged `complication` whose tags fit the failure.
+        if not calculated_success and not in_event and director is not None:
+            self._fail_forward(action, told if told is not None else attempt)
+        # Failed attempts are remembered (director.retry_bonus, retry_cooldown); a success clears them.
+        attempts = self.__dict__.setdefault("failed_attempts", Counter())
+        if calculated_success:
+            attempts.pop(action.name, None)
+        elif action.source not in ("navigation", "conversation"):
+            attempts[action.name] += 1
+            self.__dict__.setdefault("_last_failure", {})[action.name] = self.actions_taken
         if not calculated_success and director is not None:
             until = self.actions_taken + int(director.get("barred_turns", 5))
             barred = self.__dict__.setdefault("_barred", {})
@@ -3064,6 +3689,8 @@ class GameState:
         # Any choice inside an event ends it; a successful trigger action starts one.
         if in_event:
             self._finish_event(action, calculated_success)
+            if climax_turn:
+                self._resolve_climax(action, calculated_success)
         elif (
             calculated_success and action.triggers_event and self.health_player.is_alive
             and self._event_available(action.triggers_event)
@@ -3082,6 +3709,7 @@ class GameState:
         self._start_pending_event()  # a start_event in the mission's rewards
         # A hostile NPC at the destination confronts the player on arrival.
         if not self.active_event:
+            self._tell_consequences()  # what the player did earlier shows now
             self._refresh_scene()
             self._start_encounter()
         return True
@@ -3094,7 +3722,12 @@ class GameState:
         if not move_to_tags:
             return None
 
-        target = self._best_transition_destination(intent_tags=move_to_tags)
+        # Led by tags: on a map, the neighbour that fits them best.
+        neighbours = self.neighbours(self.current.name)
+        candidates = sorted(n for n in neighbours if not self.sent_only(n)) if neighbours is not None else None
+        if candidates == []:
+            return None
+        target = self._best_transition_destination(candidate_names=candidates, intent_tags=move_to_tags)
         return target.name if target else None
 
     def discover_new_node(self, node_type=None, source_npc=None):
@@ -3180,12 +3813,19 @@ class GameState:
 
         return None, None
 
-    def _move_to(self, target_name, one_way=False):
+    def _record_transition(self, kind, origin, target, resolution):
+        """One move or discovery of the story (transition_records)."""
+        self.__dict__.setdefault("transition_records", []).append({
+            "turn": self.actions_taken, "kind": kind, "from": origin, "to": target, "resolution": resolution})
+
+    def _move_to(self, target_name, one_way=False, cause=None):
         """Helper to transition to a new location and update history/counters.
 
         ``one_way`` (a ``send_to`` outcome) links the origin to the target but not
         back, and confines the player there when the target requires an escape.
         """
+        if target_name == self.current.name and not one_way:
+            return False  # already here: no move (and no second entry in the path)
         if target_name != self.current.name and self._location_is_locked():
             return False
         if target_name in self.world.locations and not self.is_enabled(self.world.locations[target_name]):
@@ -3232,6 +3872,8 @@ class GameState:
             origin.connect(target)
         self.last_location_name = origin.name
         self.current = target
+        self._record_transition("move", origin.name, target.name,
+                                "sent" if one_way else cause or getattr(self, "_transition_cause", None) or "named")
         self.location_counts[self.current.name] = self.location_counts.get(self.current.name, 0) + 1
         self.path.append(self.current.name)
         self.consecutive_steps_in_location = 0
@@ -3261,10 +3903,21 @@ class GameState:
         event_anchored = bool(self.active_event or (action and action.triggers_event))
 
         self.tags_seen.append(list(situational_tags))
-        self._record_clues(outcome.tags)
+        open_before = set(self._open_clues())
+        self._record_clues(outcome.tags, note=outcome.desc)
+        # Named threads: a setup is planted; a payoff closes it (its setup's outcomes gate on it).
+        if getattr(outcome, "setup_id", None):
+            self.__dict__.setdefault("setups_planted", set()).add(str(outcome.setup_id))
+            self._record_clues([f"setup_{outcome.setup_id}"], note=outcome.desc)
+        if getattr(outcome, "payoff_id", None):
+            self.__dict__.setdefault("completed_payoffs", set()).add(str(outcome.payoff_id))
+            self._record_clues([f"payoff_{outcome.payoff_id}"])
+        self._tell_callbacks(open_before - set(self._open_clues()), outcome.desc or "")
         if outcome.desc:  # an arrest after a failed attempt tells no outcome text
             self.outcome_counts[outcome.desc] += 1
-            self.history.append(self.narrate("result", description=outcome.desc))
+            self.__dict__.setdefault("scenario_counts", Counter())[
+                (origin_location, action.name if action else "", outcome.desc)] += 1
+            self.history.append(self._told(outcome, action))  # variants, or said to be told again (variation)
 
         # 0. Apply Outcome Mechanical Changes. The effect list holds the outcome's
         # variable and stat changes (shorthand fields) and its explicit effects.
@@ -3280,6 +3933,11 @@ class GameState:
             self.history.append(escape_msg)
             if self.interactive or self.verbose:
                 print(f"  >>> {escape_msg}")
+        if getattr(outcome, "unlock_exit", False) and origin_location not in self.unlocked_locations:
+            self.unlocked_locations.add(origin_location)
+            if self.confined_in == origin_location:
+                self.confined_in = None
+            self._say("exit_unlocked", location=origin_location)
         self._change_health(outcome.health_change, mitigate="combat" in lower_tags or "threat" in lower_tags)
         self.coins = max(0, self.coins + outcome.coin_change)  # a purse cannot go below empty
         self.update_power()
@@ -3292,9 +3950,14 @@ class GameState:
         named = rules.mentioned_location(outcome.desc, self.world.locations) if story_rules["follow_outcome_text"] else None
         if named == origin_location or (named and not self.is_enabled(self.world.locations[named])):
             named = None
+        target_tags = list(getattr(outcome, "target_tags", ()) or ())
+        if target_tags and not outcome.reveal_location:
+            named = None  # led by tags, not by a name in the text
         discovery_known = bool(outcome.spawn and not outcome.reveal_location and named in self.current.connected)
-        if (outcome.spawn or outcome.reveal_location) and not discovery_known:
+        move_cause = "travel" if action is not None and action.source == "navigation" else "named"
+        if (outcome.spawn or outcome.reveal_location or target_tags) and not discovery_known:
             target = outcome.reveal_location or (named if outcome.spawn else None)
+            resolution = "named" if target else "tags" if target_tags else "spawn"
             named_target = target
             target = self._lead_toward(target)  # a far place opens the way toward it
             new_loc = None if named_target and target is None else self.world.spawn(
@@ -3302,11 +3965,13 @@ class GameState:
                 force_target=target,
                 state=self,
                 allow_special=(target == "Dungeon"),
+                target_tags=None if target else target_tags,
             )
             if new_loc and new_loc.name != self.current.name and not (
                 story_rules["follow_outcome_text"] and new_loc.name in self.current.connected
             ):
                 self.current.connect(new_loc)
+                self._record_transition("discovery", self.current.name, new_loc.name, resolution)
                 spawn_msg = self.narrate("spawn", location=new_loc.name)
                 self.history.append(spawn_msg)
                 if self.interactive or self.verbose:
@@ -3316,12 +3981,14 @@ class GameState:
                 if (
                     outcome.move_to is None
                     and not event_anchored
+                    and not self.__dict__.get("player_directed", False)  # the player chooses where to go
                     and config.get("game_state.auto_travel_on_spawn", True)
                     and self._should_commit_to_new_path(
                         new_loc.name, config.get("game_state.auto_travel_on_spawn_threshold", 1.5),
                     )
                 ):
                     outcome.move_to = new_loc.name
+                    move_cause = resolution
                     travel_msg = self.narrate("voyage", location=new_loc.name)
                     self.history.append(travel_msg)
                     if self.interactive or self.verbose:
@@ -3356,6 +4023,8 @@ class GameState:
                 lead_due = False  # someone who just refused or beat you gives no directions
             if story_rules["follow_outcome_text"] and (routes_itself or named):
                 lead_due = bool(named) and not routes_itself and named not in self.current.connected
+            if lead_due and not named and not routes_itself and self._name_hidden_npc(c_name):
+                lead_due = False  # the lead was about someone who matters
             if lead_due:
                 if story_rules["follow_outcome_text"] and named:
                     node_type, node_name = "loc", named
@@ -3367,6 +4036,7 @@ class GameState:
                         self.current, force_target=step, state=self)
                     if new_loc and new_loc.name != self.current.name:
                         self.current.connect(new_loc)
+                        self._record_transition("discovery", self.current.name, new_loc.name, "lead")
                         lead_msg = self.narrate("lead_path", npc=c_name, location=new_loc.name)
                         self.history.append(lead_msg)
                         if self.interactive or self.verbose:
@@ -3375,9 +4045,11 @@ class GameState:
                             "conversation" not in lower_tags
                             and outcome.move_to is None
                             and not event_anchored
+                            and not self.__dict__.get("player_directed", False)  # the player chooses where to go
                             and self._should_commit_to_new_path(new_loc.name)
                         ):
                             outcome.move_to = new_loc.name
+                            move_cause = "lead"
 
         # 3. Handle Regular Movement (a one-way send_to wins over everything else)
         if outcome.send_to:
@@ -3387,15 +4059,17 @@ class GameState:
                 if self.interactive or self.verbose:
                     print(f"  >>> {sent_msg}")
 
+        elif outcome.move_to and getattr(action, "fast_travel", None):
+            self._fast_travel(action.fast_travel)  # a known way walked in one turn
         elif outcome.move_to:
             target_name = self.resolve_destination(move_to=outcome.move_to)
             if target_name:
-                self._move_to(target_name)
+                self._move_to(target_name, cause=move_cause)
 
         elif outcome.move_to_tags:
             target_name = self.resolve_destination(move_to_tags=outcome.move_to_tags)
             if target_name:
-                self._move_to(target_name)
+                self._move_to(target_name, cause="tags")
 
         # 4. Handle Guided Movement (NPC Lead)
         # The outcome's own move wins: a lead does not take the player back where the turn started.
@@ -3426,7 +4100,13 @@ class GameState:
                     
                     self.history.append(self.narrate("lead_move", npc=char.name, location=target))
                     if self.interactive: print(f" >>> {char.name} leads the way to the {target}...")
-                    self._move_to(target)
+                    self._move_to(target, cause="lead")
+
+        # 5. Fleeing back the way one came (return_to_previous), unless the outcome moved already.
+        if getattr(outcome, "return_to_previous", False) and self.current.name == origin_location:
+            previous = self.path[-2] if len(self.path) > 1 else None
+            if previous and previous != origin_location and self._move_to(previous, cause="back"):
+                self._say("fled_back", location=previous)
 
         destination_location = self.current.name
         if destination_location != origin_location:
@@ -3449,12 +4129,133 @@ class GameState:
                 coin_msg = self.narrate("paid", coins=action.required_coins, balance=self.coins)
                 self.history.append(coin_msg)
                 if self.interactive or self.verbose: print(f"  >>> {coin_msg}")
+                self._refund(action, outcome)  # a failed paid attempt returns part of the price
             
             # A failed attempt to take something (or an arrest for it) does not get it.
             if action.collects_object and not rules.is_failure(outcome, set(rules.settings()["failure_tags"])):
                 self._give_item(action.collects_object, how="collected")
             if action.consumes_object and action.active_item:
                 self._take_item(action.active_item, how="used")
+        self._advance_npc_goals(outcome, action)
+        if action is not None and action.character_name:
+            self._check_secret(action.character_name)  # spoken with often enough, they let something slip
+
+    # ---- NPC goals: what people want, and what helping them earns ----------------------------
+
+    @staticmethod
+    def _stem(word):
+        word = str(word).lower()
+        return word[:5] if len(word) > 5 else word.rstrip("s")
+
+    def _goal_specs(self, char):
+        specs = getattr(char, "goal_specs", None)
+        if specs is None:  # NPCs built by hand or saved before goal specs
+            from .builder import npc_goals
+
+            specs = char.goal_specs = npc_goals(char.goals)
+        return specs
+
+    def _npc_goal_words(self, outcome, action):
+        text = " ".join([action.name if action else "", outcome.desc or ""] + [str(t) for t in outcome.tags])
+        return {self._stem(word) for word in re.findall(r"[a-zA-Z]+", text) if len(word) > 2}
+
+    def _helps_goal(self, char, outcome, action):
+        """Index of the goal of ``char`` this outcome serves, or None."""
+        if char is None or char.name in self.__dict__.get("allies", set()):
+            return None
+        words = self._npc_goal_words(outcome, action)
+        for index, goal in enumerate(self._goal_specs(char)):
+            if {self._stem(keyword) for keyword in goal["keywords"]} & words:
+                return index
+        return None
+
+    def _advance_npc_goals(self, outcome, action):
+        """Helping someone with what they want (an action with them whose outcome serves one
+        of their goals, not a failure, not small talk) counts; after npc_goals.progress_needed
+        times (or the goal's own `needed`) they become an ally."""
+        if action is None or not action.character_name or action.source == "conversation":
+            return
+        if rules.is_failure(outcome, set(rules.settings()["failure_tags"])) or "failure" in outcome.tags:
+            return
+        char = next((c for c in self.world.characters if c.name == action.character_name), None)
+        if char is None or char.encounter_event:
+            return
+        index = self._helps_goal(char, outcome, action)
+        if index is None:
+            return
+        progress = self.__dict__.setdefault("npc_goal_progress", {}).setdefault(char.name, {})
+        progress[index] = progress.get(index, 0) + 1
+        goal = self._goal_specs(char)[index]
+        cfg = config.get("npc_goals") or {}
+        if progress[index] >= int(goal.get("needed") or cfg.get("progress_needed", 2)):
+            self._fulfil_npc_goal(char, goal)
+
+    def _fulfil_npc_goal(self, char, goal):
+        cfg = config.get("npc_goals") or {}
+        self.__dict__.setdefault("allies", set()).add(char.name)
+        self._say("npc_goal_done", npc=self._called(char.name), goal=goal["text"][:1].lower() + goal["text"][1:])
+        self.tags_seen.append(["social", "success"])
+        self._queue_consequence("ally", char.name)
+        reward = goal.get("reward") or cfg.get("reward", "lead")
+        if reward == "lead":
+            known = [name for name in char.known_locations if name in self.world.locations and name != self.current.name
+                     and name not in self.current.connected and self.is_enabled(self.world.locations[name])]
+            if known:
+                self._open_route(sorted(known, key=lambda name: (self.location_counts.get(name, 0), name))[0])
+        elif reward == "item":
+            here = [o.name for o in getattr(self, "location_objects", [])
+                    if o.name in char.known_objects and o.name not in self.visible_objects]
+            if here:
+                self._reveal_item(here[0])
+
+    def _check_bonus(self, action, stat=None, tags=()):
+        """What helps a check besides the stat: Power in a fight (power_model.check_weight per
+        point of Power gained since the story began: a weapon or full health helps, wounds
+        hurt) and an ally's trust (npc_goals.ally_check_bonus)."""
+        bonus = 0
+        power_cfg = config.get("power_model") or {}
+        fighting = stat in set(power_cfg.get("combat_stats", ["attack", "defence"])) or bool(
+            {str(tag).lower() for tag in tags} & {"combat", "threat"})
+        if fighting:
+            start = self.__dict__.get("start_power", self.power)  # games saved before: no change
+            bonus += int(round((self.power - start) * float(power_cfg.get("check_weight", 6))))
+        if action is not None and action.character_name in self.__dict__.get("allies", set()):
+            bonus += int((config.get("npc_goals") or {}).get("ally_check_bonus", 15))
+        opponent = self._opponent(action)
+        if opponent:
+            # Someone who matters is harder to beat, a bystander easier (npc_roles.<role>.check_modifier).
+            bonus += int(self.role_of(opponent)[1].get("check_modifier", 0))
+        # What worked before is harder now (variation), and a watch on edge is harder to get past (stakes).
+        bonus -= self._repeat_penalty(action) + self._alert_check_penalty(action, tags)
+        return bonus
+
+    def _opponent(self, action):
+        """The NPC an action is taken against or with: its own NPC, or the one behind the event."""
+        if action is None:
+            return None
+        if action.character_name:
+            return action.character_name
+        return self.event_source_npc if action.source == "event" and self.active_event is not None else None
+
+    def check_hint(self, action):
+        """The check an option involves, for the player to see before choosing: {stat,
+        chance (0-100), bonus (Power, an ally, the NPC's role), risk (failure_cost: what
+        failing costs, or None)}; None for an option without a check."""
+        failure_tags = set(rules.settings()["failure_tags"])
+        check = self.combat.check_for(action)
+        outcome = None
+        if not check:
+            for candidate in action.outcomes:
+                if not rules.is_failure(candidate, failure_tags) and self.combat.check_for(action, candidate):
+                    outcome, check = candidate, self.combat.check_for(action, candidate)
+                    break
+        if not check:
+            return None
+        tags = [t for o in action.outcomes for t in o.tags]
+        bonus = self._check_bonus(action, check[0], tags)
+        chance = self.combat.pass_chance(check[0], check[1] + bonus, inventory=self.inventory, step=self.actions_taken)
+        # What failing costs, seen before choosing (stakes.show_failure_costs).
+        return {"stat": check[0], "chance": int(round(chance * 100)), "bonus": bonus, "risk": self.failure_cost(action)}
 
     def get_full_story(self):
         """Returns a string representation of the full story transcript."""
