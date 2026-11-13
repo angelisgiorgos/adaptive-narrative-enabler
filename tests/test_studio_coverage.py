@@ -54,6 +54,7 @@ CLIENT_ONLY = {
     ("POST", "/v1/records/engines/{engine_id}/continue"): "/v1/jobs/engines/{engine_id}/continue",
     ("POST", "/v1/records/engines/{engine_id}/retrain"): "/v1/jobs/engines/{engine_id}/retrain",
     ("GET", "/v1/sessions/{session_id}"): "every action returns the game's state",
+    ("GET", "/v1/sessions/{session_id}/report"): "the play state carries the report: /v1/sessions/{id}/end",
 }
 # Endpoints the studio reaches through URLs the API returns (not written in app.py).
 FOLLOWED = {("GET", "/v1/artifacts/{artifact_id}"): "API.download(game['config_download_url']) and the like"}

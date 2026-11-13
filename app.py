@@ -598,7 +598,35 @@ def people_markdown(game):
             notes.append(f"◆ {person.get('role')}")  # someone who matters in this story (npc_roles)
         lines.append(f"- **{person['name']}** · met at {', '.join(person['where'])}"
                      + (f" · {' · '.join(notes)}" if notes else ""))
-    return "\n".join(lines) + "\n\n" + map_markdown(game.get("map"))
+    return "\n".join(lines) + "\n\n" + map_markdown(game.get("map")) + session_markdown(game)
+
+
+def session_markdown(game):
+    """The session: what its cast leaves out, the one-time actions tried, and its report once it ended."""
+    lines = []
+    cast = game.get("cast") or {}
+    left_out = {kind: names for kind, names in (cast.get("left_out") or {}).items() if names}
+    if left_out:
+        lines += ["\n\n### This session's cast", "Not in this session (its goal does not need them): "
+                  + "; ".join(f"{kind}: {', '.join(names)}" for kind, names in left_out.items()) + "."]
+    tried = game.get("unique_actions") or []
+    if tried:
+        lines.append("\n\n### One-time actions")
+        for entry in tried:
+            state = "done" if entry["succeeded"] else ("failed, still on offer" if entry["kept"] else "failed, used up")
+            lines.append(f"- {entry['action']} ({entry['where']}, turn {entry['turn']}): {state}")
+    report = game.get("report")
+    if report:
+        goal = report.get("goal") or {}
+        player = report["player"]
+        delivered = (report.get("delivery") or {}).get("sent")
+        lines += ["\n\n### Session report", f"**{(goal.get('title') or 'Free play')}: {report['outcome']}** "
+                  f"({report['end_kind']}, {report['turns']} turns) · health {player['health']}/{player['max_health']} · "
+                  f"coins {player['coins']} · inventory: {', '.join(player['inventory']) or 'empty'} · stats: "
+                  + ", ".join(f"{k} {v}" for k, v in player["stats"].items())
+                  + f" · goals achieved in this save game: {', '.join(report['progression']['goals_achieved']) or 'none'}"
+                  + (" · sent to the UNP" if delivered else "")]
+    return "\n".join(lines)
 
 
 def map_markdown(known):
@@ -689,6 +717,43 @@ def play_action_ui(token, selected_action):
         quest_markdown(state.get("quest")), people_markdown(state)
 
 
+@ui
+def end_session_ui(token):
+    """End the session where it stands: the progression is saved and the session reported."""
+    if not token:
+        raise gr.Error("Start a game first.")
+    state = API.post(_path("/v1/sessions", token, "end"))
+    return state["scene"], _choices(state["actions"], state.get("choices")), state["last_turn"], \
+        quest_markdown(state.get("quest")), people_markdown(state)
+
+
+@ui
+def progression_ui(profile):
+    """A player's save game (GET /v1/progression): goals achieved, playthroughs, sessions."""
+    data = API.get("/v1/progression", profile=profile or None)
+    goals = ", ".join(data["goals_achieved"]) or "none yet"
+    text = (f"**Save game `{data['profile']}`:** {data['playthroughs']} session(s) played · goals achieved "
+            f"(each once per save game): {goals}.")
+    rows = [{"ended": (r.get("ended_at") or "")[:19], "start": r.get("start_location"),
+             "goal": (r.get("goal") or {}).get("title") or "free play", "outcome": r.get("outcome"),
+             "turns": r.get("turns"), "inventory": ", ".join((r.get("player") or {}).get("inventory") or []),
+             "sent to UNP": ("yes" if (r.get("delivery") or {}).get("sent") else (r.get("delivery") or {}).get("error") or "no"),
+             "report": r.get("report_id")} for r in reversed(data["sessions"])]
+    return text, pd.DataFrame(rows, columns=["ended", "start", "goal", "outcome", "turns", "inventory", "sent to UNP",
+                                             "report"])
+
+
+@ui
+def resend_report_ui(profile):
+    """Send the save game's latest session report to the UNP again."""
+    sessions = API.get("/v1/progression", profile=profile or None)["sessions"]
+    if not sessions:
+        raise gr.Error("This save game has no session report yet.")
+    delivery = API.post(_path("/v1/progression/reports", sessions[-1]["report_id"], "send"), profile=profile or None)
+    return ("Sent to the UNP." if delivery["sent"]
+            else f"Not sent: {delivery['error'] or 'HTTP ' + str(delivery['status'])}.")
+
+
 def quest_overview(profile):
     """(choices of the quest picker, Markdown overview of the world's quests) for this profile:
     the quests open to it now can be chosen; the others are listed, struck through."""
@@ -697,7 +762,8 @@ def quest_overview(profile):
     lines = [f"**Quests in this world** (for profile `{profile or 'default'}`):"]
     for quest in quests:
         stages = " → ".join(quest["stages"])
-        lines.append(f"- {'**' + quest['title'] + '**' if quest['available'] else '~~' + quest['title'] + '~~ (not open now)'}"
+        closed = "achieved in this save game" if quest.get("achieved") else "not open now"
+        lines.append(f"- {'**' + quest['title'] + '**' if quest['available'] else '~~' + quest['title'] + f'~~ ({closed})'}"
                      + (f" — {quest['description']}" if quest["description"] else "")
                      + (f" *Stages:* {stages}" if stages else ""))
     return choices, "\n".join(lines)
@@ -1523,6 +1589,18 @@ def build_app():
                 with gr.Accordion("Quests in this world", open=False):
                     quest_overview_md = gr.Markdown(quest_overview_text)
                     refresh_quests = gr.Button("Refresh quests for this profile")
+                with gr.Accordion("Save game: this profile's progression", open=False):
+                    gr.Markdown("Every session saves the player's progression: its report (goal achieved or mission "
+                                "failed, stats, inventory) and, when achieved, its goal, which then leaves the goal "
+                                "pool (each goal once per save game). The report goes to the UNP "
+                                "(`session_report` in the engine logic). *Reset profile* (Simulation settings) starts "
+                                "a new save game.")
+                    with gr.Row():
+                        save_game_refresh = gr.Button("Show the save game")
+                        resend_report_button = gr.Button("Send the latest report to the UNP again")
+                    save_game_text = gr.Markdown()
+                    save_game_status = gr.Markdown()
+                    save_game_table = gr.Dataframe(label="Sessions", interactive=False, wrap=True)
                 with gr.Accordion("Character stats of the player", open=False):
                     allocation = character_stats.get("allocation") or {}
                     gr.Markdown(
@@ -1620,7 +1698,9 @@ def build_app():
                         scene = gr.Markdown("Run a simulation to begin.")
                         choices = gr.Radio([], label="What do you do?", interactive=True,
                                            info="The most relevant choices now: fewer in tense moments.")
-                        choose = gr.Button("Take action", variant="primary")
+                        with gr.Row():
+                            choose = gr.Button("Take action", variant="primary")
+                            end_session_button = gr.Button("End this session", variant="stop")
                         turn_result = gr.Textbox(label="Last turn", lines=7, interactive=False)
                         with gr.Accordion("Judge this playthrough (Gemma 4 as a game critic)", open=False):
                             judge_game_button = gr.Button("Judge the game played so far")
@@ -1654,6 +1734,10 @@ def build_app():
                 )
                 choose.click(play_action_ui, [session_token, choices],
                              [scene, choices, turn_result, quest_panel, people_panel], concurrency_limit=1)
+                end_session_button.click(end_session_ui, session_token,
+                                         [scene, choices, turn_result, quest_panel, people_panel], concurrency_limit=1)
+                save_game_refresh.click(progression_ui, play_profile, [save_game_text, save_game_table])
+                resend_report_button.click(resend_report_ui, play_profile, save_game_status)
                 play_profile.change(playable_quests_ui, play_profile, [play_mission, quest_overview_md])
                 refresh_quests.click(playable_quests_ui, play_profile, [play_mission, quest_overview_md])
                 record_outputs = [*play_outputs, learning_plot, learned_traits, run_state, export_generation]

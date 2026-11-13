@@ -8,7 +8,10 @@
     GET    /games/<id>                the current view
     POST   /games/<id>/choose         {"action": "<name>"} or {"action": <index>}
     GET    /games/<id>/transcript     the story so far
-    DELETE /games/<id>                end the session
+    POST   /games/<id>/end            end the session: progression saved, report sent to the UNP
+    GET    /games/<id>/report         the ended session's report (409 while it goes on)
+    GET    /progression/<profile>     the save game: goals achieved, playthroughs, session reports
+    DELETE /games/<id>                forget the game (POST .../end first to count it as a session)
     POST   /evolve                    {"generations", "pop_size", "episodes", "max_steps", "seed", "resume"}
 """
 from __future__ import annotations
@@ -56,6 +59,8 @@ def make_handler(engine: NarrativeEngine):
                 with lock:
                     if method == "GET" and parts == ["engine"]:
                         return self._send(200, engine.info())
+                    if method == "GET" and len(parts) == 2 and parts[0] == "progression":
+                        return self._send(200, engine.progression(parts[1]))
                     if method == "POST" and parts == ["games"]:
                         body = self._body()
                         game = engine.new_game(**{k: body[k] for k in
@@ -70,6 +75,11 @@ def make_handler(engine: NarrativeEngine):
                             return self._send(200, {"game_id": game.id, "transcript": game.transcript()})
                         if method == "POST" and parts[2:] == ["choose"]:
                             return self._send(200, game.choose(self._body().get("action")))
+                        if method == "POST" and parts[2:] == ["end"]:
+                            return self._send(200, game.end())
+                        if method == "GET" and parts[2:] == ["report"]:
+                            report = game.report()
+                            return self._send(200 if report else 409, report or {"error": "The session has not ended."})
                         if method == "DELETE" and len(parts) == 2:
                             engine.games.pop(game.id, None)
                             return self._send(200, {"deleted": game.id})

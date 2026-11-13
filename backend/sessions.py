@@ -64,6 +64,10 @@ def play_state(state: GameState) -> dict:
         "choices": choice_details(state),
         "ways_on": state.ways_on() if not state.ended else [],
         "stakes": state.stakes() if hasattr(state, "stakes") else None,
+        # The session: its cast, the one-time actions tried, and its report once it has ended.
+        "cast": state.scope() if hasattr(state, "scope") else None,
+        "unique_actions": state.unique_actions() if hasattr(state, "unique_actions") else [],
+        "report": state.__dict__.get("session_report"),
     }
 
 def _export_run_artifacts(model, candidate_count=0, generations=0, simulation_steps=0):
@@ -208,7 +212,9 @@ def playable_missions(profile=None):
     open to this profile now (its enabled_if, read with the profile's stored variables)."""
     profile = _profile(profile)
     specs = persistent.definitions()
-    values = VariableStore().load(profile, specs)
+    store = VariableStore()
+    values = store.load(profile, specs)
+    achieved = set(store.completed_goals(profile)) if (config.get("progression") or {}).get("goals_once", True) else set()
     missions = []
     for key, entry in (config.get("world_definition.missions") or {}).items():
         entry = entry or {}
@@ -221,7 +227,8 @@ def playable_missions(profile=None):
             "key": key, "title": entry.get("title") or key, "description": entry.get("description") or "",
             "stages": [(stage or {}).get("title") or f"Stage {number}" for number, stage in
                        enumerate(entry.get("stages") or [], start=1)],
-            "available": bool(available),
+            "available": bool(available) and key not in achieved,
+            "achieved": key in achieved,  # every goal once per save game (progression.goals_once)
         })
     return missions
 
@@ -234,7 +241,7 @@ def _start_game(genome, profile, points, mode, origin="studio", run_id=None, eng
     mission = _mission_key(world, mission)
     if mission is not None and not next((m["available"] for m in playable_missions(profile) if m["key"] == mission), True):
         raise AuthoringError(f"The mission '{world.missions[mission].title}' is not open to profile '{profile}' "
-                             "now (its enabled_if does not hold, e.g. it was already completed).")
+                             "now (it was already achieved in this save game, or its enabled_if does not hold).")
     try:
         player = GameState(world, genome, store=VariableStore(), profile=profile,
                            stats=points, stats_mode=mode, mission=mission)
@@ -243,6 +250,7 @@ def _start_game(genome, profile, points, mode, origin="studio", run_id=None, eng
             raise
         raise AuthoringError(str(exc)) from exc
     token = uuid.uuid4().hex
+    player.session_id = token  # the session's id in its report (core_engine/progression.py)
     story_id = records.record_story(
         player, origin, "play", run_id=run_id, engine_id=engine_id, session_id=token,
         parameters={"profile": profile, "stat_points": points, "stats_mode": mode, "mission": mission},
@@ -683,6 +691,46 @@ def learning_memory() -> dict:
 def forget_learning() -> dict:
     LearningMemory().forget()
     return learning_memory()
+
+
+def end_session(token: str):
+    """End a session where it stands (the player stops): the progression is saved and the
+    session reported, as when a story ends by itself. Returns its report."""
+    with SESSION_LOCK:
+        state = SESSIONS.get(token)
+        if state is None:
+            raise AuthoringError("Play session not found.")
+        state.end_session()
+        records.update_story(SESSION_RECORDS.get(token), state)
+        return state.__dict__.get("session_report")
+
+
+def session_report(token: str):
+    """The report of an ended session (None while it goes on)."""
+    with SESSION_LOCK:
+        state = SESSIONS.get(token)
+        if state is None:
+            raise AuthoringError("Play session not found.")
+        return state.__dict__.get("session_report") if state.ended else None
+
+
+def progression(profile=None):
+    """A player's save game (core_engine/progression.py): goals achieved, playthroughs, sessions."""
+    return VariableStore().progression(_profile(profile))
+
+
+def resend_report(profile, report_id):
+    """Send a kept session report to the UNP again (here and now); returns the delivery."""
+    from core_engine import progression as reports
+
+    store = VariableStore()
+    report = next((r for r in store.sessions(_profile(profile)) if r.get("report_id") == report_id), None)
+    if report is None:
+        raise AuthoringError(f"No session report `{report_id}` in profile `{_profile(profile)}`.")
+    report = {k: v for k, v in report.items() if k != "delivery"}
+    delivery = reports.send(report)
+    store.note_delivery(_profile(profile), report_id, delivery)
+    return delivery
 
 
 def play_action(token: str, selected_action: str):

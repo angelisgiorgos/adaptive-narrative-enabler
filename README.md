@@ -1638,6 +1638,25 @@ the storyteller's favourite. `relevance_filter: false` restores the plain
 each time they appear, as recent starts are, so a returning player meets
 other missions.
 
+### Sessions, the save game and the UNP
+
+A **session** is one story a player plays; a **save game** is a player profile.
+
+| Requirement | How the engine does it |
+| --- | --- |
+| A session starts with a start and a goal | The goal is drawn among the open ones (weight, recent goals drawn less often), the start among the places it can be reached from |
+| Starts vary between sessions | `start_selection.recency_factors` (`[0.12, 0.35, 0.7]`): the latest start is the least likely, the one before less so; `mission_variety` favours goals reachable from starts not used lately. Over 300 sessions of one profile a session started where the last one did 6% of the times (a uniform draw: 25%) |
+| One-time actions are remembered | Every attempt at a `repeat: once` action is kept (`unique_actions`: turn, place, success). A success uses it up; a failure uses it up too, unless the action has `retry_on_failure`, which keeps it on offer in the session |
+| Achieved goals leave the pool | An achieved goal is added to the save game (`progression.goals_once`) and is not drawn or offered again for that profile; *Reset profile* starts a new save game |
+| The progression is saved after each session | When a session ends (by itself, or `POST /v1/sessions/{id}/end`), its report is kept in the profile with its goal, and the playthrough is counted |
+| The UNP is told | The report (goal and outcome `achieved` or `failed`, stats, inventory, health, coins, the goals achieved so far) is POSTed as JSON to `session_report.url` (or `ANE_UNP_URL`, with `ANE_UNP_TOKEN` as a bearer token), in the background; its delivery is noted and it can be sent again |
+| A session does not bring everything at once | `session_scope`: what the goal needs stays (its places and the ways there, the people, items and events it names); of the rest, the most valuable share of each kind joins (value: fit with the goal's places and people, things to do, the session's own variety) and the rest stays out. In the city a session keeps about 11 of 15 NPCs, 6 of 8 items and 15 of 16 places, and the goal stays reachable |
+
+The studio shows a session's cast, its one-time actions and its report beside the game, ends
+a session (*End this session*), and shows the save game (*Save game*, with the reports and
+whether they reached the UNP). The offline engine has the same: `POST /games/<id>/end`,
+`GET /games/<id>/report`, `GET /progression/<profile>`.
+
 ### Story beats: who matters, the climax, failures, travel, stakes, reveals
 
 The engine makes a story's beats itself (`core_engine/story_beats.py`); each one has its

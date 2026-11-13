@@ -202,7 +202,9 @@ start_selection:
   # from which the story's mission can be reached.
   default_location: Harbor  # the single start of worlds where no location is start_eligible
   recent_starts: 3          # how many of a profile's latest starts count as recent...
-  repeat_factor: 0.25       # ...each one multiplies that location's weight by this (0 < f <= 1)
+  repeat_factor: 0.25       # ...each one multiplies that location's weight by this (0 < f <= 1)...
+  recency_factors: [0.12, 0.35, 0.7]  # ...or, by how recent: the last start x0.12, the one before x0.35, then x0.7
+  mission_variety: true     # a goal reachable from starts not used lately is drawn more often (starts vary too)
 action_rules:
   # How often an action is offered unless it sets `repeat` itself:
   #   once (per game), per_visit (again on the next visit), always.
@@ -836,3 +838,21 @@ consequences:                  # what the player did shows later ([CONSEQUENCE] 
       - "A message from {npc} finds you in the {location}: they have not forgotten what you did."
 memory:                        # a profile's next story remembers the last ("Last time you ...")
   enabled: true
+progression:                   # a player's save game (profile): what each session achieved
+  goals_once: true             # an achieved goal leaves the profile's goal pool: every goal once per save game
+  history: 50                  # session reports kept per profile (GET /v1/progression)
+session_report:                # after each session of real play, its report goes to the UNP
+  enabled: true
+  url: ""                      # the UNP's endpoint (POST, JSON); ANE_UNP_URL overrides it, ANE_UNP_TOKEN adds a bearer token
+  timeout: 5                   # seconds; the report is sent in the background and its delivery noted in the profile
+session_scope:                 # a session does not bring every location, NPC, item and event at once
+  enabled: true
+  # What the session's goal needs always stays (its places and the ways there, the people,
+  # items and events it names, the rules' places). Of the rest, the most valuable share of
+  # each kind stays: value = fit with the goal's places and people + things to do + variety.
+  keep_share: {npcs: 0.7, items: 0.75, events: 0.8, locations: 0.85}
+  min_value: 0.35              # below this an entry is left out too...
+  min_pool: 4                  # ...when its kind has more than this many optional entries
+  relevance_weight: 1.0
+  richness_weight: 0.5
+  variety_weight: 0.6          # each session's own draw: sessions differ in their cast

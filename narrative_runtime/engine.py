@@ -30,6 +30,7 @@ class Game:
         self.engine = engine
         self.state = state
         self.id = game_id or uuid.uuid4().hex
+        state.session_id = self.id  # the session's id in its report
 
     def actions(self) -> list[str]:
         """The choices the player sees now: the most relevant ones (player_options in the tuning)."""
@@ -70,6 +71,9 @@ class Game:
             "people_met": state.people_met() if hasattr(state, "people_met") else [],
             "ways_on": state.ways_on() if hasattr(state, "ways_on") and not state.ended else [],
             "stakes": state.stakes() if hasattr(state, "stakes") else None,
+            "cast": state.scope() if hasattr(state, "scope") else None,
+            "unique_actions": state.unique_actions() if hasattr(state, "unique_actions") else [],
+            "report": state.__dict__.get("session_report"),
             "map": state.map_view() if hasattr(state, "map_view") else None,
             "choices": [{"name": name, "check": state.check_hint(a)} for name, a in
                         zip(actions, state.player_options())] if hasattr(state, "check_hint") and actions else [],
@@ -94,6 +98,17 @@ class Game:
         self.state.step(ranked.index(names[index]))
         turn = "\n".join(line.strip("\n") for line in self.state.history[before:]).strip()
         return {**self.view(), "turn": turn}  # "turn": the story text of this turn
+
+    def end(self) -> dict:
+        """End the session where it stands (the player stops): the player's progression is saved
+        and the session reported (to the UNP when ``session_report.url`` or ANE_UNP_URL is set)."""
+        if hasattr(self.state, "end_session"):
+            self.state.end_session()
+        return self.view()
+
+    def report(self) -> dict | None:
+        """The session's report once it has ended (None while it goes on)."""
+        return self.state.__dict__.get("session_report") if self.state.ended else None
 
     def transcript(self) -> str:
         return self.state.get_full_story()
@@ -162,6 +177,12 @@ class NarrativeEngine:
             "profiles": self.store.profiles(),
             "remembered_storytellers": len(self.memory.load()),
         }
+
+    def progression(self, profile=None) -> dict:
+        """A player's save game: goals achieved (each once), playthroughs, session reports."""
+        from utils.config_loader import config
+
+        return self.store.progression(profile or config.get("persistence.profile", "default"))
 
     def starting_locations(self) -> list[str]:
         """Where a story may start (``start_eligible`` locations, or the single

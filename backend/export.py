@@ -124,7 +124,10 @@ process), then:
 | `GET /games/<id>` | | the current view |
 | `POST /games/<id>/choose` | `{{"action": "Explore harbor"}}` or `{{"action": 0}}` | the turn text and the new view |
 | `GET /games/<id>/transcript` | | the story so far |
-| `DELETE /games/<id>` | | ends the session |
+| `POST /games/<id>/end` | | ends the session: the player's progression is saved and its report sent to the UNP (`session_report.url` or `ANE_UNP_URL`) |
+| `GET /games/<id>/report` | | the ended session's report: goal achieved or mission failed, stats, inventory, progression |
+| `GET /progression/<profile>` | | the save game: goals achieved (each once), playthroughs, session reports |
+| `DELETE /games/<id>` | | forgets the game (end it first to count it as a session) |
 | `POST /evolve` | `{{"generations": 5}}` | offline training summary |
 
 Unity (C#):

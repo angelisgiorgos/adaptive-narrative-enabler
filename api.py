@@ -230,6 +230,15 @@ class PlayState(BaseModel):
         "role, importance}].")
     ways_on: list[dict[str, Any]] = Field(
         default_factory=list, description="The places one can travel to from here now: [{name, visited, toward_quest}].")
+    cast: dict[str, Any] | None = Field(
+        default=None, description="The session's cast (session_scope): {left_out: {locations, npcs, items, events}, "
+        "kept: {kind: count}}: what the session's goal does not need may stay out.")
+    unique_actions: list[dict[str, Any]] = Field(
+        default_factory=list, description="Every attempt at a one-time action: [{turn, action, owner, where, succeeded, "
+        "kept}] (kept: a failed attempt at a retryable action, still on offer; anything else is used up).")
+    report: dict[str, Any] | None = Field(
+        default=None, description="The session's report once it has ended (as sent to the UNP): goal and outcome "
+        "(achieved | failed), the player's stats, inventory, health and coins, and the save game's progression.")
     stakes: dict[str, Any] | None = Field(
         default=None, description="What is at stake: {alert, max, warn_at} (the watch's alert level; at max a manhunt "
         "starts), or null when stakes.alert is off.")
@@ -834,6 +843,53 @@ def take_action(session_id: str, body: ActionRequest):
     try:
         _, _, turn = sessions.play_action(session_id, body.action)
         return _play_state(session_id, turn)
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.post("/v1/sessions/{session_id}/end", response_model=PlayState, tags=["Evolution and play"])
+def end_session(session_id: str):
+    """End the session where it stands (the player stops). Like a story that ends by itself,
+    it counts as a session: the player's progression is saved and the session's report goes to
+    the UNP (``report`` in the response)."""
+    with sessions.SESSION_LOCK:
+        if session_id not in sessions.SESSIONS:
+            raise HTTPException(status_code=404, detail="Play session not found.")
+    try:
+        sessions.end_session(session_id)
+        return _play_state(session_id)
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.get("/v1/sessions/{session_id}/report", tags=["Evolution and play"])
+def get_session_report(session_id: str):
+    """The report of an ended session (as sent to the UNP); 409 while the session goes on."""
+    with sessions.SESSION_LOCK:
+        if session_id not in sessions.SESSIONS:
+            raise HTTPException(status_code=404, detail="Play session not found.")
+    report = sessions.session_report(session_id)
+    if report is None:
+        raise HTTPException(status_code=409, detail="The session has not ended; end it with POST .../end.")
+    return report
+
+
+@api.get("/v1/progression", tags=["Evolution and play"])
+def get_progression(profile: str | None = None):
+    """A player's save game: {profile, playthroughs, goals_achieved (each goal once per save
+    game), sessions (their reports, with their delivery to the UNP), values, updated}."""
+    try:
+        return sessions.progression(profile)
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.post("/v1/progression/reports/{report_id}/send", tags=["Evolution and play"])
+def resend_session_report(report_id: str, profile: str | None = None):
+    """Send a kept session report to the UNP again (session_report.url or ANE_UNP_URL):
+    {sent, status, error, at}."""
+    try:
+        return sessions.resend_report(profile, report_id)
     except Exception as exc:
         _fail(exc)
 

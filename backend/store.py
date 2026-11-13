@@ -169,6 +169,11 @@ OPTIONAL_CONFIG_PATHS = {
     "evolution.judge_top_k",
     "evolution.judge_workers",
     "llm_judge.pair_max_chars",
+    "progression",
+    "session_report",
+    "session_scope",
+    "start_selection.recency_factors",
+    "start_selection.mission_variety",
 }
 
 CONFIG_LOCK = threading.RLock()
@@ -329,6 +334,7 @@ FREE_FORM_PATHS = {
     "location_constraints", "scene.location_npc_tags", "action_selection.location_penalties",
     "genome_bounds", "action_rules.default_repeat",
     "npc_roles.roles", "travel.first_trip.by_tag", "fitness.term_weights", "consequences.kinds",
+    "session_scope.keep_share",
     "stakes.alert.raise_on_success", "stakes.alert.raise_on_failure",
 }
 
@@ -760,6 +766,9 @@ LOGIC_SECTIONS = {
     "stakes": "What is at stake, seen by the player: the alert level that ends in a manhunt, and what failing costs, shown with each choice's check.",
     "consequences": "What the player did shows later: beating someone who mattered, making an ally.",
     "memory": "A profile's next story remembers the last: what happened, and who was a friend or a foe.",
+    "progression": "A player's save game: every goal achieved once (achieved goals leave the pool), and the session reports kept.",
+    "session_report": "After each session, its report (the player's stats, inventory, the goal achieved or the mission failed) goes to the UNP.",
+    "session_scope": "A session's cast: what its goal needs stays, the most valuable share of the rest joins, the rest stays out.",
 }
 
 

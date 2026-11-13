@@ -123,3 +123,5 @@ messages:
   last_time: "[LAST TIME] Last time you {text}."  # {text}: the profile's last story (memory)
   remembered_friend: "[LAST TIME] {npc} remembers you, and smiles."  # {npc}
   remembered_foe: "[LAST TIME] {npc} remembers you, and not fondly."  # {npc}
+  mission_pool_done: "[MISSION] Every goal of this world has been achieved in this save game: explore freely."  # no goal is left for this save game (progression.goals_once)
+  end_abandoned: "The traveler sets the story aside for now."  # a session ended by the player
