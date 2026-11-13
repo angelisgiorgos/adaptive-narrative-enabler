@@ -140,6 +140,17 @@ Errors are JSON: `{"detail": "..."}` (or the list of `422`).
   `finale_actions` turns are a finale, and a story that reaches the action
   limit closes with an epilogue (its record's `end_kind` is `epilogue`) instead
   of being cut off. Damage grows as the story escalates, so a player can die.
+- Every choice with a check says what is at stake before it is taken
+  (`choices[].check`: `stat`, `chance`, `bonus`, and `risk`: `{health, coins,
+  sent_to}` that failing costs, or `null`). `stakes` is the watch's alert level
+  (`{alert, max, warn_at}`; at `max` a manhunt starts), `null` with
+  `stakes.alert` off. `people` and `people_met` carry each NPC's `role` and
+  `importance` (0-3) in this story (`npc_roles`); someone who matters may stay
+  out of sight until a lead, the road or enough turns bring them in.
+- A quest's last step is a showdown (`climax`): an event whose choices are
+  offered like any other; the story is won when it is won (or, after setbacks,
+  at a price). Fast travel (`Travel by known ways to …`) reaches a visited place
+  in one turn that does not count toward the action limit (`travel`).
 - A finished story has `ended: true` and offers no more actions.
 - Real play saves persistent variables to its `profile` (`save_on` in the
   story rules). Evaluated stories during evolution do not
@@ -281,6 +292,11 @@ Requests with the header `X-ANE-Client: studio` are recorded with the origin
 - `GET /v1/missions/playable?profile=`: the quests a player may choose when
   starting a game (`key`, `title`, `description`, `stages` (their titles),
   `available` for that profile now).
+- `GET /v1/lint/failures`: the failures the current world leaves as dead ends,
+  `{dead_ends: [{action, owner, why}]}`: actions that can fail (a skill check, or
+  failure outcomes) where failing changes nothing but health or coins and no
+  complication event (tagged `complication`) shares a tag with them. During play the
+  engine still shows another way (`director.another_way`).
 - `GET|PUT /v1/messages`: story messages, with defaults and allowed
   placeholders.
 

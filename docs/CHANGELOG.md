@@ -7,6 +7,60 @@ that introduces them.
 
 ## [Unreleased]
 
+### Story beats made by the engine, NPC roles, and learning from the judge
+
+Measured pairwise with Gemma 4 E4B (30 City stories, random storytellers, the same seeds
+with the new beats on and off, each pair judged in both orders): the stories with the beats
+won 19, lost 3 and tied 8, a win rate of 86% of decided pairs (95% Wilson interval 67-95%).
+They won on pacing and coherence in every decided pair, payoff 95%, surprise 90%,
+replayability 86%, stakes 84%, agency 75%; exploration was even (50%), and the three losses
+were stories whose journey the judge found more varied without fast travel.
+
+#### Added
+- NPC roles (`npc_roles`): every NPC has a role in a story, its own (`role:`) or inferred
+  from its tags (the quest's hostile target is its nemesis; lieutenants, power brokers,
+  informants, henchmen, bystanders). A role's `importance` (0-3), `check_modifier` (harder or
+  easier to beat) and `reveal_turns` / `reveal_clues` (out of sight until then, unless a lead
+  or the road names them). `[REVEAL]` on meeting, `[TRIUMPH]` on beating someone who matters;
+  `role` and `importance` in `people` and `people_met`.
+- NPC secrets (`secret: {text, talks, clues, effects}`), told as `[SECRET]`, and the
+  `secret_known` condition for the actions they unlock; the city's Merchant and Gate Guard
+  have one.
+- A climax for every quest (`climax`): a showdown before the last step completes, with one
+  choice per stat and calling on an ally; setbacks bring it back, and after `max_attempts` it is
+  won at a price. Open threads close as `[REVELATION]`s.
+- Failures as beats: another way after a failure no complication followed
+  (`director.another_way`: a witness, someone named, a way toward the quest), refunds of
+  failed paid attempts (`director.failure_refund`), and `GET /v1/lint/failures`.
+- Variation (`variation`): outcome `variants`, result lines that know an outcome was told
+  before (`result_again`, `result_habit`), and checks that grow harder with each success of
+  the same action.
+- Travel (`travel`): fast travel along known ways (not counted toward the action limit), and
+  first trips with a scene on the way and word of who is to be found there.
+- Stakes (`stakes`): the alert level (`[ALERT]`, a manhunt at the top, harder checks
+  against guards), `stakes` in the play state, and what failing costs (`risk`) with every
+  check, shown in the studio's choices.
+- Consequences (`consequences`) told a few turns later, and memory (`memory`): in real play
+  the next story starts with `[LAST TIME] ...` and old friends and foes recognise the player.
+- Fitness: `fitness.beats` (climax, triumphs, reveals, consequences, failures that led on,
+  dead ends) and `fitness.term_weights`, multipliers of any term.
+- Pairwise judging: `GameJudge.compare_states` / `compare_digests` judge a pair in both
+  orders and declare a winner only when both agree.
+- `judge_benchmark --pairwise --variant key.path=value`: A/B of any setting on the same
+  seeds, with win rate, 95% Wilson interval and per-criterion win rates.
+- `evaluator/calibrate_fitness.py`: fits judged engagement on the fitness terms and suggests
+  `fitness.term_weights` multipliers, choosing the ridge strength by cross-validation and
+  reporting how well the fit predicts unseen stories.
+- Judge in the loop: `evolution.judge_weight` (default 0, off), `judge_top_k` (2),
+  `judge_workers` (4); per-generation `judge_engagement` in the history; the run never stops
+  when no model is available.
+
+#### Changed
+- Repetition costs more: `fitness.engagement` filler 80 -> 100, loops 6 -> 8, novelty fade
+  75 -> 100, and `objective_losses.scenario_duplication` 160 -> 200.
+- The Gate Guard has a fourth way past him (settling his debt, once his secret is out).
+- The judge's digest shows an outcome as the player read it (its variant) and the new beats.
+
 ### Stories that keep their word: twists, callbacks, failing forward
 
 Measured with Gemma 4 E4B as the judge (60 stories per version, City and Monastery,
