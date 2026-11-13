@@ -1496,13 +1496,33 @@ class GameState:
             if self.interactive or self.verbose:
                 print(f"  >>> {message}")
 
+    def _recap(self):
+        """The journey in a few words, for the epilogue of a won story: the quest's steps, the
+        friends made, the threads tied up and the turns of fate."""
+        parts = []
+        # The journey as a road, not a tally: where it began, where it ended, the places that mattered.
+        route = list(dict.fromkeys(self.path))
+        if len(route) > 2:
+            middle = sorted(route[1:-1], key=lambda name: (-self.location_counts.get(name, 0), route.index(name)))[:3]
+            parts.append(f"From the {route[0]} to the {route[-1]}, by way of the {', the '.join(middle)}.")
+        stages = [stage["title"] for stage in getattr(self.mission, "stages", None) or []] if self.mission else []
+        if len(stages) > 1:
+            parts.append("Step by step: " + ", then ".join(stages) + ".")
+        allies = sorted(self.__dict__.get("allies", set()))
+        if allies:
+            parts.append("Friends made: " + ", ".join(self._called(name) for name in allies) + ".")
+        twists = [t for t in self.__dict__.get("twist_threads", []) if t["resolved"]]
+        if twists:
+            parts.append("The turns of fate: " + "; ".join(f"{t['actor']} {t['text']}" for t in twists[:2]) + ".")
+        return " ".join(parts) + (" " if parts else "")
+
     def _epilogue(self):
         """The closing text of a story that reaches the action limit with the director on."""
         mission = self.narrate("epilogue_mission_open", title=self.mission.title) if self.mission and not self.won else ""
         return self.narrate(
-            "end_epilogue", turns=self.actions_taken, mission=mission, places=len(set(self.path)),
+            "end_epilogue", turns=self.actions_taken, mission=mission, recap=self._recap(), places=len(set(self.path)),
             people=len(self.character_interactions), items=len(self.inventory),
-        )
+        ).strip()
 
     def _check_end_conditions(self):
         if self.health_player.is_dead:
@@ -1519,7 +1539,10 @@ class GameState:
                 print(f"  >>> {complete}")
             self._run_effects(self.mission.rewards)  # quest rewards
             if config.get("mission_settings.end_on_goal", True):
-                return self._end("mission", self.narrate("end_mission", title=self.mission.title))
+                ending = self.narrate("end_mission", title=self.mission.title)
+                self._say("end_victory", title=self.mission.title, turns=self.actions_taken, recap=self._recap(),
+                          places=len(set(self.path)), people=len(self.character_interactions))
+                return self._end("mission", ending + " " + self.history[-1] if self.history else ending)
 
         if self._story_end:
             return self._end("story_end", self._story_end)
@@ -2374,6 +2397,8 @@ class GameState:
         for template in self.active_event.actions:
             if not self._is_offered(template) or not self._action_enabled(template):
                 continue
+            if self._only_arrives_here(template):
+                continue  # "slip away into the Sewers" while in the Sewers
             a = self._prepare_action(copy.deepcopy(template))
             if a is None:
                 continue
@@ -2548,10 +2573,16 @@ class GameState:
             elif target_loc and target_loc.interact_prompts:
                 name = self._pick_text(target_loc.interact_prompts, offset=len(loc_name))
             
+            # A first journey somewhere says what one sees on the way (the place's distant view).
+            view = None
+            if self.location_counts.get(loc_name, 0) == 0 and target_loc is not None and target_loc.distant_descriptions:
+                view = self._pick_text(target_loc.distant_descriptions, offset=len(loc_name))
+            travel_text = (self.narrate("travel_first", stable=loc_name, location=loc_name, view=view) if view
+                           else self.narrate("travel_result", stable=loc_name, location=loc_name))
             navigation_action = Action(
                 name=name,
                 outcomes=[Outcome(
-                    desc=self.narrate("travel_result", stable=loc_name, location=loc_name),
+                    desc=travel_text,
                     move_to=loc_name,
                 )],
                 repeat="always",
@@ -3240,6 +3271,29 @@ class GameState:
         digest = hashlib.sha256(f"{salt}|{'|'.join(map(str, keys))}".encode()).hexdigest()
         return int(digest[:13], 16) / float(16 ** 13)
 
+    def _fail_forward(self, action, outcome):
+        """After a failure that changed nothing but health or coins, start (with chance
+        director.fail_forward, from the story's own randomness) a complication: an event
+        tagged `complication` that can start here and shares a tag with the failure (a
+        botched bribe brings the guards). Not when the player was moved, sent or caught up
+        in an event already."""
+        director = self._director()
+        chance = float(director.get("fail_forward", 0.0)) if director else 0.0
+        if (chance <= 0 or self.active_event or self._pending_event or self._location_is_locked()
+                or (outcome is not None and (outcome.move_to or outcome.send_to or outcome.spawn
+                                             or outcome.reveal_location or list(outcome.effects.writes)))
+                or self.path[-1] != self.current.name or self.ended):
+            return False
+        failed = {str(t).lower() for t in (outcome.tags if outcome is not None else [])} | {
+            str(t).lower() for o in action.outcomes for t in o.tags}
+        candidates = sorted(name for name, event in self.world.events.items()
+                            if "complication" in event.tags and (set(event.tags) - {"complication"}) & failed
+                            and self._event_available(name))
+        if not candidates or self._story_draw("fail_forward", self.actions_taken) >= chance:
+            return False
+        self._pending_event = (candidates[0], action.character_name)
+        return True
+
     def _storyteller_pick(self, actions):
         """The index of the option the storyteller takes: its favourite, or now and then
         (director.surprise x (1 + chaos_bias), drawn from the story's own randomness) another
@@ -3432,6 +3486,10 @@ class GameState:
 
         self._record_choice(action, calculated_success, choice_scope, choice_visit)
         director = self._director()
+        # Failing forward: a failed attempt that led nowhere (no move, discovery or event) may turn
+        # into a complication: an authored event tagged `complication` whose tags fit the failure.
+        if not calculated_success and not in_event and director is not None:
+            self._fail_forward(action, told if told is not None else attempt)
         # Failed attempts are remembered (director.retry_bonus, retry_cooldown); a success clears them.
         attempts = self.__dict__.setdefault("failed_attempts", Counter())
         if calculated_success:
@@ -3581,6 +3639,8 @@ class GameState:
         ``one_way`` (a ``send_to`` outcome) links the origin to the target but not
         back, and confines the player there when the target requires an escape.
         """
+        if target_name == self.current.name and not one_way:
+            return False  # already here: no move (and no second entry in the path)
         if target_name != self.current.name and self._location_is_locked():
             return False
         if target_name in self.world.locations and not self.is_enabled(self.world.locations[target_name]):

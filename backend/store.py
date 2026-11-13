@@ -145,6 +145,7 @@ OPTIONAL_CONFIG_PATHS = {
     "director.retry_cooldown_penalty",
     "director.ping_pong_penalty",
     "director.dead_end_penalty",
+    "director.fail_forward",
     "mission_settings.momentum_after",
     "unexpected_events.twist_payoff_delay",
     "fitness.rhythm",

@@ -190,7 +190,7 @@ mission_settings:
   discovery_route_cost: 2
   pursuit_start_step: 18       # goal pursuit starts here...
   pursuit_full_step: 40        # ...and is at full strength here (stories of about 28 turns)
-  momentum_after: 18           # a quest idle this many turns (no stage done) pulls harder, at full strength after twice that
+  momentum_after: 24           # a quest idle this many turns (no stage done) pulls harder, at full strength after twice that
 start_selection:
   # Where each story starts: a weighted random draw among the locations with
   # `start_eligible: true` (weight: their `start_weight`) that are enabled and
@@ -679,6 +679,7 @@ director:                      # how a story builds over its course, like a game
   payoff_delay: 6              # a clue open this many turns is due: its payoff and the way to it...
   payoff_due_weight: 2.0       # ...rank higher by this
   explore_weight: 1.0          # a place not visited yet pulls harder the longer since the last new place
+  fail_forward: 0.7            # chance that a failure which led nowhere turns into a complication (an event tagged complication)
   dead_end_penalty: 2.0        # travelling back to a place with nothing left there (no quest step, payoff, untold outcome, unmet person)
   # Failing forward: every failed attempt at an action makes the next one easier (like escapes),
   # and an action that just failed steps back for a while so that something else happens first

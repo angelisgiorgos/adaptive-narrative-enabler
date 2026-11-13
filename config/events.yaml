@@ -90,7 +90,8 @@ world_definition:
           move_to: Alley
     bandit_ambush:
       title: Ambushed by a bandit
-      cooldown: 6     # bandits lurk on every visit, but not on every turn
+      cooldown: 8         # bandits lurk on every visit, but not on every turn...
+      max_occurrences: 3  # ...and not all story long (a fourth ambush is padding)
       tags: [threat, ambush]
       descriptions:
       - A hooded figure steps out of the shadows, blade first. "Your purse or your life."
@@ -107,14 +108,14 @@ world_definition:
           health_change: -4
       - name: Hand over your coins
         outcomes:
-        - desc: The bandit snatches your purse and melts back into the dark.
-          tags: [threat]
+        - desc: The bandit snatches your purse, counts it with a sneer, and lets slip that the fence in the Sewers pays better than you do.
+          tags: [threat, setup_clue]
           coin_change: -10
           remove_npc: true
       - name: Plead for mercy
         outcomes:
-        - desc: They take your coins and leave you bruised but alive.
-          tags: [threat]
+        - desc: They take your coins and leave you bruised but alive, with a warning that the guards below the Vault are paid to look away.
+          tags: [threat, setup_clue]
           coin_change: -20
           health_change: -1
           remove_npc: true
@@ -133,36 +134,38 @@ world_definition:
           tags: [threat, failure]
           health_change: -2
     guards_alerted:
-      title: The vault guards come running
-      repeat: always   # every alarm brings them
-      tags: [threat, guards]
+      title: The guards come running
+      repeat: always   # any alarm, any botched bribe can bring them...
+      cooldown: 4      # ...but not turn after turn
+      # complication: it may follow a failed attempt that otherwise led nowhere (director.fail_forward)
+      tags: [threat, guards, complication]
       descriptions:
-      - Boots pound down the stairs and lanterns swing toward the vault door.
-      - A bell clangs somewhere above; the guards are coming, and they are not alone.
+      - Boots pound closer and lanterns swing toward you.
+      - A whistle shrills somewhere close; the guards are coming, and they are not alone.
       actions:
       - name: Hide in the shadows
         skill_check: {stat: stealth}
         outcomes:
-        - desc: The guards sweep past your hiding place, cursing the faulty alarm.
+        - desc: The guards sweep past your hiding place, cursing whoever raised the alarm.
           on_check: pass
           tags: [stealth, success]
-        - desc: A lantern finds your face. "Thief!" Rough hands drag you away.
+        - desc: A lantern finds your face. "There!" Rough hands drag you away.
           on_check: fail
           tags: [guards, failure]
           send_to: Dungeon
-      - name: Bluff that the guild sent you to inspect the lock
+      - name: Bluff that you have every right to be here
         skill_check: {stat: persuasion}
         outcomes:
-        - desc: "\"The locksmiths' guild sent me,\" you say; the sergeant waves you on, embarrassed."
+        - desc: "\"The magistrate sent me,\" you say; the sergeant hesitates, then waves you on, embarrassed."
           on_check: pass
           tags: [social, success]
         - desc: The sergeant laughs and calls for irons.
           on_check: fail
           tags: [guards, failure]
           send_to: Dungeon
-      - name: Slip down the drain into the Sewers
+      - name: Slip away down a drain into the Sewers
         outcomes:
-        - desc: You squeeze through the grate as the vault door bursts open behind you.
+        - desc: You squeeze through a grate just as the first lantern turns the corner.
           tags: [stealth, success]
           move_to: Sewers
     memory_theft:

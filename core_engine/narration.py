@@ -18,7 +18,7 @@ DEFAULT_MESSAGES = {
     "end_death": "The traveler can no longer continue.",
     "end_mission": "Mission complete: {title}.",
     "end_action_limit": "The story reached its action limit of {limit} steps.",
-    "end_epilogue": "[EPILOGUE] The day draws to a close after {turns} turns. {mission}You saw {places} places, met {people} people and leave with {items} items.",
+    "end_epilogue": "[EPILOGUE] The day draws to a close after {turns} turns. {mission}{recap}",
     "epilogue_mission_open": "{title} is left for another day. ",
     "finale_start": "[FINALE] Time is running out: {title} must be settled now.",
     "stage_complete": "[QUEST] {done}: done. Next: {next}. {description}",
@@ -39,6 +39,8 @@ DEFAULT_MESSAGES = {
     "travel_new": "Move to {location}",
     "travel_return": "Return to {location}",
     "travel_result": "You travel to {location}.",
+    "travel_first": "You set out for the {location}. {view}",
+    "end_victory": "[EPILOGUE] {title}: done. {recap}",
     "location_current": "[LOCATION] Current location: {location}",
     "location_moved": "[LOCATION] Transferred from {origin} to {destination}",
     "location_stayed": "[LOCATION] Still at {location}",
@@ -93,6 +95,9 @@ DEFAULT_MESSAGES = {
 
 # Values the engine passes beyond those the default text uses.
 EXTRA_FIELDS = {
+    # The epilogues tell the journey, not a tally; the counts stay available to own messages.
+    "end_epilogue": {"places", "people", "items"},
+    "end_victory": {"turns", "places", "people"},
     "arrival_item": {"item"},
     "failure_arrest": {"action"},
     "talk_goal": {"npc"},

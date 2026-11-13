@@ -606,7 +606,42 @@ class StoryCraftTests(_Quiet):
         state.apply(alarm, action=safe)
         state._start_pending_event()
         self.assertEqual(state.active_event.name, "guards_alerted")
-        self.assertIn("Slip down the drain into the Sewers", _names(state))
+        self.assertIn("Slip away down a drain into the Sewers", _names(state))
+
+    def test_a_won_story_ends_with_its_journey(self):
+        from core_engine import Mission
+
+        world = self._gate()
+        world.add_mission(Mission("trip", None, title="The trip", stages=[
+            {"title": "Reach the yard", "goal": {"location": "Yard"}},
+            {"title": "Come back", "goal": {"action": "Wait"}}]))
+        state = GameState(world, _genome(), start="Gate", rng=random.Random(0), mission="trip")
+        state.allies.add("Sentry")
+        state.current.connect(world.locations["Yard"])
+        _choose(state, "Move to Yard")
+        _choose(state, "Return to Gate")
+        _choose(state, "Wait")
+        self.assertTrue(state.won)
+        self.assertIn("[EPILOGUE] The trip: done. Step by step: Reach the yard, then Come back. "
+                      "Friends made: a Sentry.", state.end_reason)
+        self.assertNotRegex(state.end_reason, r"\d+ (places|people|turns)")  # a journey, not a tally
+
+    def test_a_failure_that_led_nowhere_becomes_a_complication(self):
+        import main as engine
+
+        config.reload()
+        genome = _genome()
+        world = engine.build_world(genome)
+        state = GameState(world, genome, start="Harbor", rng=random.Random(0))
+        bribe = next(a for c in world.characters if c.name == "Gate Guard" for a in c.actions if a.name.endswith("Bribe with coins"))
+        with patch.dict(config._config["director"], {"fail_forward": 1.0}):
+            self.assertTrue(state._fail_forward(bribe, next(o for o in bribe.outcomes if "blocks the way" in o.desc)))
+            self.assertEqual(state._pending_event[0], "guards_alerted")
+            state._pending_event = None
+            moved = Outcome("You run.", tags=["threat", "failure"], move_to="Market")
+            self.assertFalse(state._fail_forward(bribe, moved))  # it led somewhere already
+        with patch.dict(config._config["director"], {"fail_forward": 0.0}):
+            self.assertFalse(state._fail_forward(bribe, bribe.outcomes[-1]))
 
 
 if __name__ == "__main__":

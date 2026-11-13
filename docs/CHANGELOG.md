@@ -7,6 +7,46 @@ that introduces them.
 
 ## [Unreleased]
 
+### Stories that keep their word: twists, callbacks, failing forward
+
+Measured with Gemma 4 E4B as the judge (60 stories per version, City and Monastery,
+random and evolved storytellers, each judged twice, with the same digest): engagement
+7.20 -> 7.23, payoff 6.72 -> 7.11, stakes 6.32 -> 6.52, coherence 7.85 -> 7.98,
+exploration 7.51 -> 7.60; the monastery's stories rose (random storytellers 6.98 ->
+7.32), the city's random ones dipped within the judge's session-to-session noise
+(7.55 -> 7.27, 7.43 when judged again). Letting the judge see the beats a player sees
+raised every score (engagement about 6.0 -> 7.2).
+
+#### Added
+- Twists matched to what they do, mystery twists that pay off later (`[TWIST]`,
+  `unexpected_events.twist_payoff_delay`), and bargains as choices with a price
+  that comes due (`bargain` effects).
+- Callbacks: a payoff that closes a related clue says what it pays off (`[CALLBACK]`).
+- Failing forward (`director.fail_forward`): a failure that led nowhere may start a
+  complication, an event tagged `complication`; the city's *The guards come running*
+  (hide, bluff, slip into the Sewers) follows a jammed safe or a botched bribe.
+- Quest momentum (`mission_settings.momentum_after`), a dead-end travel penalty
+  (`director.dead_end_penalty`), first-journey views (`travel_first`) and a victory
+  epilogue of the journey (`end_victory`).
+
+#### Changed (epilogues)
+- Both epilogues tell the journey (the road, the quest's steps, the friends made, the
+  turns of fate) instead of counting places, people and items; `{places}`, `{people}`
+  and `{items}` stay available to custom messages.
+- The judge's digest shows the story beats the player saw and the choices passed up;
+  every turn of the turn log keeps its best alternatives (`options`).
+
+#### Changed
+- The bandit ambush strikes at most 3 times per story, every 8 turns at most, and
+  its losses tell something (who buys the loot, who the guards are paid by).
+
+#### Fixed
+- Procedural twists told one thing and did another ("offers a dangerous bargain",
+  then +8 coins), and their mysteries were never followed up.
+- Someone already in view was "noticed" again, and an item already seen "spotted".
+- An event could offer to slip away to the place one is in, and a move to the
+  current place entered it into the path again.
+
 ### Alternative, unpredictable stories; Gemma 4 as a game critic
 
 #### Added

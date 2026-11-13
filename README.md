@@ -622,7 +622,9 @@ everything else runs as usual. `llm_evaluator` sets the judge's `max_new_tokens`
 
 `evaluator/game_judge.py` uses the language model as a judge (LLM-as-a-judge):
 it reads a digest of a playthrough (each turn: the place, the choice, what
-happened, checks, events, moves, changes of health and coins) and scores it as
+happened, checks, events, moves, changes of health and coins, the story beats
+the player saw - a quest step, a twist, a callback, an ally, a new path, an
+arrest - and the choices passed up) and scores it as
 a game critic would, from 1 to 10, on **agency**, **pacing**, **surprise**,
 **payoff**, **exploration**, **stakes**, **coherence** and **replayability**,
 with the overall **engagement**, the best and the weakest moment and a verdict.
@@ -1537,6 +1539,33 @@ that it rises toward an ending instead of wandering until it is cut off:
   (`payoff_due_weight`).
 - **The pull of the unknown.** A place not visited yet pulls harder the longer
   since the last new place (`explore_weight`), so stories move across the world.
+- **No dead ends.** Going back to a place with nothing left there (no quest step,
+  no payoff, no untold outcome, nobody unmet) costs `dead_end_penalty`.
+- **Failing forward.** A failure that led nowhere may turn into a complication
+  (`fail_forward`): an authored event tagged `complication` whose tags fit the
+  failure starts once the turn is done. A botched bribe or a jammed safe brings
+  *The guards come running*: hide, bluff, or slip away into the Sewers.
+- **Quest momentum.** A quest idle for `mission_settings.momentum_after` turns (no
+  stage done) pulls harder, at full strength after twice that, so the main quest
+  keeps the story going instead of fading behind side paths.
+
+**Twists that keep their word** (`unexpected_events.effects`): every procedural
+twist is told with a text that matches what it does (a purse pressed into your
+hand pays; a trap hurts). A mystery (`payoff`) plants a thread that a later twist
+pays off, `twist_payoff_delay` turns later or in the finale (`[TWIST] The one
+who followed you since the Harbor makes their move at last ...`). A **bargain** is
+a choice: taking it pays now, and its price comes due later; refusing it closes
+the matter.
+
+**Payoffs that call back.** A payoff that closes a clue it belongs with (told at
+the same place, or sharing a word) says so: `[CALLBACK] It all fits: what you
+learned at the Harbor pays off - "A drunk sailor swears ..."`. A won story ends
+with an **epilogue** of its journey (`end_victory`): the road from its first place
+to its last by way of those that mattered, the quest's steps, the friends made and
+the turns of fate, told as a story rather than a tally (counts of places and
+threads made the judge rate the same stories lower: exploration 7.46 -> 6.88); the
+epilogue of a story that reaches the action limit is told the same way. A first
+journey somewhere says what one sees on the way (`travel_first`).
 
 ```yaml
 director:
