@@ -153,6 +153,22 @@ OPTIONAL_CONFIG_PATHS = {
     "evolution.alternatives_weight",
     "outcome_resolution.hidden_adjustments",
     "world_definition.scenario_templates",
+    # Added with the story's beats (core_engine/story_beats.py) and NPC roles.
+    "npc_roles",
+    "climax",
+    "variation",
+    "travel",
+    "stakes",
+    "consequences",
+    "memory",
+    "director.another_way",
+    "director.failure_refund",
+    "fitness.beats",
+    "fitness.term_weights",
+    "evolution.judge_weight",
+    "evolution.judge_top_k",
+    "evolution.judge_workers",
+    "llm_judge.pair_max_chars",
 }
 
 CONFIG_LOCK = threading.RLock()
@@ -312,6 +328,8 @@ def save_weights(paths, *values):
 FREE_FORM_PATHS = {
     "location_constraints", "scene.location_npc_tags", "action_selection.location_penalties",
     "genome_bounds", "action_rules.default_repeat",
+    "npc_roles.roles", "travel.first_trip.by_tag", "fitness.term_weights", "consequences.kinds",
+    "stakes.alert.raise_on_success", "stakes.alert.raise_on_failure",
 }
 
 
@@ -388,6 +406,11 @@ def _validate_complete_config(candidate: object, reference: object, path: str = 
                 errors.append(f"`{path}[{index}].encounter_repeat` must be true or false.")
             elif entry.get("encounter_event") is not None and not isinstance(entry["encounter_event"], str):
                 errors.append(f"`{path}[{index}].encounter_event` must be an event name.")
+            elif entry.get("role") is not None and not isinstance(entry["role"], str):
+                errors.append(f"`{path}[{index}].role` must be the name of a role in npc_roles.roles.")
+            elif entry.get("secret") is not None and not (
+                    isinstance(entry["secret"], dict) and str(entry["secret"].get("text", "")).strip()):
+                errors.append(f"`{path}[{index}].secret` must be a mapping with a `text`.")
         return errors
     if isinstance(reference, dict):
         if not isinstance(candidate, dict):
@@ -730,6 +753,13 @@ LOGIC_SECTIONS = {
     "editor_suggester": "Language-model suggestions in the terminal editor.",
     "world_definition": "How locations connect when no spawn rules are written (spawn strategy, similarity).",
     "augmentation": "Optional language-model expansion of the world.",
+    "npc_roles": "Who matters how much in a story: roles by importance, inferred from tags or set per NPC; how hard each is to find (reveal after turns or clues) and to beat (check modifier), and NPC secrets.",
+    "climax": "Every quest ends in a confrontation: the antagonist, the choices (one per stat, calling on an ally), setbacks and a win at a price, and the open threads revealed at the end.",
+    "variation": "What is told again is not told the same way: outcome variants, lines that know a result was told before, and checks that grow harder the more an action is repeated.",
+    "travel": "Travel as part of the story: fast travel along known ways (not counted toward the action limit) and first trips with a scene on the way and word of who is to be found there.",
+    "stakes": "What is at stake, seen by the player: the alert level that ends in a manhunt, and what failing costs, shown with each choice's check.",
+    "consequences": "What the player did shows later: beating someone who mattered, making an ally.",
+    "memory": "A profile's next story remembers the last: what happened, and who was a friend or a foe.",
 }
 
 

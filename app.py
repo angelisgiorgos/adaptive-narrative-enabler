@@ -481,11 +481,20 @@ def _learning_outputs(learning):
     return pd.DataFrame(rows), pd.DataFrame(traits)
 
 
+def _check_text(check):
+    """A choice's check in a few words: "stealth 45% (fail: -2 health, sent to the Dungeon)"."""
+    risk = check.get("risk") or {}
+    parts = [f"{risk[key]} {key}" for key in ("health", "coins") if risk.get(key)]
+    if risk.get("sent_to"):
+        parts.append(f"sent to the {risk['sent_to']}")
+    return f"{check['stat']} {check['chance']}%" + (f" (fail: {', '.join(parts)})" if parts else "")
+
+
 def _choices(actions, details=None):
     """The choices as radio options: each labelled with the check it involves (the value stays
     the action's name, which the API takes)."""
     checks = {item["name"]: item.get("check") for item in details or []}
-    options = [(name + (f"  ·  {checks[name]['stat']} {checks[name]['chance']}%" if checks.get(name) else ""), name)
+    options = [(name + (f"  ·  {_check_text(checks[name])}" if checks.get(name) else ""), name)
                for name in actions]
     return gr.Radio(choices=options, value=actions[0] if actions else None, interactive=bool(actions))
 

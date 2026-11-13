@@ -27,19 +27,29 @@ Learning features:
 - A learning memory (hall of fame) of the best genomes of earlier runs, each
   with its benchmark score, seeds the next run, so the tool keeps learning
   across runs (``warm_start``).
+- Judge in the loop (``judge_weight`` > 0, off by default): one story of each of
+  the ``judge_top_k`` best of a generation is read by the LLM judge
+  (evaluator/game_judge.py) and ``judge_weight`` x (engagement - 5) is added to
+  their scores before breeding, so what a reader finds engaging steers the
+  search. Without a model the run goes on with the fitness alone.
 """
 import datetime
 import json
+import logging
 import os
 import random
 import statistics
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
+from typing import Optional
 
 from utils.config_loader import config
 
 from .game_state import GameState
 from .genome import TRAIT_BOUNDS, Genome, trait_bounds
+
+LOGGER = logging.getLogger(__name__)
 
 TRAIT_MEANINGS = {
     "threat_prob": "appetite for danger and combat",
@@ -90,6 +100,11 @@ DEFAULTS = {
     "score_aggregate": "mean_minus_std",  # mean | mean_minus_std: penalise storytellers whose stories vary in quality
     "consistency_weight": 0.25,     # mean_minus_std: score = mean - this x standard deviation
     "alternatives_weight": 0.0,     # + this x how different a storyteller's stories are (fitness.alternatives)
+    # Judge in the loop: the LLM judge reads one story of each of the judge_top_k best of a
+    # generation; judge_weight x (engagement - 5) is added to their scores before breeding.
+    "judge_weight": 0.0,            # 0: off (no model needed, runs stay reproducible)
+    "judge_top_k": 2,
+    "judge_workers": 4,             # judgements sent to the model at once
 }
 AGGREGATES = ("mean", "mean_minus_std")
 
@@ -157,6 +172,7 @@ class GenerationStats:
     improved: bool
     best_traits: dict
     validation: float = 0.0  # the champion's score on the fixed benchmark
+    judge_engagement: Optional[float] = None  # judge in the loop: mean engagement of the judged stories
 
 
 @dataclass
@@ -291,10 +307,12 @@ def _diversity(population):
 class NarrativeEvolution:
     """Evolves storytellers for the current world configuration."""
 
-    def __init__(self, build_world, fitness, settings=None, seed=None, memory=None, map_fn=None):
+    def __init__(self, build_world, fitness, settings=None, seed=None, memory=None, map_fn=None, judge=None):
         """``build_world(genome)`` and ``fitness(state)`` come from main.py;
         ``map_fn(function, tasks)`` can evaluate in parallel (default: in turn);
-        ``memory`` (a LearningMemory) enables learning across runs."""
+        ``memory`` (a LearningMemory) enables learning across runs; ``judge`` (with
+        ``judge_digest(digest)``, default: evaluator.game_judge.GameJudge when
+        judge_weight > 0) is the judge in the loop."""
         self.build_world = build_world
         self.fitness = fitness
         self.settings = evolution_settings(settings)
@@ -302,6 +320,9 @@ class NarrativeEvolution:
         self.rng = random.Random(seed)
         self.memory = memory
         self.map_fn = map_fn or (lambda function, tasks: list(map(function, tasks)))
+        self.judge = judge
+        self._judge_off = False          # the judge proved unavailable: the run goes on without it
+        self._judge_unreadable = False   # an unreadable judgement was already logged
 
     def _max_steps(self):
         """Steps per evaluated story: the whole story with full_length_stories."""
@@ -403,6 +424,60 @@ class NarrativeEvolution:
     def _genome_key(genome):
         return tuple(round(value, 4) for _, value in sorted(genome.traits().items()))
 
+    # ---- judge in the loop ---------------------------------------------------------
+
+    def _judge_unavailable(self, error):
+        if not self._judge_off:
+            LOGGER.warning("The judge in the loop is off for this run (%s); evolution goes on with the "
+                           "fitness alone.", error)
+        self._judge_off = True
+
+    def _loop_judge(self):
+        """The judge in the loop, created on first use (None once it proved unavailable)."""
+        if self._judge_off:
+            return None
+        if self.judge is None:
+            try:
+                from evaluator.game_judge import GameJudge
+
+                self.judge = GameJudge()
+            except Exception as error:  # no vLLM, no server, no model: never stop the evolution
+                self._judge_unavailable(error)
+                return None
+        return self.judge
+
+    def _judged(self, scored, seed, situation, max_steps):
+        """Judge in the loop: one story (``seed``, ``situation``) of each of the judge_top_k
+        best in ``scored`` is judged; judge_weight x (engagement - 5) is added to their
+        scores. Returns (scored again sorted best first, mean engagement or None)."""
+        weight = float(self.settings.get("judge_weight") or 0.0)
+        top_k = min(max(0, int(self.settings.get("judge_top_k") or 0)), len(scored))
+        if not weight or not top_k:
+            return scored, None
+        judge = self._loop_judge()
+        if judge is None:
+            return scored, None
+        from evaluator.game_judge import digest_state
+
+        digests = [digest_state(play_episode(self.build_world, genome, seed, max_steps, situation))
+                   for _, genome in scored[:top_k]]
+        try:
+            with ThreadPoolExecutor(max_workers=max(1, min(int(self.settings.get("judge_workers") or 1), top_k))) as pool:
+                judgements = list(pool.map(judge.judge_digest, digests))
+        except Exception as error:  # the model went away mid-run
+            self._judge_unavailable(error)
+            return scored, None
+        engagements = [j.get("engagement") if isinstance(j, dict) else None for j in judgements]
+        engagements = [float(e) if isinstance(e, (int, float)) else None for e in engagements]
+        if None in engagements and not self._judge_unreadable:
+            LOGGER.warning("The judge in the loop could not be read for some stories; their scores are left as they are.")
+            self._judge_unreadable = True
+        rescored = [(score + weight * (engagement - 5.0) if engagement is not None else score, genome)
+                    for (score, genome), engagement in zip(scored[:top_k], engagements)] + list(scored[top_k:])
+        rescored.sort(key=lambda pair: pair[0], reverse=True)
+        read = [e for e in engagements if e is not None]
+        return rescored, (round(statistics.mean(read), 3) if read else None)
+
     # ---- training state ------------------------------------------------------------
 
     CHECKPOINT_FORMAT = "ane-evolution-checkpoint"
@@ -433,7 +508,7 @@ class NarrativeEvolution:
         }
 
     @classmethod
-    def from_checkpoint(cls, build_world, fitness, checkpoint, generations=None, memory=None, map_fn=None):
+    def from_checkpoint(cls, build_world, fitness, checkpoint, generations=None, memory=None, map_fn=None, judge=None):
         """An evolution set up to continue ``checkpoint``; ``generations`` more
         generations (default: the remaining ones of the original run)."""
         if not isinstance(checkpoint, dict) or checkpoint.get("format") != cls.CHECKPOINT_FORMAT:
@@ -441,7 +516,8 @@ class NarrativeEvolution:
         settings = dict(checkpoint["settings"])
         if generations is not None:
             settings["generations"] = int(checkpoint["next_generation"]) + max(1, int(generations))
-        return cls(build_world, fitness, settings=settings, seed=checkpoint.get("seed"), memory=memory, map_fn=map_fn)
+        return cls(build_world, fitness, settings=settings, seed=checkpoint.get("seed"), memory=memory, map_fn=map_fn,
+                   judge=judge)
 
     def run(self, progress=None, stop_event=None, resume=None, checkpoint=None):
         """Evolve; ``progress(generation, total, GenerationStats)`` reports each generation.
@@ -486,6 +562,10 @@ class NarrativeEvolution:
             tasks = [(self.build_world, self.fitness, genome.traits(), seeds, max_steps, options) for genome in population]
             scores = self.map_fn(evaluate_task, tasks)
             scored = sorted(zip(scores, population), key=lambda pair: pair[0], reverse=True)
+            values = [score for score, _ in scored]  # the generation's fitness, before the judge's say
+            # Judge in the loop (judge_weight > 0): the LLM judge's engagement moves the best few.
+            scored, judge_engagement = self._judged(
+                scored, seeds[0], (options.get("situations") or [None])[0], max_steps)
 
             # The champion of this generation: the best on the fixed benchmark among the
             # benchmark_top_k best on this generation's stories (a lucky story cannot crown it).
@@ -506,7 +586,6 @@ class NarrativeEvolution:
                 if stale >= int(self.settings["stagnation_generations"]):
                     mutation_step = min(float(self.settings["max_mutation_step"]), mutation_step * 1.5)
 
-            values = [score for score, _ in scored]
             stats = GenerationStats(
                 generation=generation,
                 best=round(max(values), 3),
@@ -518,6 +597,7 @@ class NarrativeEvolution:
                 improved=improved,
                 best_traits=champion.traits(),
                 validation=round(validation, 3),
+                judge_engagement=judge_engagement,
             )
             history.append(stats)
             if progress is not None:

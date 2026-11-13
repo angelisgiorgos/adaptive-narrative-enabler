@@ -90,6 +90,32 @@ DEFAULT_MESSAGES = {
     "unexpected_event": "[UNEXPECTED EVENT] {description}",
     "unexpected_effect": "[EVENT EFFECT] Health {health:+d}, coins {coins:+d}.",
     "unexpected_discovery": "[EVENT DISCOVERY] A path opens to {location}.",
+    # The story's beats (story_beats.py)
+    "npc_reveal": "[REVEAL] {npc}, the {role} of this story: {description}",
+    "npc_named": "[LEAD] {npc} speaks of {target}, a {role} in all this: look for them at the {location}.",
+    "npc_triumph": "[TRIUMPH] You have beaten {npc}, the {role}.",
+    "climax_start": "[CLIMAX] {title}: it all comes down to this.",
+    "climax_won": "[CLIMAX] You prevail: {title} is yours.",
+    "climax_setback": "[SETBACK] {antagonist} throws you back. Catch your breath; this is not over.",
+    "climax_price": "[CLIMAX] Bloodied and spent, you prevail at last; {title} cost you dearly.",
+    "revelation": '[REVELATION] At last it makes sense, what you learned at the {place}: "{text}"',
+    "another_way_witness": "[ANOTHER WAY] Someone saw it all: {npc} beckons you over.",
+    "another_way_lead": "[ANOTHER WAY] The failure teaches you something: the answer may lie at the {location}.",
+    "refund": "[REFUND] Not everything is lost: you get {coins} coins back (Balance: {balance}).",
+    "result_again": "RESULT: {description} It goes much as it did before.",
+    "result_habit": "RESULT: {description} The same again; people here are starting to know your face.",
+    "travel_fast": "Travel by known ways to the {location}",
+    "travel_fast_result": "By ways you know, through the {via}, you reach the {location}.",
+    "on_the_way": "[ON THE WAY] {text}",
+    "road_word": "[ON THE WAY] Word on the road: {npc} is to be found in the {location}.",
+    "alert_up": "[ALERT] {text} (alert {level}/{max})",
+    "alert_calm": "[ALERT] Things have calmed down (alert {level}/{max}).",
+    "manhunt": "[MANHUNT] The whole watch is after you!",
+    "secret": "[SECRET] {text}",
+    "consequence": "[CONSEQUENCE] {text}",
+    "last_time": "[LAST TIME] Last time you {text}.",
+    "remembered_friend": "[LAST TIME] {npc} remembers you, and smiles.",
+    "remembered_foe": "[LAST TIME] {npc} remembers you, and not fondly.",
 }
 
 
@@ -101,6 +127,7 @@ EXTRA_FIELDS = {
     "arrival_item": {"item"},
     "failure_arrest": {"action"},
     "talk_goal": {"npc"},
+    "manhunt": {"location"},
 }
 
 

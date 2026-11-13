@@ -56,10 +56,12 @@ def _choose(state, name):
 
 class MissionTests(unittest.TestCase):
     def setUp(self):
-        # Mission logic is tested without skill-check dice.
-        patcher = patch.dict(config._config["world_definition"]["character_stats"], {"tag_checks": {}})
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        # Mission logic is tested without skill-check dice, and with every NPC in sight from the
+        # start (NPC roles are tested in test_story_beats).
+        for patcher in (patch.dict(config._config["world_definition"]["character_stats"], {"tag_checks": {}}),
+                        patch.dict(config._config, {"npc_roles": {**(config.get("npc_roles") or {}), "enabled": False}})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def _state(self, *missions, **kwargs):
         return GameState(_world(*missions), _genome(), start="Market", rng=random.Random(2), **kwargs)

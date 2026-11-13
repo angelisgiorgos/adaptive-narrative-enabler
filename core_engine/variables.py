@@ -194,6 +194,33 @@ class VariableStore:
         """Remember the mission of one of the profile's stories (latest ``limit`` kept)."""
         self._remember(name, "missions", mission, limit)
 
+    def recent_memories(self, name="default"):
+        """What the profile's last stories were, in a few words each, oldest first (memory)."""
+        return _start_names(self._read().get("profiles", {}).get(name, {}), "memories")
+
+    def record_memory(self, name, text, limit=None):
+        """Remember what one of the profile's stories was (story_beats: "Last time you ...")."""
+        self._remember(name, "memories", text, limit)
+
+    def remembered_people(self, name="default"):
+        """{friends, foes}: the NPCs the profile's stories made friends of, and beat."""
+        record = self._read().get("profiles", {}).get(name, {})
+        return {"friends": _start_names(record, "friends"), "foes": _start_names(record, "foes")}
+
+    def record_people(self, name, friends=(), foes=(), limit=None):
+        """Remember the friends made and the foes beaten in one of the profile's stories."""
+        if not friends and not foes:
+            return
+        with self._lock:
+            data = self._read()
+            record = data.setdefault("profiles", {}).setdefault(name, {"values": {}, "playthroughs": 0})
+            for key, names in (("friends", friends), ("foes", foes)):
+                kept = [n for n in _start_names(record, key) if n not in set(names)] + [str(n) for n in names]
+                record[key] = kept[-(limit or HISTORY_LIMIT):]
+            record["updated"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+            data["version"] = 1
+            self._write(data)
+
     def _remember(self, name, key, value, limit=None):
         with self._lock:
             data = self._read()

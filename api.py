@@ -207,18 +207,23 @@ class PlayState(BaseModel):
         "[{title, description, state: done|current|todo}], todo: what the current step still needs, in words}.")
     people: list[dict[str, Any]] = Field(
         default_factory=list, description="The people here: [{name, called, description, wants, hostile, talks, "
-        "quest, helped, ally}] (talks: times spoken with; quest: they can help with the mission now; helped: times "
-        "helped with their goal; ally: their goal is fulfilled).")
+        "quest, helped, ally, role, importance}] (talks: times spoken with; quest: they can help with the mission now; "
+        "helped: times helped with their goal; ally: their goal is fulfilled; role and importance 0-3: how much they "
+        "matter in this story, npc_roles).")
     map: dict[str, Any] | None = Field(
         default=None, description="The map as the player knows it: {current, previous, places: [{name, visited, locked}], "
         "paths: [[a, b]] (both ways), one_way: [[from, to]]}.")
     choices: list[dict[str, Any]] = Field(
         default_factory=list, description="The offered actions with the check each involves: [{name, check: {stat, "
-        "chance (0-100), bonus} or null}].")
+        "chance (0-100), bonus, risk: {health, coins, sent_to} (what failing costs) or null} or null}].")
     people_met: list[dict[str, Any]] = Field(
-        default_factory=list, description="Everyone met in this story: [{name, called, where, talks, hostile, gone, ally}].")
+        default_factory=list, description="Everyone met in this story: [{name, called, where, talks, hostile, gone, ally, "
+        "role, importance}].")
     ways_on: list[dict[str, Any]] = Field(
         default_factory=list, description="The places one can travel to from here now: [{name, visited, toward_quest}].")
+    stakes: dict[str, Any] | None = Field(
+        default=None, description="What is at stake: {alert, max, warn_at} (the watch's alert level; at max a manhunt "
+        "starts), or null when stakes.alert is off.")
 
 
 class SimulationResponse(PlayState):
@@ -691,6 +696,19 @@ def get_playable_missions(profile: str | None = None):
     [{key, title, description, stages, available}], ``available`` for this profile now."""
     try:
         return {"missions": sessions.playable_missions(profile)}
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.get("/v1/lint/failures", tags=["World authoring"])
+def get_failure_lint():
+    """The failures this world leaves as dead ends: {dead_ends: [{action, owner, why}]}, each an
+    action that can fail (a skill check, or failure outcomes) where failing changes nothing but
+    health or coins and no complication event (tagged `complication`) shares a tag with it.
+    During play the engine still shows another way (director.another_way); these are the
+    failures worth writing a consequence for."""
+    try:
+        return {"dead_ends": sessions.failure_lint()}
     except Exception as exc:
         _fail(exc)
 

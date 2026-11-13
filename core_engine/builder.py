@@ -327,6 +327,9 @@ def logic_errors(world):
         actions(entry, where)
         errors.extend(_dialogue_errors(entry.get("dialogue"), where, condition, effect_list))
         errors.extend(npc_goal_errors(entry.get("goals"), where))
+        secret = entry.get("secret")
+        if isinstance(secret, dict) and secret.get("effects"):
+            effect_list(secret["effects"], f"{where}.secret.effects")
         encounter = entry.get("encounter_event")
         if encounter:
             # A mandatory encounter must be one the player can resolve.
@@ -426,6 +429,15 @@ def _dialogue_errors(lines, where, condition, effect_list):
     return errors
 
 
+def _secret(spec):
+    """An NPC's secret ({text, talks, clues, effects}) with its effects as a checked effect list."""
+    if not isinstance(spec, dict) or not str(spec.get("text", "")).strip():
+        return None
+    secret = dict(spec)
+    secret["effects"] = _checked(effects.EffectList(spec.get("effects"))) if spec.get("effects") else None
+    return secret
+
+
 def _checked(effect_list):
     """Mark an effect list validated (logic_errors ran before the world was built)."""
     effect_list.checked = True
@@ -499,6 +511,8 @@ def _build_outcome(o_data, genome, tags=None):
         payoff_id=o_data.get("payoff_id"),
     )
     outcome.until = o_data.get("until")
+    # Other ways to tell it, used in turn when it is told again (story_beats.variation).
+    outcome.variants = [str(text) for text in o_data.get("variants") or [] if str(text).strip()]
     _checked(outcome.effects)
     return outcome
 
@@ -634,6 +648,8 @@ def build_world(genome):
             encounter_repeat=char_data.get("encounter_repeat", False),
             enabled_if=char_data.get("enabled_if"),
             article=char_data.get("article"),
+            role=char_data.get("role"),
+            secret=_secret(char_data.get("secret")),
             dialogue=[
                 DialogueLine(line.get("text"), line.get("enabled_if"), _checked(effects.EffectList(line.get("effects"))))
                 for line in char_data.get("dialogue") or []

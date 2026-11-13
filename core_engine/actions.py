@@ -31,6 +31,7 @@ class Outcome:
     setup_id = None           # plants this setup (story_rules: named setups and payoffs)
     requires_setup = None     # told only once this setup has been planted
     payoff_id = None          # pays this setup off (its thread closes)
+    variants = ()             # other ways to tell it, used in turn when it is told again
     def __init__(self, desc, tags=None,
                  success_prob=1.0,
                  health_change=0,

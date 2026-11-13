@@ -32,6 +32,8 @@ def _quiet(**story_rules):
     patches = [
         patch.dict(config._config["unexpected_events"], {"enabled": False}),
         patch.dict(config._config["game_state"], {"arrest_location": "Cell"}),
+        # NPC roles (who is hidden until revealed, who is harder to beat) are tested in test_story_beats.
+        patch.dict(config._config, {"npc_roles": {**(config.get("npc_roles") or {}), "enabled": False}}),
     ]
     if story_rules:
         patches.append(patch.dict(config._config["story_rules"], story_rules))
@@ -439,7 +441,7 @@ class ShippedContentTests(unittest.TestCase):
     def test_no_way_past_the_guard_from_inside_and_no_free_pass(self):
         guard = next(npc for npc in self._world()["characters"] if npc["name"] == "Gate Guard")
         group = [a for a in guard["actions"] if a.get("exclusive_group") == "get_past_gate_guard"]
-        self.assertEqual(len(group), 3)
+        self.assertEqual(len(group), 4)  # a drink, a bribe, a fight, or settling his debt once his secret is out
         self.assertTrue(all(a.get("enabled_if") for a in group))
         coins = next(a for a in group if a["name"] == "Bribe with coins")
         failed = next(o for o in coins["outcomes"] if o.get("on_check") == "fail")

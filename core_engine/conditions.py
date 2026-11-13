@@ -41,7 +41,7 @@ BUILTIN_VARIABLES = {"playthroughs": "int"}  # read-only, maintained by the vari
 GROUPS = ("all", "any", "not")
 COMPARISONS = ("variable", "stat", "resource")
 FACTS = ("has_item", "item_collected", "visited", "at_location", "npc_removed", "event_done", "event_succeeded",
-         "event_failed", "action_done", "outcome_tag", "mission")
+         "event_failed", "action_done", "outcome_tag", "mission", "secret_known")
 KEYWORDS = frozenset(GROUPS + COMPARISONS + FACTS)  # cannot be variable names (shorthand would be ambiguous)
 RESOURCES = ("coins", "health", "turn")
 TRUE = ("all", ())
@@ -50,7 +50,7 @@ TRUE = ("all", ())
 _FACT_REFERENCES = {
     "has_item": "items", "item_collected": "items", "visited": "locations", "at_location": "locations",
     "npc_removed": "npcs", "event_done": "events", "event_succeeded": "events", "event_failed": "events",
-    "action_done": None, "outcome_tag": None, "mission": "missions",
+    "action_done": None, "outcome_tag": None, "mission": "missions", "secret_known": "npcs",
 }
 _FACT_LABELS = {"items": "item", "locations": "location", "npcs": "NPC", "events": "event", "missions": "mission"}
 _ACTION_PREFIX = re.compile(r"^\s*(\([^)]*\)|\[[^\]]*\])\s*")
@@ -268,6 +268,8 @@ class StoryFacts:
             return str(name).lower() in state.succeeded_outcome_tags
         if kind == "mission":
             return state.mission is not None and state.mission.name == name
+        if kind == "secret_known":  # the NPC's secret came out in this story (story_beats)
+            return name in state.__dict__.get("revealed_secrets", {})
         return False
 
 

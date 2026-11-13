@@ -233,6 +233,7 @@ OUTCOME_FIELDS = {
     "linked_location", "linked_location_mode", "linked_npc", "linked_item", "lead_to_known",
     "remove_npc", "send_to", "set_variables", "change_variables", "on_check", "change_stats", "effects", "until",
     "target_tags", "unlock_exit", "return_to_previous", "setup_id", "requires_setup", "payoff_id",
+    "variants",
 }
 
 ACTION_REFERENCE = """
@@ -245,12 +246,14 @@ ACTION_REFERENCE = """
 `move_to` · `send_to` (one way) · `move_to_tags` · `target_tags` (a discovery led by tags) · `reveal_location` ·
 `reveal_npc` · `reveal_object` · `unlock_exit` · `return_to_previous` · `setup_id` / `requires_setup` / `payoff_id` ·
 `lead_to_known` · `remove_npc` (true or a name) · `set_variables` · `change_variables` ·
-`on_check` (pass / fail) · `change_stats` · `effects` (a list, e.g. `[{give_item: Royal Pass}, {change_variable: {reputation: 1}}]`)
+`on_check` (pass / fail) · `change_stats` · `effects` (a list, e.g. `[{give_item: Royal Pass}, {change_variable: {reputation: 1}}]`) ·
+`variants` (other ways to tell it, used in turn when it is told again)
 
 **Conditions** (`enabled_if`): `{all: [...]}` · `{any: [...]}` · `{not: ...}` · `{variable: x, op: gte, value: 2}` ·
 `{stat: s, op: gte, value: 60}` · `{resource: coins, op: gte, value: 20}` · `{has_item: X}` · `{visited: L}` ·
 `{at_location: L}` · `{npc_removed: N}` · `{event_done: E}` · `{event_succeeded: E}` · `{event_failed: E}` ·
-`{item_collected: X}` · `{action_done: A}` · `{outcome_tag: t}` · `{mission: m}`, or the shorthand `{variable: value}`.
+`{item_collected: X}` · `{action_done: A}` · `{outcome_tag: t}` · `{mission: m}` · `{secret_known: N}` (the NPC's
+secret came out), or the shorthand `{variable: value}`.
 
 **Effects:** `set_variable` · `change_variable` · `set_stat` · `change_stat` · `give_item` · `take_item` ·
 `change_coins` · `change_health` · `remove_npc` · `reveal_npc` · `reveal_item` · `reveal_location` ·
@@ -328,6 +331,9 @@ def validate_entity_actions(kind: str, actions) -> list[str]:
                     errors.append(f"{where}: `{field}` must be a whole number.")
             if not isinstance(outcome.get("tags", []), list):
                 errors.append(f"{where}: `tags` must be a list.")
+            variants = outcome.get("variants", [])
+            if not isinstance(variants, list) or not all(isinstance(text, str) and text.strip() for text in variants):
+                errors.append(f"{where}: `variants` must be a list of texts (other ways to tell it).")
             for field in ("move_to", "send_to", "reveal_location", "linked_location"):
                 if outcome.get(field) and outcome[field] not in locations:
                     errors.append(f"{where}: unknown location `{outcome[field]}` in `{field}`.")
