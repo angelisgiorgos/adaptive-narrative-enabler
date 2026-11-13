@@ -640,8 +640,13 @@ class StoryCraftTests(_Quiet):
             state._pending_event = None
             moved = Outcome("You run.", tags=["threat", "failure"], move_to="Market")
             self.assertFalse(state._fail_forward(bribe, moved))  # it led somewhere already
-        with patch.dict(config._config["director"], {"fail_forward": 0.0}):
-            self.assertFalse(state._fail_forward(bribe, bribe.outcomes[-1]))
+        with patch.dict(config._config["director"], {"fail_forward": 0.0, "another_way": 0.0}):
+            self.assertFalse(state._fail_forward(bribe, bribe.outcomes[-1]))  # a dead end
+        self.assertEqual(state.beat_log[-1]["kind"], "dead_end")
+        with patch.dict(config._config["director"], {"fail_forward": 0.0, "another_way": 1.0}):
+            self.assertTrue(state._fail_forward(bribe, bribe.outcomes[-1]))  # no complication, but another way
+        self.assertIsNone(state._pending_event)
+        self.assertEqual(state.beat_log[-1]["kind"], "another_way")
 
 
 if __name__ == "__main__":

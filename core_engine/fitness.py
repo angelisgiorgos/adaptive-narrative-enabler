@@ -352,9 +352,15 @@ def _fitness_breakdown(state):
     breakdown.update(_rhythm(state, fitness_cfg.get("rhythm", {})))
     # People helped: each NPC whose goal the story fulfilled (npc_goals).
     breakdown["npc_goals"] = len(getattr(state, "allies", ())) * base_cfg.get("npc_goal_bonus", 8)
+    # The engine's own beats: the climax, triumphs, reveals, consequences, failures that led on.
+    breakdown.update(_beats(state, fitness_cfg.get("beats", {})))
     # What the story lacks (objective_losses), subtracted.
     for name, value in objective_losses(state).items():
         breakdown[f"loss_{name}"] = -value
+    # Weights learned from the judge (evaluator/calibrate_fitness.py): each term x its weight.
+    for term, weight in (fitness_cfg.get("term_weights") or {}).items():
+        if term in breakdown:
+            breakdown[term] *= float(weight)
     return breakdown
 
 def fitness(state):
@@ -451,6 +457,33 @@ def _rhythm(state, cfg):
             failed_at[name] = turn["turn"]
     terms["repeated_failures"] = -retries * float(cfg.get("repeated_failure_penalty", 6))
     return terms
+
+
+def _beats(state, cfg):
+    """The beats the engine made (fitness.beats, from GameState.beat_log): a climax won
+    (climax_bonus; half when won at a price), each NPC who mattered beaten (triumph_bonus x
+    importance, up to triumph_cap of them), reveals (someone who matters found or named, a
+    secret told) and consequences shown (each up to its cap), failures that showed another
+    way (another_way_bonus) and failures that led nowhere (-dead_end_penalty)."""
+    log = getattr(state, "beat_log", None)
+    if not cfg or not cfg.get("enabled", True) or log is None:
+        return {}
+    kinds = {}
+    for beat in log:
+        kinds[beat["kind"]] = kinds.get(beat["kind"], 0) + 1
+    climaxes = [beat for beat in log if beat["kind"] == "climax"]
+    climax_bonus = float(cfg.get("climax_bonus", 15))
+    importances = sorted((int(state.importance(d["npc"])) for d in getattr(state, "defeated", [])), reverse=True)
+    return {
+        "climax": (climax_bonus if any(b.get("won") for b in climaxes) else climax_bonus / 2 if climaxes else 0.0),
+        "npc_triumphs": sum(importances[:int(cfg.get("triumph_cap", 3))]) * float(cfg.get("triumph_bonus", 4)),
+        "reveals": min(kinds.get("reveal", 0) + kinds.get("secret", 0), int(cfg.get("reveal_cap", 4)))
+        * float(cfg.get("reveal_bonus", 3)),
+        "consequences": min(kinds.get("consequence", 0), int(cfg.get("consequence_cap", 3)))
+        * float(cfg.get("consequence_bonus", 3)),
+        "failures_led_on": kinds.get("another_way", 0) * float(cfg.get("another_way_bonus", 2))
+        - kinds.get("dead_end", 0) * float(cfg.get("dead_end_penalty", 4)),
+    }
 
 
 def story_signature(state):

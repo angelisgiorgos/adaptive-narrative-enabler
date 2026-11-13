@@ -28,11 +28,19 @@ class Character(Conditional):
     present in the scene (e.g. a bandit ambush), once per game, or on every
     visit to a location when ``encounter_repeat`` is set. ``dialogue`` lists
     DialogueLines chosen by condition when the player talks with the NPC."""
+    role = None     # class defaults: games saved before these fields load unchanged
+    secret = None
+
     def __init__(self, name, associated_tags, goals=None, 
                  descriptions=None, actions=None, 
                  known_locations=None, known_objects=None, unique=False,
-                 encounter_event=None, encounter_repeat=False, enabled_if=None, dialogue=None, article=None):
+                 encounter_event=None, encounter_repeat=False, enabled_if=None, dialogue=None, article=None,
+                 role=None, secret=None):
         self.name = name
+        # The NPC's part in the story (npc_roles.roles), None: inferred from tags; and a
+        # secret the story can reveal ({text, talks, clues, tags, effects}).
+        self.role = role
+        self.secret = dict(secret) if secret else None
         # How the story names the NPC: "" for a proper name (Aurora), "the" / "a" / "an";
         # None: "the" for a unique NPC, "a"/"an" for a generic one.
         self.article = article

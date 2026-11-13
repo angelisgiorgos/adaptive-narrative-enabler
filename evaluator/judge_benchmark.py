@@ -10,6 +10,16 @@ and the judge's own reliability (every story judged twice).
 
 With --server the judge calls a vLLM server (vllm serve google/gemma-4-E4B-it); without
 it, the vllm settings decide (embedded or server).
+
+Pairwise mode compares two versions of the engine on the same seeds, which detects much
+smaller gains than absolute scores (whose run-to-run noise is about 0.15 points):
+
+    python -m evaluator.judge_benchmark --pairwise --variant director.surprise=0 --stories 20
+
+A is the current configuration, B the same with each --variant (a dotted settings path and
+a YAML value) applied. Every pair (same seed) is judged in both orders and a side wins only
+where both orders agree. It prints B's win rate (B wins over decided pairs) with its 95%
+Wilson interval, and B's win rate per criterion.
 """
 from __future__ import annotations
 
@@ -83,6 +93,68 @@ def benchmark(states, judge=None, workers=4, repeats=2):
     return rows
 
 
+def _wilson(wins, n, z=1.96):
+    """The 95% Wilson score interval of a win rate (wins out of n decided pairs)."""
+    if n == 0:
+        return [0.0, 1.0]
+    p = wins / n
+    centre = (p + z * z / (2 * n)) / (1 + z * z / n)
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / (1 + z * z / n)
+    return [max(0.0, centre - half), min(1.0, centre + half)]
+
+
+def pairwise(states_a, states_b, judge=None, workers=4):
+    """Compare two sets of stories pair by pair (same index, i.e. the same seed): ([{pair,
+    winner, criteria, reason}], summary). summary: pairs, a_wins, b_wins, ties, b_win_rate
+    (B wins over decided pairs), wilson_95 and B's win rate per criterion."""
+    judge = judge or GameJudge()
+    pairs = list(zip(states_a, states_b))
+    with ThreadPoolExecutor(max(1, workers)) as pool:
+        results = list(pool.map(lambda pair: judge.compare_states(*pair), pairs))
+    rows = [{"pair": index, "winner": r["winner"], "criteria": r["criteria"], "reason": r["reason"],
+             "agreed": r.get("agreed", False)} for index, r in enumerate(results)]
+    return rows, pairwise_summary(rows)
+
+
+def pairwise_summary(rows):
+    a_wins = sum(1 for r in rows if r["winner"] == "A")
+    b_wins = sum(1 for r in rows if r["winner"] == "B")
+    decided = a_wins + b_wins
+    criteria = {}
+    for name in CRITERIA:
+        votes = [r["criteria"].get(name) for r in rows]
+        a, b = votes.count("A"), votes.count("B")
+        criteria[name] = b / (a + b) if a + b else None
+    return {"pairs": len(rows), "a_wins": a_wins, "b_wins": b_wins, "ties": len(rows) - decided,
+            "b_win_rate": b_wins / decided if decided else None, "wilson_95": _wilson(b_wins, decided),
+            "criteria": criteria}
+
+
+def _apply_variants(variants):
+    """Apply "dotted.path=value" settings to the active configuration; returns how to undo them."""
+    import copy
+
+    import yaml
+
+    from utils.config_loader import config
+
+    saved = copy.deepcopy(config._config)
+    for item in variants or []:
+        path, _, raw = item.partition("=")
+        if not path or not _:
+            raise SystemExit(f"--variant needs key.path=value, not {item!r}")
+        node = config._config
+        keys = path.strip().split(".")
+        for key in keys[:-1]:
+            node = node.setdefault(key, {})
+        node[keys[-1]] = yaml.safe_load(raw)
+
+    def undo():
+        config._config.clear()
+        config._config.update(saved)
+    return undo
+
+
 def summary(rows):
     judged = [r for r in rows if r["engagement"] is not None]
     if not judged:
@@ -105,6 +177,10 @@ def main(argv=None):
     parser.add_argument("--server", help="a vLLM server's OpenAI-compatible URL, e.g. http://127.0.0.1:8000/v1")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--out", help="write every story's judgement here (JSON lines)")
+    parser.add_argument("--pairwise", action="store_true",
+                        help="compare the current configuration (A) with --variant settings (B) on the same seeds")
+    parser.add_argument("--variant", action="append", default=[],
+                        help="a setting of version B: dotted.path=value (YAML), repeatable")
     args = parser.parse_args(argv)
 
     from utils.config_loader import config
@@ -118,6 +194,19 @@ def main(argv=None):
         genome = model.genome
     if args.server:
         config._config.setdefault("vllm", {}).update({"mode": "server", "base_url": args.server})
+    if args.pairwise:
+        stories_a = play_stories(args.stories, args.seed, genome)
+        undo = _apply_variants(args.variant)
+        try:
+            stories_b = play_stories(args.stories, args.seed, genome)
+        finally:
+            undo()
+        rows, result = pairwise(stories_a, stories_b, workers=args.workers)
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as stream:
+                stream.writelines(json.dumps(row) + "\n" for row in rows)
+        print(json.dumps({"variant": args.variant, **result}, indent=2))
+        return
     rows = benchmark(play_stories(args.stories, args.seed, genome), workers=args.workers)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as stream:
