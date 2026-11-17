@@ -36,6 +36,10 @@ SESSION_LOCK = threading.Lock()
 # Recent evolution runs (learning summaries), so any run or generation can be exported.
 RUNS: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
 MAX_RUNS = 20
+# The complete engines of this process (engine id -> its model file and summary): a finished run's
+# engine and every loaded engine. An ANE AI is made from one (backend/export.py), also when
+# recording is off.
+ENGINES: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
 
 def play_state(state: GameState) -> dict:
     """Structured snapshot of a game, for clients that render their own UI."""
@@ -96,6 +100,18 @@ def _export_run_artifacts(model, candidate_count=0, generations=0, simulation_st
         bundle_path = archive_stream.name
     model.save(bundle_path)
     return config_path, bundle_path
+
+
+def _remember_engine(model, model_path, run_id=None):
+    """Keep a complete engine (its model file) for ANE AI exports."""
+    with SESSION_LOCK:
+        ENGINES[model.id] = {"engine_id": model.id, "model_path": model_path, "created_at": model.created,
+                             "source": model.source, "score": model.score, "run_id": run_id,
+                             "resumable": bool(model.checkpoint)}
+        ENGINES.move_to_end(model.id)
+        while len(ENGINES) > MAX_RUNS:
+            ENGINES.popitem(last=False)
+
 
 def _validated_genome(values):
     if not isinstance(values, dict):
@@ -290,9 +306,11 @@ def load_best_engine(uploaded_file, model_parameters_file=None, profile=None, st
         note = " (an older bundle: no training state, so it can be retrained but not continued)."
     engine.refresh_runtime_settings()
     records.record_engine(model, origin=origin, source=model.source or "loaded")
-    return _game_for(model, profile, points, mode, origin,
-                     f"Saved engine loaded. Best recorded score: **{model.score if model.score is not None else 'unknown'}**. "
-                     f"Evolution was skipped.{note}", mission=mission)
+    result = _game_for(model, profile, points, mode, origin,
+                       f"Saved engine loaded. Best recorded score: **{model.score if model.score is not None else 'unknown'}**. "
+                       f"Evolution was skipped.{note}", mission=mission)
+    _remember_engine(model, result["engine_path"])
+    return result
 
 
 def _game_for(model, profile, points, mode, origin, report, run_id=None, candidate_count=0, generations=0,
@@ -537,6 +555,7 @@ def _finish_training(evolution, result, run_id, origin, profile, points, mode, c
         f"Engine: `{model.id}`" + (" (recorded)" if records.enabled() else "")
     )
     config_path, bundle_path = _export_run_artifacts(model, candidate_count, result.generations_run, simulation_steps)
+    _remember_engine(model, bundle_path, run_id)
     with SESSION_LOCK:
         RUNS[run_id] = {"learning": learning, "token": token, "engine_id": model.id,
                         "checkpoint": evolution.last_checkpoint}

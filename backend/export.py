@@ -1,29 +1,45 @@
-"""Export a trained engine to run offline and integrate in a game.
+"""Export a trained engine to run offline and integrate in a game: an "ANE AI".
 
-The ZIP contains everything the engine needs and nothing of the studio:
+The ZIP contains everything the engine needs and nothing of the studio. Every export has the
+engine package:
 
     <name>/
       engine.json                 manifest: evolved storyteller, score, learning history, world summary
       config/engine.yaml          the complete active configuration (world, tuning, messages, stats, ...)
       data/tag_vectors.json       the tag vectors the storyteller was trained with (identical behaviour)
       saves/evolution_memory.json the learning memory, to keep training offline (optional)
-      core_engine/  utils/        the engine code (no torch, gradio or fastapi needed)
-      narrative_runtime/          embedding API, HTTP server, command line
-      run.py  requirements.txt  README.md
+      README.md
+
+and, by ``platform``, what runs it:
+
+- ``python``: the engine code (core_engine/, utils/, narrative_runtime/), run.py and
+  requirements.txt (Python 3.10+ with pyyaml and numpy);
+- ``windows-x64``, ``linux-x64``, ``macos-arm64``, ``macos-x64``: the standalone runtime built for
+  that system (``ane-ai`` / ``ane-ai.exe`` with Python and the engine inside, runtime.json), from
+  ``runtimes/ane-runtime-<platform>.zip`` (ANE_RUNTIMES_DIR; CI builds them, packaging/). Its code
+  version must be the API's, so the runtime plays exactly like the studio.
+- ``unity``: a ``.unitypackage`` (Assets > Import Package > Custom Package): the C# library that
+  starts, drives and stops the ANE AI from a game (unity/com.ane.ai), and in StreamingAssets/ANE-AI
+  the engine package (package.zip) and the standalone runtimes (runtimes/), unpacked by the
+  library on first start.
 """
 from __future__ import annotations
 
 import datetime
+import io
 import json
+import os
 import re
 import shutil
+import tarfile
 import tempfile
+import uuid
 import zipfile
 from pathlib import Path
 
 import yaml
 
-from core_engine import Genome
+from core_engine import Genome, version
 from core_engine.evolution import LearningMemory
 from narrative_runtime.engine import FORMAT
 from utils.config_loader import config
@@ -31,7 +47,7 @@ from utils.tag_similarity import export_tag_vectors
 
 from .errors import AuthoringError
 from . import records
-from .sessions import RUNS, SESSIONS, SESSION_LOCK
+from .sessions import ENGINES, RUNS, SESSIONS, SESSION_LOCK
 from .store import PROJECT_ROOT
 
 RUNTIME_CODE = [
@@ -43,6 +59,205 @@ RUNTIME_CODE = [
 # The tag collector lives with the engine model (it saves the same vectors).
 from core_engine.model import ENGINE_TAGS, world_tags  # noqa: E402,F401
 SOURCES = ("run", "memory", "game", "engine")
+PLATFORMS = ("python", "windows-x64", "linux-x64", "macos-arm64", "macos-x64", "unity")
+STANDALONE = PLATFORMS[1:5]
+UNITY_PACKAGE = PROJECT_ROOT / "unity" / "com.ane.ai"
+
+
+class RuntimeUnavailable(AuthoringError):
+    """No standalone runtime for that platform, or one built from other engine code."""
+
+
+class EngineRequired(AuthoringError):
+    """An ANE AI (a standalone or Unity export) is made from a complete engine, and there is none
+    to make it from: no finished run or loaded engine yet, or a partial storyteller was asked for."""
+
+
+ANE_AI = STANDALONE + ("unity",)
+NO_ENGINE = ("No complete engine yet: the ANE AI is made from a complete engine (the engine model a finished "
+             "training run saves, or a loaded engine). Run a training or load an engine first, or export the "
+             "Python version.")
+
+
+def complete_engines(limit=50):
+    """The complete engines an ANE AI can be made from, newest first: recorded engines with their
+    model file (a run's engine, a loaded, continued or retrained one; not a generation's champion)
+    and this process's (also when recording is off)."""
+    found = {}
+    if records.enabled():
+        try:
+            rows = records.list_engines(limit=500)
+        except LookupError:  # no records yet
+            rows = []
+        for row in rows:
+            if row.get("model_path"):
+                found[row["id"]] = {"engine_id": row["id"], "created_at": row["created_at"], "source": row["source"],
+                                    "score": row["score"], "run_id": row["run_id"],
+                                    "resumable": bool(row.get("resumable"))}
+    with SESSION_LOCK:
+        kept = list(ENGINES.values())
+    for info in kept:
+        if info["engine_id"] not in found and Path(info["model_path"]).is_file():
+            found[info["engine_id"]] = {k: v for k, v in info.items() if k != "model_path"}
+    return sorted(found.values(), key=lambda e: e["created_at"] or "", reverse=True)[:limit]
+
+
+def complete_engine(source="run", run_id=None, generation=None, engine_id=None):
+    """The EngineModel an ANE AI is made from: ``run`` (``run_id``, default the latest run) is the
+    run's engine; ``engine`` is a complete engine (``engine_id``, default the newest). Anything
+    else (a generation's champion, the remembered storyteller, a play session) is refused."""
+    from core_engine.model import EngineModel
+
+    if source == "run":
+        if generation not in (None, ""):
+            raise EngineRequired("The ANE AI is made from a complete engine, and a generation's champion is not one "
+                                 "(it is a storyteller without its engine model): export the run's engine, without "
+                                 "`generation`, or the Python version.")
+        run = RUNS.get(run_id) if run_id else (RUNS[next(reversed(RUNS))] if RUNS else None)
+        if run is None:
+            raise EngineRequired(f"Unknown run `{run_id}`: use GET /v1/runs, or source `engine`." if run_id else NO_ENGINE)
+        engine_id = run.get("engine_id")
+    elif source != "engine":
+        what = {"memory": "the remembered storyteller", "game": "a play session's storyteller"}.get(source, source)
+        raise EngineRequired(f"The ANE AI is made from a complete engine (a finished run's engine model, or a loaded "
+                             f"engine), not from {what}: use source `run` or `engine`, or export the Python version.")
+    elif not engine_id:
+        newest = complete_engines(limit=1)
+        if not newest:
+            raise EngineRequired(NO_ENGINE)
+        engine_id = newest[0]["engine_id"]
+
+    with SESSION_LOCK:
+        kept = ENGINES.get(engine_id)
+    record = None
+    if records.enabled():
+        try:
+            record = records.engine_record(engine_id)
+        except LookupError:
+            record = None
+    if record is not None and not record.get("model_path"):
+        raise EngineRequired(f"Engine `{engine_id}` is a generation's champion, a storyteller without its engine "
+                             "model, so not a complete engine: export its run's engine, or the Python version.")
+    if record is not None:
+        try:
+            return records.load_engine(engine_id)
+        except (LookupError, ValueError) as exc:
+            if kept is None:
+                raise AuthoringError(str(exc)) from exc
+    if kept is not None and Path(kept["model_path"]).is_file():
+        return EngineModel.load(kept["model_path"])
+    raise EngineRequired(f"No complete engine `{engine_id}` here (GET /v1/exports/engines lists them).")
+
+
+def runtimes_dir() -> Path:
+    return Path(os.environ.get("ANE_RUNTIMES_DIR") or (PROJECT_ROOT / "runtimes"))
+
+
+def _runtime_info(platform):
+    """runtime.json of runtimes/ane-runtime-<platform>.zip, or None."""
+    archive = runtimes_dir() / f"ane-runtime-{platform}.zip"
+    if not archive.is_file():
+        return None
+    try:
+        with zipfile.ZipFile(archive) as zipped:
+            return {**json.loads(zipped.read("runtime.json")), "zip": str(archive)}
+    except (KeyError, ValueError, zipfile.BadZipFile):
+        return None
+
+
+def platforms() -> list[dict]:
+    """What an export can run on: [{platform, available, reason?, code_version?, built_at?}]."""
+    result = [{"platform": "python", "available": True, "description": "Python 3.10+ with pyyaml and numpy"}]
+    for platform in STANDALONE:
+        info = _runtime_info(platform)
+        if info is None:
+            result.append({"platform": platform, "available": False,
+                           "reason": f"no runtime: put ane-runtime-{platform}.zip in {runtimes_dir()}"})
+        elif info.get("code_version") != version.code_version():
+            result.append({"platform": platform, "available": False, "code_version": info.get("code_version"),
+                           "reason": f"its runtime was built from other engine code ({info.get('code_version')}, "
+                                     f"the API runs {version.code_version()})"})
+        else:
+            result.append({"platform": platform, "available": True, "code_version": info["code_version"],
+                           "built_at": info.get("built_at"), "python": info.get("python")})
+    standalone = [p["platform"] for p in result if p["platform"] in STANDALONE and p["available"]]
+    unity = {"platform": "unity", "available": bool(standalone) and UNITY_PACKAGE.is_dir(), "includes": standalone,
+             "description": "a .unitypackage: the C# library and the runtimes for " + (", ".join(standalone) or "no system")}
+    if not unity["available"]:
+        unity["reason"] = "no standalone runtime here to put in it" if not standalone else "the Unity library is missing"
+    result.append(unity)
+    return result
+
+
+# ---- the Unity package (.unitypackage) ------------------------------------------------------------
+
+_META = {
+    ".cs": "MonoImporter:\n  externalObjects: {}\n  serializedVersion: 2\n  defaultReferences: []\n  executionOrder: 0\n"
+           "  icon: {instanceID: 0}\n  userData: \n  assetBundleName: \n  assetBundleVariant: \n",
+    ".asmdef": "AssemblyDefinitionImporter:\n  externalObjects: {}\n  userData: \n  assetBundleName: \n  assetBundleVariant: \n",
+    ".md": "TextScriptImporter:\n  externalObjects: {}\n  userData: \n  assetBundleName: \n  assetBundleVariant: \n",
+    ".json": "TextScriptImporter:\n  externalObjects: {}\n  userData: \n  assetBundleName: \n  assetBundleVariant: \n",
+}
+_DEFAULT_META = "DefaultImporter:\n  externalObjects: {}\n  userData: \n  assetBundleName: \n  assetBundleVariant: \n"
+
+
+def _unity_guid(asset_path):
+    """A GUID fixed per asset path: importing a newer export updates the same assets."""
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"ane-ai:{asset_path}").hex
+
+
+def _unity_meta(asset_path, folder=False):
+    head = f"fileFormatVersion: 2\nguid: {_unity_guid(asset_path)}\n"
+    if folder:
+        return head + "folderAsset: yes\n" + _DEFAULT_META
+    return head + _META.get(Path(asset_path).suffix.lower(), _DEFAULT_META)
+
+
+def write_unitypackage(assets, path):
+    """A .unitypackage (a gzipped tar of <guid>/{pathname, asset, asset.meta}) holding ``assets``
+    ({"Assets/...": bytes}) and their folders."""
+    folders = set()
+    for asset_path in assets:
+        parts = asset_path.split("/")
+        folders |= {"/".join(parts[:i]) for i in range(2, len(parts))}
+
+    def add(tar, name, data):
+        info = tarfile.TarInfo(name)
+        info.size, info.mode, info.mtime = len(data), 0o644, 0
+        tar.addfile(info, io.BytesIO(data))
+
+    with tarfile.open(path, "w:gz") as tar:
+        for folder in sorted(folders):
+            guid = _unity_guid(folder)
+            add(tar, f"{guid}/pathname", folder.encode("utf-8"))
+            add(tar, f"{guid}/asset.meta", _unity_meta(folder, folder=True).encode("utf-8"))
+        for asset_path, data in sorted(assets.items()):
+            guid = _unity_guid(asset_path)
+            add(tar, f"{guid}/pathname", asset_path.encode("utf-8"))
+            add(tar, f"{guid}/asset", data)
+            add(tar, f"{guid}/asset.meta", _unity_meta(asset_path).encode("utf-8"))
+
+
+def _unity_assets(package_root, manifest, runtimes):
+    """The assets of the Unity export: the library, the engine package and the runtimes."""
+    assets = {}
+    for folder, target in (("Runtime", "Runtime"), ("Editor", "Editor"), ("Samples~/TextAdventure", "Samples/TextAdventure")):
+        for source in sorted((UNITY_PACKAGE / folder).glob("*")):
+            if source.suffix in (".cs", ".asmdef"):
+                assets[f"Assets/ANE-AI/{target}/{source.name}"] = source.read_bytes()
+    assets["Assets/ANE-AI/README.md"] = (UNITY_PACKAGE / "README.md").read_bytes()
+    package = io.BytesIO()
+    with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
+        for path in sorted(package_root.rglob("*")):
+            if path.is_file() and path.name != "README.md":
+                zipped.write(path, path.relative_to(package_root).as_posix())
+    assets["Assets/StreamingAssets/ANE-AI/package.zip"] = package.getvalue()
+    for info in runtimes:
+        assets[f"Assets/StreamingAssets/ANE-AI/runtimes/ane-runtime-{info['target']}.zip"] = Path(info["zip"]).read_bytes()
+    assets["Assets/StreamingAssets/ANE-AI/ane-ai.json"] = json.dumps({
+        "name": manifest["name"], "code_version": manifest["code_version"], "protocol": manifest["protocol"],
+        "platforms": [info["target"] for info in runtimes], "created": manifest["created"]}, indent=2).encode("utf-8")
+    return assets
 
 
 def _choose_storyteller(source, run_id=None, generation=None, token=None, engine_id=None):
@@ -84,6 +299,59 @@ def _choose_storyteller(source, run_id=None, generation=None, token=None, engine
     raise AuthoringError(f"Unknown export source `{source}`; use one of: {', '.join(SOURCES)}.")
 
 
+def _standalone_guide(name: str, platform: str, executable: str) -> str:
+    run = executable if platform.startswith("windows") else f"./{executable}"
+    return f"""# {name}: ANE AI for {platform}
+
+An evolved storyteller with its world, ready to run on this computer without Python, the studio
+or an internet connection. `{executable}` is the program; `engine.json`, `config/` and `data/`
+are the engine package it plays.
+
+## Start it (from the UNP)
+
+    {run} serve --port 0 --ready-file ready.json --parent-pid <UNP pid> --exit-on-stdin-eof
+
+Set `ANE_RUNTIME_TOKEN` in its environment (or read the token from the ready line). It listens
+on 127.0.0.1 only, prints one JSON line when ready:
+
+    {{"event": "ready", "protocol": 1, "url": "http://127.0.0.1:<port>", "port": ..., "pid": ..., ...}}
+
+and every request needs `Authorization: Bearer <token>`. `--unp-url URL` makes it POST session
+reports and events to the UNP; `--data-dir DIR` says where profiles and saves go (default: the
+user's application-data folder).
+
+## Stop it
+
+`POST /shutdown {{"save": true}}`: every session is saved (data dir `suspended/`), everything is
+delivered, it prints `{{"event": "stopped"}}` and exits with code 0. It also stops when the UNP
+process ends (`--parent-pid`), when stdin closes (`--exit-on-stdin-eof`) or on SIGTERM. Wait a few
+seconds after `/shutdown`, then kill it if it is still running.
+
+## Talk to it
+
+| Request | What it does |
+| --- | --- |
+| `GET /world`, `GET /world/<kind>/<name>` | the world as parameters: locations, NPCs, items, events, missions, stats, ... |
+| `POST /world/patch` | world content from the UNP (items, actions, tags, ...); 422 with every problem |
+| `POST /games` | a new session (`profile`, `start`, `mission`, `player`: stats, inventory, coins, ...) or `{{"savegame": ...}}` to continue one |
+| `GET /games/<id>`, `POST /games/<id>/choose` | the scene, and the player's choice |
+| `PATCH /games/<id>/player`, `POST /games/<id>/sync` | the player's state, and what happened in the UNP |
+| `POST /games/<id>/save`, `POST /games/<id>/cancel` | the save game (`ane.savegame/1`); cancel also releases the session |
+| `POST /games/<id>/end`, `GET /games/<id>/report` | end the session; its report |
+| `GET /progression/<profile>` | the save game of a player: goals achieved, sessions |
+| `GET /health`, `POST /shutdown` | is it up; stop it |
+
+The full protocol is in the Adaptive Narrative Enabler's `docs/UNP.md`.
+
+## Notes
+
+- macOS: an unsigned program downloaded with a browser is quarantined; the UNP can start it
+  after `xattr -dr com.apple.quarantine <folder>`, or download it itself.
+- Windows: start it with `CREATE_NO_WINDOW`, and put it in a Job Object with
+  `KILL_ON_JOB_CLOSE` so it never outlives the UNP.
+"""
+
+
 def _guide(name: str) -> str:
     return f"""# {name}: offline Adaptive Narrative engine
 
@@ -95,7 +363,7 @@ the REST API or an internet connection. Python 3.10+ and the packages in
 
     python run.py info          # what is inside
     python run.py play          # play in the terminal
-    python run.py serve         # JSON server on http://127.0.0.1:8765 for any game engine
+    python run.py serve         # JSON server on http://127.0.0.1:8765 for any game engine (token in the ready line)
     python run.py evolve        # keep training offline (adopts a better storyteller)
 
 ## Embed it in a Python game
@@ -109,13 +377,14 @@ game = engine.new_game(profile="player-1", stats_mode="random")   # or stats={{.
 view = game.view()        # location, description, npcs, items, actions, health, mission, stats, ...
 while not view["ended"]:
     view = game.choose(view["actions"][0])   # by name or index; view["turn"] is the story text
-game.save("slot1.game")   # engine.load_game("slot1.game") continues later
+game.save("slot1.json")   # a JSON save game; engine.load_game("slot1.json") continues it
 ```
 
 ## Any other engine (Unity, Godot, Unreal, web): HTTP + JSON
 
 Start `python run.py serve --port 8765` next to the game (or as a sidecar
-process), then:
+process). It prints one JSON line when ready, with the token every request needs
+(`Authorization: Bearer <token>`; set ANE_RUNTIME_TOKEN to choose it), then:
 
 | Request | Body | Returns |
 | --- | --- | --- |
@@ -128,6 +397,11 @@ process), then:
 | `GET /games/<id>/report` | | the ended session's report: goal achieved or mission failed, stats, inventory, progression |
 | `GET /progression/<profile>` | | the save game: goals achieved (each once), playthroughs, session reports |
 | `DELETE /games/<id>` | | forgets the game (end it first to count it as a session) |
+| `GET /world` · `POST /world/patch` | | the world as parameters · world content from the UNP |
+| `PATCH /games/<id>/player` · `POST /games/<id>/sync` | | the player's state · what happened in the UNP |
+| `POST /games/<id>/save` · `POST /games/<id>/cancel` | | the save game (`ane.savegame/1`) · save and release |
+| `POST /games` | `{{"savegame": {{...}}}}` | continue a saved session |
+| `POST /shutdown` | `{{"save": true}}` | save every session and stop |
 | `POST /evolve` | `{{"generations": 5}}` | offline training summary |
 
 Unity (C#):
@@ -137,6 +411,7 @@ var request = new UnityWebRequest("http://127.0.0.1:8765/games", "POST");
 request.uploadHandler = new UploadHandlerRaw(System.Text.Encoding.UTF8.GetBytes("{{\\"profile\\":\\"p1\\"}}"));
 request.downloadHandler = new DownloadHandlerBuffer();
 request.SetRequestHeader("Content-Type", "application/json");
+request.SetRequestHeader("Authorization", "Bearer " + token);
 yield return request.SendWebRequest();   // request.downloadHandler.text is the view (JSON)
 ```
 
@@ -145,7 +420,8 @@ Godot (GDScript):
 ```gdscript
 var http = HTTPRequest.new(); add_child(http)
 http.request("http://127.0.0.1:8765/games/" + game_id + "/choose",
-    ["Content-Type: application/json"], HTTPClient.METHOD_POST, JSON.stringify({{"action": 0}}))
+    ["Content-Type: application/json", "Authorization: Bearer " + token], HTTPClient.METHOD_POST,
+    JSON.stringify({{"action": 0}}))
 ```
 
 ## What is inside
@@ -164,14 +440,46 @@ http.request("http://127.0.0.1:8765/games/" + game_id + "/choose",
 
 def export_engine(source="run", run_id=None, generation=None, token=None, include_memory=True, name=None,
                   genome=None, score=None, learning=None, description=None, engine_id=None, checkpoint=None,
-                  memory=None) -> dict:
+                  memory=None, platform="python", model=None) -> dict:
     """Build the offline engine ZIP; returns {"path", "manifest"}.
 
     The storyteller comes from ``source``: "run" (``run_id``, default the latest
     run; ``generation`` for a generation's champion instead of the run's best),
-    "memory" (the best remembered storyteller) or "game" (``token``'s game).
-    Passing ``genome`` exports that storyteller directly (e.g. from main.py)."""
-    if genome is not None:
+    "memory" (the best remembered storyteller), "game" (``token``'s game) or "engine"
+    (``engine_id``). Passing ``genome`` exports that storyteller directly (e.g. from main.py).
+    ``platform``: what runs it (PLATFORMS): the Python code, or a standalone runtime
+    (RuntimeUnavailable when it is missing or was built from other engine code).
+
+    An ANE AI (a standalone or Unity export) is made only from a complete engine: ``model`` (an
+    EngineModel), or the one ``complete_engine`` finds for ``source`` "run" or "engine"; it carries
+    that engine's own world, storyteller, training state, memory and tag vectors
+    (EngineRequired otherwise)."""
+    if platform not in PLATFORMS:
+        raise AuthoringError(f"Unknown platform `{platform}`; use one of: {', '.join(PLATFORMS)}.")
+    runtime, unity_runtimes = None, []
+    if platform in STANDALONE or platform == "unity":
+        offered = next(p for p in platforms() if p["platform"] == platform)
+        if not offered["available"]:
+            raise RuntimeUnavailable(f"No ANE AI runtime for {platform}: {offered['reason']}.")
+        if platform == "unity":
+            unity_runtimes = [_runtime_info(name) for name in offered["includes"]]
+        else:
+            runtime = _runtime_info(platform)
+    active = vectors = None
+    if platform in ANE_AI:
+        if model is None:
+            if genome is not None:
+                raise EngineRequired("The ANE AI is made from a complete engine: pass its engine model, not a "
+                                     "storyteller alone.")
+            model = complete_engine(source, run_id, generation, engine_id)
+        genome, score, learning = model.genome, model.score, model.learning
+        checkpoint, memory, engine_id = model.checkpoint, model.memory, model.id
+        description = model.source or f"engine {model.id}"
+        active = dict(model.config)  # its own world and tuning, whatever the studio has active now
+        vectors = model.tag_vectors or None
+    elif model is not None:
+        raise AuthoringError("`model` is for ANE AI exports (a standalone platform or unity).")
+    elif genome is not None:
         description = description or "evolved storyteller"
     else:
         genome, score, description, learning = _choose_storyteller(source, run_id, generation, token, engine_id)
@@ -183,7 +491,7 @@ def export_engine(source="run", run_id=None, generation=None, token=None, includ
             checkpoint, engine_id = run.get("checkpoint"), run.get("engine_id")
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
     name = re.sub(r"[^A-Za-z0-9_.-]+", "-", name or f"narrative-engine-{stamp}").strip("-") or "narrative-engine"
-    active = config.as_dict()
+    active = active if active is not None else config.as_dict()
     world = active.get("world_definition") or {}
     manifest = {
         "format": FORMAT,
@@ -206,19 +514,32 @@ def export_engine(source="run", run_id=None, generation=None, token=None, includ
         },
         "python": ">=3.10",
         "requirements": ["pyyaml>=6", "numpy>=1.24"],
+        "platform": platform,
+        "code_version": version.code_version(),
+        "protocol": version.PROTOCOL,
     }
     staging = Path(tempfile.mkdtemp(prefix="narrative-export-"))
     root = staging / name
     try:
-        for relative in RUNTIME_CODE:
-            target = root / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(PROJECT_ROOT / relative, target)
+        root.mkdir(parents=True)
+        if platform == "python":
+            for relative in RUNTIME_CODE:
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(PROJECT_ROOT / relative, target)
+        elif runtime is not None:
+            with zipfile.ZipFile(runtime["zip"]) as zipped:  # the standalone program, execute bits kept
+                for info in zipped.infolist():
+                    extracted = Path(zipped.extract(info, root))
+                    mode = info.external_attr >> 16
+                    if mode and not info.is_dir():
+                        extracted.chmod(mode & 0o777)
         (root / "config").mkdir()
         (root / "config" / "engine.yaml").write_text(
             yaml.safe_dump(active, sort_keys=False, allow_unicode=True), encoding="utf-8")
         (root / "data").mkdir()
-        (root / "data" / "tag_vectors.json").write_text(json.dumps(export_tag_vectors(world_tags(active))), encoding="utf-8")
+        (root / "data" / "tag_vectors.json").write_text(
+            json.dumps(vectors if vectors is not None else export_tag_vectors(world_tags(active))), encoding="utf-8")
         (root / "saves").mkdir()
         if checkpoint:
             # The training state: `python run.py evolve --resume` continues it exactly.
@@ -229,12 +550,22 @@ def export_engine(source="run", run_id=None, generation=None, token=None, includ
                 (root / "saves" / "evolution_memory.json").write_text(
                     json.dumps({"version": 1, "hall_of_fame": entries}, indent=2), encoding="utf-8")
         (root / "engine.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-        (root / "requirements.txt").write_text("\n".join(manifest["requirements"]) + "\n", encoding="utf-8")
-        (root / "run.py").write_text(
-            '"""Run this engine: python run.py info | play | serve | evolve"""\n'
-            "from narrative_runtime.__main__ import main\n\nif __name__ == \"__main__\":\n    main()\n",
-            encoding="utf-8")
-        (root / "README.md").write_text(_guide(name), encoding="utf-8")
+        if platform == "python":
+            (root / "requirements.txt").write_text("\n".join(manifest["requirements"]) + "\n", encoding="utf-8")
+            (root / "run.py").write_text(
+                '"""Run this engine: python run.py info | play | serve | evolve"""\n'
+                "from narrative_runtime.__main__ import main\n\nif __name__ == \"__main__\":\n    main()\n",
+                encoding="utf-8")
+            (root / "README.md").write_text(_guide(name), encoding="utf-8")
+        elif runtime is not None:
+            (root / "README.md").write_text(_standalone_guide(name, platform, runtime["executable"]), encoding="utf-8")
+        if platform == "unity":
+            archive = Path(tempfile.mkstemp(prefix=f"{name}-", suffix=".unitypackage")[1])
+            write_unitypackage(_unity_assets(root, manifest, unity_runtimes), archive)
+            manifest["unity_platforms"] = [info["target"] for info in unity_runtimes]
+            records.record_artifact("offline_engine", archive, run_id=run_id if source == "run" else None,
+                                    engine_id=engine_id, keep_copy=True)
+            return {"path": str(archive), "manifest": manifest}
         archive = Path(tempfile.mkstemp(prefix=f"{name}-", suffix=".zip")[1])
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
             for path in sorted(root.rglob("*")):

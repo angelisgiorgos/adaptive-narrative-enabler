@@ -556,6 +556,11 @@ def list_engines(run_id=None, source=None, limit=200, offset=0):
                  (*args, limit, offset))
 
 
+def engine_record(engine_id):
+    """An engine's record, without its stories (LookupError when there is none)."""
+    return _get("engines", engine_id)
+
+
 def get_engine(engine_id):
     engine = _get("engines", engine_id)
     engine["stories"] = list_stories(engine_id=engine_id)

@@ -285,7 +285,8 @@ if origins:
 
 def _fail(exc: Exception):
     message = getattr(exc, "message", None) or str(exc)
-    raise HTTPException(status_code=400, detail=message) from exc
+    status = 409 if isinstance(exc, (export.RuntimeUnavailable, export.EngineRequired)) else 400
+    raise HTTPException(status_code=status, detail=message) from exc
 
 
 def _origin(x_ane_client: str | None = Header(default=None)) -> str:
@@ -604,7 +605,9 @@ class ExportRequest(BaseModel):
         default="run",
         description="run: an evolution run (run_id; latest if omitted); memory: the best storyteller the AI "
         "remembers; game: the storyteller of a play session (session_id); engine: a recorded engine (engine_id), "
-        "with its own world and training state.",
+        "with its own world and training state. An ANE AI (a standalone platform or unity) is made only from a "
+        "complete engine: run (the run's engine, no generation) or engine (engine_id, default the newest; "
+        "GET /v1/exports/engines); 409 otherwise.",
     )
     run_id: str | None = None
     engine_id: str | None = None
@@ -612,6 +615,11 @@ class ExportRequest(BaseModel):
     session_id: str | None = None
     include_memory: bool = Field(default=True, description="Ship the learning memory so the engine can keep training offline.")
     name: str | None = Field(default=None, description="Folder name of the export.")
+    platform: Literal["python", "windows-x64", "linux-x64", "macos-arm64", "macos-x64", "unity"] = Field(
+        default="python", description="What runs the ANE AI: python (the engine code, Python 3.10+ with pyyaml and "
+        "numpy), a standalone runtime for that system (no Python needed), or unity (a .unitypackage: the C# library "
+        "and every standalone runtime available here). See GET /v1/exports/platforms; 409 when the runtime is missing "
+        "or was built from other engine code, or when there is no complete engine to make the ANE AI from.")
 
 
 class LogicSection(BaseModel):
@@ -648,7 +656,7 @@ def export_offline_engine(body: ExportRequest):
     try:
         result = export.export_engine(
             source=body.source, run_id=body.run_id, generation=body.generation, token=body.session_id,
-            include_memory=body.include_memory, name=body.name, engine_id=body.engine_id,
+            include_memory=body.include_memory, name=body.name, engine_id=body.engine_id, platform=body.platform,
         )
     except Exception as exc:
         _fail(exc)
@@ -660,7 +668,29 @@ def export_offline_engine(body: ExportRequest):
         "score": manifest["score"],
         "genome": manifest["genome"],
         "world": manifest["world"],
+        "platform": manifest["platform"],
+        "code_version": manifest["code_version"],
+        "engine_id": manifest["engine_id"],
     }
+
+
+@api.get("/v1/exports/platforms", tags=["Engine export"])
+def export_platforms():
+    """What an ANE AI export can run on: python (always), and each standalone runtime
+    (windows-x64, linux-x64, macos-arm64, macos-x64) with whether it is available here and fits
+    this API's engine code (``code_version``)."""
+    from core_engine import version
+
+    return {"platforms": export.platforms(), "code_version": version.code_version(), "protocol": version.PROTOCOL}
+
+
+@api.get("/v1/exports/engines", tags=["Engine export"])
+def export_engines():
+    """The complete engines an ANE AI (a standalone or Unity export) can be made from, newest
+    first: each finished run's engine model and each loaded engine (not a generation's champion,
+    the remembered storyteller or a play session). Empty until a training finishes or an engine
+    is loaded."""
+    return {"engines": export.complete_engines()}
 
 
 @api.get("/v1/runs", tags=["Engine export"])
