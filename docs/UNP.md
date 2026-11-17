@@ -318,7 +318,8 @@ unknown). Patches are kept in `<data-dir>/unp_patches.json` and applied again at
 - `snapshot` is the exact state of the story (opaque to the UNP), with the engine code, world
   and storyteller it was made with. `checksum` covers it.
 
-The UNP stores the document as it is (a file, its own save system).
+The UNP stores the document as it is (a file, its own save system), with any JSON library: one
+that writes the number `1.0` as `1` (C#, JavaScript) does not change the snapshot or its checksum.
 
 `POST /games/<id>/save` returns it and the session goes on. `POST /games/<id>/cancel` is the
 UNP cancelling the session: it returns

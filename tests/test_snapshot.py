@@ -18,7 +18,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import main as engine
-from core_engine import GameState, Genome, snapshot, version
+from core_engine import GameState, Genome, savegame, snapshot, version
 from utils.config_loader import config
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -60,6 +60,33 @@ class _Snapshots(unittest.TestCase):
         self.assertEqual(restored.rng.getstate(), state.rng.getstate())
         self.assertEqual(snapshot.canonical(snapshot.dump(restored)), snapshot.canonical(snapshot.dump(state)))
         return restored
+
+
+def _as_other_json_libraries_write_it(value):
+    """JSON as C# or JavaScript writes it back: the real number 1.0 becomes 1."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, dict):
+        return {k: _as_other_json_libraries_write_it(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_as_other_json_libraries_write_it(v) for v in value]
+    return value
+
+
+class OtherJsonLibrariesTests(_Snapshots):
+    def test_a_save_game_kept_by_a_unp_in_csharp_or_javascript_goes_on_exactly(self):
+        self.assertEqual(snapshot.checksum({"a": 1.0, "b": [2.0]}), snapshot.checksum({"a": 1, "b": [2]}))
+        for seed in range(3):
+            with self.subTest(seed=seed):
+                state, genome = _story(seed, 12)
+                kept = json.loads(json.dumps(_as_other_json_libraries_write_it(
+                    json.loads(json.dumps(savegame.make(state))))))
+                restored, how, note = savegame.load(kept, genome)
+                self.assertEqual(how, "exact", note)
+                _play(state, random.Random(7), 20)
+                _play(restored, random.Random(7), 20)
+                self.assertEqual(restored.history, state.history)
+                self.assertEqual(restored.rng.getstate(), state.rng.getstate())
 
 
 class RoundTripTests(_Snapshots):

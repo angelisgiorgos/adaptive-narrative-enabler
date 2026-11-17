@@ -66,7 +66,9 @@ def _encode(value, path, dynamic_events):
     if value is None or isinstance(value, (bool, int, str)):
         return value
     if isinstance(value, float):
-        if value != value or value in (float("inf"), float("-inf")):
+        # NaN and infinity are not JSON; an integral float (1.0) is written 1 by many JSON
+        # libraries (C#, JavaScript) and comes back an int: as text, every library keeps it.
+        if value != value or value in (float("inf"), float("-inf")) or value.is_integer():
             return {"$f": repr(value)}
         return value
     if isinstance(value, list):
@@ -158,9 +160,21 @@ def dump(state, extra=None):
     }
 
 
+def _plain_numbers(value):
+    """Integral floats as ints, so that the checksum does not depend on how the UNP's JSON library
+    writes 1.0 (C# and JavaScript write 1)."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, dict):
+        return {k: _plain_numbers(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_plain_numbers(v) for v in value]
+    return value
+
+
 def canonical(data):
     """The snapshot as canonical JSON text (for its checksum)."""
-    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(_plain_numbers(data), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def checksum(data):

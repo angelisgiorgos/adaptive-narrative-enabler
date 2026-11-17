@@ -7,6 +7,16 @@ that introduces them.
 
 ## [Unreleased]
 
+### The ANE AI
+
+#### Fixed
+- A save game kept by a UNP whose JSON library writes the real number `1.0` as `1` (C#,
+  JavaScript) loaded from its parameters instead of exactly: the snapshot's checksum changed.
+  Integral reals are now kept as text in the snapshot (`$f`), the checksum reads `1.0` and `1`
+  alike, and the Unity library's JSON writes `1.0`. Found by CI's C# protocol test, which now
+  runs (its project file held `--` in an XML comment, so MSBuild refused it).
+- CI: the macOS arm64 runtime is built on `macos-15` (GitHub retired `macos-14`).
+
 ### Documentation and repository
 
 #### Changed

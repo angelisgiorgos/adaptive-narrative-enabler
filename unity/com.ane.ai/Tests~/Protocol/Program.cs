@@ -78,7 +78,8 @@ static class Program
             Check("cancel (save game)", cancelled.GetObject("status").GetString("outcome") == "suspended"
                   && savegame.GetString("format") == "ane.savegame/1");
             var loaded = await client.LoadGameAsync(savegame);
-            Check("load (exact)", loaded.Restored == "exact" && loaded.Turn == 1);
+            Check("load (exact)", loaded.Restored == "exact" && loaded.Turn == 1,
+                  $"restored {loaded.Restored}, turn {loaded.Turn}: {loaded.Raw.GetString("note")}");
             try { await client.GameAsync("nope"); Check("unknown game", false); }
             catch (AneAiException missing) { Check("unknown game", missing.Status == 404); }
 
@@ -119,6 +120,9 @@ static class Program
         Check("quoting", (string)quote.Invoke(null, new object[] { @"C:\my pkg\" }) == "\"C:\\my pkg\\\\\""
               && (string)quote.Invoke(null, new object[] { "a\"b" }) == "\"a\\\"b\"");
         Check("json: no NaN", AneJson.Serialize(new List<object> { double.NaN, 1.5 }) == "[null,1.5]", AneJson.Serialize(new List<object> { double.NaN, 1.5 }));
+        var reals = AneJson.Serialize(new List<object> { 1.0, 2L, -3.0, 1e20 });
+        Check("json: reals stay reals", reals == "[1.0,2,-3.0,1E+20]", reals);
+        Check("json: 1.0 reads back a real", AneJson.Parse(AneJson.Serialize(1.0)) is double);
 
         try { Directory.Delete(data, true); } catch (Exception) { }
         Console.WriteLine(failures == 0 ? "C# client test passed." : $"{failures} check(s) failed.");
