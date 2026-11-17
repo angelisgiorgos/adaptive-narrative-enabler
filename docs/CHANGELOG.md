@@ -7,6 +7,23 @@ that introduces them.
 
 ## [Unreleased]
 
+### Documentation and repository
+
+#### Changed
+- The README is a short overview (what the ANE does, quick start, the documentation, the
+  repository); its sections moved, whole, into guides: `docs/STUDIO.md` (running, every studio
+  tab, Docker, the terminal), `docs/WORLD.md` (authoring a world), `docs/AI.md` (the
+  evolutionary AI, the director, sessions, story rules), `docs/ENGINES.md` (exports, engine
+  models, records, outputs), `docs/LLM.md` (Gemma 4 and the judge) and `docs/DEVELOPMENT.md`
+  (layout, tests, CI, building the ANE AI runtimes). Links and code comments point to them.
+- Fewer files and folders: `narrative_runtime/catalogue.py` and `patches.py` are one
+  `world.py`, `events.py` joined `lifecycle.py`; the example worlds are in `examples/`; the
+  Docker smoke test is `packaging/docker_smoke_test.py`; `runtimes/` is no longer in the
+  repository (CI and deployments fill it; `docs/DEVELOPMENT.md` explains it).
+
+#### Removed
+- `utils/visualize.py` (unused), and with it the `matplotlib` and `networkx` requirements.
+
 ### The ANE AI: a standalone engine a UNP launches, drives and stops
 
 #### Added

@@ -172,7 +172,7 @@ saves/
 
 artifacts/
 # Standalone runtimes (built by CI or downloaded from a release) and their build info
-runtimes/*.zip
+runtimes/
 core_engine/_build_info.py
 
 # Build output of the Unity library checks (unity/com.ane.ai/Tests~)

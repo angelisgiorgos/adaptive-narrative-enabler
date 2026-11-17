@@ -1,6 +1,6 @@
 <!-- Drives a real ANE AI through the package's C# client (no Unity): JSON, start, the world,
      a session with the player's state, sync, turns, save, cancel, load, the export importer,
-     stop. Usage: dotnet run -- <package folder> <python> (CI). -->
+     stop. Usage (CI): dotnet run, then the package folder and the python to start it with. -->
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>

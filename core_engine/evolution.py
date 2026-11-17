@@ -94,7 +94,7 @@ DEFAULTS = {
     "benchmark_top_k": 1,           # this many of each generation's best are benchmarked
     "min_diversity": 0.0,           # below this diversity: more immigrants, wider mutation
     "max_immigrant_rate": 0.3,
-    # Methodology (README, "How the evolutionary AI learns"):
+    # Methodology (docs/AI.md, "The evolutionary AI"):
     "full_length_stories": True,    # play every story to its end (narrative_end.max_actions), not max_steps
     "stratify_episodes": True,      # every storyteller plays the same spread of start x mission situations
     "score_aggregate": "mean_minus_std",  # mean | mean_minus_std: penalise storytellers whose stories vary in quality

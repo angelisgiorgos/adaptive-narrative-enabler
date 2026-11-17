@@ -4,7 +4,7 @@ Checks that the API is healthy, serves the world (missions, failure lint), runs 
 evolution that starts a game, and plays one turn of it; and that the studio is up.
 Only the standard library is used, so it runs on any CI runner or host.
 
-    python .github/scripts/docker_smoke_test.py --api http://127.0.0.1:8004 --ui http://127.0.0.1:8003
+    python packaging/docker_smoke_test.py --api http://127.0.0.1:8004 --ui http://127.0.0.1:8003
 """
 import argparse
 import io

@@ -1,6 +1,6 @@
 """Checks of world content, as pure functions of a world (``world_definition``): the same checks
 the studio and the REST API make (backend/content.py wraps them), available to the offline
-runtime, which validates the content the UNP sends (narrative_runtime/patches.py).
+runtime, which validates the content the UNP sends (narrative_runtime/world.py).
 
 ``world_errors(world, roles)`` checks a whole world: every entry's fields and actions (unknown
 fields, unknown places, NPCs, items and events they name, conditions, effects, stats), NPC roles

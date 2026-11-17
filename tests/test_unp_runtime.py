@@ -37,8 +37,7 @@ from backend import export
 from core_engine import GameState, Genome, content_rules, resume, savegame, version
 from core_engine.model import EngineModel
 from core_engine.variables import VariableStore
-from narrative_runtime.catalogue import world_catalogue
-from narrative_runtime.patches import PatchFormatError, apply_patch, patch_errors
+from narrative_runtime.world import PatchFormatError, apply_patch, patch_errors, world_catalogue
 from utils.config_loader import config
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -265,6 +264,23 @@ class ProtocolTests(unittest.TestCase):
                              capture_output=True, text=True, timeout=120)
         self.assertNotEqual(out.returncode, 0)
         self.assertEqual(json.loads(out.stdout.strip().splitlines()[-1])["event"], "error")
+
+
+class UnityLibraryFilesTests(unittest.TestCase):
+    def test_the_project_and_package_files_parse(self):
+        """CI builds the C# with dotnet; this catches a broken project file without it (an XML
+        comment holding `--` made MSBuild refuse the protocol test project)."""
+        import xml.dom.minidom
+
+        library = ROOT / "unity" / "com.ane.ai"
+        projects = sorted(library.rglob("*.csproj"))
+        self.assertEqual(len(projects), 2)
+        for path in projects:
+            with self.subTest(path=path.name):
+                xml.dom.minidom.parse(str(path))
+        for path in [library / "package.json", *library.rglob("*.asmdef")]:
+            with self.subTest(path=path.name):
+                json.loads(path.read_text(encoding="utf-8"))
 
 
 class ExportPlatformTests(unittest.TestCase):

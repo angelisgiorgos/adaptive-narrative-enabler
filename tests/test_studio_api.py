@@ -453,7 +453,7 @@ class StudioOverHTTPTests(unittest.TestCase):
 
 
 class ExampleWorldTests(unittest.TestCase):
-    """The example worlds (examples/worlds/) are world-only files: uploaded as they are,
+    """The example worlds (examples/) are world-only files: uploaded as they are,
     completed with the built-in tuning, trained on and played."""
 
     def setUp(self):
@@ -461,7 +461,7 @@ class ExampleWorldTests(unittest.TestCase):
         self.addCleanup(lambda: self.client.post("/v1/config/reset"))
 
     def test_example_worlds_load_train_and_play(self):
-        root = Path(__file__).resolve().parent.parent / "examples" / "worlds"
+        root = Path(__file__).resolve().parent.parent / "examples"
         for path in sorted(root.glob("*.yaml")):
             with self.subTest(world=path.name):
                 response = self.client.post("/v1/config/upload", files={"file": (path.name, path.read_bytes())})
@@ -480,7 +480,7 @@ class ExampleWorldTests(unittest.TestCase):
                 self.client.post("/v1/config/reset")
 
     def test_a_world_must_name_its_own_places(self):
-        path = Path(__file__).resolve().parent.parent / "examples" / "worlds" / "orbital_station.yaml"
+        path = Path(__file__).resolve().parent.parent / "examples" / "orbital_station.yaml"
         world = yaml.safe_load(path.read_text())
         world.pop("game_state")                                      # the arrest location would be the city's Dungeon
         response = self.client.post("/v1/config/upload", files={"file": ("w.yaml", yaml.safe_dump(world).encode())})
