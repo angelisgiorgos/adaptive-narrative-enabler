@@ -45,6 +45,15 @@ def _collection(world, kind):
     return world.setdefault(key, {} if shape == "mapping" else []), shape
 
 
+def _mapping(value, where):
+    """A mapping from the patch (an absent value is an empty one), or PatchFormatError."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise PatchFormatError(f"`{where}` must be a mapping, not {type(value).__name__}.")
+    return value
+
+
 def _find(collection, shape, name):
     if shape == "mapping":
         return collection.get(name)
@@ -54,7 +63,7 @@ def _find(collection, shape, name):
 def _records(kind, value):
     """(name, record) pairs of an upsert: a list of records with `name`, or a mapping name -> record."""
     if isinstance(value, dict):
-        return [(name, dict(record or {})) for name, record in value.items()]
+        return [(name, dict(_mapping(record, f"upsert.{kind}.{name}"))) for name, record in value.items()]
     if isinstance(value, list):
         pairs = []
         for record in value:
@@ -74,7 +83,7 @@ def apply_patch(config_data, patch):
         raise PatchFormatError(f"Unknown operation(s) {', '.join(unknown)}; use {', '.join(OPERATIONS)}.")
     data = copy.deepcopy(config_data)
     world = data.setdefault("world_definition", {})
-    for kind, value in (patch.get("upsert") or {}).items():
+    for kind, value in _mapping(patch.get("upsert"), "upsert").items():
         collection, shape = _collection(world, kind)
         for name, record in _records(kind, value):
             if shape == "mapping":
@@ -87,13 +96,13 @@ def apply_patch(config_data, patch):
                     collection.append(record)
                 else:
                     collection[collection.index(existing)] = record
-    for kind, entries in (patch.get("update") or {}).items():
+    for kind, entries in _mapping(patch.get("update"), "update").items():
         collection, shape = _collection(world, kind)
-        for name, fields in (entries or {}).items():
+        for name, fields in _mapping(entries, f"update.{kind}").items():
             record = _find(collection, shape, name)
             if record is None:
                 raise PatchFormatError(f"No {kind[:-1]} `{name}` to update.")
-            for field, value in (fields or {}).items():
+            for field, value in _mapping(fields, f"update.{kind}.{name}").items():
                 field = TAG_FIELDS.get(kind, field) if field == "tags" else field
                 if field == "name":
                     raise PatchFormatError("Rename an entry with delete + upsert.")
@@ -101,8 +110,10 @@ def apply_patch(config_data, patch):
                     record.pop(field, None)
                 else:
                     record[field] = copy.deepcopy(value)
-    for kind, names in (patch.get("delete") or {}).items():
+    for kind, names in _mapping(patch.get("delete"), "delete").items():
         collection, shape = _collection(world, kind)
+        if names is not None and not isinstance(names, list):
+            raise PatchFormatError(f"`delete.{kind}` must be a list of names.")
         for name in names or []:
             record = _find(collection, shape, name)
             if record is None:
@@ -111,20 +122,20 @@ def apply_patch(config_data, patch):
                 collection.pop(name)
             else:
                 collection.remove(record)
-    for kind, entries in (patch.get("add_actions") or {}).items():
+    for kind, entries in _mapping(patch.get("add_actions"), "add_actions").items():
         collection, shape = _collection(world, kind)
-        for name, actions in (entries or {}).items():
+        for name, actions in _mapping(entries, f"add_actions.{kind}").items():
             record = _find(collection, shape, name)
             if record is None:
                 raise PatchFormatError(f"No {kind[:-1]} `{name}` to add actions to.")
             if not isinstance(actions, list):
                 raise PatchFormatError(f"`add_actions.{kind}.{name}` must be a list of actions.")
             record.setdefault("actions", []).extend(copy.deepcopy(actions))
-    for kind, entries in (patch.get("tags") or {}).items():
+    for kind, entries in _mapping(patch.get("tags"), "tags").items():
         collection, shape = _collection(world, kind)
         if kind not in TAG_FIELDS:
             raise PatchFormatError(f"{kind} have no tags.")
-        for name, change in (entries or {}).items():
+        for name, change in _mapping(entries, f"tags.{kind}").items():
             record = _find(collection, shape, name)
             if record is None:
                 raise PatchFormatError(f"No {kind[:-1]} `{name}` to tag.")
@@ -132,13 +143,17 @@ def apply_patch(config_data, patch):
             if isinstance(change, list):
                 record[field] = list(dict.fromkeys(str(t) for t in change))
             else:
+                change = _mapping(change, f"tags.{kind}.{name}")
+                for part in ("add", "remove"):
+                    if change.get(part) is not None and not isinstance(change[part], list):
+                        raise PatchFormatError(f"`tags.{kind}.{name}.{part}` must be a list of tags.")
                 tags = list(record.get(field) or [])
                 tags += [str(t) for t in change.get("add") or [] if str(t) not in tags]
                 removed = {str(t) for t in change.get("remove") or []}
                 record[field] = [t for t in tags if t not in removed]
     if patch.get("stats"):
         stats = world.setdefault("character_stats", {})
-        for field, value in dict(patch["stats"]).items():
+        for field, value in _mapping(patch["stats"], "stats").items():
             if field not in ("stats", "allocation", "tag_checks", "mode", "defined_points"):
                 raise PatchFormatError(f"Unknown stats field `{field}`.")
             stats[field] = copy.deepcopy(value)

@@ -7,6 +7,51 @@ that introduces them.
 
 ## [Unreleased]
 
+### Exporting finished runs, for Linux and Unity in Docker
+
+#### Added
+- The Docker image builds the ANE AI's Linux runtime from its own code (an `ane-runtime` build
+  stage, Debian 11 for older Linux systems), so a deployment exports `linux-x64` and `unity`
+  without CI's runtimes ("not available here" before).
+- The studio exports **finished runs**: the latest is chosen, and several can be chosen to
+  download each (for any platform; the Python version can still be made from a generation's
+  champion, the remembered storyteller or this game's storyteller). The list is refreshed when
+  the page opens and after each run.
+- Finished runs are kept when recording is off (a records folder the container cannot write):
+  their engines go with the saves (`ANE_SAVE_DIR/engines`, the newest 20), so they can be
+  exported after a restart. `GET /v1/exports/engines` gives `generations` and `loaded`.
+
+#### Changed
+- A Python export of a run (`source: run` without `generation`, or `source: engine`) is made from
+  the run's engine model, with its own world, without switching the studio's active world.
+
+### Studio, Docker and the ANE AI: fixes from a bug hunt
+
+#### Fixed
+- Docker: a config volume from an older release mixed old and new files (the old `npcs.yaml`
+  next to a newer `missions.yaml`), so its world named an NPC it lacked (*Mission
+  'rid_the_market_of_the_thief'.goal.npc_removed: unknown NPC `Thief`*) and every run and edit
+  failed. The entrypoint now adds, once, each default entry the volume lacks
+  (`python -m utils.config_loader upgrade`); entries already there are kept, and an entry
+  deleted afterwards stays deleted.
+- An earlier problem of the world no longer blocks every other edit: only the problems an edit
+  makes refuse it, and the save names the earlier ones; a world that cannot be played says so
+  once (`The world cannot be played: …`, each problem once).
+- A save that changes nothing no longer rewrites the YAML file (and loses its comments).
+- Runs: the work limit (`max_simulation_work`) was 60,000 simulated turns, so with whole stories
+  (200 turns) little more than the default run was allowed while the sliders went far higher.
+  It is 300,000 (about ten minutes at most), the play tab shows what a run asks for before it
+  starts (`GET /v1/simulations/work`), and a refusal says how to raise the limit.
+- ANE AI: a malformed world patch (a string or list where a mapping is expected) answered 500;
+  every part of a patch now has its shape checked and the 400 names it.
+
+#### Checked
+- 760 stories with a random player on the repository's world, both example worlds and the
+  upgraded deployed volume (invariants every turn; save games exact and rebuilt at random
+  points), 80 stories for text glitches, every GET endpoint of the API (306 calls), every entry,
+  action list, policy, the missions and the map saved back unchanged (100 saves), and 600
+  random requests to a running ANE AI: no other problem found.
+
 ### The studio, the API and the ANE AI
 
 #### Added

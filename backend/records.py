@@ -122,6 +122,14 @@ def writable() -> bool:
     return os.access(directory(), os.W_OK) and all(not f.exists() or os.access(f, os.W_OK) for f in files)
 
 
+def readable() -> bool:
+    """Whether there are records to read: recording is not switched off (ANE_RECORDS) and the
+    database exists (also when this process cannot write it)."""
+    if os.environ.get("ANE_RECORDS", "on").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    return database_path().exists()
+
+
 def disabled_reason():
     """Why recording is off (None when it is on)."""
     if os.environ.get("ANE_RECORDS", "on").strip().lower() in ("0", "off", "false", "no"):

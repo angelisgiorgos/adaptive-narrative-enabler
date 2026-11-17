@@ -92,9 +92,12 @@ python packaging/smoke_test.py --folder <runtime folder with the package>
 `runtime.json` in the zip records its target and `code_version` (a hash of the engine code). The
 API exports a runtime only when its `code_version` is its own, so rebuild after changing the
 engine code. The API looks for `ane-runtime-<platform>.zip` in `ANE_RUNTIMES_DIR` (default
-`runtimes/`): CI puts them in the Docker image, and a `v*` tag attaches them to a GitHub release
-([`release.yml`](../.github/workflows/release.yml)); in a deployment, download the ones that match
-the image into that folder.
+`runtimes/`). The Docker image builds the Linux one itself (the `ane-runtime` stage of the
+[`Dockerfile`](../Dockerfile), on Debian 11 so the program starts on Linux systems with glibc 2.31
+or later), so every image exports `linux-x64` and `unity`. Windows and macOS runtimes can only be
+built on those systems: CI builds them, and a `v*` tag attaches them to a GitHub release
+([`release.yml`](../.github/workflows/release.yml)); put the ones of the same commit in `runtimes/`
+before building the image.
 
 ## Notes
 

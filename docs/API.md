@@ -102,10 +102,12 @@ Errors are JSON: `{"detail": "..."}` (or the list of `422`).
    (by default the maximums). A request above a lowered limit runs at the
    limit; it is not refused.
 3. **Work.** Storytellers × generations × story length × stories per
-   storyteller must stay within `max_simulation_work` (60,000 simulated
-   turns). With `evolution.full_length_stories`, a story counts as at least
-   100 turns (`narrative_end.max_actions`). A run above this is refused with
-   `400` before anything runs.
+   storyteller must stay within `max_simulation_work` (300,000 simulated
+   turns by default, an app parameter). With `evolution.full_length_stories`, a story counts as
+   `narrative_end.max_actions` turns (at least 100), an upper bound since many end sooner. A
+   run above this is refused with `400` before anything runs, and
+   `GET /v1/simulations/work?candidate_count=&generations=&simulation_steps=&episodes=` says
+   beforehand what a run would ask for (`work`, `limit`, `allowed`, `story_turns`).
 4. **Reproducible.** `deterministic: true` uses the seed of the settings; the
    same configuration and seed give the same evolution.
 5. **Waiting.** `POST /v1/simulations` and the records' `play`, `continue` and
@@ -452,9 +454,13 @@ one); `tests/test_studio_coverage.py` checks it.
 - **The ANE AI is made from a complete engine** (any platform but `python`): a
   finished run's engine model or a loaded (also continued or retrained) engine,
   with its own world, storyteller, training state and tag vectors.
-  `GET /v1/exports/engines` lists them, newest first (`engine_id`, `created_at`,
-  `source`, `score`, `run_id`, `resumable`); it is empty until a training
-  finishes or an engine is loaded. Export with `source: engine` (`engine_id`,
+  `GET /v1/exports/engines` lists them (the finished runs), newest first
+  (`engine_id`, `created_at`, `source`, `score`, `run_id`, `resumable`,
+  `generations`, `loaded`); it is empty until a training finishes or an engine is
+  loaded. They are kept in the records, or, when recording is off, with the
+  saves (`ANE_SAVE_DIR/engines`, the newest 20), so they survive a restart. A
+  Python export with `source: engine` or `source: run` (no `generation`) is made
+  from the engine the same way. Export with `source: engine` (`engine_id`,
   default the newest) or `source: run` (that run's engine, without
   `generation`). A generation's champion, the remembered storyteller, a play
   session's storyteller, or no complete engine yet answer `409`. The response

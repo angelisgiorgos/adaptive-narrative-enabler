@@ -63,8 +63,14 @@ storyteller.
 
 A platform is offered only when the API has a runtime for it that was built from the same
 engine code (see [Versions](#versions-and-compatibility)); otherwise the export answers 409.
-CI builds the four runtimes on every push (`.github/workflows/runtime.yml`), puts them in the
-API's Docker image (`/app/runtimes`, or `ANE_RUNTIMES_DIR`), and attaches them to each release.
+Every Docker image builds its own Linux runtime from its code, so a deployment always exports
+`linux-x64` and `unity` (with the Linux runtime). CI builds all four on every push
+(`.github/workflows/runtime.yml`) and attaches them to each release; put the Windows and macOS
+zips in `runtimes/` before building the image (or in `ANE_RUNTIMES_DIR`) to export those too.
+
+Finished runs are kept: in the records, or, when recording is off (a records folder the
+container cannot write), with the saves (`ANE_SAVE_DIR/engines`, the newest 20), so a run can be
+exported after a restart.
 
 ```bash
 curl http://localhost:8000/v1/exports/engines

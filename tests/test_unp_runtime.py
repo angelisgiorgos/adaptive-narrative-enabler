@@ -195,6 +195,25 @@ class ContentTests(_Runtime):
             with self.subTest(patch=malformed), self.assertRaises(PatchFormatError):
                 apply_patch(current, malformed)
 
+    def test_a_malformed_patch_says_what_is_wrong(self):
+        data = config.as_dict()
+        npc, item = data["world_definition"]["characters"][0]["name"], data["world_definition"]["objects"][0]["name"]
+        malformed = [  # found by fuzzing the ANE AI: some of these were 500s (AttributeError)
+            ({"update": {"npcs": "not a mapping"}}, "update.npcs"),
+            ({"update": {"npcs": {npc: ["a", "list"]}}}, f"update.npcs.{npc}"),
+            ({"upsert": "x"}, "upsert"),
+            ({"upsert": {"items": {"Lamp": "a lamp"}}}, "upsert.items.Lamp"),
+            ({"delete": {"items": item}}, "delete.items"),  # a name, not a list of names
+            ({"add_actions": {"npcs": [1]}}, "add_actions.npcs"),
+            ({"tags": {"npcs": {npc: "smuggler"}}}, f"tags.npcs.{npc}"),
+            ({"tags": {"npcs": {npc: {"add": "smuggler"}}}}, f"tags.npcs.{npc}.add"),
+            ({"stats": ["strength"]}, "stats"),
+        ]
+        for patch_body, where in malformed:
+            with self.subTest(patch=patch_body), self.assertRaises(PatchFormatError) as refused:
+                apply_patch(data, patch_body)
+            self.assertIn(f"`{where}`", str(refused.exception))
+
     def test_the_catalogue_holds_every_entity_and_field(self):
         data = config.as_dict()
         world = data["world_definition"]
@@ -633,7 +652,7 @@ class ExportPlatformTests(unittest.TestCase):
     def test_no_ane_ai_before_a_complete_engine_exists(self):
         folder = tempfile.mkdtemp(prefix="ane-runtimes-")
         self._runtime_zip(folder, "linux-x64", version.code_version())
-        with patch.dict(os.environ, {"ANE_RUNTIMES_DIR": folder, "ANE_RECORDS": "off"}), \
+        with patch.dict(os.environ, {"ANE_RUNTIMES_DIR": folder, "ANE_RECORDS": "off", "ANE_SAVE_DIR": tempfile.mkdtemp()}), \
                 patch.dict(export.RUNS, {}, clear=True), patch.dict(export.ENGINES, {}, clear=True):
             self.assertEqual(export.complete_engines(), [])
             for source in ("run", "engine", "memory", "game"):
@@ -657,7 +676,17 @@ class ExportPlatformTests(unittest.TestCase):
             for source in ("run", "engine"):  # the latest run's engine; the newest engine
                 with self.subTest(source=source):
                     made = export.export_engine(source=source, platform="linux-x64", include_memory=False)
-                    self.assertEqual((made["manifest"]["engine_id"], made["manifest"]["source"]), (model.id, "test run"))
+                    self.assertEqual((made["manifest"]["engine_id"], made["manifest"]["source"]),
+                                     (model.id, "best of the run" if source == "run" else "test run"))
+
+            # Recording is off: the finished run is kept with the saves, so after a restart (nothing in
+            # memory) it is still listed and exported.
+            self.assertTrue((sessions.kept_engines_dir() / f"{model.id}.ane.zip").is_file())
+            export.ENGINES.clear()
+            export.RUNS.clear()
+            self.assertEqual([e["engine_id"] for e in export.complete_engines()], [model.id])
+            made = export.export_engine(source="engine", engine_id=model.id, platform="linux-x64", include_memory=False)
+            self.assertEqual(made["manifest"]["engine_id"], model.id)
 
 
 if __name__ == "__main__":

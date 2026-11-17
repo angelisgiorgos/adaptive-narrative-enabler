@@ -5,8 +5,11 @@ import collections
 import copy
 import datetime
 import json
+import logging
 import math
+import os
 import random
+import shutil
 import tempfile
 import threading
 import uuid
@@ -102,12 +105,57 @@ def _export_run_artifacts(model, candidate_count=0, generations=0, simulation_st
     return config_path, bundle_path
 
 
+LOG = logging.getLogger("ane.sessions")
+KEPT_ENGINES = 20  # finished runs kept with the saves when recording is off
+
+
+def kept_engines_dir() -> Path:
+    """Where finished runs' engines are kept when recording is off: with the saves (ANE_SAVE_DIR,
+    a volume in Docker), so they can still be exported after a restart."""
+    return Path(os.environ.get("ANE_SAVE_DIR") or (Path(__file__).resolve().parent.parent / "saves")) / "engines"
+
+
+def kept_engines():
+    """The engines kept with the saves (newest last), whose files are still there."""
+    index = kept_engines_dir() / "index.json"
+    try:
+        entries = json.loads(index.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [e for e in entries if isinstance(e, dict) and Path(str(e.get("model_path", ""))).is_file()]
+
+
+def _keep_engine(info, model_path):
+    """Keep a finished run's engine model with the saves (the newest KEPT_ENGINES)."""
+    folder = kept_engines_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{info['engine_id']}.ane.zip"
+    shutil.copyfile(model_path, target)
+    entries = [e for e in kept_engines() if e.get("engine_id") != info["engine_id"]] + [{**info, "model_path": str(target)}]
+    for dropped in entries[:-KEPT_ENGINES]:
+        Path(dropped["model_path"]).unlink(missing_ok=True)
+    entries = entries[-KEPT_ENGINES:]
+    temporary = folder / ".index.json.tmp"
+    temporary.write_text(json.dumps(entries, indent=1), encoding="utf-8")
+    os.replace(temporary, folder / "index.json")
+    return str(target)
+
+
 def _remember_engine(model, model_path, run_id=None):
-    """Keep a complete engine (its model file) for ANE AI exports."""
+    """Keep a complete engine (its model file) for exports: the records keep it when recording is
+    on; otherwise it is kept with the saves, so a finished run can be exported after a restart."""
+    learning = model.learning or {}
+    info = {"engine_id": model.id, "model_path": model_path, "created_at": model.created,
+            "source": model.source, "score": model.score, "run_id": run_id, "resumable": bool(model.checkpoint),
+            "generations": learning.get("generations_run") or len(learning.get("history") or []) or None}
+    if not records.enabled():
+        try:
+            info["model_path"] = _keep_engine(info, model_path)
+        except OSError as exc:
+            LOG.warning("Could not keep engine %s with the saves (%s): it can be exported until the API restarts.",
+                        model.id, exc)
     with SESSION_LOCK:
-        ENGINES[model.id] = {"engine_id": model.id, "model_path": model_path, "created_at": model.created,
-                             "source": model.source, "score": model.score, "run_id": run_id,
-                             "resumable": bool(model.checkpoint)}
+        ENGINES[model.id] = info
         ENGINES.move_to_end(model.id)
         while len(ENGINES) > MAX_RUNS:
             ENGINES.popitem(last=False)
@@ -490,17 +538,7 @@ def run_simulation(candidate_count: int, generations: int, simulation_steps: int
     generations = max(1, min(int(generations), APP_SETTINGS["generation_limit"]))
     simulation_steps = max(1, min(int(simulation_steps), APP_SETTINGS["simulation_step_limit"]))
     episodes = max(1, min(int(episodes or config.get("evolution.episodes_per_genome", 3)), 10))
-    # Whole stories (evolution.full_length_stories) can last up to narrative_end.max_actions.
-    story_steps = simulation_steps
-    if evolution_settings().get("full_length_stories"):
-        story_steps = max(simulation_steps, max(100, int(config.get("narrative_end.max_actions", 100))))
-    requested_work = candidate_count * generations * story_steps * episodes
-    if requested_work > MAX_SIMULATION_WORK:
-        raise AuthoringError(
-            f"This run requests {requested_work:,} simulated turns, above the "
-            f"public-app safety limit of {MAX_SIMULATION_WORK:,}. Reduce candidates, "
-            "generations, steps, or episodes per genome."
-        )
+    _training_guard(candidate_count, generations, episodes, simulation_steps)
     seed = None
     if deterministic:
         seed = config.get("reproducibility.seed")
@@ -574,14 +612,27 @@ def _finish_training(evolution, result, run_id, origin, profile, points, mode, c
     }
 
 
-def _training_guard(pop_size, generations, episodes, steps):
-    story_steps = steps
+def training_work(candidates, generations, episodes, steps):
+    """What a run asks for: {work, limit, allowed, story_turns}. ``work`` is the simulated turns at
+    most (storytellers x generations x stories per storyteller x turns per story); with whole
+    stories (evolution.full_length_stories) a story counts at narrative_end.max_actions, though
+    many end sooner. ``limit`` is the app parameter max_simulation_work."""
+    story_turns = int(steps)
     if evolution_settings().get("full_length_stories"):
-        story_steps = max(steps, max(100, int(config.get("narrative_end.max_actions", 100))))
-    requested = int(pop_size) * int(generations) * int(episodes) * int(story_steps)
-    if requested > MAX_SIMULATION_WORK:
-        raise AuthoringError(f"This training requests {requested:,} simulated turns, above the public-app safety "
-                             f"limit of {MAX_SIMULATION_WORK:,}. Ask for fewer generations.")
+        story_turns = max(story_turns, max(100, int(config.get("narrative_end.max_actions", 100))))
+    work = int(candidates) * int(generations) * int(episodes) * story_turns
+    return {"work": work, "limit": MAX_SIMULATION_WORK, "allowed": work <= MAX_SIMULATION_WORK,
+            "story_turns": story_turns}
+
+
+def _training_guard(pop_size, generations, episodes, steps):
+    asked = training_work(pop_size, generations, episodes, steps)
+    if not asked["allowed"]:
+        raise AuthoringError(
+            f"This run requests up to {asked['work']:,} simulated turns ({pop_size} storytellers x {generations} "
+            f"generations x {episodes} stories x {asked['story_turns']} turns), above the limit of "
+            f"{asked['limit']:,}. Use fewer storytellers, generations or stories per storyteller, or raise "
+            "`max_simulation_work` (5 · Engine logic & app parameters → App parameters).")
 
 
 def continue_engine(engine_id, generations=1, profile=None, stats_choice=None, stats_points=None, origin="studio",

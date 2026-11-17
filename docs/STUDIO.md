@@ -86,7 +86,7 @@ nothing is written.
 | **4 · Simulate & play** → evolution | Storytellers, generations, steps, **stories per storyteller**, **continue learning from earlier runs**; the **learning curve** and **what the storyteller learned**; forget the learning memory | `POST /v1/jobs/simulations` and `GET /v1/jobs/{id}` (or `POST /v1/simulations`), `GET/DELETE /v1/learning` |
 | **4 · Simulate & play** → *Load a previous best engine* | An engine model, an older engine ZIP, or a configuration YAML with its model-parameters YAML | `POST /v1/engines/load` (`file`, `parameters`, `profile`, `stats_mode`, `stats`) |
 | **4 · Simulate & play** | **Player profile**, the **quest to play** (any quest open to the profile, or one drawn by the story; *Quests in this world* lists them with their stages) and the player's **character stats** (story default, random, balanced, or own points with Randomize/Balance); the scene shows the quest and its current stage, health `x/max`, the **people here** (who they are, what they want, hostile or able to help with the quest, how often helped and whether an ally, how often spoken with), the **checks** of the choices, stats, the last check and remembered values; beside it the **quest log** (stages done, now, to come; what to do now) the **people met** (where, how often spoken with, allies, gone) and the **map** as the player knows it (places, paths, locked exits); taking one of the **most relevant choices**, each labelled with its check | `GET /v1/missions/playable`, `POST /v1/stats/allocate`, `POST /v1/sessions/{id}/actions` (structured state: `quest`, `people`, `people_met`, `ways_on`) |
-| **4 · Simulate & play** → *Export the engine* | Download the engine to run offline in a game. *Runs on* a system or Unity: **the ANE AI**, made from a complete engine (a finished training's or a loaded one; the export stays off until one exists). *Runs on* Python: this run's best, any generation's champion, the best remembered storyteller, or the current game's. With or without the learning memory | `GET /v1/exports/platforms`, `GET /v1/exports/engines`, `POST /v1/exports`, `GET /v1/artifacts/{id}` |
+| **4 · Simulate & play** → *Export the engine* | Download the engine to run offline in a game, *Runs on* a system, Unity or Python, from the **finished runs**: the latest is chosen, choose several to download each (their own world, storyteller and training state; the export stays off until a run has finished). The Python version can also be made from a generation's champion, the best remembered storyteller, or the current game's. With or without the learning memory | `GET /v1/exports/platforms`, `GET /v1/exports/engines`, `POST /v1/exports`, `GET /v1/artifacts/{id}` |
 | **4 · Simulate & play** → *This session as a UNP sees it* | What the exported ANE AI does for a UNP, on this game: download its **save game** and **continue** one (from here or from the ANE AI; exactly, or rebuilt from its parameters), show its **parameters**, **set the player** (JSON) and tell it **what happened** in the UNP's game | `GET /v1/sessions/{id}/savegame`, `POST /v1/sessions/load`, `GET /v1/sessions/{id}/state`, `PATCH /v1/sessions/{id}/player`, `POST /v1/sessions/{id}/sync` |
 | **4 · Simulate & play** → *Export* → *Where the ANE AI runs, and the world it sends* | The standalone runtimes available here (or why not), and the world as the ANE AI sends it (JSON) | `GET /v1/exports/platforms`, `GET /v1/world/catalogue` |
 | **4 · Simulate & play** → *Judge this playthrough* | Gemma 4's judgement of the game played so far: engagement, the eight criteria, the best and weakest moments, a verdict | `POST /v1/sessions/{id}/judge` |
@@ -128,7 +128,9 @@ fitness, and the evolutionary search itself.
   go up to 400 candidates, 1000 generations, and 400 steps per simulation (the
   largest run the API accepts); `max_simulation_work` caps the total simulated
   turns of one run (candidates × generations × story length × stories per
-  storyteller). These are stored in
+  storyteller; 300,000 by default, about ten minutes at most on a 20-core
+  server). The play tab shows what a run asks for under its sliders, before it
+  starts. These are stored in
   `config/ui_settings.yml` (`GET|PUT /v1/app-settings`). Restart the UI and
   the API after saving them. `ANE_UI_HOST`,
   `ANE_UI_PORT`, and `ANE_UI_SHARE` override the saved launch options.
@@ -149,8 +151,20 @@ files are never overwritten, so your edits are safe. New *keys* inside
 existing files, e.g. `mission_settings` in an older `hyperparameters.yaml`,
 fall back to built-in defaults in code. A default file that you deleted from
 the volume is restored on the next start, so empty it instead (for example
-`world_definition: {events: {}}`) to switch its content off. After updating,
-run `docker compose up --build`.
+`world_definition: {events: {}}`) to switch its content off.
+
+A release's new entries refer to each other (a new mission names its new NPC), so a file kept
+from an older release next to a newer one could make a world that cannot be played (*unknown
+NPC `Thief`* on every run and edit). The entrypoint therefore also adds, once, each default
+place, NPC, item, event and mission that the volume's files lack, and logs
+`[config] Added the default entry …`. Entries already there are never changed, and an entry you
+delete afterwards stays deleted (the names already offered are kept in
+`.ane-default-entries.json` in the volume). After updating, run `docker compose up --build`.
+
+A world that has a problem from before (such a volume, a file edited by hand) does not block
+other edits in the studio: an edit is refused only for the problems it makes, and the save says
+which earlier ones remain. A save that changes nothing leaves the file, and its comments, as
+they are.
 
 With Docker, app parameters persist in the existing config volume, and the
 learning memory and persistent variables persist on the `narrative-saves`

@@ -345,7 +345,10 @@ def save_entity_yaml(kind: str, name: str, yaml_text: str) -> str:
     from .store import _validate_complete_config
 
     errors.extend(_validate_complete_config(entries, None, f"world_definition.{key}"))
-    errors.extend(logic_errors(world))
+    # Only the problems this edit makes block it: the world's earlier ones (e.g. a config folder
+    # from an older release) must not stop every unrelated edit; they are reported.
+    earlier = list(dict.fromkeys(logic_errors(config.get("world_definition") or {})))
+    errors.extend(e for e in logic_errors(world) if e not in earlier)
     if errors:
         raise AuthoringError("The entry is invalid:\n" + "\n".join(f"- {e}" for e in dict.fromkeys(errors)))
     with CONFIG_LOCK:
@@ -355,7 +358,9 @@ def save_entity_yaml(kind: str, name: str, yaml_text: str) -> str:
         _write_yaml(path, data)
         config.clear_override()
         config.reload()
-    return f"Saved every field of **{name}** to `{path.name}`."
+    still = [e for e in dict.fromkeys(logic_errors(config.get("world_definition") or {})) if e in earlier]
+    note = (f" The world still has {len(still)} earlier problem(s): " + "; ".join(still[:3])) if still else ""
+    return f"Saved every field of **{name}** to `{path.name}`.{note}"
 
 
 MAP_PATH = CONFIG_DIR / "locations.yaml"   # the map lives with the locations (world_definition.routes)
