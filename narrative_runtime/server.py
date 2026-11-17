@@ -15,7 +15,7 @@ given in ANE_RUNTIME_TOKEN, else one made at start and given in the ready line.
                                          session, deliver everything, stop (exit code 0)
     GET    /world                        the world as parameters (ane.world/1)
     GET    /world/<kind>/<name>          one location, npc, item, event or mission
-    POST   /world/patch                  world content from the UNP (see patches.py); 422 + errors
+    POST   /world/patch                  world content from the UNP (see world.py); 422 + errors
     POST   /world/reset                  forget the UNP's content (the package's own world)
     GET    /progression/<profile>        the save game: goals achieved, playthroughs, reports
     GET    /games                        the active sessions
@@ -243,7 +243,7 @@ def make_handler(server):
         def _route(self, method):
             from core_engine import resume, savegame, snapshot
 
-            from .patches import PatchFormatError
+            from .world import PatchFormatError
 
             try:
                 self._check(method)

@@ -16,7 +16,7 @@
 #   coins:        the player holds at least this many coins.
 #   variables:    persistent variables, e.g. {reputation: {gte: 1}}.
 #   condition:    any condition tree (all / any / not, variable, stat,
-#                 resource, has_item, visited, ...); see the README.
+#                 resource, has_item, visited, ...); see docs/WORLD.md.
 # Missions whose goal already holds at the start of the story are never chosen.
 # `rewards` is an effect list applied when the mission is completed.
 world_definition:

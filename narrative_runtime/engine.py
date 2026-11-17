@@ -328,7 +328,7 @@ class NarrativeEngine:
     def catalogue(self) -> dict:
         from utils.config_loader import config
 
-        from .catalogue import world_catalogue
+        from .world import world_catalogue
 
         return world_catalogue(config.as_dict(), self.starting_locations(), revision=self.revision,
                                engine=self.manifest.get("name"))
@@ -336,7 +336,7 @@ class NarrativeEngine:
     def entity(self, kind, name) -> dict:
         from utils.config_loader import config
 
-        from .catalogue import world_entity
+        from .world import world_entity
 
         return world_entity(config.as_dict(), kind, name)
 
@@ -359,7 +359,7 @@ class NarrativeEngine:
         longer fits is skipped and reported in the log)."""
         from utils.config_loader import config
 
-        from .patches import apply_patch, patch_errors
+        from .world import apply_patch, patch_errors
 
         active, kept = copy.deepcopy(self.base_config), []
         for record in self.patches:
@@ -381,7 +381,7 @@ class NarrativeEngine:
         from core_engine.builder import build_world
         from utils.config_loader import config
 
-        from .patches import apply_patch, new_tags, patch_errors
+        from .world import apply_patch, new_tags, patch_errors
 
         with self.lock:
             current = config.as_dict()
@@ -502,14 +502,14 @@ class NarrativeEngine:
 
     def notify(self, event, data=None, session_id=None, wait=False):
         """Send an event to the UNP's callback (session_report.url / ANE_UNP_URL), if one is set."""
-        from .events import send_event
+        from .lifecycle import send_event
 
         return send_event(event, data, session_id=session_id, engine=self.describe(), wait=wait)
 
     def shutdown(self, save=True, end_sessions=False) -> dict:
         """Before the process stops: every active session saved (or ended, with ``end_sessions``)
         and every report and event delivered. Safe to call twice."""
-        from .events import wait_for_deliveries
+        from .lifecycle import wait_for_deliveries
 
         result = {"saved": [], "ended": []}
         with self.lock:

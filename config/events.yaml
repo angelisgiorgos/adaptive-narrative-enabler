@@ -22,7 +22,7 @@
 #                         reappears; a generic one only leaves this visit.
 #   actions[].repeat / exclusive_group
 #                         How often an option is offered, and one-choice groups
-#                         (see "Repeatable and one-time options" in the README).
+#                         (see "Repeatable and one-time options" in docs/WORLD.md).
 # Actions and outcomes otherwise use the same fields as location actions.
 #
 # When an event may start. These rules hold for every way into it (trigger

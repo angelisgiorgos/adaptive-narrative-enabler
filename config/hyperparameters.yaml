@@ -24,7 +24,7 @@ evolution:
   cover_situations: true      # the benchmark has at least one story per start x mission situation
   benchmark_top_k: 3          # this many of each generation's best are benchmarked; the champion is the
                               # best of them on the benchmark, not the luckiest on the training stories
-  # How storytellers are evaluated (README, "How the evolutionary AI learns"):
+  # How storytellers are evaluated (docs/AI.md, "The evolutionary AI"):
   full_length_stories: true   # every story is played to its end, as in a real game
   stratify_episodes: true     # every storyteller plays the same spread of start x mission situations
   score_aggregate: mean_minus_std  # mean | mean_minus_std: consistent storytellers beat erratic ones
