@@ -19,7 +19,7 @@ from core_engine import Action, GameState, Genome, Location, Outcome, WorldGraph
 from core_engine.actions import repetition_errors
 from core_engine.builder import logic_errors
 from core_engine.combat import CheckResult
-from narrative_runtime.engine import FORMAT, Game
+from narrative_runtime.engine import FORMAT
 from utils.config_loader import config
 
 
@@ -77,9 +77,13 @@ def _go(state, place):
 
 
 def _saved_and_restored(state, folder):
-    """Through the runtime's own save format (Game.save) and back."""
-    path = Game(None, state).save(Path(folder) / "slot.game")
-    data = pickle.loads(Path(path).read_bytes())
+    """Through a game saved in the old format (a pickle of the state, which
+    NarrativeEngine.load_game still reads from local files) and back. These worlds are made
+    here, not from the configuration, so the JSON save game (rebuilt from the configuration;
+    tests/test_snapshot.py) does not apply to them."""
+    path = Path(folder) / "slot.game"
+    path.write_bytes(pickle.dumps({"format": FORMAT, "state": state}))
+    data = pickle.loads(path.read_bytes())
     assert data["format"] == FORMAT
     return data["state"]
 

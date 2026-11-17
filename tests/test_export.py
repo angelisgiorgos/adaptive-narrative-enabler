@@ -18,13 +18,15 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
 from fastapi.testclient import TestClient
 
 import api
 import main as engine
-from backend import export, sessions
-from core_engine import GameState, Genome
+from backend import export, records, sessions
+from core_engine import GameState, Genome, version
 from core_engine.builder import build_world
+from core_engine.model import EngineModel
 
 PYTHON = sys.executable
 
@@ -144,6 +146,7 @@ print(json.dumps({
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
         env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        env["ANE_RUNTIME_TOKEN"] = "game-token"  # every request needs it (Authorization: Bearer)
         server = subprocess.Popen([PYTHON, "run.py", "serve", "--port", str(port)], cwd=self.root, env=env,
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.addCleanup(server.kill)
@@ -152,7 +155,8 @@ print(json.dumps({
         def call(path, body=None, method=None):
             data = json.dumps(body).encode() if body is not None else None
             request = urllib.request.Request(base + path, data=data, method=method or ("POST" if data else "GET"),
-                                             headers={"Content-Type": "application/json"})
+                                             headers={"Content-Type": "application/json",
+                                                      "Authorization": "Bearer game-token"})
             try:
                 with urllib.request.urlopen(request, timeout=60) as response:
                     return response.status, json.loads(response.read())
@@ -240,6 +244,52 @@ class ExportEndpointsTests(_Exports):
         self.assertIn("champion of generation 2", status)
         path, status = app.export_engine_ui("This game's storyteller", None, None, self.game["token"], False, "mine")
         self.assertIn("storyteller of the current game", status)
+
+    def test_the_ane_ai_is_made_from_a_complete_engine_only(self):
+        runtimes = Path(tempfile.mkdtemp(dir=self.dir))
+        with zipfile.ZipFile(runtimes / "ane-runtime-linux-x64.zip", "w") as zipped:  # a stand-in runtime
+            zipped.writestr("runtime.json", json.dumps({"format": "ane.runtime/1", "target": "linux-x64",
+                                                       "code_version": version.code_version(), "protocol": 1,
+                                                       "executable": "ane-ai"}))
+            zipped.writestr("ane-ai", "#!/bin/sh\n")
+        client = TestClient(api.api)
+        engine_id = self.game["engine_id"]
+        with patch.dict(os.environ, {"ANE_RUNTIMES_DIR": str(runtimes)}):
+            listed = client.get("/v1/exports/engines").json()["engines"]
+            self.assertIn(engine_id, [e["engine_id"] for e in listed])  # the finished run's engine
+            refused = [{"source": "memory"}, {"source": "game", "session_id": self.game["token"]},
+                       {"source": "run", "run_id": self.game["run_id"], "generation": 1}]
+            if records.enabled():  # a generation's champion is recorded, but it is no complete engine
+                champion = next(e for e in records.list_engines(run_id=self.game["run_id"])
+                                if e["source"] == "generation_champion")
+                refused.append({"source": "engine", "engine_id": champion["id"]})
+            for body in refused:
+                with self.subTest(body=body):
+                    response = client.post("/v1/exports", json={**body, "platform": "linux-x64"})
+                    self.assertEqual(response.status_code, 409, response.text)
+                    self.assertIn("complete engine", response.json()["detail"])
+
+            for body in ({"source": "run", "run_id": self.game["run_id"]}, {"source": "engine", "engine_id": engine_id}):
+                with self.subTest(body=body):
+                    response = client.post("/v1/exports", json={**body, "platform": "linux-x64", "name": "ane-ai"})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(response.json()["engine_id"], engine_id)
+                    with zipfile.ZipFile(__import__("io").BytesIO(client.get(response.json()["download_url"]).content)) as zipped:
+                        manifest = json.loads(zipped.read("ane-ai/engine.json"))
+                        exported_config = yaml.safe_load(zipped.read("ane-ai/config/engine.yaml"))
+                        vectors = json.loads(zipped.read("ane-ai/data/tag_vectors.json"))
+                        names = set(zipped.namelist())
+                    model = EngineModel.load(sessions.ENGINES[engine_id]["model_path"])
+                    # The engine itself: its storyteller, world, tag vectors and training state.
+                    self.assertEqual(manifest["genome"], model.genome.traits())
+                    self.assertEqual(exported_config, model.config)
+                    self.assertEqual(vectors, model.tag_vectors)
+                    self.assertTrue(manifest["resumable"] and "ane-ai/data/training.json" in names)
+                    self.assertIn("ane-ai/ane-ai", names)
+
+        # The Python version is still made from any storyteller.
+        python = client.post("/v1/exports", json={"source": "run", "run_id": self.game["run_id"], "generation": 1})
+        self.assertEqual(python.status_code, 200, python.text)
 
     def test_terminal_run_exports_automatically(self):
         run_dir = Path(tempfile.mkdtemp(dir=self.dir))
