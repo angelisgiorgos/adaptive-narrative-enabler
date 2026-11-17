@@ -6,8 +6,9 @@ x-studio-volumes: &studio-volumes
   - narrative-saves:/app/saves  # persistent variables across playthroughs
   - model-cache:/var/cache/huggingface
   # The records database (every run, world, engine and story) and engine model files.
-  # The folder must be writable by the container user (uid 10001); otherwise recording
-  # switches itself off and the studio and API keep working.
+  # The folder must be writable by the container user (uid 10001) to record; otherwise
+  # recording switches itself off (GET /v1/records says why), the records already there are
+  # still shown, and the studio and API keep working.
   - ${ANE_RECORDS_HOST_DIR:-/data/angelisg/ane}:/data/angelisg/ane
 
 services:
