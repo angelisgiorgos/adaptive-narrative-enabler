@@ -192,9 +192,11 @@ def _chain_world(goal):
 
 class RoutePlanningTests(unittest.TestCase):
     def setUp(self):
-        patcher = _full_drive()
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        # Route planning over the whole world (the session's cast is tested in test_progression;
+        # these tests add goal items after the story starts).
+        for patcher in (_full_drive(), patch.dict(config._config, {"session_scope": {**(config.get("session_scope") or {}), "enabled": False}})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def _state(self, goal):
         genome = _genome()

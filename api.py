@@ -236,7 +236,7 @@ class PlayState(BaseModel):
     unique_actions: list[dict[str, Any]] = Field(
         default_factory=list, description="Every attempt at a one-time action: [{turn, action, owner, where, succeeded, "
         "kept}] (kept: a failed attempt at a retryable action, still on offer; anything else is used up).")
-    report: dict[str, Any] | None = Field(
+    session_report: dict[str, Any] | None = Field(
         default=None, description="The session's report once it has ended (as sent to the UNP): goal and outcome "
         "(achieved | failed), the player's stats, inventory, health and coins, and the save game's progression.")
     stakes: dict[str, Any] | None = Field(

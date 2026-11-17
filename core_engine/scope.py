@@ -199,18 +199,28 @@ class SessionScope:
         """Choose the session's cast and settle the world around it: unique NPCs and items
         whose place was left out move to the best place still in the session. If the goal
         could no longer be reached, every place is kept; if still not, the whole world is."""
-        reachable_before = self.mission is not None and self._goal_still_reachable()
-        self.session_scope = self._choose_scope()
-        if not any(self.session_scope.values()):
+        if self._scope_cfg() is None:
             self.session_scope = None
             return
-        self._settle_scope()
-        if reachable_before and not self._goal_still_reachable():
-            self.session_scope["locations"] = set()
-            self._settle_scope()
-            if not self._goal_still_reachable():
+        try:
+            reachable_before = self.mission is not None and self._goal_still_reachable()
+            self.session_scope = self._choose_scope()
+            if not any(self.session_scope.values()):
                 self.session_scope = None
+                return
+            self._settle_scope()
+            if reachable_before and not self._goal_still_reachable():
+                self.session_scope["locations"] = set()
                 self._settle_scope()
+                if not self._goal_still_reachable():
+                    self.session_scope = None
+                    self._settle_scope()
+        finally:
+            self._clear_planning_caches()  # play plans its routes afresh, as before the cast existed
+
+    def _clear_planning_caches(self):
+        for cache in ("_viability_cache", "_item_sites_cache", "_site_index", "_goal_sites_cache", "_route_cache"):
+            self.__dict__.pop(cache, None)
 
     def _goal_still_reachable(self):
         for cache in ("_viability_cache", "_item_sites_cache", "_site_index", "_goal_sites_cache", "_route_cache"):

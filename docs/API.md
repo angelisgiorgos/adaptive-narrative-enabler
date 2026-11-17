@@ -159,7 +159,7 @@ Errors are JSON: `{"detail": "..."}` (or the list of `422`).
   attempt at a one-time action (`succeeded`, `kept`: a failed retryable attempt stays on
   offer, anything else is used up). When a session ends, by itself or with
   `POST /v1/sessions/{id}/end` (the player stops), the player's progression is saved and
-  its `report` (goal and `outcome`: `achieved` or `failed`, the player's stats, inventory,
+  its `session_report` (goal and `outcome`: `achieved` or `failed`, the player's stats, inventory,
   health and coins, the goals achieved in the save game) is sent to the UNP:
   `session_report.url` or `ANE_UNP_URL` (POST, JSON; `ANE_UNP_TOKEN` adds a bearer token).
   `GET /v1/sessions/{id}/report` returns it (`409` while the session goes on),

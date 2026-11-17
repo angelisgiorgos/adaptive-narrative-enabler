@@ -27,9 +27,9 @@ jobs:
       PYTHONUNBUFFERED: "1"
       MPLBACKEND: Agg
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.10"   # the Docker image's Python
           cache: pip
@@ -64,7 +64,7 @@ jobs:
 
       - name: Keep the test logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: test-logs
           path: test-logs/
@@ -75,7 +75,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Make room for the image (PyTorch with CUDA, about 10 GB)
         run: |

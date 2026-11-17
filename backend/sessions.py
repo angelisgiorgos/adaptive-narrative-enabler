@@ -67,7 +67,7 @@ def play_state(state: GameState) -> dict:
         # The session: its cast, the one-time actions tried, and its report once it has ended.
         "cast": state.scope() if hasattr(state, "scope") else None,
         "unique_actions": state.unique_actions() if hasattr(state, "unique_actions") else [],
-        "report": state.__dict__.get("session_report"),
+        "session_report": state.__dict__.get("session_report"),
     }
 
 def _export_run_artifacts(model, candidate_count=0, generations=0, simulation_steps=0):

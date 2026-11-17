@@ -77,7 +77,8 @@ class NPCPlacementTests(unittest.TestCase):
         world = _world()
         for index in range(4):
             world.add_character(Character(f"Shade {index}", ["spectral", "underground"]))
-        with patch.dict(config._config["scene"], {"max_visible_npcs": 1}):
+        # Placement, with everyone in the session (the session's cast is tested in test_progression).
+        with patch.dict(config._config["scene"], {"max_visible_npcs": 1}), patch.dict(config._config, {"session_scope": {**(config.get("session_scope") or {}), "enabled": False}}):
             state = _state(world)
             state._move_to("Crypt")
             self.assertEqual(_present(state), {"Ghost"})

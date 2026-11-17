@@ -370,8 +370,9 @@ class ShippedContentTests(unittest.TestCase):
         self.genome = Genome()
 
     def _talk_to_priest(self, **variables):
-        state = GameState(engine.build_world(self.genome), self.genome, start="Abandoned Church",
-                          rng=random.Random(0), variables=variables)
+        with patch.dict(config._config, {"session_scope": {**(config.get("session_scope") or {}), "enabled": False}}):  # the Priest in the session, whatever its goal (the cast: test_progression)
+            state = GameState(engine.build_world(self.genome), self.genome, start="Abandoned Church",
+                              rng=random.Random(0), variables=variables)
         talk = next(a for a in state.get_available_actions() if a.character_name == "Priest" and a.source == "conversation")
         return talk.outcomes[0].desc
 

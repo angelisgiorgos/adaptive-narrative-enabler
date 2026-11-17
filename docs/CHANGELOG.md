@@ -27,6 +27,13 @@ that introduces them.
 - Studio: *End this session*, the session's cast, one-time actions and report beside the game,
   and *Save game* (reports, UNP delivery, send again).
 
+#### Fixed
+- The play state's session report is `session_report` (it clashed with the run's `report`, so
+  every evolution that starts a game failed with 400; CI's smoke test caught it).
+- A story's route planning starts afresh after its cast is chosen (stale caches hid goal sites
+  added later); the cast is not computed at all when `session_scope` is off.
+- CI actions on Node 24 (`checkout@v5`, `setup-python@v6`, `upload-artifact@v5`).
+
 ### Everything in the API and in the studio
 
 #### Added

@@ -305,7 +305,7 @@ class SessionAPITests(_Progression):
         ended = self.client.post(f"/v1/sessions/{self.token}/end")
         self.assertEqual(ended.status_code, 200, ended.text)
         self.assertTrue(ended.json()["ended"])
-        report = ended.json()["report"]
+        report = ended.json()["session_report"]
         self.assertEqual(report["session_id"], self.token)
         self.assertEqual(report["outcome"], "failed")
         self.assertEqual(self.client.get(f"/v1/sessions/{self.token}/report").json()["report_id"], report["report_id"])

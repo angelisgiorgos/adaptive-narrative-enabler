@@ -73,7 +73,7 @@ class Game:
             "stakes": state.stakes() if hasattr(state, "stakes") else None,
             "cast": state.scope() if hasattr(state, "scope") else None,
             "unique_actions": state.unique_actions() if hasattr(state, "unique_actions") else [],
-            "report": state.__dict__.get("session_report"),
+            "session_report": state.__dict__.get("session_report"),
             "map": state.map_view() if hasattr(state, "map_view") else None,
             "choices": [{"name": name, "check": state.check_hint(a)} for name, a in
                         zip(actions, state.player_options())] if hasattr(state, "check_hint") and actions else [],

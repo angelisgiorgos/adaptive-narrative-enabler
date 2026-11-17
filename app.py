@@ -615,7 +615,7 @@ def session_markdown(game):
         for entry in tried:
             state = "done" if entry["succeeded"] else ("failed, still on offer" if entry["kept"] else "failed, used up")
             lines.append(f"- {entry['action']} ({entry['where']}, turn {entry['turn']}): {state}")
-    report = game.get("report")
+    report = game.get("session_report")
     if report:
         goal = report.get("goal") or {}
         player = report["player"]

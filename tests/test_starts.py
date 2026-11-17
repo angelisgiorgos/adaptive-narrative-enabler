@@ -139,14 +139,18 @@ class RecentStartTests(unittest.TestCase):
         repeat = Counter(GameState(world, _genome(), rng=random.Random(seed), recent_starts=["A"]).start_location
                          for seed in range(1000))
         self.assertAlmostEqual(_shares(fresh)["A"], 0.5, delta=0.04)
-        self.assertAlmostEqual(_shares(repeat)["A"], 0.25 / 1.25, delta=0.04)  # discouraged...
+        expected = starts.probabilities(list(world.locations.values()), ["A"])["A"]  # start_selection
+        self.assertLess(expected, 0.5)
+        self.assertAlmostEqual(_shares(repeat)["A"], expected, delta=0.04)  # discouraged...
         self.assertGreater(repeat["A"], 0)  # ...never forbidden
 
     def test_shipped_harbor_is_drawn_less_often_after_starting_there(self):
         genome = _genome()
+        world = engine.build_world(genome)
         counts = Counter(GameState(engine.build_world(genome), genome, rng=random.Random(seed),
                                    recent_starts=["Harbor"]).start_location for seed in range(600))
-        expected = 1.5 * 0.25 / (1.5 * 0.25 + 1.0 + 1.0 + 0.5)
+        expected = starts.probabilities(world.start_locations(), ["Harbor"])["Harbor"]
+        self.assertLess(expected, 1.5 / 4)  # less often than without the recent start
         self.assertAlmostEqual(_shares(counts)["Harbor"], expected, delta=0.04)
 
 
@@ -183,7 +187,8 @@ class HistoryTests(_TempStore):
             first = GameState(world, _genome(), rng=random.Random(player), store=self.store, profile=f"p{player}")
             second = GameState(world, _genome(), rng=random.Random(10_000 + player), store=self.store, profile=f"p{player}")
             repeats += first.start_location == second.start_location
-        self.assertAlmostEqual(repeats / 300, 0.25 / 1.25, delta=0.06)
+        expected = starts.probabilities(list(world.locations.values()), ["A"])["A"]
+        self.assertAlmostEqual(repeats / 300, expected, delta=0.06)
 
 
 class MissionViabilityTests(unittest.TestCase):
