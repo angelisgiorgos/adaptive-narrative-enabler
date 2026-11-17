@@ -1,0 +1,19 @@
+<!-- Compiles the package's C# (Runtime, Editor, sample) outside Unity, against small stand-ins
+     for the UnityEngine/UnityEditor types it uses (Stubs/). CI: dotnet build. -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- As in the Editor, so the sample's code is compiled too -->
+    <DefineConstants>$(DefineConstants);UNITY_EDITOR;UNITY_STANDALONE</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../Runtime/**/*.cs" />
+    <Compile Include="../../Editor/**/*.cs" />
+    <Compile Include="../../Samples~/**/*.cs" />
+    <Compile Include="Stubs/*.cs" />
+  </ItemGroup>
+</Project>

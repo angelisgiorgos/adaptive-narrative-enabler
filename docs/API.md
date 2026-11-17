@@ -86,6 +86,7 @@ state.
 | `202` | A job was queued (`POST /v1/jobs/...`); poll `GET /v1/jobs/{id}` |
 | `400` | Refused content (see above), a file of the wrong type, an engine file that cannot be loaded, a choice that is not on offer, a deterministic run without a seed |
 | `404` | Unknown entry, document, action index, play session, job, artifact, or recorded run, world, engine or story (also when playing, continuing or retraining it, before any work starts). While no records database exists, the records endpoints answer `404` ("No records yet") |
+| `409` | An export for a platform this API has no runtime for, or whose runtime was built from other engine code (`GET /v1/exports/platforms` says why); an ANE AI export without a complete engine (`GET /v1/exports/engines`) |
 | `413` | An upload above its limit: configuration 2 MB (`max_config_upload_bytes`), engine 20 MB (`max_engine_upload_bytes`), model parameters 100 KB |
 | `422` | The request's shape, types or ranges |
 
@@ -421,9 +422,29 @@ one); `tests/test_studio_coverage.py` checks it.
   integrates in a game. `source` is `run` (with `run_id`, the latest if
   omitted, and an optional `generation` for that generation's champion),
   `memory` (the best remembered storyteller), or `game` (`session_id`). It
-  also takes `include_memory` and `name`, and returns `download_url`, `name`,
-  `source`, `score`, `genome`, and `world`. `GET /v1/runs` lists the exportable
+  also takes `include_memory`, `name` and `platform`, and returns `download_url`, `name`,
+  `source`, `score`, `genome`, `world`, `platform` and `code_version`. `GET /v1/runs` lists the exportable
   runs, and simulation responses carry their `run_id`.
+- `platform` says what runs the export: `python` (the default: the engine as
+  Python code), `windows-x64`, `linux-x64`, `macos-arm64` or `macos-x64` (the
+  **ANE AI**: a standalone program with the engine package, which a UNP
+  launches, drives over HTTP on 127.0.0.1 and stops; see [UNP.md](UNP.md)), or
+  `unity` (a `.unitypackage` with the Unity library, the engine package and
+  every runtime available). `GET /v1/exports/platforms` lists each platform
+  with `available` and, when it is not, the `reason`; a platform that is not
+  available answers `409`. The API takes the runtimes from `ANE_RUNTIMES_DIR`
+  (default `runtimes/`, `/app/runtimes` in the Docker image, filled by CI) and
+  uses one only when its `code_version` is the API's own.
+- **The ANE AI is made from a complete engine** (any platform but `python`): a
+  finished run's engine model or a loaded (also continued or retrained) engine,
+  with its own world, storyteller, training state and tag vectors.
+  `GET /v1/exports/engines` lists them, newest first (`engine_id`, `created_at`,
+  `source`, `score`, `run_id`, `resumable`); it is empty until a training
+  finishes or an engine is loaded. Export with `source: engine` (`engine_id`,
+  default the newest) or `source: run` (that run's engine, without
+  `generation`). A generation's champion, the remembered storyteller, a play
+  session's storyteller, or no complete engine yet answer `409`. The response
+  carries the `engine_id`.
 - `GET /v1/learning` returns the storytellers the AI remembers from earlier
   runs; `DELETE /v1/learning` forgets them.
 - `POST /v1/engines/load?profile=&stats_mode=&stats=&mission=` loads an engine model

@@ -1,0 +1,21 @@
+{
+  "name": "com.ane.ai",
+  "version": "1.0.0",
+  "displayName": "ANE AI (Adaptive Narrative Enabler)",
+  "description": "Runs an exported ANE AI next to your game: launches its standalone runtime (no Python), drives stories over its local HTTP protocol (world parameters, sessions, the player's state, save games) and stops it with the game. Desktop platforms (Windows, macOS, Linux) and the Editor.",
+  "unity": "2021.3",
+  "keywords": [
+    "narrative",
+    "story",
+    "ai",
+    "procedural"
+  ],
+  "dependencies": {},
+  "samples": [
+    {
+      "displayName": "Text adventure",
+      "description": "A minimal scene script: start a story, show its scene and choices, save, cancel and load.",
+      "path": "Samples~/TextAdventure"
+    }
+  ]
+}

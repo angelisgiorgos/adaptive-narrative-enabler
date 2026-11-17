@@ -125,3 +125,4 @@ messages:
   remembered_foe: "[LAST TIME] {npc} remembers you, and not fondly."  # {npc}
   mission_pool_done: "[MISSION] Every goal of this world has been achieved in this save game: explore freely."  # no goal is left for this save game (progression.goals_once)
   end_abandoned: "The traveler sets the story aside for now."  # a session ended by the player
+  resumed: "[RESUMED] The story goes on in the {location}."  # a session continued from the UNP's parameters (also {turns})

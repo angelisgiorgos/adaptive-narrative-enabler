@@ -1,0 +1,19 @@
+<!-- Drives a real ANE AI through the package's C# client (no Unity): JSON, start, the world,
+     a session with the player's state, sync, turns, save, cancel, load, the export importer,
+     stop. Usage: dotnet run -- <package folder> <python> (CI). -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../Runtime/AneJson.cs" />
+    <Compile Include="../../Runtime/AneAiClient.cs" />
+    <Compile Include="../../Runtime/AneAiProcess.cs" />
+    <Compile Include="../../Runtime/AneAiExportImport.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+</Project>

@@ -118,6 +118,7 @@ DEFAULT_MESSAGES = {
     "remembered_foe": "[LAST TIME] {npc} remembers you, and not fondly.",
     "mission_pool_done": "[MISSION] Every goal of this world has been achieved in this save game: explore freely.",
     "end_abandoned": "The traveler sets the story aside for now.",
+    "resumed": "[RESUMED] The story goes on in the {location}.",
 }
 
 
@@ -130,6 +131,7 @@ EXTRA_FIELDS = {
     "failure_arrest": {"action"},
     "talk_goal": {"npc"},
     "manhunt": {"location"},
+    "resumed": {"turns"},
 }
 
 

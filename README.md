@@ -40,10 +40,14 @@ adaptive-narrative-enabler/
 |   |-- sessions.py                 # Games created by evolution, bundles, play sessions, background jobs
 |   |-- records.py                  # Records database: runs, worlds, engines, stories, turns
 |   `-- export.py                   # Offline engine export for games
-|-- narrative_runtime/              # Offline runtime shipped in exports: embedding API, HTTP server, CLI
+|-- narrative_runtime/              # The ANE AI: embedding API, HTTP server for the UNP, CLI, catalogue, patches
+|-- packaging/                      # Standalone ANE AI builds (PyInstaller), test packages, protocol smoke test
+|-- unity/com.ane.ai/               # Unity library (C#): installs, starts, drives and stops the ANE AI
+|-- runtimes/                       # Standalone runtimes the API puts in exports (built by CI)
 |-- examples/worlds/                # Example storyworlds (world-only files): a frozen monastery, an orbital station
 |-- docs/
 |   |-- API.md                      # REST API: how it behaves, every endpoint, examples
+|   |-- UNP.md                      # The ANE AI for a UNP: launch, protocol, save/load, stop, Unity
 |   `-- CHANGELOG.md                # Every change, under Unreleased until released
 |-- config/
 |   |-- hyperparameters.yaml        # Evolution, fitness, LLM, editor, augmentation settings
@@ -442,13 +446,33 @@ as a ZIP that **runs offline** and **integrates in a game**:
   generation's champion), *Best remembered storyteller*, or *This game's
   storyteller*, and whether to include the learning memory.
 - **API:** `POST /v1/exports` with
-  `{"source": "run" | "memory" | "game", "run_id", "generation", "session_id", "include_memory", "name"}`
+  `{"source": "run" | "memory" | "game", "run_id", "generation", "session_id", "include_memory", "name", "platform"}`
   returns a `download_url`. `GET /v1/runs` lists the runs you can export, and
-  every simulation response carries its `run_id`.
+  every simulation response carries its `run_id`. `GET /v1/exports/platforms`
+  lists what it can be exported for.
 - **Terminal:** `python main.py` writes `runs/<timestamp>/offline_engine.zip`
   after every run.
 
-The ZIP contains only what the engine needs:
+**What runs it** (`platform`, *Runs on* in the studio):
+
+| `platform` | The download |
+| --- | --- |
+| `windows-x64`, `linux-x64`, `macos-arm64`, `macos-x64` | **The ANE AI**: a standalone program (`ane-ai`, no Python needed) with the engine package; a UNP (a game, a tool) starts it, talks to it over HTTP on 127.0.0.1 and stops it. Made from a complete engine. See [docs/UNP.md](docs/UNP.md) |
+| `unity` | A `.unitypackage`: the Unity library ([unity/com.ane.ai](unity/com.ane.ai/README.md)) with the engine package and the runtimes |
+| `python` (default) | The engine as Python code, described below |
+
+The ANE AI (a system or Unity) is made from a **complete engine**: the engine model a finished
+training saves, or a loaded engine, with its own world, storyteller, training state and tag
+vectors. It can be downloaded once one exists: in the studio, *Runs on* a system or Unity lists
+the complete engines (and the export stays off until there is one); in the API,
+`GET /v1/exports/engines` lists them and `POST /v1/exports` takes `source: engine` or
+`source: run` (409 otherwise). The Python version can be made from any storyteller.
+
+The standalone runtimes are built by CI for each system (`.github/workflows/runtime.yml`,
+`packaging/`), shipped in the API's Docker image and attached to each release. A platform is
+offered only when its runtime was built from the API's own engine code.
+
+The Python ZIP contains only what the engine needs:
 
 | Path | What it is |
 | --- | --- |
@@ -475,14 +499,19 @@ engine = NarrativeEngine("path/to/export")
 game = engine.new_game(profile="player-1", stats_mode="random")   # start="Tavern" picks the start
 view = game.view()               # location, start_location, description, npcs, items, actions, health, mission, stats, ...
 view = game.choose(view["actions"][0])                  # by name or index; view["turn"] = story text
-game.save("slot1.game")                                 # engine.load_game(...) continues later
+game.save("slot1.json")       # a JSON save game (ane.savegame/1); engine.load_game(...) continues it
 ```
 
-For Unity, Godot, Unreal, or web games, run `python run.py serve --port 8765`
-next to the game and use HTTP + JSON: `POST /games`,
-`POST /games/<id>/choose`, `GET /games/<id>`, `GET /games/<id>/transcript`,
-`DELETE /games/<id>`, `GET /engine`, and `POST /evolve`. The export's README
-has Unity (C#) and Godot (GDScript) snippets. `python run.py play` plays in a
+For Unity, Godot, Unreal, or web games, export the ANE AI for the player's
+system (or run `python run.py serve --port 0` next to the game) and use HTTP +
+JSON: the world as parameters (`GET /world`), sessions (`POST /games`,
+`POST /games/<id>/choose`, `GET /games/<id>`), the player's state and what
+happened in the game (`PATCH /games/<id>/player`, `POST /games/<id>/sync`),
+world content (`POST /world/patch`), save and load games
+(`POST /games/<id>/save`, `.../cancel`, `POST /games {"savegame": ...}`) and a
+clean stop (`POST /shutdown`). Every request carries the token from the ready
+line. [docs/UNP.md](docs/UNP.md) has the whole protocol, and C# and Python code;
+Unity games use the Unity library. The export's README has Unity (C#) and Godot (GDScript) snippets. `python run.py play` plays in a
 terminal. `python run.py evolve` keeps training offline from the shipped
 memory, and adopts the new storyteller only when it beats the current one
 on the same stories. Persistent variables and each profile's recent starts
@@ -1655,7 +1684,9 @@ A **session** is one story a player plays; a **save game** is a player profile.
 The studio shows a session's cast, its one-time actions and its report beside the game, ends
 a session (*End this session*), and shows the save game (*Save game*, with the reports and
 whether they reached the UNP). The offline engine has the same: `POST /games/<id>/end`,
-`GET /games/<id>/report`, `GET /progression/<profile>`.
+`GET /games/<id>/report`, `GET /progression/<profile>`. A UNP can also save a session
+(`POST /games/<id>/save`), cancel it (its status, outcome `suspended`, and its save game), and
+continue it later, exactly or from parameters it changed ([docs/UNP.md](docs/UNP.md)).
 
 ### Story beats: who matters, the climax, failures, travel, stakes, reveals
 
