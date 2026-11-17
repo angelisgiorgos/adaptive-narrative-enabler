@@ -110,11 +110,11 @@ namespace Ane.AI
                 }
                 case float f:
                     if (float.IsNaN(f) || float.IsInfinity(f)) builder.Append("null");  // not JSON numbers
-                    else builder.Append(f.ToString("R", CultureInfo.InvariantCulture));
+                    else WriteReal(builder, f.ToString("R", CultureInfo.InvariantCulture));
                     return;
                 case double d:
                     if (double.IsNaN(d) || double.IsInfinity(d)) builder.Append("null");
-                    else builder.Append(d.ToString("R", CultureInfo.InvariantCulture));
+                    else WriteReal(builder, d.ToString("R", CultureInfo.InvariantCulture));
                     return;
                 case Enum e:
                     WriteString(builder, e.ToString());
@@ -129,6 +129,13 @@ namespace Ane.AI
                     WriteString(builder, Convert.ToString(value, CultureInfo.InvariantCulture));
                     return;
             }
+        }
+
+        /// <summary>A real number stays one: 1.0 is written "1.0", not "1" (which reads back as an integer).</summary>
+        static void WriteReal(StringBuilder builder, string text)
+        {
+            builder.Append(text);
+            if (text.IndexOfAny(new[] { '.', 'E', 'e' }) < 0) builder.Append(".0");
         }
 
         static bool IsNumber(IConvertible value)
