@@ -7,6 +7,36 @@ that introduces them.
 
 ## [Unreleased]
 
+### The studio, the API and the ANE AI
+
+#### Added
+- The studio and the API do for their games what the ANE AI does for a UNP: a session's
+  parameters (`GET /v1/sessions/{id}/state`), setting the player (`PATCH .../player`), what
+  happened in the UNP's game (`POST .../sync`), save games (`GET .../savegame`,
+  `POST /v1/sessions/load`: exactly, or rebuilt from the parameters; save games go both ways
+  with the ANE AI) and the world as the ANE AI sends it (`GET /v1/world/catalogue`). In the
+  studio: *4 · Simulate & play → This session as a UNP sees it*, and in the export, where the
+  ANE AI runs here (each runtime, or why not) and the world catalogue as a file.
+- Tests: the ANE AI's command line (`info`; `play` with scripted input; `evolve` and
+  `--resume`; `serve` with a ready file, without a token, for one web origin, with offline
+  training, on a port in use, on SIGTERM, and with the Unity library's arguments); the Unity
+  library against the ANE AI (every route it calls exists and every route is called, the
+  fields it sends, platforms and programs, its package and assemblies, a newer export keeps
+  the asset GUIDs, the package it ships runs); the new API endpoints and studio views; a
+  read-only records folder.
+
+#### Fixed
+- Docker: the records folder mounted from the host is not writable by the container's user
+  (uid 10001): recording turned itself off, but reading the records still wrote to the database
+  (`PRAGMA journal_mode`), so every records list answered 500 and the studio did not start.
+  Records this process cannot write are now opened read only, `GET /v1/records` says why
+  recording is off (`reason`), and the studio starts without readable records.
+- Studio games had the shared random generator, so they could not be saved: each now has its
+  own, drawn from the shared one (seeded runs stay reproducible).
+- `python run.py play` / `ane-ai play` stops quietly when its input ends.
+- A player field or event amount that is not a whole number is refused with its name, not
+  Python's message.
+
 ### The ANE AI
 
 #### Fixed

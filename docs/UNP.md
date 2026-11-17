@@ -516,6 +516,15 @@ The library keeps Python inside the standalone program, where Unity never sees i
 CI compiles the library outside Unity (`Tests~/Build`, against stubs of the Unity API) and
 drives a real ANE AI through the C# client (`Tests~/Protocol`).
 
+## Trying it in the studio
+
+The studio and the REST API offer the same session operations on their own games, so an
+integration can be tried before an export: *4 · Simulate & play → This session as a UNP sees it*
+(save and continue, the parameters, set the player, what happened), and
+`GET /v1/sessions/{id}/state`, `PATCH /v1/sessions/{id}/player`, `POST /v1/sessions/{id}/sync`,
+`GET /v1/sessions/{id}/savegame`, `POST /v1/sessions/load` and `GET /v1/world/catalogue`
+([API.md](API.md)). Save games go both ways between the studio and the ANE AI.
+
 ## Versions and compatibility
 
 - `protocol` (in the ready line, `/health` and `/engine`) is the version of this protocol: 1. A

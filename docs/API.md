@@ -167,6 +167,20 @@ Errors are JSON: `{"detail": "..."}` (or the list of `422`).
   `GET /v1/progression?profile=` the save game (goals achieved, playthroughs, session
   reports with their `delivery`), and `POST /v1/progression/reports/{id}/send?profile=`
   sends a kept report again.
+- A session as a UNP sees it, as the exported ANE AI does ([UNP.md](UNP.md)), so an
+  integration can be tried here: `GET /v1/sessions/{id}/state` (its parameters,
+  `ane.session_state/1`), `PATCH /v1/sessions/{id}/player` (set `stat_points`,
+  `stat_changes`, `inventory`, `add_items`, `remove_items`, `coins`, `health`, `max_health`,
+  `variables`; set, not played), `POST /v1/sessions/{id}/sync` (what happened in the UNP's
+  game: one event or `{"events": [...]}`: `action_done`, `item_gained`, `item_lost`,
+  `npc_removed`, `location_visited`, `coins_changed`, `health_changed`), and save games:
+  `GET /v1/sessions/{id}/savegame` (`ane.savegame/1`; the session goes on) and
+  `POST /v1/sessions/load` (`{"savegame", "profile", "session_id"}`: a new session that goes
+  on exactly, `restored: exact`, or is rebuilt from the parameters, `restored: parameters`
+  with a `note`; a save game without a snapshot takes the storyteller of `session_id`). A save
+  game of the ANE AI loads here, and one from here in the ANE AI. Fields that do not fit the
+  world answer `400`. `GET /v1/world/catalogue` is the world as the ANE AI sends it
+  (`ane.world/1`).
 - A finished story has `ended: true` and offers no more actions.
 - Real play saves persistent variables to its `profile` (`save_on` in the
   story rules). Evaluated stories during evolution do not
