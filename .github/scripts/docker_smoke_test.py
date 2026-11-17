@@ -7,11 +7,14 @@ Only the standard library is used, so it runs on any CI runner or host.
     python .github/scripts/docker_smoke_test.py --api http://127.0.0.1:8004 --ui http://127.0.0.1:8003
 """
 import argparse
+import io
 import json
+import os
 import sys
 import time
 import urllib.error
 import urllib.request
+import zipfile
 
 
 def request(method, url, body=None, timeout=60):
@@ -51,6 +54,8 @@ def main():
     parser.add_argument("--api", default="http://127.0.0.1:8004")
     parser.add_argument("--ui", default="http://127.0.0.1:8003", help="the studio's URL ('' to skip it)")
     parser.add_argument("--wait", type=int, default=300, help="seconds to wait for each service")
+    parser.add_argument("--export-platform", help="also export an ANE AI for this platform (e.g. linux-x64)...")
+    parser.add_argument("--export-to", help="...and unzip it here (execute bits kept)")
     args = parser.parse_args()
     api = args.api.rstrip("/")
 
@@ -88,6 +93,29 @@ def main():
 
     status, text = request("POST", f"{api}/v1/sessions/{game['session_id']}/actions", {"action": game["actions"][0]})
     check("one turn is played", status == 200 and json.loads(text)["last_turn"], text)
+
+    status, text = request("GET", f"{api}/v1/exports/platforms")
+    check("export platforms", status == 200 and json.loads(text)["platforms"][0]["platform"] == "python", text)
+    if args.export_platform:
+        available = {p["platform"]: p for p in json.loads(text)["platforms"]}
+        check(f"the {args.export_platform} runtime is in the image",
+              available.get(args.export_platform, {}).get("available"), text)
+        status, text = request("POST", f"{api}/v1/exports", {"source": "memory", "platform": args.export_platform})
+        check("no ANE AI from a storyteller alone (a complete engine only)", status == 409, text)
+        status, text = request("GET", f"{api}/v1/exports/engines")
+        check("the run's engine is a complete engine", status == 200 and json.loads(text)["engines"], text)
+        status, text = request("POST", f"{api}/v1/exports", {"source": "run", "platform": args.export_platform,
+                                                            "name": "ane-ai-smoke"}, timeout=300)
+        check(f"export an ANE AI for {args.export_platform}", status == 200, text)
+        with urllib.request.urlopen(api + json.loads(text)["download_url"], timeout=300) as response:
+            archive = zipfile.ZipFile(io.BytesIO(response.read()))
+        for info in archive.infolist():
+            path = archive.extract(info, args.export_to)
+            mode = info.external_attr >> 16
+            if mode and os.name != "nt":
+                os.chmod(path, mode & 0o777)
+        check("the export holds the standalone program",
+              any(name.endswith("/ane-ai") or name.endswith("/ane-ai.exe") for name in archive.namelist()))
 
     if args.ui:
         ui = args.ui.rstrip("/")

@@ -31,6 +31,7 @@ MANIFEST
 #  for example when installing using the "pre-built egg" mechanism.
 *.manifest
 *.spec
+!packaging/ane_ai.spec
 
 # Installer logs
 pip-log.txt
@@ -170,3 +171,10 @@ saves/
 .gradio/
 
 artifacts/
+# Standalone runtimes (built by CI or downloaded from a release) and their build info
+runtimes/*.zip
+core_engine/_build_info.py
+
+# Build output of the Unity library checks (unity/com.ane.ai/Tests~)
+unity/**/bin/
+unity/**/obj/

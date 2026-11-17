@@ -70,12 +70,50 @@ jobs:
           path: test-logs/
           retention-days: 7
 
+  runtime:
+    name: ANE AI runtime
+    uses: ./.github/workflows/runtime.yml
+
+  unity:
+    name: Unity library (C#)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+
+      - name: A test engine package, run with Python
+        run: |
+          python -m pip install "pyyaml>=6,<7" "numpy>=1.26,<3"
+          python packaging/make_package.py --out "$RUNNER_TEMP/pkg" --with-code
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Compile the library (Runtime, Editor, sample) outside Unity
+        run: dotnet build "unity/com.ane.ai/Tests~/Build/AneAi.Build.csproj"
+
+      - name: Drive a real ANE AI through the C# client
+        run: dotnet run --project "unity/com.ane.ai/Tests~/Protocol/AneAi.Protocol.Tests.csproj" -- "$RUNNER_TEMP/pkg" "$(which python)"
+
   docker:
     name: Docker image (API and studio)
+    needs: runtime
     runs-on: ubuntu-latest
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v5
+
+      - name: The standalone runtimes the image exports (built and tested by the runtime job)
+        uses: actions/download-artifact@v5
+        with:
+          pattern: ane-runtime-*
+          path: runtimes
+          merge-multiple: true
 
       - name: Make room for the image (PyTorch with CUDA, about 10 GB)
         run: |
@@ -103,8 +141,13 @@ jobs:
       - name: Start the API and the studio (waits for their health checks)
         run: docker compose up --detach --wait --wait-timeout 600
 
-      - name: Smoke-test the API and the studio
-        run: python3 .github/scripts/docker_smoke_test.py --api http://127.0.0.1:8004 --ui http://127.0.0.1:8003
+      - name: Smoke-test the API and the studio, and export a standalone ANE AI for Linux
+        run: |
+          python3 .github/scripts/docker_smoke_test.py --api http://127.0.0.1:8004 --ui http://127.0.0.1:8003 \
+            --export-platform linux-x64 --export-to "$RUNNER_TEMP/ane-ai"
+
+      - name: Drive the exported ANE AI like a UNP (no Python of its own, 127.0.0.1 only)
+        run: python3 packaging/smoke_test.py --folder "$(ls -d "$RUNNER_TEMP"/ane-ai/*/ | head -n 1)"
 
       - name: Check that a story was recorded
         run: |
