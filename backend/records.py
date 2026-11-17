@@ -114,6 +114,21 @@ def exports_dir() -> Path:
     return directory() / "exports"
 
 
+def writable() -> bool:
+    """Whether this process can write the records database: its folder (SQLite keeps its journal
+    there) and, when they exist, the database and its journal files."""
+    path = database_path()
+    files = [path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")]
+    return os.access(directory(), os.W_OK) and all(not f.exists() or os.access(f, os.W_OK) for f in files)
+
+
+def disabled_reason():
+    """Why recording is off (None when it is on)."""
+    if os.environ.get("ANE_RECORDS", "on").strip().lower() in ("0", "off", "false", "no"):
+        return "ANE_RECORDS is off"
+    return None if enabled() else _DISABLED_REASON.get(str(directory()))
+
+
 def enabled() -> bool:
     """Whether recording is on and the records directory is usable."""
     if os.environ.get("ANE_RECORDS", "on").strip().lower() in ("0", "off", "false", "no"):
@@ -124,8 +139,10 @@ def enabled() -> bool:
     try:
         root.mkdir(parents=True, exist_ok=True)
         models_dir().mkdir(parents=True, exist_ok=True)
-        if not os.access(root, os.W_OK):
-            raise PermissionError(f"{root} is not writable")
+        if not writable():
+            raise PermissionError(f"{database_path()} or its folder is not writable by this user "
+                                  f"(uid {os.getuid() if hasattr(os, 'getuid') else '?'}); the records "
+                                  "already there can still be read")
     except OSError as exc:
         _DISABLED_REASON[str(root)] = str(exc)
         LOG.warning("Recording is off: the records directory %s cannot be used (%s).", root, exc)
@@ -133,10 +150,38 @@ def enabled() -> bool:
     return True
 
 
+def _open_readonly(path):
+    """The database, for reading only: this process cannot write it (e.g. a container user
+    that does not own a mounted records folder). With a WAL database in a folder it cannot
+    write, SQLite cannot set up its shared memory, so the file is then read as immutable."""
+    uri = Path(path).resolve().as_uri()
+    failure = None
+    for options in ("mode=ro", "mode=ro&immutable=1"):
+        connection = None
+        try:
+            connection = sqlite3.connect(f"{uri}?{options}", uri=True, timeout=30)
+            connection.execute("SELECT count(*) FROM sqlite_master").fetchone()
+            return connection
+        except sqlite3.Error as exc:
+            failure = exc
+            if connection is not None:
+                connection.close()
+    raise LookupError(f"The records database {path} cannot be read: {failure}")
+
+
 @contextlib.contextmanager
 def connect():
-    """A connection to the records database (schema created on first use)."""
+    """A connection to the records database (schema created on first use); read only when this
+    process cannot write it."""
     path = database_path()
+    if path.exists() and not writable():
+        connection = _open_readonly(path)
+        connection.row_factory = sqlite3.Row
+        try:
+            yield connection
+        finally:
+            connection.close()
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=30)
     connection.row_factory = sqlite3.Row

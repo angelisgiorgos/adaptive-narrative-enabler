@@ -259,18 +259,25 @@ def _start_game(genome, profile, points, mode, origin="studio", run_id=None, eng
         raise AuthoringError(f"The mission '{world.missions[mission].title}' is not open to profile '{profile}' "
                              "now (it was already achieved in this save game, or its enabled_if does not hold).")
     try:
-        player = GameState(world, genome, store=VariableStore(), profile=profile,
+        # Its own dice (drawn from the global, seeded ones: reproducible runs stay reproducible),
+        # so that its save game can carry them.
+        player = GameState(world, genome, store=VariableStore(), profile=profile, rng=random.Random(random.getrandbits(64)),
                            stats=points, stats_mode=mode, mission=mission)
     except ValueError as exc:
         if mission is None:
             raise
         raise AuthoringError(str(exc)) from exc
+    return _register_session(player, origin, run_id=run_id, engine_id=engine_id,
+                             parameters={"profile": profile, "stat_points": points, "stats_mode": mode,
+                                         "mission": mission}), player
+
+
+def _register_session(player, origin, run_id=None, engine_id=None, parameters=None):
+    """Make a game a play session (recorded as it is played); returns its token."""
     token = uuid.uuid4().hex
     player.session_id = token  # the session's id in its report (core_engine/progression.py)
-    story_id = records.record_story(
-        player, origin, "play", run_id=run_id, engine_id=engine_id, session_id=token,
-        parameters={"profile": profile, "stat_points": points, "stats_mode": mode, "mission": mission},
-    )
+    story_id = records.record_story(player, origin, "play", run_id=run_id, engine_id=engine_id, session_id=token,
+                                    parameters=parameters or {})
     with SESSION_LOCK:
         while len(SESSIONS) >= MAX_WEB_SESSIONS:
             dropped = next(iter(SESSIONS))
@@ -278,7 +285,7 @@ def _start_game(genome, profile, points, mode, origin="studio", run_id=None, eng
             SESSION_RECORDS.pop(dropped, None)
         SESSIONS[token] = player
         SESSION_RECORDS[token] = story_id
-    return token, player
+    return token
 
 
 def load_best_engine(uploaded_file, model_parameters_file=None, profile=None, stats_choice=None, stats_points=None,
@@ -768,6 +775,104 @@ def play_action(token: str, selected_action: str):
         scene, next_actions = _scene(state)
         records.update_story(SESSION_RECORDS.get(token), state)
     return scene, next_actions, turn_text
+
+
+# ---- a session as the UNP sees it (the ANE AI's protocol, for play sessions) ----------------------
+# The session's parameters, the player's state and what happened in the game set from outside, and
+# save games (ane.savegame/1): the same as the exported ANE AI does (core_engine/resume.py,
+# savegame.py), so a UNP integration can be tried in the studio and the API.
+
+def _session(token):
+    state = SESSIONS.get(token)
+    if state is None:
+        raise LookupError("Play session not found.")
+    return state
+
+
+def _parameter_errors(work):
+    from core_engine import resume, savegame
+
+    try:
+        return work()
+    except (resume.ParameterError, savegame.SaveGameError) as exc:
+        raise AuthoringError(str(exc)) from exc
+
+
+def session_parameters(token):
+    """The session's parameters (ane.session_state/1): place, path, items, stats, mission stage, ..."""
+    from core_engine import resume
+
+    with SESSION_LOCK:
+        state = _session(token)
+        _scene(state)  # the scene as the player sees it
+        return resume.parameters(state)
+
+
+def update_player(token, player):
+    """Set the player's stats, items, coins, health or variables, as a UNP does; returns the fields set."""
+    from core_engine import resume
+
+    with SESSION_LOCK:
+        state = _session(token)
+        applied = _parameter_errors(lambda: resume.apply_player(state, dict(player or {})))
+        records.update_story(SESSION_RECORDS.get(token), state)
+        return applied
+
+
+def sync_session(token, events):
+    """Take what happened in the UNP's game into the session: one event or {"events": [...]}."""
+    from core_engine import resume
+
+    events = events.get("events") if isinstance(events, dict) and "events" in events else events
+    events = events if isinstance(events, list) else [events]
+    with SESSION_LOCK:
+        state = _session(token)
+        taken = _parameter_errors(lambda: [resume.sync(state, dict(event or {})) for event in events])
+        records.update_story(SESSION_RECORDS.get(token), state)
+        return taken
+
+
+def session_savegame(token):
+    """The session's save game (ane.savegame/1): its parameters and an exact snapshot."""
+    from core_engine import savegame
+
+    with SESSION_LOCK:
+        state = _session(token)
+        _scene(state)
+        return savegame.make(state, {"package": "studio", "created": None})
+
+
+def load_savegame(doc, profile=None, session_id=None, origin="studio"):
+    """Continue a save game as a new play session: exactly when its snapshot fits this engine and
+    world, else rebuilt from its parameters. Its storyteller comes from the snapshot, or (a save
+    game of parameters only) from the play session ``session_id``. Returns (token, how, note)."""
+    from core_engine import savegame
+
+    if not isinstance(doc, dict) or doc.get("format") != savegame.FORMAT:
+        raise AuthoringError(f"Not a save game: send an {savegame.FORMAT} document.")
+    traits = (doc.get("snapshot") or {}).get("genome")
+    if traits:
+        genome = Genome.from_traits(traits)
+    else:
+        with SESSION_LOCK:
+            if session_id not in SESSIONS:
+                raise AuthoringError("This save game has no snapshot, so no storyteller: give the `session_id` of a "
+                                     "play session whose storyteller continues it.")
+            genome = SESSIONS[session_id].genome
+    store = VariableStore()
+    state, how, note = _parameter_errors(lambda: savegame.load(doc, genome, store=store, profile=profile or None))
+    if state.ended:
+        raise AuthoringError("The save game's session has ended: start a new one.")
+    token = _register_session(state, origin, parameters={"profile": state.profile, "savegame": how})
+    return token, how, note
+
+
+def world_catalogue():
+    """The world as the ANE AI sends it to a UNP (ane.world/1): every entity with all its fields."""
+    from narrative_runtime.world import starting_locations, world_catalogue as catalogue
+
+    active = config.as_dict()
+    return catalogue(active, starting_locations(active), revision=0, engine="studio")
 
 
 # ---- importing artifacts into the records ---------------------------------------------------
