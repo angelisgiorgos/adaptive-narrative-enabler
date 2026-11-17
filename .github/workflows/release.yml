@@ -1,0 +1,36 @@
+# A release (a tag v*): the standalone ANE AI runtimes for every system are built, tested and
+# attached to the GitHub release, so a deployment can put them in runtimes/ (ANE_RUNTIMES_DIR).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    uses: ./.github/workflows/runtime.yml
+
+  publish:
+    name: Attach the runtimes to the release
+    needs: runtime
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: ane-runtime-*
+          path: runtimes
+          merge-multiple: true
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -l runtimes
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" runtimes/*.zip --clobber

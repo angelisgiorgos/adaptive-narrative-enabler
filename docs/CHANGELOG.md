@@ -7,6 +7,69 @@ that introduces them.
 
 ## [Unreleased]
 
+### The ANE AI: a standalone engine a UNP launches, drives and stops
+
+#### Added
+- Standalone ANE AI per system (requirements 1.1–1.4): `POST /v1/exports` takes `platform`
+  (`windows-x64`, `linux-x64`, `macos-arm64`, `macos-x64`, `unity`, or `python` as before) and
+  `GET /v1/exports/platforms` lists what can be exported now; the studio's export has *Runs on*.
+  A standalone export is a program (`ane-ai`, PyInstaller onedir, no Python needed) with the
+  engine package; a platform whose runtime is missing or was built from other engine code
+  answers 409. `packaging/` builds and smoke-tests a runtime; `.github/workflows/runtime.yml`
+  builds the four on every push, the API's Docker image ships them (`ANE_RUNTIMES_DIR`), and
+  `release.yml` attaches them to `v*` releases.
+- The ANE AI is made only from a complete engine (a finished run's engine model, or a loaded,
+  continued or retrained engine), with that engine's own world, storyteller, training state and
+  tag vectors, and can be downloaded once one exists: `GET /v1/exports/engines` lists them;
+  `POST /v1/exports` with a standalone platform or `unity` takes `source: engine` (default the
+  newest) or `source: run` and answers 409 for a generation's champion, the remembered
+  storyteller, a play session or when there is none yet. In the studio, *Runs on* a system or
+  Unity shows the complete engines (the newest after each training or load) and keeps the
+  export off until one exists. The Python export is unchanged.
+- A launch contract: `ane-ai serve --port 0 --parent-pid P --exit-on-stdin-eof [--ready-file]
+  [--unp-url] [--data-dir]`; one JSON ready line on stdout (`url`, `port`, `pid`,
+  `code_version`, `protocol`), lifecycle events only on stdout, `{"event": "error"}` and exit 1
+  when it cannot start. Profiles, saves and the UNP's content go to the data folder (the user's
+  app-data folder by default), never next to the program.
+- A clean stop: `POST /shutdown` saves every session (`data-dir/suspended/`), delivers events
+  and exits 0; the same on SIGTERM/SIGINT/SIGHUP/Ctrl+Break, when the UNP's process ends and
+  when stdin closes. `GET /health`.
+- ANE → UNP (1.5.1): `GET /world` and `GET /world/<kind>/<name>` (`ane.world/1`: every
+  location, NPC, item, event and mission with all its fields, the stats, variables, routes and
+  starts), `GET /games/<id>/state` (the session's parameters, `ane.session_state/1`), and events
+  POSTed to the UNP (`ane.event/1`: `session.started`, `session.cancelled`, `engine.stopping`).
+- UNP → ANE (1.5.2): `player` in `POST /games` and `PATCH /games/<id>/player` (stats, items,
+  coins, health, variables: set, never played); `POST /games/<id>/sync` (actions done, items
+  gained or lost, NPCs removed, places visited, coins and health; goals checked afterwards);
+  `POST /world/patch` (upsert, update, delete, actions, tags, stats), checked like the studio
+  checks a world (422 with every problem), kept as world revisions in the data folder or
+  written into the package; `POST /world/reset`.
+- Save and load games (1.5.3, 1.5.4): `ane.savegame/1` (JSON: the parameters, an exact
+  snapshot, its checksum and the engine's fingerprints; `core_engine/snapshot.py`,
+  `savegame.py`). `POST /games/<id>/save`; `POST /games/<id>/cancel` returns the session's
+  status (outcome `suspended`, kept in the profile) and its save game; `POST /games
+  {"savegame"}` continues exactly when the snapshot fits (the UNP's changed parameters applied
+  on top), else rebuilds the session from the parameters (`core_engine/resume.py`: nothing
+  narrated or paid twice). `Game.save`/`load_game` write and read it; old pickles still load
+  from local files, with a warning.
+- Security of the local server: a bearer token on every request (`ANE_RUNTIME_TOKEN`, or one
+  made and given in the ready line), only `Host: 127.0.0.1|localhost|[::1]:<port>`, no CORS
+  unless `--allow-origin`, JSON bodies up to 8 MB, `/evolve` only with `--allow-evolve`.
+- Unity library `unity/com.ane.ai` (C#, Unity 2021.3+, no dependencies): installs the runtime
+  from StreamingAssets, starts it with the game and stops it on quit (`AneAiBehaviour`,
+  `AneAiProcess`), a client with a method per endpoint (`AneAiClient`), its own JSON
+  (`AneJson`), an Editor importer for standalone exports, and a text-adventure sample. The
+  `unity` export is a `.unitypackage` with the library, the engine package and every runtime
+  available (GUIDs fixed per path). CI compiles it outside Unity and drives a real ANE AI with it.
+- `core_engine/content_rules.py`: the world checks as pure functions, shared by the studio's
+  backend and the ANE AI. `core_engine/version.py`: the engine code's version.
+- `docs/UNP.md`: the integration guide (lifecycle, every endpoint, parameters, save game,
+  events, errors, C# and Python code, Unity).
+
+#### Changed
+- The offline server answers only authorised local requests (it sent `CORS: *` and took
+  any request before). Existing integrations add `Authorization: Bearer <token>`.
+
 ### Sessions, the save game and the UNP
 
 #### Added

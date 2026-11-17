@@ -1,0 +1,58 @@
+# The standalone ANE AI runtime: built with PyInstaller on every system it runs on, then driven
+# like a UNP would drive it (packaging/smoke_test.py) before it is kept as an artifact.
+# Called by ci.yml (its Docker image ships the runtimes) and release.yml (tags attach them).
+name: ANE AI runtime
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Runtime ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-22.04, target: linux-x64}       # an older glibc: runs on more Linux systems
+          - {os: windows-2022, target: windows-x64}
+          - {os: macos-14, target: macos-arm64}
+          - {os: macos-15-intel, target: macos-x64}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"   # the studio's Python: the runtime plays exactly like it
+
+      - name: Build environment (only what the runtime needs)
+        run: python -m pip install "pyinstaller>=6,<7" "pyyaml>=6,<7" "numpy>=1.26,<3"
+
+      - name: Build the runtime
+        run: python packaging/build_runtime.py --target ${{ matrix.target }} --dist dist
+
+      - name: Put a test engine package next to it
+        shell: python
+        run: |
+          import subprocess, sys, zipfile, os
+          subprocess.run([sys.executable, "packaging/make_package.py", "--out", "smoke"], check=True)
+          with zipfile.ZipFile("dist/ane-runtime-${{ matrix.target }}.zip") as zipped:
+              for info in zipped.infolist():
+                  path = zipped.extract(info, "smoke")
+                  mode = info.external_attr >> 16
+                  if mode and os.name != "nt":
+                      os.chmod(path, mode & 0o777)
+
+      - name: Drive it like a UNP (offline, 127.0.0.1 only)
+        run: python packaging/smoke_test.py --folder smoke
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: ane-runtime-${{ matrix.target }}
+          path: dist/ane-runtime-${{ matrix.target }}.zip
+          retention-days: 30
