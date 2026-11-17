@@ -47,7 +47,7 @@ from utils.tag_similarity import export_tag_vectors
 
 from .errors import AuthoringError
 from . import records
-from .sessions import ENGINES, RUNS, SESSIONS, SESSION_LOCK
+from .sessions import ENGINES, RUNS, SESSIONS, SESSION_LOCK, kept_engines
 from .store import PROJECT_ROOT
 
 RUNTIME_CODE = [
@@ -80,26 +80,40 @@ NO_ENGINE = ("No complete engine yet: the ANE AI is made from a complete engine 
 
 
 def complete_engines(limit=50):
-    """The complete engines an ANE AI can be made from, newest first: recorded engines with their
-    model file (a run's engine, a loaded, continued or retrained one; not a generation's champion)
-    and this process's (also when recording is off)."""
+    """The complete engines (finished runs) an export can be made from, newest first: recorded
+    engines with their model file (a run's engine, a loaded, continued or retrained one; not a
+    generation's champion), and, when recording is off, those kept with the saves and this
+    process's. Each: engine_id, created_at, source, score, run_id, resumable, generations, loaded."""
     found = {}
-    if records.enabled():
+    if records.readable():
         try:
             rows = records.list_engines(limit=500)
         except LookupError:  # no records yet
             rows = []
         for row in rows:
-            if row.get("model_path"):
+            if row.get("model_path") and Path(row["model_path"]).is_file():
                 found[row["id"]] = {"engine_id": row["id"], "created_at": row["created_at"], "source": row["source"],
                                     "score": row["score"], "run_id": row["run_id"],
-                                    "resumable": bool(row.get("resumable"))}
+                                    "resumable": bool(row.get("resumable")),
+                                    "generations": row.get("trained_generations")}
     with SESSION_LOCK:
         kept = list(ENGINES.values())
-    for info in kept:
+    for info in kept_engines() + kept:
         if info["engine_id"] not in found and Path(info["model_path"]).is_file():
             found[info["engine_id"]] = {k: v for k, v in info.items() if k != "model_path"}
+    for info in found.values():
+        info.setdefault("generations", None)
+        info["loaded"] = not info.get("run_id")
     return sorted(found.values(), key=lambda e: e["created_at"] or "", reverse=True)[:limit]
+
+
+def _kept_engine(engine_id):
+    """This process's or the saves' record of a complete engine (with its model_path), or None."""
+    with SESSION_LOCK:
+        kept = ENGINES.get(engine_id)
+    if kept is None:
+        kept = next((e for e in reversed(kept_engines()) if e.get("engine_id") == engine_id), None)
+    return kept if kept is not None and Path(kept["model_path"]).is_file() else None
 
 
 def complete_engine(source="run", run_id=None, generation=None, engine_id=None):
@@ -127,10 +141,9 @@ def complete_engine(source="run", run_id=None, generation=None, engine_id=None):
             raise EngineRequired(NO_ENGINE)
         engine_id = newest[0]["engine_id"]
 
-    with SESSION_LOCK:
-        kept = ENGINES.get(engine_id)
+    kept = _kept_engine(engine_id)
     record = None
-    if records.enabled():
+    if records.readable():
         try:
             record = records.engine_record(engine_id)
         except LookupError:
@@ -144,7 +157,7 @@ def complete_engine(source="run", run_id=None, generation=None, engine_id=None):
         except (LookupError, ValueError) as exc:
             if kept is None:
                 raise AuthoringError(str(exc)) from exc
-    if kept is not None and Path(kept["model_path"]).is_file():
+    if kept is not None:
         return EngineModel.load(kept["model_path"])
     raise EngineRequired(f"No complete engine `{engine_id}` here (GET /v1/exports/engines lists them).")
 
@@ -466,19 +479,22 @@ def export_engine(source="run", run_id=None, generation=None, token=None, includ
         else:
             runtime = _runtime_info(platform)
     active = vectors = None
-    if platform in ANE_AI:
-        if model is None:
-            if genome is not None:
-                raise EngineRequired("The ANE AI is made from a complete engine: pass its engine model, not a "
-                                     "storyteller alone.")
-            model = complete_engine(source, run_id, generation, engine_id)
+    if platform in ANE_AI and model is None:
+        if genome is not None:
+            raise EngineRequired("The ANE AI is made from a complete engine: pass its engine model, not a "
+                                 "storyteller alone.")
+        model = complete_engine(source, run_id, generation, engine_id)
+    elif model is None and genome is None and (source == "engine" or (source == "run" and generation in (None, ""))):
+        try:  # a finished run (its engine model), as for the ANE AI
+            model = complete_engine(source, run_id, None, engine_id)
+        except EngineRequired:
+            model = None  # a generation's champion, or no run's engine: the storyteller, as before
+    if model is not None:
         genome, score, learning = model.genome, model.score, model.learning
         checkpoint, memory, engine_id = model.checkpoint, model.memory, model.id
-        description = model.source or f"engine {model.id}"
+        description = "best of the run" if source == "run" else (model.source or f"engine {model.id}")
         active = dict(model.config)  # its own world and tuning, whatever the studio has active now
         vectors = model.tag_vectors or None
-    elif model is not None:
-        raise AuthoringError("`model` is for ANE AI exports (a standalone platform or unity).")
     elif genome is not None:
         description = description or "evolved storyteller"
     else:

@@ -917,6 +917,17 @@ def _session_call(session_id, work):
         _fail(exc)
 
 
+@api.get("/v1/simulations/work", tags=["Evolution and play"])
+def simulation_work(candidate_count: int = 8, generations: int = 5, simulation_steps: int = 16, episodes: int = 3):
+    """What a run would ask for before it starts: ``work`` (simulated turns at most:
+    storytellers x generations x stories per storyteller x turns per story, whole stories counted
+    at ``narrative_end.max_actions``), the ``limit`` (app parameter ``max_simulation_work``),
+    ``allowed`` and ``story_turns``."""
+    if min(candidate_count, generations, simulation_steps, episodes) < 1:
+        raise HTTPException(status_code=422, detail="Every value must be at least 1.")
+    return sessions.training_work(candidate_count, generations, episodes, simulation_steps)
+
+
 @api.get("/v1/sessions/{session_id}/state", tags=["Evolution and play"])
 def get_session_parameters(session_id: str):
     """The session's parameters (ane.session_state/1), as the exported ANE AI sends them to a UNP:

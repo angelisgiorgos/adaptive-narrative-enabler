@@ -723,6 +723,22 @@ def play_action_ui(token, selected_action):
         quest_markdown(state.get("quest")), people_markdown(state)
 
 
+def run_work_ui(candidate_count, generations, simulation_steps, episodes):
+    """How much simulation a run asks for, against the limit, before it starts."""
+    try:
+        asked = API.get("/v1/simulations/work", candidate_count=int(candidate_count or 1),
+                        generations=int(generations or 1), simulation_steps=int(simulation_steps or 1),
+                        episodes=int(episodes or 1))
+    except (APIError, TypeError, ValueError):
+        return ""
+    line = (f"This run: up to **{asked['work']:,}** simulated turns ({asked['story_turns']} per story) of the "
+            f"**{asked['limit']:,}** allowed.")
+    if not asked["allowed"]:
+        line = ("⚠ " + line + " It will be refused: use fewer storytellers, generations or stories, or raise "
+                "`max_simulation_work` in *5 · App parameters*.")
+    return line
+
+
 def _play_view(state):
     """The play area for a play state: scene, choices, last turn, quest, people."""
     return state["scene"], _choices(state["actions"], state.get("choices")), state["last_turn"], \
@@ -905,8 +921,9 @@ def check_points_text(points_text):
     return f"✅ {sum(result['points'].values())} of {result['budget']['total_points']} points · values: {values}"
 
 
-EXPORT_SOURCES = {
-    "This run's best": "run",
+FINISHED_RUNS = "The chosen finished run(s)"
+EXPORT_SOURCES = {  # what the Python version can be made from; the ANE AI only from finished runs
+    FINISHED_RUNS: "engine",
     "A generation of this run": "run",
     "Best remembered storyteller": "memory",
     "This game's storyteller": "game",
@@ -924,67 +941,91 @@ def export_platform_choices():
               + ("" if p["available"] else " (not available here)")), p["platform"]) for p in listed]
 
 
-# What an ANE AI (a standalone program or the Unity package) is made from: a complete engine.
+# What an ANE AI (a standalone program or the Unity package) is made from: a finished run (its engine).
 ANE_AI_PLATFORMS = ("windows-x64", "linux-x64", "macos-arm64", "macos-x64", "unity")
-NO_COMPLETE_ENGINE = ("**No complete engine yet.** The ANE AI is made from a complete engine: finish a training "
-                      "(*Run simulation*), or load an engine, then export it here.")
+NO_COMPLETE_ENGINE = ("**No finished run yet.** An export is made from a finished run (its engine: world, "
+                      "storyteller, training state): run a training (*Evolve storytellers & start game*), or load an "
+                      "engine, then export it here.")
 
 
-def ane_engine_choices():
-    """(label, engine id) of the complete engines an ANE AI can be made from (GET /v1/exports/engines)."""
+def finished_run_choices():
+    """(label, engine id) of the finished runs (complete engines) to export, newest first
+    (GET /v1/exports/engines)."""
     try:
         engines = API.get("/v1/exports/engines")["engines"]
-    except APIError:
+    except APIError as exc:
+        LOG.warning("The finished runs could not be read: %s", exc)
         return []
-    return [(f"{(e['created_at'] or '')[:16]} · {e['source']}"
-             + (f" · score {e['score']:.1f}" if isinstance(e["score"], (int, float)) else "")
-             + (" · resumable" if e.get("resumable") else "") + f" · {e['engine_id'][:8]}", e["engine_id"])
-            for e in engines]
+
+    def label(e):
+        parts = [(e.get("created_at") or "")[:16].replace("T", " "), "loaded engine" if e.get("loaded") else "run"]
+        if e.get("generations"):
+            parts.append(f"{e['generations']} generation(s)")
+        if isinstance(e.get("score"), (int, float)):
+            parts.append(f"best {e['score']:.1f}")
+        return " · ".join(parts + [e["engine_id"][:8]])
+
+    return [(label(e), e["engine_id"]) for e in engines]
 
 
-def export_form_ui(platform, engine_id=None):
-    """The export form for a platform: the Python version is made from any storyteller; the ANE AI
-    only from a complete engine, and it cannot be exported before one exists."""
+def export_form_ui(platform, source_label=FINISHED_RUNS, chosen=None):
+    """The export form: the ANE AI is made from finished runs (the latest is chosen; several can
+    be); the Python version also from a generation's champion, the remembered storyteller or this
+    game's storyteller. It cannot be exported from a finished run before one exists."""
     ane_ai = platform in ANE_AI_PLATFORMS
-    choices = ane_engine_choices() if ane_ai else []
+    from_runs = ane_ai or source_label == FINISHED_RUNS
+    choices = finished_run_choices()
     ids = [value for _, value in choices]
-    note = ("" if not ane_ai else NO_COMPLETE_ENGINE if not choices else
-            "The ANE AI is made from the chosen complete engine: its own world, storyteller, training state and "
-            "tag vectors.")
-    return (gr.Radio(visible=not ane_ai), gr.Dropdown(visible=not ane_ai),
-            gr.Dropdown(choices=choices, value=engine_id if engine_id in ids else (ids[0] if ids else None),
-                        visible=ane_ai),
-            gr.Markdown(note), gr.Button(interactive=not ane_ai or bool(choices)))
+    kept = [engine for engine in (chosen or []) if engine in ids]
+    note = (NO_COMPLETE_ENGINE if from_runs and not choices else
+            f"{len(kept or ids[:1])} finished run(s) chosen: each is exported with its own world, storyteller, "
+            "training state and tag vectors." if from_runs else "")
+    return (gr.Radio(visible=not ane_ai),
+            gr.Dropdown(visible=not ane_ai and source_label == "A generation of this run"),
+            gr.Dropdown(choices=choices, value=kept or ids[:1], visible=from_runs),
+            gr.Markdown(note), gr.Button(interactive=not from_runs or bool(choices)))
 
 
-@ui
-def export_engine_ui(source_label, run_id, generation, token, include_memory, name, platform="python", engine_id=None):
-    platform = platform or "python"
-    if platform in ANE_AI_PLATFORMS:  # from a complete engine only
-        if not engine_id:
-            raise gr.Error(NO_COMPLETE_ENGINE.replace("**", ""))
-        result = API.post("/v1/exports", {"source": "engine", "engine_id": engine_id, "platform": platform,
-                                          "include_memory": bool(include_memory), "name": name or None})
-    else:
-        source = EXPORT_SOURCES.get(source_label, "run")
-        result = API.post("/v1/exports", {
-            "source": source, "run_id": run_id or None,
-            "generation": int(generation) if source_label == "A generation of this run" and generation not in (None, "") else None,
-            "session_id": token or None, "include_memory": bool(include_memory), "name": name or None,
-            "platform": platform,
-        })
+def _export_status(result):
     score = f"{result['score']:.1f}" if isinstance(result["score"], (int, float)) else "not benchmarked"
     if result.get("engine_id"):
         score += f", engine `{result['engine_id'][:8]}`"
-    status = (f"Exported **{result['name']}**: {result['source']} (benchmark score {score}). "
-              f"World: {result['world']['locations']} locations, {result['world']['npcs']} NPCs, "
-              f"{result['world']['missions']} missions. "
-              + ("Unzip it and run `python run.py play` or `python run.py serve`." if result.get("platform", "python") == "python"
-                 else "Import it in Unity (Assets > Import Package > Custom Package), then Tools > ANE AI > Add the ANE AI "
-                      "to the scene." if result.get("platform") == "unity"
-                 else f"Unzip it on {result['platform']} and start `ane-ai serve` (no Python needed); the README explains "
-                      "how a UNP launches, drives and stops it."))
-    return API.download(result["download_url"]), status
+    return (f"Exported **{result['name']}**: {result['source']} (benchmark score {score}). "
+            f"World: {result['world']['locations']} locations, {result['world']['npcs']} NPCs, "
+            f"{result['world']['missions']} missions. "
+            + ("Unzip it and run `python run.py play` or `python run.py serve`." if result.get("platform", "python") == "python"
+               else "Import it in Unity (Assets > Import Package > Custom Package), then Tools > ANE AI > Add the ANE AI "
+                    "to the scene." if result.get("platform") == "unity"
+               else f"Unzip it on {result['platform']} and start `ane-ai serve` (no Python needed); the README explains "
+                    "how a UNP launches, drives and stops it."))
+
+
+@ui
+def export_engine_ui(source_label, run_id, generation, token, include_memory, name, platform="python", engine_ids=None):
+    """Export: from the chosen finished runs (one download each), or, for the Python version, from a
+    generation's champion, the remembered storyteller or this game's storyteller. Returns
+    ([downloaded files], status)."""
+    platform = platform or "python"
+    if platform in ANE_AI_PLATFORMS or source_label == FINISHED_RUNS:
+        engine_ids = [engine_ids] if isinstance(engine_ids, str) else list(engine_ids or [])
+        if not engine_ids:
+            raise gr.Error(NO_COMPLETE_ENGINE.replace("**", ""))
+        files, lines = [], []
+        for engine_id in engine_ids:
+            label = f"{name}-{engine_id[:8]}" if name and len(engine_ids) > 1 else (name or None)
+            result = API.post("/v1/exports", {"source": "engine", "engine_id": engine_id, "platform": platform,
+                                              "include_memory": bool(include_memory), "name": label})
+            files.append(API.download(result["download_url"]))
+            lines.append(_export_status(result))
+        return files, "\n\n".join(lines)
+    source = EXPORT_SOURCES.get(source_label, "run")
+    result = API.post("/v1/exports", {
+        "source": source, "run_id": run_id or None,
+        "generation": int(generation) if source_label == "A generation of this run" and generation not in (None, "") else None,
+        "session_id": token or None, "include_memory": bool(include_memory), "name": name or None,
+        "platform": platform,
+    })
+    return [API.download(result["download_url"])], _export_status(result)
 
 
 # ---- records (/v1/records) -------------------------------------------------------------------
@@ -1746,6 +1787,12 @@ def build_app():
                         1, 10, value=min(10, int(defaults["episodes_per_genome"])), step=1,
                         label="Stories per storyteller", info="More stories per genome: fairer scores, slower learning.",
                     )
+                run_work = gr.Markdown(run_work_ui(limits["default_candidates"], limits["default_generations"],
+                                                   limits["default_simulation_steps"],
+                                                   min(10, int(defaults["episodes_per_genome"]))))
+                for slider in (candidates, generations, sim_steps, episodes):
+                    slider.change(run_work_ui, [candidates, generations, sim_steps, episodes], run_work,
+                                  show_progress="hidden")
                 warm_start = gr.Checkbox(
                     value=bool(defaults["warm_start"]), label="Continue learning from earlier runs",
                     info="Seed the population with the best storytellers the AI remembers.",
@@ -1821,8 +1868,9 @@ def build_app():
                     gr.Markdown(
                         "Download the engine to run offline in a game. **The ANE AI** (*Runs on* Windows, macOS, "
                         "Linux or Unity) is a standalone program that a UNP launches, drives over HTTP and stops, "
-                        "no Python needed; it is made from a **complete engine**: the engine model a finished "
-                        "training saves, or an engine you loaded, so it can be exported once one exists. "
+                        "no Python needed. An export is made from a **finished run**: its engine (world, "
+                        "storyteller, training state, tag vectors). The latest is chosen; choose several to export "
+                        "each. Finished runs are kept (in the records, or with the saves) and can be exported later. "
                         "**The Python version** (for developers: embed it with `NarrativeEngine`, `python run.py "
                         "serve`, `play`, `evolve`) can also be made from a generation's champion, the remembered "
                         "storyteller or this game's storyteller. Each download's README explains how to use it."
@@ -1832,18 +1880,20 @@ def build_app():
                             export_platform_choices(), value="python", label="Runs on",
                             info="A standalone program for that system (the ANE AI, no Python needed), the Unity "
                             "package, or Python.")
-                        export_engine = gr.Dropdown([], label="Complete engine (for the ANE AI)", visible=False,
-                                                    info="Newest first: each finished training's engine and each "
-                                                    "loaded engine.")
-                    with gr.Row():
-                        export_source = gr.Radio(list(EXPORT_SOURCES), value="This run's best", label="Storyteller")
-                        export_generation = gr.Dropdown([], label="Generation (for a generation's champion)")
+                        export_source = gr.Radio(list(EXPORT_SOURCES), value=FINISHED_RUNS, label="What to export",
+                                                 info="The Python version only; the ANE AI is made from finished runs.")
+                    finished = finished_run_choices()
+                    export_engine = gr.Dropdown(finished, value=[v for _, v in finished[:1]], multiselect=True,
+                                                label="Finished runs", info="Newest first: the latest is chosen. "
+                                                "Choose several to export each.")
+                    export_generation = gr.Dropdown([], label="Generation (for a generation's champion)", visible=False)
                     export_engine_note = gr.Markdown()
                     with gr.Row():
                         export_memory = gr.Checkbox(True, label="Include the learning memory (keep training offline)")
                         export_name = gr.Textbox(label="Name", placeholder="narrative-engine")
                     export_button = gr.Button("Export", variant="primary")
-                    export_file = gr.File(label="Download (ZIP, or .unitypackage for Unity)", interactive=False)
+                    export_file = gr.File(label="Downloads (ZIP, or .unitypackage for Unity)", interactive=False,
+                                          file_count="multiple")
                     export_status = gr.Markdown()
                     with gr.Accordion("Where the ANE AI runs, and the world it sends", open=False):
                         gr.Markdown("The standalone runtimes this API has (built by CI for each system, from the same "
@@ -1858,7 +1908,9 @@ def build_app():
                         refresh_platforms.click(export_platforms_table, None, export_platforms)
                         catalogue_button.click(world_catalogue_ui, None, [catalogue_file, catalogue_status])
                     export_form = [export_source, export_generation, export_engine, export_engine_note, export_button]
-                    export_platform.change(export_form_ui, [export_platform, export_engine], export_form)
+                    for control in (export_platform, export_source):
+                        control.change(export_form_ui, [export_platform, export_source, export_engine], export_form)
+                    demo.load(export_form_ui, [export_platform, export_source, export_engine], export_form)
                     export_button.click(
                         export_engine_ui,
                         [export_source, run_state, export_generation, session_token, export_memory, export_name,
@@ -2004,8 +2056,9 @@ def build_app():
                     [record_engine, candidates, more_generations, sim_steps, episodes, deterministic_run,
                      *player_inputs],
                     record_outputs, concurrency_limit=1, concurrency_id="narrative_evolution"))
-                for event in engine_events:  # a new complete engine (the newest is chosen): the ANE AI can be made
-                    event.then(lambda platform: export_form_ui(platform), export_platform, export_form)
+                for event in engine_events:  # a finished run: it is chosen for the export (the newest)
+                    event.then(lambda platform, source: export_form_ui(platform, source), [export_platform, export_source],
+                               export_form)
                 download_record.click(download_recorded_ui, record_engine, [record_model_file, record_world_file])
                 record_story.change(story_view_ui, record_story, story_view)
                 for button in (run_button, load_engine_button):

@@ -187,7 +187,9 @@ APP_SETTINGS_LOCK = threading.RLock()
 RUN_LIMITS = {"candidate_limit": 400, "generation_limit": 1000, "simulation_step_limit": 400}
 APP_DEFAULTS = {
     "max_web_sessions": 100,
-    "max_simulation_work": 60000,  # an upper bound: whole stories are counted at narrative_end.max_actions
+    # Simulated turns one run may take: whole stories are counted at narrative_end.max_actions, an
+    # upper bound (stories often end sooner). About 10 minutes on a 20-core server at most.
+    "max_simulation_work": 300000,
     "max_config_upload_bytes": 2 * 1024 * 1024,
     "max_engine_upload_bytes": 20 * 1024 * 1024,
     "candidate_limit": RUN_LIMITS["candidate_limit"],
@@ -270,7 +272,16 @@ def _read_yaml(path: Path) -> dict:
             return yaml.safe_load(stream) or {}
 
 def _write_yaml(path: Path, data: dict) -> None:
+    """Write a config file atomically. A save that changes nothing leaves the file as it is: the
+    YAML is written anew (its comments are not kept), so only a real change should cost them."""
     with CONFIG_LOCK:
+        if path.exists():
+            try:
+                with path.open("r", encoding="utf-8") as stream:
+                    if (yaml.safe_load(stream) or {}) == data:
+                        return
+            except (OSError, yaml.YAMLError):
+                pass
         temp_name = None
         try:
             with tempfile.NamedTemporaryFile(
