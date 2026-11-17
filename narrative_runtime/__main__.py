@@ -30,7 +30,11 @@ def play(engine, args):
         print(view["description"] or "")
         for number, name in enumerate(view["actions"], start=1):
             print(f"  [{number}] {name}")
-        choice = input("> ").strip()
+        try:
+            choice = input("> ").strip()
+        except EOFError:  # the input ended (a pipe, Ctrl+D): stop like q
+            print()
+            break
         if choice.lower() in {"q", "quit", "exit"}:
             break
         if not choice.isdigit() or not 1 <= int(choice) <= len(view["actions"]):

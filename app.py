@@ -35,6 +35,7 @@ from __future__ import annotations
 import atexit
 import functools
 import json
+import logging
 import os
 import re
 import shutil
@@ -46,6 +47,8 @@ from urllib.parse import quote
 import gradio as gr
 import pandas as pd
 import yaml
+
+LOG = logging.getLogger("ane.studio")
 
 
 # ---- the connection to the REST API ------------------------------------------------------------
@@ -108,6 +111,9 @@ class StudioAPI:
 
     def put(self, path, body=None, **params):
         return self.request("PUT", path, json=body, params={k: v for k, v in params.items() if v is not None})
+
+    def patch(self, path, body=None, **params):
+        return self.request("PATCH", path, json=body, params={k: v for k, v in params.items() if v is not None})
 
     def post(self, path, body=None, files=None, **params):
         params = {k: v for k, v in params.items() if v is not None}
@@ -717,6 +723,113 @@ def play_action_ui(token, selected_action):
         quest_markdown(state.get("quest")), people_markdown(state)
 
 
+def _play_view(state):
+    """The play area for a play state: scene, choices, last turn, quest, people."""
+    return state["scene"], _choices(state["actions"], state.get("choices")), state["last_turn"], \
+        quest_markdown(state.get("quest")), people_markdown(state)
+
+
+# ---- the session as a UNP sees it (as the exported ANE AI does): save games, player, events ---------
+
+SYNC_EVENTS = {  # what happened in the UNP's game -> the field it names
+    "action_done": "action", "item_gained": "item", "item_lost": "item", "npc_removed": "npc",
+    "location_visited": "location", "coins_changed": "amount", "health_changed": "amount",
+}
+
+
+def _need_game(token):
+    if not token:
+        raise gr.Error("Start a game first (run a simulation, load an engine, or continue a save game).")
+
+
+@ui
+def session_parameters_ui(token):
+    """The session's parameters (ane.session_state/1), as the ANE AI sends them to a UNP."""
+    _need_game(token)
+    return json.dumps(API.get(_path("/v1/sessions", token, "state")), indent=2, ensure_ascii=False)
+
+
+@ui
+def update_player_ui(token, player_json):
+    """Set the player's state as a UNP does (PATCH .../player)."""
+    _need_game(token)
+    try:
+        player = json.loads(player_json or "{}")
+    except ValueError as exc:
+        raise gr.Error(f"The player's state is not JSON: {exc}") from exc
+    if not isinstance(player, dict):
+        raise gr.Error('Write a JSON object, e.g. {"coins": 20, "add_items": ["Ancient Map"]}.')
+    return _play_view(API.patch(_path("/v1/sessions", token, "player"), player))
+
+
+@ui
+def sync_session_ui(token, kind, value):
+    """Something happened in the UNP's game (POST .../sync)."""
+    _need_game(token)
+    field = SYNC_EVENTS.get(kind)
+    if field is None:
+        raise gr.Error("Choose what happened.")
+    if field == "amount":
+        try:
+            value = int(str(value).strip())
+        except ValueError as exc:
+            raise gr.Error("Give the amount as a whole number (negative for a loss).") from exc
+    elif not str(value or "").strip():
+        raise gr.Error(f"Name the {field}.")
+    return _play_view(API.post(_path("/v1/sessions", token, "sync"), {"type": kind, field: value}))
+
+
+@ui
+def download_savegame_ui(token):
+    """The session's save game (ane.savegame/1) as a file; the session goes on."""
+    _need_game(token)
+    path = API.download(_path("/v1/sessions", token, "savegame"), f"savegame-{token[:8]}.json")
+    doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    params = doc.get("parameters") or {}
+    return path, (f"Saved after {params.get('turns', 0)} turn(s) at **{params.get('current_location')}** "
+                       f"(`{doc['format']}`). *Continue a save game* goes on from it, here or in the ANE AI.")
+
+
+@ui
+def load_savegame_ui(upload, token):
+    """Continue a save game (from the studio or the ANE AI) as a new session."""
+    if not upload:
+        raise gr.Error("Choose a save game (.json).")
+    try:
+        doc = json.loads(Path(upload).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise gr.Error(f"Not a JSON save game: {exc}") from exc
+    state = API.post("/v1/sessions/load", {"savegame": doc, "session_id": token or None})
+    status = ("**Continued exactly** where it was saved." if state["restored"] == "exact"
+              else f"**Rebuilt from its parameters** ({state.get('note') or 'no usable snapshot'}).")
+    if state["restored"] == "exact" and state.get("note"):
+        status += f" {state['note'].capitalize()}."
+    return (state["session_id"], *_play_view(state), status)
+
+
+@ui
+def world_catalogue_ui():
+    """The world as the ANE AI sends it to a UNP (ane.world/1), as a file."""
+    path = API.download("/v1/world/catalogue", "world-catalogue.json")
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    counts = ", ".join(f"{len(data[kind])} {kind}" for kind in ("locations", "npcs", "items", "events", "missions"))
+    return path, f"The world as a UNP receives it (`{data['format']}`): {counts}."
+
+
+def export_platforms_table():
+    """What an export can run on here, and why a platform is not available (GET /v1/exports/platforms)."""
+    try:
+        listed = API.get("/v1/exports/platforms")["platforms"]
+    except APIError as exc:
+        LOG.warning("The export platforms could not be read: %s", exc)
+        listed = []
+    rows = [{"runs on": p["platform"], "available": "yes" if p["available"] else "no",
+             "details": p.get("reason") or p.get("description") or
+             (f"runtime {p['code_version']}, built {(p.get('built_at') or '')[:10]}" if p.get("code_version") else
+              "the engine as Python code")} for p in listed]
+    return pd.DataFrame(rows, columns=["runs on", "available", "details"])
+
+
 @ui
 def end_session_ui(token):
     """End the session where it stands: the progression is saved and the session reported."""
@@ -877,19 +990,25 @@ def export_engine_ui(source_label, run_id, generation, token, include_memory, na
 # ---- records (/v1/records) -------------------------------------------------------------------
 
 def _recorded(path, key, **params):
+    """Recorded items; none when there are no records yet or they cannot be read (the studio must
+    start and work without them; the records status says why)."""
     try:
         return API.get(path, **params)[key]
     except APIError as exc:
-        if exc.status == 404:  # no records yet
-            return []
-        raise
+        if exc.status != 404:  # not "no records yet": say so in the log, keep the studio running
+            LOG.warning("The records could not be read (%s): %s", path, exc)
+        return []
 
 
 @ui
 def records_status_text():
-    info = API.get("/v1/records")
+    try:
+        info = API.get("/v1/records")
+    except APIError as exc:
+        return f"The records cannot be reached: {exc}"
     status = (f"Recording to `{info['directory']}`." if info["enabled"]
-              else f"Recording is off (`{info['directory']}` is not usable, or ANE_RECORDS=off).")
+              else f"Recording is off: {info.get('reason') or 'ANE_RECORDS=off'}."
+              + (" The records already there are shown." if info.get("readable") else ""))
     return status + " Every run, engine, world and story generated here, in the API or in the terminal is kept there."
 
 
@@ -1726,6 +1845,18 @@ def build_app():
                     export_button = gr.Button("Export", variant="primary")
                     export_file = gr.File(label="Download (ZIP, or .unitypackage for Unity)", interactive=False)
                     export_status = gr.Markdown()
+                    with gr.Accordion("Where the ANE AI runs, and the world it sends", open=False):
+                        gr.Markdown("The standalone runtimes this API has (built by CI for each system, from the same "
+                                    "engine code), and the world as the ANE AI sends it to a UNP (`GET /world`). "
+                                    "How a UNP uses the ANE AI: `docs/UNP.md`.")
+                        export_platforms = gr.Dataframe(export_platforms_table(), interactive=False, wrap=True)
+                        with gr.Row():
+                            refresh_platforms = gr.Button("Refresh")
+                            catalogue_button = gr.Button("Download the world as a UNP receives it (JSON)")
+                        catalogue_file = gr.File(label="World catalogue (ane.world/1)", interactive=False)
+                        catalogue_status = gr.Markdown()
+                        refresh_platforms.click(export_platforms_table, None, export_platforms)
+                        catalogue_button.click(world_catalogue_ui, None, [catalogue_file, catalogue_status])
                     export_form = [export_source, export_generation, export_engine, export_engine_note, export_button]
                     export_platform.change(export_form_ui, [export_platform, export_engine], export_form)
                     export_button.click(
@@ -1781,6 +1912,35 @@ def build_app():
                     with gr.Column(scale=2):
                         quest_panel = gr.Markdown("### Quest\nStart a game to see its quest.")
                         people_panel = gr.Markdown("### People met\nNobody yet.")
+                with gr.Accordion("This session as a UNP sees it: save and continue, the player, events", open=False):
+                    gr.Markdown(
+                        "What the exported ANE AI does for a UNP, tried on this game: download its **save game** "
+                        "(`ane.savegame/1`) and **continue** one (exactly, or rebuilt from its parameters), read its "
+                        "**parameters**, **set the player** and tell it **what happened** in the UNP's game. "
+                        "Save games of the ANE AI continue here too."
+                    )
+                    with gr.Row():
+                        with gr.Column():
+                            savegame_button = gr.Button("Download this session's save game")
+                            savegame_file = gr.File(label="Save game (JSON)", interactive=False)
+                        with gr.Column():
+                            savegame_upload = gr.File(label="Continue a save game (.json)", file_types=[".json"],
+                                                      type="filepath")
+                            load_savegame_button = gr.Button("Continue it", variant="primary")
+                    savegame_status = gr.Markdown()
+                    with gr.Row():
+                        player_json = gr.Code(value='{"coins": 20}', language="json", lines=4,
+                                              label="Set the player (stat_points, stat_changes, inventory, add_items, "
+                                                    "remove_items, coins, health, max_health, variables)")
+                        with gr.Column():
+                            sync_kind = gr.Dropdown(list(SYNC_EVENTS), value="item_gained",
+                                                    label="What happened in the UNP's game")
+                            sync_value = gr.Textbox(label="Its action, item, NPC, location or amount")
+                            with gr.Row():
+                                player_button = gr.Button("Set the player")
+                                sync_button = gr.Button("Tell the session")
+                    parameters_button = gr.Button("Show the session's parameters (ane.session_state/1)")
+                    parameters_view = gr.Code(language="json", label="Session parameters", interactive=False)
                 generated_config = gr.File(label="Generated story configuration", interactive=False, visible=True)
                 generated_engine = gr.File(
                     label="Engine model (world, storyteller, training state, memory, tag vectors)",
@@ -1810,6 +1970,14 @@ def build_app():
                 end_session_button.click(end_session_ui, session_token,
                                          [scene, choices, turn_result, quest_panel, people_panel], concurrency_limit=1)
                 save_game_refresh.click(progression_ui, play_profile, [save_game_text, save_game_table])
+                game_view = [scene, choices, turn_result, quest_panel, people_panel]
+                savegame_button.click(download_savegame_ui, session_token, [savegame_file, savegame_status])
+                load_savegame_button.click(load_savegame_ui, [savegame_upload, session_token],
+                                           [session_token, *game_view, savegame_status], concurrency_limit=1)
+                player_button.click(update_player_ui, [session_token, player_json], game_view, concurrency_limit=1)
+                sync_button.click(sync_session_ui, [session_token, sync_kind, sync_value], game_view,
+                                  concurrency_limit=1)
+                parameters_button.click(session_parameters_ui, session_token, parameters_view)
                 resend_report_button.click(resend_report_ui, play_profile, save_game_status)
                 play_profile.change(playable_quests_ui, play_profile, [play_mission, quest_overview_md])
                 refresh_quests.click(playable_quests_ui, play_profile, [play_mission, quest_overview_md])

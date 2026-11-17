@@ -11,7 +11,10 @@ savegame.py, content_rules.py; packaging/; backend/export.py platforms):
 - the whole protocol end to end, with Python (packaging/smoke_test.py), like CI does with the
   standalone build;
 - exports by platform: a standalone runtime is used only when its code version is the API's; the
-  Unity export is a .unitypackage with the C# library, the engine package and those runtimes.
+  Unity export is a .unitypackage with the C# library, the engine package and those runtimes;
+- the command line (info, play, evolve, serve and its options), as a UNP or a person uses it;
+- the Unity library agrees with the ANE AI: its routes, request fields, platforms, launch
+  arguments, and the package it ships runs.
 """
 try:  # recording goes to a temporary folder, not the real records database
     import records_sandbox  # noqa: F401
@@ -23,10 +26,16 @@ import io
 import json
 import os
 import random
+import re
+import shutil
+import signal
+import socket
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
+import types
 import unittest
 import zipfile
 from pathlib import Path
@@ -266,7 +275,206 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(json.loads(out.stdout.strip().splitlines()[-1])["event"], "error")
 
 
-class UnityLibraryFilesTests(unittest.TestCase):
+def _run(package, *args, stdin="", timeout=600, env=None):
+    """``python run.py <args>`` in a package, as a person or a UNP runs it."""
+    environment = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    environment.update(env or {})
+    return subprocess.run([PYTHON, "run.py", *args], cwd=package, input=stdin, capture_output=True, text=True,
+                          timeout=timeout, env=environment)
+
+
+class _Server:
+    """``run.py serve`` running: its ready line, requests to it, and how it stopped."""
+
+    def __init__(self, package, *serve_args, token="t", data_dir=None, extra=()):
+        environment = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        if token:
+            environment["ANE_RUNTIME_TOKEN"] = token
+        self.token = token
+        self.process = subprocess.Popen(
+            [PYTHON, "run.py", *extra, "--data-dir", data_dir or tempfile.mkdtemp(), "serve", "--port", "0",
+             *serve_args], cwd=package, env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True)
+        self.ready = json.loads(self.process.stdout.readline())
+        self.port = self.ready.get("port")
+
+    def send(self, method, path, body=None, headers=None):
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=300)
+        sent = {"Host": f"127.0.0.1:{self.port}", **({"Authorization": f"Bearer {self.token}"} if self.token else {}),
+                **({"Content-Type": "application/json"} if body is not None else {}), **(headers or {})}
+        connection.request(method, path, body=None if body is None else json.dumps(body), headers=sent)
+        response = connection.getresponse()
+        return response.status, dict(response.getheaders()), json.loads(response.read() or b"{}")
+
+    def stop(self):
+        if self.process.poll() is None:
+            self.send("POST", "/shutdown", {"save": True})
+        self.process.stdin.close()
+        code = self.process.wait(timeout=120)
+        rest = [json.loads(line) for line in self.process.stdout.read().splitlines() if line.strip()]
+        return code, rest
+
+
+class CommandLineTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.package = _package(Path(tempfile.mkdtemp(prefix="ane-cli-pkg-")) / "pkg", name="ane-cli")
+
+    def test_info_says_what_is_inside(self):
+        data = tempfile.mkdtemp()
+        out = _run(self.package, "--data-dir", data, "info")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        info = json.loads(out.stdout)
+        self.assertEqual((info["code_version"], info["protocol"], Path(info["data_dir"]).resolve()),
+                         (version.code_version(), version.PROTOCOL, Path(data).resolve()))
+        self.assertEqual(info["games"], [])  # no session yet
+
+    def test_play_in_a_terminal(self):
+        out = _run(self.package, "--data-dir", tempfile.mkdtemp(), "play", "--seed", "3", "--profile", "cli",
+                   stdin="x\n1\nq\n")
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        self.assertIn("[1] ", out.stdout)  # the choices
+        self.assertIn("Choose a number from the list", out.stdout)  # "x" is not one
+        self.assertGreaterEqual(out.stdout.count("health "), 2)  # a turn was played
+        ended = _run(self.package, "--data-dir", tempfile.mkdtemp(), "play", "--seed", "3", stdin="")
+        self.assertEqual(ended.returncode, 0, ended.stderr[-2000:])  # the input ended: it stops quietly
+        self.assertNotIn("Traceback", ended.stderr)
+
+    def test_evolve_offline_and_resume_the_training(self):
+        package = Path(tempfile.mkdtemp()) / "pkg"
+        shutil.copytree(self.package, package)
+        out = _run(package, "--data-dir", tempfile.mkdtemp(), "evolve", "--generations", "1", "--pop-size", "2",
+                   "--episodes", "1", "--seed", "1")
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        self.assertIn("Generation 1/1", out.stdout)
+        self.assertRegex(out.stdout, r"(adopted the new|kept the current) storyteller")
+        again = _run(package, "--data-dir", tempfile.mkdtemp(), "evolve", "--generations", "1", "--pop-size", "2",
+                     "--episodes", "1", "--resume")
+        self.assertEqual(again.returncode, 0, again.stderr[-2000:])
+
+    def test_serve_with_a_ready_file_and_without_a_token(self):
+        ready_file = Path(tempfile.mkdtemp()) / "ready.json"
+        server = _Server(self.package, "--ready-file", str(ready_file), "--no-token", token=None)
+        try:
+            self.assertEqual(json.loads(ready_file.read_text()), server.ready)
+            if os.name == "posix":
+                self.assertEqual(ready_file.stat().st_mode & 0o777, 0o600)  # only the user reads it
+            self.assertEqual(server.send("GET", "/health")[0], 200)  # no token needed
+        finally:
+            code, rest = server.stop()
+        self.assertEqual(code, 0)
+        self.assertEqual(rest[-1]["event"], "stopped")
+
+    def test_serve_one_web_origin_and_offline_training(self):
+        package = Path(tempfile.mkdtemp()) / "pkg"
+        shutil.copytree(self.package, package)
+        origin = "http://localhost:3000"
+        server = _Server(package, "--allow-origin", origin, "--allow-evolve")
+        try:
+            status, headers, _ = server.send("OPTIONS", "/games", headers={"Origin": origin})
+            self.assertEqual((status, headers.get("Access-Control-Allow-Origin")), (204, origin))
+            self.assertIn("Authorization", headers.get("Access-Control-Allow-Headers", ""))
+            status, headers, _ = server.send("GET", "/health", headers={"Origin": origin})
+            self.assertEqual((status, headers.get("Access-Control-Allow-Origin")), (200, origin))
+            self.assertEqual(server.send("GET", "/health", headers={"Origin": "http://evil.example"})[0], 403)
+            status, _, summary = server.send("POST", "/evolve", {"generations": 1, "pop_size": 2, "episodes": 1})
+            self.assertEqual(status, 200, summary)
+            self.assertIn("adopted", summary)
+        finally:
+            self.assertEqual(server.stop()[0], 0)
+
+    def test_serve_says_why_it_cannot_listen(self):
+        taken = socket.socket()
+        taken.bind(("127.0.0.1", 0))
+        taken.listen(1)
+        self.addCleanup(taken.close)
+        port = taken.getsockname()[1]
+        out = _run(self.package, "--data-dir", tempfile.mkdtemp(), "serve", "--port", str(port), timeout=120)
+        self.assertEqual(out.returncode, 1)
+        self.assertEqual(json.loads(out.stdout.strip().splitlines()[-1])["event"], "error")
+
+    @unittest.skipUnless(os.name == "posix", "signals")
+    def test_sigterm_saves_every_session_and_stops(self):
+        data = tempfile.mkdtemp()
+        server = _Server(self.package, data_dir=data)
+        status, _, game = server.send("POST", "/games", {"profile": "cli", "seed": 2})
+        self.assertEqual(status, 201, game)
+        server.process.send_signal(signal.SIGTERM)
+        code = server.process.wait(timeout=120)
+        rest = [json.loads(line) for line in server.process.stdout.read().splitlines() if line.strip()]
+        self.assertEqual(code, 0)
+        self.assertEqual(rest[-1]["event"], "stopped")
+        saved = Path(data) / "suspended" / f"{game['game_id']}.json"
+        self.assertEqual(json.loads(saved.read_text())["format"], "ane.savegame/1")
+
+    def test_the_unity_librarys_launch_arguments(self):
+        """AneAiProcess.StartAsync: --package, --data-dir, then serve --port 0 --exit-on-stdin-eof
+        --parent-pid <the game> --unp-url <callback>; the token in ANE_RUNTIME_TOKEN."""
+        server = _Server(self.package, "--exit-on-stdin-eof", "--parent-pid", str(os.getpid()), "--unp-url",
+                         "http://127.0.0.1:9/ane-events", extra=("--package", str(self.package)))
+        self.assertEqual(server.ready["event"], "ready")
+        self.assertNotIn("token", server.ready)  # given by the game, never echoed
+        server.process.stdin.close()  # the game went away
+        self.assertEqual(server.process.wait(timeout=120), 0)
+
+
+class UnityLibraryTests(unittest.TestCase):
+    LIBRARY = ROOT / "unity" / "com.ane.ai"
+
+    def _client_calls(self):
+        """(method, path) of every request the C# client makes, {...} parts as "x"."""
+        source = (self.LIBRARY / "Runtime" / "AneAiClient.cs").read_text(encoding="utf-8")
+        calls = re.findall(r'SendAsync\("(\w+)",\s*\$?"([^"]*)"', source)
+        return {(method, "/" + re.sub(r"\{[^}]*\}", "x", path)) for method, path in calls}
+
+    def test_the_client_calls_every_route_of_the_ane_ai_and_only_those(self):
+        from narrative_runtime.server import _routes
+
+        routes = [(method, pattern) for method, pattern, _ in _routes(types.SimpleNamespace(engine=None))]
+        calls = self._client_calls()
+        for method, path in sorted(calls):
+            with self.subTest(call=f"{method} {path}"):
+                self.assertTrue(any(m == method and re.fullmatch(p, path) for m, p in routes), "no such route")
+        unused = [f"{m} {p}" for m, p in routes if not any(c == m and re.fullmatch(p, path) for c, path in calls)]
+        self.assertEqual(unused, ["POST /evolve"])  # offline training: off unless --allow-evolve
+
+    def test_the_client_sends_what_the_ane_ai_takes(self):
+        source = (self.LIBRARY / "Runtime" / "AneAiClient.cs").read_text(encoding="utf-8")
+        to_json = source[source.index("public Dictionary<string, object> ToJson()"):]
+        to_json = to_json[:to_json.index("return body;")]
+        sent = set(re.findall(r'\["(\w+)"\]', to_json))
+        server = (ROOT / "narrative_runtime" / "server.py").read_text(encoding="utf-8")
+        accepted = set(re.search(r'for k in \(([^)]*)\)', server).group(1).replace('"', "").replace(" ", "").split(","))
+        self.assertTrue(sent and sent <= accepted, sent - accepted)
+        self.assertIn('["savegame"]', source)  # LoadGameAsync
+
+    def test_platforms_and_programs_agree_with_the_exports(self):
+        process = (self.LIBRARY / "Runtime" / "AneAiProcess.cs").read_text(encoding="utf-8")
+        named = set(re.findall(r'"((?:windows|linux|macos)-(?:x64|arm64))"', process))
+        self.assertEqual(named, set(export.STANDALONE))
+        self.assertIn('"ane-ai.exe" : "ane-ai"', process)
+        build = (ROOT / "packaging" / "build_runtime.py").read_text(encoding="utf-8")
+        self.assertIn('"ane-ai.exe" if os.name == "nt" else "ane-ai"', build)
+        self.assertIn('runtimes/ane-runtime-', (self.LIBRARY / "Runtime" / "AneAiProcess.cs").read_text(encoding="utf-8")
+                      + (self.LIBRARY / "Runtime" / "AneAiBehaviour.cs").read_text(encoding="utf-8")
+                      + (self.LIBRARY / "Runtime" / "AneAiExportImport.cs").read_text(encoding="utf-8"))
+
+    def test_the_package_and_its_assemblies(self):
+        package = json.loads((self.LIBRARY / "package.json").read_text(encoding="utf-8"))
+        self.assertEqual(package["name"], "com.ane.ai")
+        self.assertRegex(package["version"], r"^\d+\.\d+\.\d+")
+        self.assertEqual(package.get("dependencies", {}), {})
+        for sample in package.get("samples", []):
+            self.assertTrue((self.LIBRARY / sample["path"]).is_dir(), sample["path"])
+        runtime = json.loads((self.LIBRARY / "Runtime" / "Ane.AI.Runtime.asmdef").read_text(encoding="utf-8"))
+        self.assertEqual(set(runtime["includePlatforms"]),  # it starts a process: desktop players and the Editor
+                         {"Editor", "LinuxStandalone64", "macOSStandalone", "WindowsStandalone64"})
+        editor = json.loads((self.LIBRARY / "Editor" / "Ane.AI.Editor.asmdef").read_text(encoding="utf-8"))
+        self.assertEqual(editor["includePlatforms"], ["Editor"])
+        self.assertIn(runtime["name"], editor["references"])
+        sample = next((self.LIBRARY / "Samples~").rglob("*.cs")).read_text(encoding="utf-8")
+        self.assertIn("#if UNITY_EDITOR || UNITY_STANDALONE", sample)  # mobile and WebGL builds still compile
+
     def test_the_project_and_package_files_parse(self):
         """CI builds the C# with dotnet; this catches a broken project file without it (an XML
         comment holding `--` made MSBuild refuse the protocol test project)."""
@@ -388,6 +596,39 @@ class ExportPlatformTests(unittest.TestCase):
         self.assertFalse(any(n.endswith(".py") or n == "runtime.json" or n == "README.md" for n in names))
         with zipfile.ZipFile(io.BytesIO(assets[streaming + "runtimes/ane-runtime-linux-x64.zip"])) as runtime:
             self.assertEqual(runtime.getinfo("ane-ai").external_attr >> 16 & 0o111, 0o111)
+
+    def test_a_newer_unity_export_updates_the_same_assets_and_its_engine_runs(self):
+        folder = tempfile.mkdtemp(prefix="ane-runtimes-")
+        self._runtime_zip(folder, "linux-x64", version.code_version())
+
+        def exported(seed):
+            with patch.dict(os.environ, {"ANE_RUNTIMES_DIR": folder}):
+                result = export.export_engine(model=EngineModel.capture(Genome(rng=random.Random(seed))),
+                                              name="ane-unity", platform="unity", include_memory=False)
+            assets = {}
+            with tarfile.open(result["path"], "r:gz") as tar:
+                for member in tar.getmembers():
+                    guid, part = member.name.split("/")
+                    assets.setdefault(guid, {})[part] = tar.extractfile(member).read()
+            return {parts["pathname"].decode(): (guid, parts.get("asset")) for guid, parts in assets.items()}
+
+        first, second = exported(2), exported(5)  # another storyteller, the same paths
+        self.assertEqual({path: guid for path, (guid, _) in first.items()},
+                         {path: guid for path, (guid, _) in second.items()})
+        self.assertNotEqual(first["Assets/StreamingAssets/ANE-AI/package.zip"][1],
+                            second["Assets/StreamingAssets/ANE-AI/package.zip"][1])
+
+        # The engine package it ships is a whole one: the ANE AI's code runs it.
+        package = Path(tempfile.mkdtemp()) / "package"
+        with zipfile.ZipFile(io.BytesIO(second["Assets/StreamingAssets/ANE-AI/package.zip"][1])) as zipped:
+            zipped.extractall(package)
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        out = subprocess.run([PYTHON, "-m", "narrative_runtime", "--package", str(package), "--data-dir",
+                              tempfile.mkdtemp(), "info"], cwd=ROOT, env=env, capture_output=True, text=True,
+                             timeout=300)
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        info = json.loads(out.stdout)
+        self.assertEqual(info["name"], "ane-unity")
 
     def test_no_ane_ai_before_a_complete_engine_exists(self):
         folder = tempfile.mkdtemp(prefix="ane-runtimes-")

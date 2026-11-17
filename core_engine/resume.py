@@ -29,6 +29,16 @@ class ParameterError(ValueError):
     """Parameters that do not fit this world (an unknown place, item, stat, ...)."""
 
 
+def _whole(value, field):
+    """A whole number from the UNP, or a ParameterError that names the field."""
+    if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+        raise ParameterError(f"`{field}` must be a whole number, not {value!r}.")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ParameterError(f"`{field}` must be a whole number, not {value!r}.") from None
+
+
 def parameters(state):
     """The session's parameters (JSON-ready)."""
     mission = state.mission
@@ -167,7 +177,7 @@ def apply_player(state, player):
         raise ParameterError(f"Unknown player field(s) {', '.join(unknown)}; use {', '.join(PLAYER_FIELDS)}.")
     applied = []
     if "stat_points" in player:
-        points = {str(k): int(v) for k, v in dict(player["stat_points"]).items()}
+        points = {str(k): _whole(v, f"stat_points.{k}") for k, v in dict(player["stat_points"]).items()}
         errors = state.stats.validate_points(points, state.stats.names, state.stats.budget)
         if errors:
             raise ParameterError("; ".join(errors))
@@ -178,7 +188,7 @@ def apply_player(state, player):
         bad = sorted(set(changes) - set(state.stats.names))
         if bad:
             raise ParameterError(f"Unknown stat(s) {', '.join(bad)}.")
-        state.stats.changes = {name: changes.get(name, 0) for name in state.stats.names}
+        state.stats.changes = {name: _whole(changes.get(name, 0), f"stat_changes.{name}") for name in state.stats.names}
         applied.append("stat_changes")
     if "inventory" in player:
         wanted = [str(i) for i in player["inventory"]]
@@ -196,14 +206,14 @@ def apply_player(state, player):
         _drop(state, str(name))
     applied += [f for f in ("add_items", "remove_items") if f in player]
     if "max_health" in player:
-        state.health_player.max_health = max(1, int(player["max_health"]))
+        state.health_player.max_health = max(1, _whole(player["max_health"], "max_health"))
         state.health_player.set(min(state.health_player.health, state.health_player.max_health))
         applied.append("max_health")
     if "health" in player:
-        state.health_player.set(int(player["health"]))
+        state.health_player.set(_whole(player["health"], "health"))
         applied.append("health")
     if "coins" in player:
-        state.coins = max(0, int(player["coins"]))
+        state.coins = max(0, _whole(player["coins"], "coins"))
         applied.append("coins")
     if "variables" in player:
         for name, value in dict(player["variables"]).items():
@@ -246,9 +256,9 @@ def sync(state, event):
     elif kind == "location_visited":
         _place(state, str(event.get("location")))
     elif kind == "coins_changed":
-        state.coins = max(0, state.coins + int(event.get("amount", 0)))
+        state.coins = max(0, state.coins + _whole(event.get("amount", 0), "amount"))
     elif kind == "health_changed":
-        state.health_player.change(int(event.get("amount", 0)))
+        state.health_player.change(_whole(event.get("amount", 0), "amount"))
     state.update_power()
     state.__dict__.setdefault("sync_log", []).append({"turn": state.actions_taken, **event})
     _clear(state)

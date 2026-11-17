@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
@@ -600,6 +600,21 @@ def put_entity_policy(kind: Literal["Events", "Items"], name: str, body: EntityP
         _fail(exc)
 
 
+class LoadedState(PlayState):
+    restored: Literal["exact", "parameters"] = Field(
+        description="exact: the save game's snapshot fits this engine and world, and the story goes on exactly; "
+        "parameters: the session was rebuilt from its parameters (`note` says why).")
+    note: str | None = None
+
+
+class SaveGameLoad(BaseModel):
+    savegame: dict[str, Any] = Field(description="An ane.savegame/1 document (GET /v1/sessions/{id}/savegame, or the "
+                                                 "ANE AI's POST /games/{id}/save).")
+    profile: str | None = Field(default=None, description="The profile to continue it in (default: the save game's).")
+    session_id: str | None = Field(default=None, description="For a save game without a snapshot: the play session "
+                                                             "whose storyteller continues it.")
+
+
 class ExportRequest(BaseModel):
     source: Literal["run", "memory", "game", "engine"] = Field(
         default="run",
@@ -892,6 +907,74 @@ def end_session(session_id: str):
         _fail(exc)
 
 
+def _session_call(session_id, work):
+    """Run ``work`` on a play session: 404 when there is none, 400 for parameters that do not fit."""
+    try:
+        return work()
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Play session not found.") from exc
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.get("/v1/sessions/{session_id}/state", tags=["Evolution and play"])
+def get_session_parameters(session_id: str):
+    """The session's parameters (ane.session_state/1), as the exported ANE AI sends them to a UNP:
+    where the player is, the way taken, items, stats, health, coins, variables, mission stage,
+    one-time actions, people met. See docs/UNP.md."""
+    return _session_call(session_id, lambda: sessions.session_parameters(session_id))
+
+
+@api.patch("/v1/sessions/{session_id}/player", response_model=PlayState, tags=["Evolution and play"])
+def patch_session_player(session_id: str, player: dict[str, Any] = Body(
+        ..., examples=[{"coins": 20, "add_items": ["Ancient Map"], "health": 8}])):
+    """Set the player's state as a UNP does: ``stat_points`` (a whole allocation),
+    ``stat_changes``, ``inventory`` (exactly these items), ``add_items``, ``remove_items``,
+    ``coins``, ``health``, ``max_health``, ``variables``. Set, not played: nothing is narrated
+    or paid."""
+    applied = _session_call(session_id, lambda: sessions.update_player(session_id, player))
+    return _play_state(session_id, f"Player set by the UNP: {', '.join(applied) or 'nothing'}.")
+
+
+@api.post("/v1/sessions/{session_id}/sync", response_model=PlayState, tags=["Evolution and play"])
+def sync_session(session_id: str, events: dict[str, Any] = Body(
+        ..., examples=[{"type": "item_gained", "item": "Ancient Map"}])):
+    """What happened in the UNP's game: one event, or ``{"events": [...]}``. Types:
+    ``action_done`` (``action``, ``owner``, ``where``, ``succeeded``), ``item_gained`` /
+    ``item_lost`` (``item``), ``npc_removed`` (``npc``), ``location_visited`` (``location``),
+    ``coins_changed`` / ``health_changed`` (``amount``). Goals are checked afterwards."""
+    taken = _session_call(session_id, lambda: sessions.sync_session(session_id, events))
+    return _play_state(session_id, f"From the UNP's game: {', '.join(taken)}.")
+
+
+@api.get("/v1/sessions/{session_id}/savegame", tags=["Evolution and play"])
+def get_session_savegame(session_id: str):
+    """The session's save game (ane.savegame/1): its parameters and an exact snapshot, as the
+    ANE AI's save. The session goes on. ``POST /v1/sessions/load`` continues it."""
+    return _session_call(session_id, lambda: sessions.session_savegame(session_id))
+
+
+@api.post("/v1/sessions/load", response_model=LoadedState, tags=["Evolution and play"])
+def load_session(body: SaveGameLoad):
+    """Continue a save game as a new play session: exactly when its snapshot fits this engine and
+    world (``restored: exact``), else rebuilt from its parameters (``restored: parameters``,
+    ``note`` says why). A save game from the ANE AI or from another engine is accepted."""
+    try:
+        token, how, note = sessions.load_savegame(body.savegame, profile=body.profile, session_id=body.session_id)
+    except Exception as exc:
+        _fail(exc)
+    state = _play_state(token, "[RESUMED] The story goes on." if how == "parameters" else "")
+    return LoadedState(**state.model_dump(), restored=how, note=note)
+
+
+@api.get("/v1/world/catalogue", tags=["Engine export"])
+def get_world_catalogue():
+    """The world as the exported ANE AI sends it to a UNP (``GET /world``, ane.world/1): every
+    location, NPC, item, event and mission with all its fields, the stats, variables, routes and
+    starting locations."""
+    return sessions.world_catalogue()
+
+
 @api.get("/v1/sessions/{session_id}/report", tags=["Evolution and play"])
 def get_session_report(session_id: str):
     """The report of an ended session (as sent to the UNP); 409 while the session goes on."""
@@ -967,9 +1050,13 @@ def _known_engine(engine_id):
 
 @api.get("/v1/records", tags=["Records"])
 def records_info():
-    """Where the records database is, and whether recording is on."""
-    return {"enabled": records.enabled(), "directory": str(records.directory()),
-            "database": str(records.database_path()), "models": str(records.models_dir())}
+    """Where the records database is, whether recording is on, and why not (``reason``). When the
+    folder is not writable by this process, recording is off and the records already there
+    are still read (``readable``)."""
+    enabled = records.enabled()
+    return {"enabled": enabled, "reason": records.disabled_reason(), "directory": str(records.directory()),
+            "database": str(records.database_path()), "models": str(records.models_dir()),
+            "readable": records.database_path().exists()}
 
 
 @api.get("/v1/records/runs", tags=["Records"])

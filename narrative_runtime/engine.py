@@ -316,12 +316,10 @@ class NarrativeEngine:
         """Where a story may start (``start_eligible`` locations, or the single
         default start of a world that marks none)."""
         from utils.config_loader import config
-        from core_engine import starts
 
-        locations = (config.get("world_definition") or {}).get("locations") or {}
-        eligible = [name for name, data in locations.items() if (data or {}).get("start_eligible")]
-        default = starts.settings()["default_location"]
-        return eligible or [default if default in locations else next(iter(locations), default)]
+        from .world import starting_locations
+
+        return starting_locations(config.as_dict())
 
     # ---- the world as parameters (ANE -> UNP), and world content from the UNP --------------------
 

@@ -84,7 +84,8 @@ def _studio_requests():
             return "/".join(str(part) for part in parts)
         return None
 
-    methods = {"get": "GET", "post": "POST", "put": "PUT", "delete": "DELETE", "upload": "POST", "download": "GET"}
+    methods = {"get": "GET", "post": "POST", "put": "PUT", "patch": "PATCH", "delete": "DELETE", "upload": "POST",
+               "download": "GET"}
     found = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not node.args:

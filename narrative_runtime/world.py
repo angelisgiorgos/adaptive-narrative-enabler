@@ -181,6 +181,17 @@ def _entities(world, kind):
     return [{"kind": kind, **copy.deepcopy(entry)} for entry in raw if isinstance(entry, dict)]
 
 
+def starting_locations(config_data):
+    """Where a story may start (``start_eligible`` locations, or the single default start of a
+    world that marks none)."""
+    from core_engine import starts
+
+    locations = ((config_data or {}).get("world_definition") or {}).get("locations") or {}
+    eligible = [name for name, data in locations.items() if (data or {}).get("start_eligible")]
+    default = starts.settings()["default_location"]
+    return eligible or [default if default in locations else next(iter(locations), default)]
+
+
 def world_catalogue(config_data, starting_locations=(), revision=0, engine=None):
     world = (config_data or {}).get("world_definition") or {}
     stats = world.get("character_stats") or {}

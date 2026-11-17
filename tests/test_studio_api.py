@@ -209,6 +209,129 @@ class ProfileAndPlayTests(_Sandbox):
             self.assertEqual((request.status_code, request.json()["detail"]), (404, "Play session not found."))
 
 
+class UnpSessionTests(_Sandbox):
+    """A play session as a UNP sees it: the exported ANE AI's protocol in the API, and the studio's views."""
+
+    def _game(self):
+        body = {"candidate_count": 1, "generations": 1, "simulation_steps": 2, "deterministic": False, "profile": "unp"}
+        game = self.client.post("/v1/simulations", json=body)
+        self.assertEqual(game.status_code, 200, game.text)
+        return game.json()
+
+    def test_parameters_the_player_events_and_save_games(self):
+        game = self._game()
+        sid = game["session_id"]
+        state = self.client.get(f"/v1/sessions/{sid}/state").json()
+        self.assertEqual((state["format"], state["current_location"]), ("ane.session_state/1", game["location"]))
+        catalogue = self.client.get("/v1/world/catalogue").json()
+        self.assertEqual(catalogue["format"], "ane.world/1")
+        item = catalogue["items"][0]["name"]
+
+        changed = self.client.patch(f"/v1/sessions/{sid}/player", json={"coins": 42, "health": 3, "add_items": [item]})
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertEqual((changed.json()["coins"], changed.json()["health"]), (42, 3))
+        self.assertIn(item, changed.json()["inventory"])
+        for bad in ({"coins": "lots"}, {"gold": 1}, {"add_items": ["No Such Thing"]}):
+            with self.subTest(player=bad):
+                refused = self.client.patch(f"/v1/sessions/{sid}/player", json=bad)
+                self.assertEqual(refused.status_code, 400, refused.text)
+        synced = self.client.post(f"/v1/sessions/{sid}/sync", json={"type": "coins_changed", "amount": -2})
+        self.assertEqual(synced.json()["coins"], 40)
+        synced = self.client.post(f"/v1/sessions/{sid}/sync", json={"events": [
+            {"type": "item_lost", "item": item}, {"type": "health_changed", "amount": 1}]})
+        self.assertNotIn(item, synced.json()["inventory"])
+        self.assertEqual(synced.json()["health"], 4)
+        self.assertEqual(self.client.post(f"/v1/sessions/{sid}/sync", json={"type": "teleported"}).status_code, 400)
+
+        doc = self.client.get(f"/v1/sessions/{sid}/savegame").json()
+        self.assertEqual(doc["format"], "ane.savegame/1")
+        loaded = self.client.post("/v1/sessions/load", json={"savegame": doc})
+        self.assertEqual(loaded.status_code, 200, loaded.text)
+        self.assertEqual(loaded.json()["restored"], "exact")
+        self.assertNotEqual(loaded.json()["session_id"], sid)
+        again = self.client.get(f"/v1/sessions/{loaded.json()['session_id']}/state").json()
+        for field in ("current_location", "coins", "health", "inventory", "turns", "path"):
+            self.assertEqual(again[field], state[field] if field in ("current_location", "turns", "path") else
+                             self.client.get(f"/v1/sessions/{sid}/state").json()[field], field)
+
+        damaged = json.loads(json.dumps(doc))
+        damaged["checksum"] = "0" * 64
+        rebuilt = self.client.post("/v1/sessions/load", json={"savegame": damaged}).json()
+        self.assertEqual(rebuilt["restored"], "parameters")
+        self.assertIn("checksum", rebuilt["note"])
+        bare = {"format": "ane.savegame/1", "parameters": doc["parameters"]}
+        self.assertEqual(self.client.post("/v1/sessions/load", json={"savegame": bare}).status_code, 400)  # no storyteller
+        self.assertEqual(self.client.post("/v1/sessions/load", json={"savegame": bare, "session_id": sid})
+                         .json()["restored"], "parameters")
+        self.assertEqual(self.client.post("/v1/sessions/load", json={"savegame": {"format": "nope"}}).status_code, 400)
+        for request in (self.client.get("/v1/sessions/nothing/state"), self.client.get("/v1/sessions/nothing/savegame"),
+                        self.client.patch("/v1/sessions/nothing/player", json={"coins": 1}),
+                        self.client.post("/v1/sessions/nothing/sync", json={"type": "coins_changed", "amount": 1})):
+            self.assertEqual(request.status_code, 404, request.text)
+
+    def test_the_studio_views(self):
+        import gradio as gr
+
+        import app
+
+        token = self._game()["session_id"]
+        self.assertEqual(json.loads(app.session_parameters_ui(token))["format"], "ane.session_state/1")
+        scene, choices, turn, quest, people = app.update_player_ui(token, '{"coins": 9}')
+        self.assertIn("coins", turn)
+        app.sync_session_ui(token, "coins_changed", "-4")
+        self.assertEqual(self.client.get(f"/v1/sessions/{token}/state").json()["coins"], 5)
+        for bad in (lambda: app.sync_session_ui(token, "coins_changed", "a lot"),
+                    lambda: app.update_player_ui(token, "[1]"), lambda: app.session_parameters_ui("")):
+            with self.assertRaises(gr.Error):
+                bad()
+        path, status = app.download_savegame_ui(token)
+        self.assertEqual(json.loads(Path(path).read_text())["format"], "ane.savegame/1")
+        new_token, *view, status = app.load_savegame_ui(path, token)
+        self.assertNotEqual(new_token, token)
+        self.assertIn("Continued exactly", status)
+        path, status = app.world_catalogue_ui()
+        self.assertEqual(json.loads(Path(path).read_text())["format"], "ane.world/1")
+        self.assertIn("python", list(app.export_platforms_table()["runs on"]))
+
+
+@unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root can write anything")
+class ReadOnlyRecordsTests(unittest.TestCase):
+    """A records folder the process cannot write (the container's user and a mounted folder owned by
+    someone else): recording is off, the records there are still read, the studio starts."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="ane-ro-records-"))
+        patcher = patch.dict(os.environ, {"ANE_RECORDS_DIR": str(self.root)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.assertTrue(records.enabled())
+        with records.connect() as connection:
+            connection.execute("INSERT INTO engines (id, created_at, source, genome_json, resumable) "
+                               "VALUES ('e1', '2026-11-17T00:00:00', 'run_best', '{}', 0)")
+        os.chmod(records.database_path(), 0o444)
+        os.chmod(self.root, 0o555)
+        self.addCleanup(lambda: (os.chmod(self.root, 0o755), shutil.rmtree(self.root, ignore_errors=True)))
+
+    def test_recording_is_off_and_the_records_are_still_read(self):
+        self.assertFalse(records.enabled())
+        self.assertIn("not writable", records.disabled_reason())
+        client = TestClient(api.api)
+        listed = client.get("/v1/records/engines")
+        self.assertEqual(listed.status_code, 200, listed.text)  # it used to be a 500 (a read-only database)
+        self.assertEqual([e["id"] for e in listed.json()["engines"]], ["e1"])
+        info = client.get("/v1/records").json()
+        self.assertEqual((info["enabled"], info["readable"]), (False, True))
+        self.assertIsNone(records.record_engine(genome=None, source="nothing"))  # writes are skipped, not failed
+
+    def test_the_studio_starts_when_the_records_cannot_be_read(self):
+        import app
+
+        with patch.object(records, "list_engines", side_effect=RuntimeError("disk on fire")):
+            self.assertEqual(app.recorded_engines(), [])  # a 500 from the API: no records, no crash
+            app.build_app()
+        self.assertIn("Recording is off", app.records_status_text())
+
+
 class StudioServiceTests(_Sandbox):
     """The endpoints the studio is built on: every studio tab works through the API."""
 
