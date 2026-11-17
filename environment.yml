@@ -7,8 +7,6 @@ dependencies:
   - pyyaml
   - numpy
   - scikit-learn
-  - matplotlib
-  - networkx
   - pip:
       - gradio>=6.0
       - torch

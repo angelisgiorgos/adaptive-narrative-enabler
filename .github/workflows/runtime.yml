@@ -21,7 +21,7 @@ jobs:
         include:
           - {os: ubuntu-22.04, target: linux-x64}       # an older glibc: runs on more Linux systems
           - {os: windows-2022, target: windows-x64}
-          - {os: macos-14, target: macos-arm64}
+          - {os: macos-15, target: macos-arm64}
           - {os: macos-15-intel, target: macos-x64}
     steps:
       - uses: actions/checkout@v5

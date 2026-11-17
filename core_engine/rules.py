@@ -1,6 +1,6 @@
 """Story rules: how the engine keeps a story coherent, paced and varied.
 
-Configured under ``story_rules`` in hyperparameters.yaml (README, "Story rules").
+Configured under ``story_rules`` in hyperparameters.yaml (docs/AI.md, "Story rules").
 Each rule answers a failure measured in simulated stories:
 
   failure_tags          Outcomes with one of these tags (or ``on_check: fail``) are

@@ -261,7 +261,7 @@ one); `tests/test_studio_coverage.py` checks it.
   (every section, plus every condition and effect list of its world; a
   rejected upload leaves the active configuration unchanged). A file may hold
   only a world: the sections it lacks come from the built-in configuration,
-  and the message names them (see `examples/worlds/`);
+  and the message names them (see `examples/`);
   `POST /v1/config/reset` restores the built-in file configuration.
 - `GET|PUT /v1/settings`: basic simulation settings. `max_health` caps
   healing; omit it on `PUT` to keep the stored value.
@@ -291,9 +291,9 @@ one); `tests/test_studio_coverage.py` checks it.
     `encounter_repeat`: NPCs only.
   - `enabled_if`: locations, NPCs, items, and events (send `{}` to remove it).
     Any condition: the variable shorthand or a tree with `all` / `any` / `not`
-    (see the README, Conditions and effects).
+    (see [WORLD.md](WORLD.md#conditions-and-effects)).
   - `start_eligible` and `start_weight` (above 0): locations only. Stories
-    start at the eligible locations (see the README, Starting locations).
+    start at the eligible locations (see [WORLD.md](WORLD.md#starting-locations)).
   - `title`: events.
   - `role` (a key of `npc_roles.roles`; `""` removes it and the role is then
     inferred from the NPC's tags) and `secret` (`{text, talks, clues, effects}`,
@@ -363,7 +363,7 @@ one); `tests/test_studio_coverage.py` checks it.
 **Records and saved engines**
 - Earlier files (engine models, exports, older bundles, story configurations)
   are brought into the records with `python main.py --import-artifacts
-  [FOLDER]` (see the README, Records database); they then appear here with the
+  [FOLDER]` (see [ENGINES.md](ENGINES.md#records-database)); they then appear here with the
   origin `import`, their rebuilt runs and a preview story.
 - `GET /v1/records`: the records folder and whether recording is on.
 - `GET /v1/records/runs` and `GET /v1/records/runs/{id}`: runs with every
