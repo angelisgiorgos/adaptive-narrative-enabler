@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import socket
+import sqlite3
 import tempfile
 import threading
 import time
@@ -183,7 +184,8 @@ class ProfileAndPlayTests(_Sandbox):
 
     def test_studio_stored_values_editor(self):
         text, _ = content.save_stored_values_yaml("carol", "playthroughs: 1\nvalues:\n  thief_caught: true\n")
-        self.assertEqual(yaml.safe_load(text), {"playthroughs": 1, "values": {"thief_caught": True, "fence_exposed": False, "reputation": 0}})
+        self.assertEqual(yaml.safe_load(text), {"playthroughs": 1, "values": {"thief_caught": True, "fence_exposed": False, "reputation": 0,
+                                                                   "pit_champion": False}})
         text, _ = content.reset_stored_values_ui("carol")
         self.assertEqual(yaml.safe_load(text)["playthroughs"], 0)
 
@@ -294,6 +296,53 @@ class UnpSessionTests(_Sandbox):
         self.assertIn("python", list(app.export_platforms_table()["runs on"]))
 
 
+class PlayTabTests(_Sandbox):
+    """▶ Play: the world of a finished run, played as a game, also without the records."""
+
+    def test_play_the_world_of_a_finished_run(self):
+        import app
+        from backend import export
+
+        with patch.dict(os.environ, {"ANE_RECORDS": "off", "ANE_SAVE_DIR": str(self.dir / "fresh")}), \
+                patch.dict(export.ENGINES, {}, clear=True), patch.dict(export.RUNS, {}, clear=True):
+            early = self.client.post("/v1/engines/latest/play", json={})
+            self.assertEqual(early.status_code, 409, early.text)  # nothing trained yet
+            self.assertIn("train the AI first", early.json()["detail"])
+
+            trained = self.client.post("/v1/simulations", json={"candidate_count": 1, "generations": 1,
+                                                                 "simulation_steps": 2, "deterministic": False})
+            self.assertEqual(trained.status_code, 200, trained.text)
+            engine_id = trained.json()["engine_id"]
+            self.assertEqual(app.play_runs_ui().value, engine_id)  # the newest is offered first
+
+            game = self.client.post(f"/v1/engines/{engine_id}/play", json={"profile": "player", "stats_mode": "random"})
+            self.assertEqual(game.status_code, 200, game.text)
+            self.assertEqual(game.json()["engine_id"], engine_id)
+            sid = game.json()["session_id"]
+            self.assertEqual(self.client.get(f"/v1/sessions/{sid}/transcript").json()["session_id"], sid)
+            self.assertEqual(self.client.get("/v1/sessions/nothing/transcript").status_code, 404)
+            self.assertEqual(self.client.post("/v1/engines/nothing/play", json={}).status_code, 409)
+
+            # The studio's game screen: a button per choice, a turn per press, save and continue.
+            token, ending, hud, scene, turn, *rest = app.play_new_game_ui(engine_id, "player", "", "balanced")
+            buttons, actions, story = rest[:app.CHOICE_BUTTONS], rest[app.CHOICE_BUTTONS + 2], rest[-2]
+            self.assertIn("📍", hud.value)  # the status bar: where, health, coins, the quest
+            self.assertIn("❤", hud.value)
+            shown = [b.value for b in buttons if b.visible]
+            self.assertEqual(len(shown), len(actions))
+            self.assertTrue(all(name in label for label, name in zip(shown, actions)))
+            out = app.play_choose_ui(token, actions, 0)
+            self.assertIn("What happened", out[3].value)
+            self.assertGreater(len(out[-1]), len(story))  # the story so far grew
+            path, _ = app.download_savegame_ui(token)
+            continued = app.play_continue_ui(path, token)
+            self.assertEqual(continued[-1], "Continued exactly where it was saved.")
+            ended = app.play_end_ui(continued[0])
+            self.assertTrue(ended[0].visible and ended[0].value.startswith("## "))  # how the story ended
+            with self.assertRaises(Exception):
+                app.play_choose_ui("", [], 0)
+
+
 @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root can write anything")
 class ReadOnlyRecordsTests(unittest.TestCase):
     """A records folder the process cannot write (the container's user and a mounted folder owned by
@@ -322,6 +371,47 @@ class ReadOnlyRecordsTests(unittest.TestCase):
         info = client.get("/v1/records").json()
         self.assertEqual((info["enabled"], info["readable"]), (False, True))
         self.assertIsNone(records.record_engine(genome=None, source="nothing"))  # writes are skipped, not failed
+
+    def test_a_run_whose_engine_file_this_server_cannot_read_is_not_offered(self):
+        """The host's records folder in the container: the database is readable, the engine model
+        files (mode 600, another user's) are not. The export used to fail with Python's error and
+        the host's path."""
+        from core_engine import Genome
+        from core_engine.model import EngineModel
+        import random
+
+        os.chmod(self.root, 0o755)
+        os.chmod(records.database_path(), 0o644)
+        (self.root / "models").mkdir(exist_ok=True)
+        model_file = self.root / "models" / "m1.ane.zip"
+        EngineModel.capture(Genome(rng=random.Random(1)), source="host run").save(str(model_file))
+        with sqlite3.connect(records.database_path()) as connection:
+            connection.execute("INSERT INTO engines (id, created_at, source, genome_json, resumable, model_path) "
+                               "VALUES ('m1', '2026-11-18T00:00:00', 'run_best', '{}', 0, 'models/m1.ane.zip')")
+        os.chmod(model_file, 0o000)
+        os.chmod(records.database_path(), 0o444)
+        os.chmod(self.root, 0o555)
+        self.addCleanup(lambda: os.chmod(model_file, 0o644))
+
+        from backend import export
+
+        self.assertNotIn("m1", [e["engine_id"] for e in export.complete_engines()])
+        client = TestClient(api.api)
+        for platform in ("python", "linux-x64"):
+            with self.subTest(platform=platform):
+                refused = client.post("/v1/exports", json={"source": "engine", "engine_id": "m1", "platform": platform})
+                self.assertIn(refused.status_code, (400, 409), refused.text)
+                detail = refused.json()["detail"]
+                self.assertNotIn(str(self.root), detail)  # never the server's paths
+                if platform == "python":
+                    self.assertIn("cannot be read by this server", detail)
+        self.assertNotIn(str(self.root), json.dumps(client.get("/v1/records").json()["reason"]))
+
+    def test_errors_never_show_the_servers_paths(self):
+        self.assertEqual(api.public_message("[Errno 13] Permission denied: '/data/someone/ane/models/x.ane.zip'"),
+                         "[Errno 13] Permission denied: 'x.ane.zip'")
+        self.assertEqual(api.public_message("Use GET /v1/exports/engines or http://host:8004/v1/x."),
+                         "Use GET /v1/exports/engines or http://host:8004/v1/x.")  # routes and URLs stay
 
     def test_the_studio_starts_when_the_records_cannot_be_read(self):
         import app
@@ -363,6 +453,98 @@ class ConfigFolderTests(_Sandbox):
         upgraded = [c for c in upgraded if c["name"] != "Thief"]
         (old / "npcs.yaml").write_text(yaml.safe_dump({"world_definition": {"characters": upgraded}}, sort_keys=False))
         self.assertEqual(upgrade_config_dir(str(store.CONFIG_DIR), str(old), log=lambda *_: None), [])
+
+    def _release(self, history):
+        """A defaults folder (this release) whose history says which values earlier releases had."""
+        from utils.config_loader import HISTORY_FILE
+
+        defaults = self.dir / "defaults"
+        shutil.copytree(store.CONFIG_DIR, defaults, ignore=shutil.ignore_patterns(HISTORY_FILE, ".*"))
+        (defaults / HISTORY_FILE).write_text(json.dumps({"format": 1, "files": history}))
+        volume = self.dir / "old-volume"
+        shutil.copytree(defaults, volume, ignore=shutil.ignore_patterns(HISTORY_FILE))
+        return defaults, volume
+
+    def test_what_nobody_edited_takes_this_release_s_defaults_and_edits_stay(self):
+        from utils.config_loader import digest, upgrade_config_dir
+
+        npcs = yaml.safe_load((store.CONFIG_DIR / "npcs.yaml").read_text())["world_definition"]["characters"]
+        old_priest = {**next(c for c in npcs if c["name"] == "Priest"), "goals": ["An old release's goal"]}
+        old_steps = 60
+        defaults, volume = self._release({
+            "npcs.yaml": {"world_definition.characters[Priest]": [digest(old_priest)]},
+            "hyperparameters.yaml": {"evolution.max_steps": [digest(old_steps)]},
+        })
+        world = yaml.safe_load((volume / "npcs.yaml").read_text())
+        people = world["world_definition"]["characters"]
+        people[[c["name"] for c in people].index("Priest")] = old_priest                 # an earlier release's
+        people[[c["name"] for c in people].index("Aurora")]["goals"] = ["Edited by the writer."]  # edited
+        people.append({"name": "Lamplighter", "associated_tags": ["urban"], "descriptions": ["Mine."]})  # added
+        (volume / "npcs.yaml").write_text(yaml.safe_dump(world, sort_keys=False))
+        settings = yaml.safe_load((volume / "hyperparameters.yaml").read_text())
+        settings["evolution"]["max_steps"] = old_steps                   # an earlier release's value
+        settings["narrative_end"]["max_actions"] = 140                   # edited
+        del settings["npc_leads"]                                        # a section an earlier release lacked
+        (volume / "hyperparameters.yaml").write_text(yaml.safe_dump(settings, sort_keys=False))
+
+        logged = []
+        upgrade_config_dir(str(defaults), str(volume), log=logged.append)
+        people = {c["name"]: c for c in yaml.safe_load((volume / "npcs.yaml").read_text())["world_definition"]["characters"]}
+        self.assertEqual(people["Priest"], next(c for c in npcs if c["name"] == "Priest"))  # updated
+        self.assertEqual(people["Aurora"]["goals"], ["Edited by the writer."])               # kept
+        self.assertIn("Lamplighter", people)                                                  # never touched
+        settings = yaml.safe_load((volume / "hyperparameters.yaml").read_text())
+        defaults_settings = yaml.safe_load((defaults / "hyperparameters.yaml").read_text())
+        self.assertEqual(settings["evolution"]["max_steps"], defaults_settings["evolution"]["max_steps"])
+        self.assertEqual(settings["narrative_end"]["max_actions"], 140)
+        self.assertEqual(settings["npc_leads"], defaults_settings["npc_leads"])
+        self.assertTrue(any("Kept as edited" in line and "Aurora" in line for line in logged))
+        backups = list((volume / ".ane-backups").glob("*/npcs.yaml"))
+        self.assertEqual(len(backups), 1)
+        self.assertIn("Edited by the writer.", backups[0].read_text())
+
+        # Asked for, an edited entry takes the default too, once per release; additions stay.
+        upgrade_config_dir(str(defaults), str(volume), log=lambda *_: None, take_defaults=["all"])
+        people = {c["name"]: c for c in yaml.safe_load((volume / "npcs.yaml").read_text())["world_definition"]["characters"]}
+        self.assertNotEqual(people["Aurora"]["goals"], ["Edited by the writer."])
+        self.assertIn("Lamplighter", people)
+        self.assertEqual(yaml.safe_load((volume / "hyperparameters.yaml").read_text())["narrative_end"]["max_actions"],
+                         defaults_settings["narrative_end"]["max_actions"])
+        world = yaml.safe_load((volume / "npcs.yaml").read_text())
+        next(c for c in world["world_definition"]["characters"] if c["name"] == "Aurora")["goals"] = ["Edited again."]
+        (volume / "npcs.yaml").write_text(yaml.safe_dump(world, sort_keys=False))
+        upgrade_config_dir(str(defaults), str(volume), log=lambda *_: None, take_defaults=["all"])  # left set
+        people = {c["name"]: c for c in yaml.safe_load((volume / "npcs.yaml").read_text())["world_definition"]["characters"]}
+        self.assertEqual(people["Aurora"]["goals"], ["Edited again."])  # applied once for this release
+
+    def test_a_world_that_would_not_build_gets_only_the_additions(self):
+        from utils import config_loader
+
+        npcs = yaml.safe_load((store.CONFIG_DIR / "npcs.yaml").read_text())["world_definition"]["characters"]
+        old_priest = {**next(c for c in npcs if c["name"] == "Priest"), "goals": ["An old release's goal"]}
+        defaults, volume = self._release({"npcs.yaml": {"world_definition.characters[Priest]":
+                                                        [config_loader.digest(old_priest)]}})
+        world = yaml.safe_load((volume / "npcs.yaml").read_text())
+        people = world["world_definition"]["characters"]
+        people[[c["name"] for c in people].index("Priest")] = old_priest
+        world["world_definition"]["characters"] = [c for c in people if c["name"] != "Smuggler"]
+        (volume / "npcs.yaml").write_text(yaml.safe_dump(world, sort_keys=False))
+        logged = []
+        with patch.object(config_loader, "_world_problem", return_value="a mission names a missing NPC"):
+            added = config_loader.upgrade_config_dir(str(defaults), str(volume), log=logged.append)
+        self.assertEqual(added, [("npcs.yaml", "Smuggler")])
+        people = {c["name"]: c for c in yaml.safe_load((volume / "npcs.yaml").read_text())["world_definition"]["characters"]}
+        self.assertEqual(people["Priest"]["goals"], ["An old release's goal"])
+        self.assertTrue(any("could not be built" in line for line in logged))
+
+    def test_the_shipped_history_covers_the_current_defaults(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "default_history", Path(__file__).resolve().parent.parent / "packaging" / "default_history.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.main(["--check"])  # exits when config/default_history.json misses a current default
 
     def test_an_earlier_problem_of_the_world_does_not_block_other_edits(self):
         world = store.config.as_dict()

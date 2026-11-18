@@ -35,3 +35,7 @@ world_definition:
       min: -5
       max: 5
       description: How the city sees the traveler. Blessings raise it; theft, bribes and brawls lower it.
+    pit_champion:
+      type: bool
+      default: false
+      description: The traveler beat the Tavern's pit champion; the back room remembers it in later playthroughs.

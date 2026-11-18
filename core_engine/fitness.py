@@ -1,4 +1,13 @@
-"""The fitness function: how engaging a finished story is. Evolution maximises it."""
+"""The fitness function: the training objective evolution maximises.
+
+It adds up operational measures of a finished story: events, changes of health, how many tags it
+covers, clues planted and resolved, variety, pacing and coherence losses. They are proxies that
+can be computed for thousands of stories, not proof of narrative quality: they do not establish
+engagement, causality or a satisfying payoff, a fine quiet scene can score low and a mechanically
+busy story high. Narrative quality is assessed apart from it, by the LLM judge reading stories as
+a player would (evaluator/game_judge.py, docs/LLM.md) and by people playing; the studio's tab 6
+compares fitness with the judge and can fit its weights to it (evaluator/calibrate_fitness.py).
+See docs/AI.md, "What fitness is, and what it is not"."""
 from utils.config_loader import config
 from utils.tag_similarity import semantic_tag_similarity
 
@@ -505,7 +514,11 @@ def alternatives(states):
     """0..1: how different a storyteller's stories are from one another (the mean Jaccard
     distance of their signatures): a storyteller that tells the same story whatever the
     start is predictable; evolution.alternatives_weight rewards telling alternatives."""
-    signatures = [story_signature(state) for state in states if getattr(state, "actions_taken", 0)]
+    return signature_alternatives([story_signature(state) for state in states if getattr(state, "actions_taken", 0)])
+
+
+def signature_alternatives(signatures):
+    """alternatives() of the stories with these signatures (story_signature)."""
     if len(signatures) < 2:
         return 0.0
     distances = []

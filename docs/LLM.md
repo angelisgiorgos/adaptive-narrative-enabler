@@ -32,7 +32,24 @@ vllm:
   `vllm serve google/gemma-4-E4B-it --max-model-len 8192`. Use it with Docker (the
   image does not install vLLM) or to share one model between several processes.
 
-Without vLLM (or a server), the LLM features report that the model is unavailable and
+**Pointing at a server.** `ANE_JUDGE_URL` (a server's `/v1` address) selects server mode over
+`vllm.*`, with `ANE_JUDGE_API_KEY` and `ANE_JUDGE_MODEL`. With Docker, the `judge` service in
+`compose.yaml` is that server, off unless asked for (it takes a GPU):
+
+```bash
+docker compose --profile judge up -d judge   # Gemma 4 E4B on GPU ANE_JUDGE_GPU (1), from ANE_JUDGE_HF_CACHE
+```
+
+The API looks for it at `http://hamlet-ane-judge:8000/v1` by default. It serves the model from a
+local Hugging Face cache (offline), so the model must be in that cache.
+
+**Is it there?** `GET /v1/judge/status` says whether the judge can be used: `{available, mode,
+model, server, reason, how}` (a server is asked which models it serves). The studio shows it in
+*6 · Evaluate with the judge* and next to *Judge this playthrough*: a ready judge, or why not
+(no server answering at the address, a server with another model, a refused key, vLLM not
+installed) and how to start one.
+
+Without vLLM (or a server), the LLM features report that the model is unavailable, and why, and
 everything else runs as usual. `llm_evaluator` sets the judge's `max_new_tokens` and
 `temperature`, `editor_suggester` the editor's.
 
@@ -74,6 +91,15 @@ successes -0.31) now count half as much, and those that ran with it (scenario
 duplication +0.44, novelty fading, loops, filler) cost more; repeated failed
 attempts, its most frequent complaint, now ease the next attempt and step back for
 a turn or two (`director.retry_bonus`, `retry_cooldown`).
+
+**Comparing with baselines.** `python -m evaluator.compare_baselines --server URL --worlds city
+examples/frozen_monastery.yaml examples/orbital_station.yaml --stories 16 --train 12 8 3` trains,
+per world and with the same settings and seed, a storyteller the old way (it plays its own
+stories, `evolution.player: storyteller`) and the new way (simulated players), then plays the
+same story seeds with each and with random storytellers. It reports fitness, the judge's
+engagement and criteria (each story read twice), fitness's agreement with the judge, quests won,
+and head-to-head win rates (new against old, new against random, both orders), as JSON and
+markdown tables. No learning memory and no records are used, so the baselines are clean.
 
 **Measuring with the judge, and learning from it.** Small differences in the judge's 1-10
 scores (about 0.1) sit within run-to-run noise, so compare settings head to head.

@@ -42,7 +42,7 @@ The ANE AI is made from a **complete engine**: the engine model a finished train
 the API (also a continued or retrained one). It can be downloaded once one exists, from the studio
 or the API:
 
-- **Studio:** *4 · Simulate & play → Export the engine*: choose *Runs on* (a system or Unity),
+- **Studio:** *4 · Train the AI → Export the engine*: choose *Runs on* (a system or Unity),
   then the complete engine (newest first). Until a training has finished or an engine is loaded,
   the export says so and stays off.
 - **API:** `GET /v1/exports/engines` lists the complete engines; `POST /v1/exports` with a
@@ -525,7 +525,7 @@ drives a real ANE AI through the C# client (`Tests~/Protocol`).
 ## Trying it in the studio
 
 The studio and the REST API offer the same session operations on their own games, so an
-integration can be tried before an export: *4 · Simulate & play → This session as a UNP sees it*
+integration can be tried before an export: *4 · Train the AI → This session as a UNP sees it*
 (save and continue, the parameters, set the player, what happened), and
 `GET /v1/sessions/{id}/state`, `PATCH /v1/sessions/{id}/player`, `POST /v1/sessions/{id}/sync`,
 `GET /v1/sessions/{id}/savegame`, `POST /v1/sessions/load` and `GET /v1/world/catalogue`

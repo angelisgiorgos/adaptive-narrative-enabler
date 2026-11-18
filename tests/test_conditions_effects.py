@@ -386,6 +386,9 @@ class ShippedContentTests(unittest.TestCase):
                           mission="rid_the_market_of_the_thief")
         coins, reputation = state.coins, state.variables["reputation"]
         state.apply_effects([{"remove_npc": "Thief"}])
+        self.assertFalse(state.won)  # a quest in steps: the trail and the confrontation come first
+        state.mission_stage = len(state.mission.stages) - 1   # on its last step
+        state.apply_effects([{"remove_npc": "Thief"}])
         self.assertTrue(state.won)
         self.assertEqual((state.coins, state.variables["reputation"]), (coins + 10, reputation + 1))
 

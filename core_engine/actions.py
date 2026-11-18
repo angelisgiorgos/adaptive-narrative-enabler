@@ -1,3 +1,5 @@
+import copy
+
 from utils.config_loader import config
 
 from .conditions import Conditional
@@ -23,6 +25,21 @@ def repetition_errors(repeat, retry_on_failure, label="Action"):
         errors.append(f"{label}: `retry_on_failure` has no effect with `repeat: always` (the action never runs out).")
     return errors
 
+_IMMUTABLE = frozenset((str, int, float, bool, type(None)))
+
+
+def _deepcopy(self, memo):
+    """copy.deepcopy of an action or outcome, as the default one makes it (a new object of the
+    same class whose attributes are deep copies, sharing what the original shares), only faster:
+    the actions on offer are copied every turn, and most of their attributes are texts and
+    numbers, which a deep copy keeps as they are anyway."""
+    clone = self.__class__.__new__(self.__class__)
+    memo[id(self)] = clone
+    clone.__dict__.update({key: value if value.__class__ in _IMMUTABLE else copy.deepcopy(value, memo)
+                           for key, value in self.__dict__.items()})
+    return clone
+
+
 class Outcome:
     # Class defaults: games saved before these fields existed load unchanged.
     target_tags = ()          # a discovery led by tags: the neighbour that fits them best opens
@@ -32,6 +49,7 @@ class Outcome:
     requires_setup = None     # told only once this setup has been planted
     payoff_id = None          # pays this setup off (its thread closes)
     variants = ()             # other ways to tell it, used in turn when it is told again
+    __deepcopy__ = _deepcopy
     def __init__(self, desc, tags=None,
                  success_prob=1.0,
                  health_change=0,
@@ -199,6 +217,7 @@ class Action(Conditional):
     """
     retry_on_failure = False  # class default: games saved before the field existed load unchanged
     until = None              # a condition: once it holds, the action is no longer offered
+    __deepcopy__ = _deepcopy
 
     def __init__(self, name, outcomes, character_name=None, 
                  required_object=None, required_tag=None, required_coins=0,

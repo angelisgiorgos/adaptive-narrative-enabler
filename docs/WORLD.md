@@ -2,7 +2,7 @@
 
 The world is YAML under `config/`: places, NPCs, items, events, missions, stats, variables,
 messages and the tuning. This guide covers every authoring feature; the studio's
-*1 · World editor* and *2 · Simulation settings* tabs edit the same files
+*1 · Create the world* and *2 · Simulation settings* tabs edit the same files
 ([STUDIO.md](STUDIO.md)).
 
 ## Configuration Files
@@ -196,6 +196,20 @@ Configurations uploaded before Events existed remain valid without an
 automatically (see [Docker config volumes](STUDIO.md#docker-config-volumes)).
 
 ### Missions and winning
+
+**The shipped quests.** Nine missions, most of them in steps:
+
+| Mission | Steps |
+| --- | --- |
+| Rid the market of the thief | Pick up the thief's trail (the Captain of the Watch's bounty, the Merchant, or a guard) → catch them in the act (mind their lookout, who fights you once you hunt them) → drive them out (beat them, hand them to the watch with the captain's warrant, or follow them to their hideout); the captain pays the bounty |
+| The smuggler's tunnels | Get yourself thrown in the Dungeon → free the Smuggler (bribe the jailer, pick the lock, or overpower the jailer) → follow his tunnels to the Vault; freed, he becomes an ally and leads the way toward the quest |
+| Champion of the back room | Win a brawl in the Tavern's back room → beat the Pit Champion (one rematch); in later playthroughs she remembers (`pit_champion`) |
+| A face for the Palace | Buy an Official's Mask from the Maskwright → walk into the Palace (gate guards salute it) → unmask Aurora as the festival's patron |
+| Expose the fence | Find out who buys the stolen goods (make the thief talk, or win the Merchant's trust) → get the fence's ledger (fight his bodyguard, name the thief, or buy it) |
+| Break into the Vault, Buy your way into the Palace, Find a shield, Clear your name | as before |
+
+Guards on duty take no bribes at a gate: the only bribe is the jailer's, offered to a prisoner
+locked in the Dungeon (to open your cell, or to free the Smuggler, who knows the way).
 
 **Missions in stages.** A mission may be a quest in steps: `stages` lists
 `{title, description, goal, rewards}`, completed in order. Completing one is
@@ -446,7 +460,7 @@ before, except that a mission the route planner cannot reach from that start
 is no longer chosen while another one can be reached. Configurations uploaded
 without a `start_selection` section stay valid.
 
-In the studio, **World editor → Locations** has **Stories can start here**
+In the studio, **Create the world → Locations** has **Stories can start here**
 and **Start weight**, and the entity API exposes `start_eligible` and
 `start_weight` for locations. `start_selection` is editable in **Engine
 logic**. `start_eligible` must be `true` or `false` and `start_weight` must be
@@ -490,7 +504,7 @@ unique:
   explicitly.
 
 **Where to set it:**
-- **Studio:** tab **1 · World editor** → content type **NPCs** → the
+- **Studio:** tab **1 · Create the world** → content type **NPCs** → the
   **Unique NPC** checkbox.
 - **REST API:** the `unique` field on `GET|PUT /v1/entities/NPCs/{name}`.
   Omitting it on `PUT` keeps the stored value.
@@ -555,7 +569,7 @@ from the definition and from the inventory:
 - Validation: `unique` must be true or false, and only a unique item may have
   a `location`, which must exist.
 
-**Where to edit.** In the studio, **World editor → Uniqueness & scheduling**
+**Where to edit.** In the studio, **Create the world → Uniqueness & scheduling**
 edits an event's start rules or an item's uniqueness as YAML (validated, and
 nothing is written when invalid). The API offers
 `GET|PUT /v1/entities/{Events|Items}/{name}/policy`.
@@ -599,7 +613,7 @@ the event's actions:
   inside an encounter event, sends the player to where that NPC is.
 
 **Where to set it:**
-- **Studio:** World editor → **NPCs** → **Encounter event** (a dropdown of
+- **Studio:** Create the world → **NPCs** → **Encounter event** (a dropdown of
   the events in `events.yaml`, or *None*) and **Repeat on every visit**.
 - **REST API:** `encounter_event` and `encounter_repeat` on
   `GET|PUT /v1/entities/NPCs/{name}`. Omit a field to keep the stored value,
@@ -659,7 +673,7 @@ and actions can form one exclusive choice:
 # config/npcs.yaml — Gate Guard
 - name: Give him the {alcohol_desc}
   exclusive_group: get_past_gate_guard  # one way past the guard...
-- name: Bribe with coins
+- name: Show him your official's face
   exclusive_group: get_past_gate_guard
 - name: Fight the guard
   exclusive_group: get_past_gate_guard  # ...once one succeeds, the others disappear
@@ -700,6 +714,14 @@ and actions can form one exclusive choice:
   `hyperparameters.yaml` decides by source: `location: per_visit`,
   `npc: per_visit`, `item: once`, `event: always`. Travel and conversation
   options are always available.
+- **Questions are asked once.** An action that only *tells* is offered once,
+  unless it sets its own `repeat`: every outcome at most reveals a place, a
+  person or an item, opens a path (`spawn`) or shows the way (`lead_to_known`),
+  and nothing else changes (no coins, health, items, variables, stats, moves or
+  events). "Ask about the crown" is answered once, not on every visit. An answer
+  that told nothing ("the prisoner is too far gone to speak") does not use it
+  up: it is offered again on the next visit. `action_rules.questions_once:
+  false` turns this off.
 - **Exclusive groups.** `exclusive_group: <name>` makes the actions with the
   same name one choice. When one of them **succeeds**, the whole group
   disappears for the rest of the game. After a failed attempt the other options
@@ -707,10 +729,15 @@ and actions can form one exclusive choice:
   follows its `repeat` rule.
 - **Scope.** One-time options and groups belong to their owner: a location, a
   unique NPC, an item, or an event. A generic NPC is a different person in each
-  location, so bribing the Palace gate guard does not open the Vault's.
+  location, so getting past the Palace gate guard does not get you past the Vault's.
+- **Guides lead toward the quest.** When an NPC leads the way
+  (`lead_to_known`) or an ally shows a route (`npc_goals.reward: lead`), the
+  places they know score `npc_leads.quest_weight / (1 + steps to where the
+  quest can advance next)` on top of their tags: a prisoner you free takes you
+  toward your quest, not just anywhere he knows.
 - The mission planner respects these rules. A goal option that is used up no
   longer counts as a way to the goal.
-- Set them in YAML, in the studio (**World editor → Actions & outcomes →
+- Set them in YAML, in the studio (**Create the world → Actions & outcomes →
   How often one action is offered**: pick the action, choose **Repeat**, tick
   **Retry after failure**), through `PUT /v1/entities/{kind}/{name}/actions`,
   or in the terminal editor: edit an action → **6. Repeat rule** and
@@ -936,7 +963,7 @@ fence mission was no longer drawn.
 **Where to edit:**
 - **Studio:** **Simulation settings → Persistent variables** has the
   definitions editor (validated, comments kept), the stored values of the
-  profile, and **Reset stored values (new player)**. **World editor → Enabled
+  profile, and **Reset stored values (new player)**. **Create the world → Enabled
   if** covers locations, NPCs, items, and events, and the scene lists the current values.
 - **REST API:** `GET|PUT /v1/variables` (definitions), `GET /v1/variables/values`,
   `POST /v1/variables/reset` (optional `?profile=`), and `enabled_if` on entities.
@@ -1083,7 +1110,7 @@ there, so it pays nothing for this.
 **Shipped examples:** the Priest's dialogue above, and the reward for ridding
 the market of the thief.
 
-**Where to edit:** `enabled_if` in the studio's **World editor** (any
+**Where to edit:** `enabled_if` in the studio's **Create the world** tab (any
 condition as YAML, events included) and on the entity API; action
 `enabled_if` and outcome `effects` in **Actions & outcomes** and
 `PUT /v1/entities/{kind}/{name}/actions`; mission `rewards` and
@@ -1187,9 +1214,9 @@ a weapon.
 
 **Where to set it:**
 - **Studio:** *Simulation settings → Character stats* (definitions);
-  *Simulate & play → Character stats of the player* (story default, random,
+  *Train the AI → Character stats of the player* (story default, random,
   balanced, or your own points, with **Randomize**/**Balance** and a live
-  points check); *World editor* → item **Stat bonus while held**; and
+  points check); *Create the world* → item **Stat bonus while held**; and
   `skill_check`, `on_check`, and `change_stats` in the actions editor.
 - **REST API:** `GET|PUT /v1/stats`, `POST /v1/stats/allocate` (check or
   preview points), `stats` / `stats_mode` on `POST /v1/simulations`,

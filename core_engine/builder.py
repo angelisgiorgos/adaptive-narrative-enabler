@@ -646,6 +646,7 @@ def build_world(genome):
             unique=char_data.get("unique", False),
             encounter_event=char_data.get("encounter_event"),
             encounter_repeat=char_data.get("encounter_repeat", False),
+            starts_conversation=char_data.get("starts_conversation", False),
             enabled_if=char_data.get("enabled_if"),
             article=char_data.get("article"),
             role=char_data.get("role"),

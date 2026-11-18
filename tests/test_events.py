@@ -141,7 +141,7 @@ class EventTests(unittest.TestCase):
         event = world.events["confront_thief"]
         self.assertEqual(
             [a.name for a in event.actions],
-            ["Fight the thief", "Interrogate the thief", "Steal from the thief"],
+            ["Fight the thief", "Interrogate the thief", "Hand the thief over to the watch", "Steal from the thief"],
         )
         thief = next(c for c in world.characters if c.name == "Thief")
         trigger = next(a for a in thief.actions if a.triggers_event)

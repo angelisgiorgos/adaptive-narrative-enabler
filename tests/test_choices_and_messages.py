@@ -114,8 +114,8 @@ class RepeatAndExclusiveTests(unittest.TestCase):
         groups = {a.name: a.exclusive_group for a in guard.actions}
         self.assertEqual(
             {name for name, group in groups.items() if group == "get_past_gate_guard"},
-            {"(Gate Guard) Give him the {alcohol_desc}", "(Gate Guard) Bribe with coins", "(Gate Guard) Fight the guard",
-             "(Gate Guard) Offer to settle the guard's debt quietly"},
+            {"(Gate Guard) Give him the {alcohol_desc}", "(Gate Guard) Show him your official's face",
+             "(Gate Guard) Fight the guard", "(Gate Guard) Offer to settle the guard's debt quietly"},
         )
         study = next(a for o in world.objects if o.name == "Ancient Map" for a in o.actions)
         self.assertEqual(GameState(world, _genome())._repeat_rule(study), "once")
@@ -243,6 +243,88 @@ class GenomeDrivenChoiceTests(unittest.TestCase):
         genome = sessions._validated_genome(values)
         low, high = config.get("genome_bounds.novelty_bias")
         self.assertAlmostEqual(genome.novelty_bias, (low + high) / 2)
+
+
+class QuestionAndGuideTests(unittest.TestCase):
+    """Choices that make sense: a question is asked once, and a guide leads toward the quest."""
+
+    def _world(self):
+        from core_engine import Mission
+
+        world = WorldGraph()
+        for name, tags in (("Gate", ["gate"]), ("Yard", ["yard", "oracle"]), ("Tower", ["tower"])):
+            world.add_location(Location(name, tags))
+        world.locations["Gate"].connect(world.locations["Yard"])
+        world.locations["Gate"].connect(world.locations["Tower"])
+        oracle = Character("Oracle", ["gate", "oracle"], unique=True, known_locations=["Gate", "Yard", "Tower"], actions=[
+            Action("(Oracle) Ask about the crown", [Outcome("It lies in the Tower.", reveal_location="Tower")],
+                   character_name="Oracle", source="npc", owner="Oracle"),
+            Action("(Oracle) Ask again and again", [Outcome("It lies in the Tower.", reveal_location="Tower")],
+                   character_name="Oracle", source="npc", owner="Oracle", repeat="always"),
+            Action("(Oracle) Sell a riddle", [Outcome("Two coins.", coin_change=2)],
+                   character_name="Oracle", source="npc", owner="Oracle"),
+            Action("(Oracle) Show the way", [Outcome("Follow me.", lead_to_known=True)],
+                   character_name="Oracle", source="npc", owner="Oracle", repeat="always"),
+        ])
+        world.add_character(oracle)
+        world.add_mission(Mission("climb", {"location": "Tower"}, title="Climb the tower"))
+        return world
+
+    def _state(self, mission=None):
+        return GameState(self._world(), _genome(), start="Gate", rng=random.Random(1), mission=mission)
+
+    def test_a_question_is_asked_once_and_an_empty_answer_comes_back(self):
+        state = self._state()
+        state.npc_homes["Oracle"] = "Gate"
+        oracle = state.world.characters[0]
+        ask, again, sell, _ = oracle.actions
+        self.assertTrue(state._is_question(ask))
+        self.assertFalse(state._is_question(again))   # its own `repeat` wins
+        self.assertFalse(state._is_question(sell))    # it changes something: a purchase
+        self.assertEqual(state._repeat_rule(ask), "once")
+        _choose(state, "(Oracle) Ask about the crown")
+        self.assertNotIn("(Oracle) Ask about the crown", _names(state))
+        _choose(state, "Move to Yard")
+        state.npc_homes["Oracle"] = "Yard"
+        self.assertNotIn("(Oracle) Ask about the crown", _names(state))  # answered: not asked again anywhere
+        # An answer that told nothing does not use the question up (it comes back on the next visit).
+        fresh = self._state()
+        scope = fresh._action_scope(ask)
+        fresh._record_choice(ask, True, scope, told=Outcome("The oracle only hums."))
+        self.assertNotIn((scope, ask.name), fresh.spent_actions)
+        fresh._record_choice(ask, True, scope, told=ask.outcomes[0])
+        self.assertIn((scope, ask.name), fresh.spent_actions)
+        with patch.dict(config._config.setdefault("action_rules", {}), {"questions_once": False}):
+            self.assertFalse(self._state()._is_question(ask))
+
+    def test_a_guide_leads_toward_the_quest(self):
+        state = self._state(mission="climb")
+        self.assertGreater(state._quest_pull("Tower"), state._quest_pull("Yard"))
+        free = self._state()
+        free.mission = None
+        self.assertEqual(free._quest_pull("Tower"), 0.0)  # no quest, no pull
+        state.npc_homes["Oracle"] = "Gate"
+        with patch.dict(config._config.setdefault("npc_leads", {}), {"quest_weight": 50.0}):
+            _choose(state, "(Oracle) Show the way")
+        self.assertEqual(state.current.name, "Tower")  # not the Yard, whose tags suit the oracle better
+        alone = self._state(mission="climb")
+        alone.npc_homes["Oracle"] = "Gate"
+        with patch.dict(config._config.setdefault("npc_leads", {}), {"quest_weight": 0.0}):
+            _choose(alone, "(Oracle) Show the way")
+        self.assertEqual(alone.current.name, "Yard")
+
+    def test_the_quest_log_says_what_to_do_in_words(self):
+        from core_engine import Mission
+
+        world = self._world()
+        world.add_mission(Mission("brawl", {}, stages=[
+            {"title": "Win a brawl in the Yard", "goal": {"outcome_tag": "brawl_won"}},
+            {"title": "Find a way", "goal": {"condition": {"any": [{"action_done": "Ask about the crown"},
+                                                                  {"has_item": "Map"}]}}}]))
+        state = GameState(world, _genome(), start="Gate", rng=random.Random(1), mission="brawl")
+        self.assertEqual(state.quest_log()["todo"], ["Win a brawl in the Yard"])  # the step's title, not its tag
+        state.mission_stage = 1
+        self.assertEqual(state.quest_log()["todo"], ["Ask about the crown or Get the Map"])
 
 
 if __name__ == "__main__":

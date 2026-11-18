@@ -7,6 +7,168 @@ that introduces them.
 
 ## [Unreleased]
 
+### Choices that make sense, quests in steps, fights
+
+#### Changed
+- **A question is asked once.** An action that only tells (it reveals a place, a person or an
+  item, opens a path or shows the way, and changes nothing else) is offered once unless it sets
+  its own `repeat`; an answer that told nothing comes back on the next visit
+  (`action_rules.questions_once`). "Ask about the crown" no longer comes back on every visit, in
+  any world, including worlds written before.
+- **Guides lead toward the quest.** An NPC's lead and an ally's route prefer the places on the
+  way to where the quest can advance next (`npc_leads.quest_weight`).
+- The quest log says what to do in words: a step that is a tag to bring about shows its title
+  ("Win a brawl in the Tavern's back room"), a condition its parts ("Take the bounty on the market
+  thief or Ask about the market thief or Report the market thief"), not their raw form.
+- *Commission a new identity* (Maskwright) is bought once, for 6 coins, with no stealth check, and
+  gives an **Official's Mask** (+10 persuasion, +5 stealth): gate guards salute it, and it is how
+  to unmask Aurora. *Ask about the crown* (Aurora) is asked once; the Archivist's, the
+  Cartographer's and the Apprentice's are one-time too.
+- **No bribes at a gate.** The Gate Guard takes no coins; the only bribe is the jailer's, to a
+  prisoner locked in the Dungeon: to open your own cell, or to free the Smuggler, who knows the way.
+
+#### Added
+- Characters: the **Captain of the Watch** (a bounty on the thief, paid when the thief is gone),
+  the **Thief's Lookout** (once you hunt the thief, they come for you), the **Smuggler** (a prisoner
+  in the Dungeon: bribe the jailer, pick the lock or overpower the jailer; freed, he is an ally
+  and leads the way toward the quest), the **Fence** (his bodyguard guards the ledger), and the
+  **Pit Champion** (the Tavern's back room).
+- Fights: the lookout's ambush, the fence's bodyguard, back-room brawls (up to four a story) and
+  the champion's bout (one rematch), each with a fighting choice, a talking or sneaking one, and
+  a way out.
+- Quests in steps: *Rid the market of the thief* (pick up the trail, catch them in the act,
+  drive them out: beat them, hand them to the watch, or follow them), *The smuggler's tunnels*,
+  *Champion of the back room*, *A face for the Palace*; *Expose the fence* can also start from the
+  Merchant's secret. People speak as the story goes (the Merchant after the thief is gone, the
+  Thief after their lookout is beaten, the Captain, the Smuggler, Aurora and the Maskwright once
+  you wear a mask); the Pit Champion remembers a past win in later playthroughs (`pit_champion`).
+
+#### Measured (30 stories per quest, simulated players)
+No choice was offered again after it was used and no bribe outside the Dungeon, in every story of
+every quest. Won: rid the market of the thief 21 (14 before its fixes), the smuggler's tunnels 21,
+a face for the Palace 21 (8 before Aurora could be asked again after a failure), expose the
+fence 27 (5 before the Merchant's secret), champion of the back room 6 (2 before the rematch; a
+fighting quest, and simulated players do not heal before a fight); every freed smuggler led the
+player out. A story plays at about 290 turns a second in one process in this bigger world (the
+names of actions in conditions are now worked out once, not every turn).
+
+### Deployments: the config volume follows the release
+
+#### Changed
+- On start, a config volume kept from an older release is brought up to date entry by entry and
+  setting by setting: what it lacks is added, what has a value an earlier release shipped (never
+  edited: `config/default_history.json`, from git) takes this release's default, and anything
+  edited is kept. Edited ones take the defaults when `ANE_CONFIG_TAKE_DEFAULTS` names them (or
+  `all`), once per release. Changed files are backed up in `.ane-backups/`; if the result would
+  not build, only the additions are made. A volume used to keep an old release's world and
+  settings for good: the deployed one lacked 26 of 48 settings sections (the director, mission
+  pacing, NPC goals, story rules, the judge's) and the map's routes, and ran stories of up to 200
+  turns.
+
+### The judge: a server, and whether it is there
+
+#### Added
+- `ANE_JUDGE_URL` (`ANE_JUDGE_API_KEY`, `ANE_JUDGE_MODEL`) points the judge at a vLLM server;
+  `compose.yaml` has an opt-in `judge` service (Gemma 4 E4B on a GPU, `--profile judge`) that the
+  API finds by default.
+- `GET /v1/judge/status` and the studio's judge views say whether the judge is ready and, if not,
+  why (no server answering, another model, a refused key, vLLM not installed) and how to start
+  one, instead of an error after a click.
+
+### Training speed: runs of up to 1,000,000 simulated turns
+
+#### Changed
+- `max_simulation_work` (the largest run, in simulated turns) is 1,000,000 (was 300,000). A run of
+  1,000,000 (40 storytellers x 50 generations x 5 whole stories) took 2 min 44 s through the
+  studio's code path on a 20-core server, game and export included (4 min 23 s in this release's
+  bigger world); the same run took about two hours before (estimated from the measured cost of a
+  story).
+- Training in the studio and the API plays a generation's stories in a pool of processes
+  (`evolution.evaluation_threads`, at most `evolution.max_evaluation_processes`); it used one CPU.
+  The processes are spawned with the world and its tag vectors (a file, so they all start at
+  once), which is safe in a server with threads. Every pool (the terminal's too) gets one story
+  per task, so all CPUs stay busy whichever storyteller tells it.
+- A storyteller kept from the generation before keeps its benchmark score instead of playing the
+  benchmark's fixed stories again.
+- A story plays about 3x faster in one process (134 to 406 turns a second): the actions on offer
+  are copied for each turn without the generic deep copy's overhead.
+
+#### Fixed
+- The cache of where the quest can advance never hit (the loop over the goal reused the name of
+  its key), so every choice the storyteller weighed recomputed it.
+
+None of this changes a result: runs, single evaluations and stories were compared before and after
+(the same seeds give the same storytellers, scores and stories, in one process or many). A run of
+12 storytellers x 4 generations x 3 stories went from 158 s to 13 s with the same result.
+
+### The studio's interface
+
+#### Changed
+- The tabs follow the workflow: *1 · Create the world* (was World editor), *4 · Train the AI*
+  (was Simulate & play), then *▶ Play*. The header shows the steps and a live status line (the
+  world's places, people, items, events and quests; the trained AIs; recording), refreshed after
+  each run. A themed look (violet, light and dark).
+- *▶ Play* is a game screen: a status bar (where, a health bar, coins, the quest's current step,
+  an event), the scene as a card, what just happened, numbered choice buttons with their check
+  (🎲), and an ending banner that appears when the story ends.
+
+#### Added
+- `python -m evaluator.compare_baselines`: storytellers trained the old way (the storyteller
+  plays) and the new way (simulated players), and random ones, played on the same seeds and
+  measured with fitness and the judge (engagement, criteria, agreement, head to head).
+
+#### Measured (Gemma 4 E4B, float16; 12 storytellers x 8 generations x 3 stories per run)
+Judged engagement (1-10, mean ± 95% CI, each story read twice), stories played by simulated
+players unless noted:
+
+| World (stories) | Random | Old (storyteller trained playing itself) | New (trained with simulated players) | Old, playing its own stories (earlier protocol) |
+| --- | --- | --- | --- | --- |
+| City (16) | 7.23 ± 0.36 | 7.05 ± 0.41 | 7.30 ± 0.27 | 7.88 ± 0.19 |
+| Frozen monastery (10) | 7.17 ± 0.46 | 7.40 ± 0.50 | 6.78 ± 0.44 | 7.65 ± 0.29 |
+| Orbital station (10) | 6.97 ± 0.35 | 7.15 ± 0.32 | 7.15 ± 0.38 | 7.05 ± 0.22 |
+
+Head to head, new against old (decided pairs): city 5-4 (7 ties), monastery 2-5 (3 ties), orbital
+1-3 (6 ties); every 95% Wilson interval includes 50%. The clearest result is the earlier
+protocol's inflation: in the city, the old storyteller's own stories score 7.88 (100% quests won,
+33 turns), but 7.05 when a simulated player plays (50% won, 59 turns); the earlier documented
+engagements (7.2-7.5) were measured that way. With players, trained and random storytellers are
+within the judge's noise at these sizes (the new one in the city has the best payoff, 6.81
+against 6.16, and quests won, 62% against 50%). Longer training with more stories per storyteller
+(simulated players make scores noisier) and 30+ judged stories per condition are needed to tell
+them apart.
+
+### ▶ Play: play your world after training
+
+#### Added
+- A **▶ Play** tab in the studio: choose a trained AI (a finished run, the newest first), a
+  player profile, a quest and the character, then **New game** (or continue a save game) and play
+  the world it was trained on, its storyteller directing: the scene, what just happened, a button
+  per choice with its skill check, the quest log, the people met and the map, the ending, the
+  story so far, save and end. It works without the records (finished runs are kept with the
+  saves), so in Docker too.
+- API: `POST /v1/engines/{id}/play` (`latest`: the newest finished run) and
+  `GET /v1/sessions/{id}/transcript`.
+
+### The evolutionary AI: the storyteller directs, players play
+
+#### Changed
+- Evaluated stories are played by **simulated players** (`core_engine/players.py`: follower,
+  explorer, quester, cautious, random; `evolution.player_mix`), who choose among the choices shown
+  with only what a person sees. The storyteller (genome) only directs: the world it builds, who is
+  where, events and encounters, how the story answers, and which choices are shown in what order.
+  Before, a story told without a player's choice took the storyteller's own favourite, so training
+  could reward a storyteller for choosing well for the player, which does not transfer to people.
+  Measured on 12 storytellers x 6 stories: fitness 758 with the storyteller playing, 561 with
+  players, and the two rank storytellers differently (Spearman 0.43). `evolution.player:
+  storyteller` keeps the older evaluation to compare with; training states saved before continue
+  with it, exactly. The judge's benchmarks, previews and the terminal's stories are played the same
+  way. A player's turn ranks the choices once (shared by the choices shown and the step), so it
+  costs about as much as the storyteller's own.
+- Fitness is presented as what it is, the **training objective** (operational measures), not a
+  measure of narrative quality: the studio reports "fitness on the benchmark (the training
+  objective)", and docs/AI.md ("Who controls what", "What fitness is, and what it is not") says
+  what the director and the player control and how quality is assessed (the judge, people playing).
+
 ### Exporting finished runs, for Linux and Unity in Docker
 
 #### Added
@@ -20,6 +182,16 @@ that introduces them.
 - Finished runs are kept when recording is off (a records folder the container cannot write):
   their engines go with the saves (`ANE_SAVE_DIR/engines`, the newest 20), so they can be
   exported after a restart. `GET /v1/exports/engines` gives `generations` and `loaded`.
+
+#### Fixed
+- Docker: exporting a run recorded on the host failed with *[Errno 13] Permission denied:
+  '/data/…/models/….ane.zip'*: the records folder is shared with the host, whose engine model
+  files only their owner can read. Runs whose engine this server cannot read are no longer
+  offered; choosing one gives a clear message. The list of finished runs also survives records
+  that cannot be read at all.
+- No error from the API shows the server's file paths any more (only a file's name), and the
+  studio's records status no longer shows the records folder.
+- `PATCH` (setting the player) is allowed for browser clients when `ANE_CORS_ORIGINS` is set.
 
 #### Changed
 - A Python export of a run (`source: run` without `generation`, or `source: engine`) is made from

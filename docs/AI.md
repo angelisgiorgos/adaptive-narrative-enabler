@@ -25,17 +25,20 @@ Every story the tool creates comes from evolution
 A **genome** is a storyteller: 19 traits such as appetite for danger,
 curiosity, drive toward the mission, and avoiding repetition. Each generation:
 
-1. Every storyteller plays `episodes_per_genome` stories. All storytellers
-   of a generation play the **same** stories: the same seeds and, with
+1. Every storyteller tells `episodes_per_genome` stories, each played by a
+   **simulated player** ([who controls what](#who-controls-what-the-director-and-the-player)).
+   All storytellers of a generation tell the **same** stories: the same seeds and, with
    `stratify_episodes`, the same **situations** (a starting location and a
    mission that can be reached from it). The generations cycle through every
    start × mission pair, so a storyteller is judged on the whole world, not
    on a few lucky draws. With `full_length_stories` every story is played to
    its natural end (`narrative_end.max_actions`), as in a real game, so the
    fitness judges real endings instead of stories cut at `max_steps`.
-2. The **fitness function** (`fitness` in `hyperparameters.yaml`) scores how
-   engaging each story is: dramatic arc, contrast, setup and payoff, variety,
-   tension, mission wins, and more. It also has **losses** for what makes a
+2. The **fitness function** (`fitness` in `hyperparameters.yaml`) is the
+   **training objective**: operational measures of dramatic arc, contrast,
+   setup and payoff, variety, tension, mission wins, and more. It is not a
+   measure of narrative quality ([what fitness is, and what it is
+   not](#what-fitness-is-and-what-it-is-not)). It also has **losses** for what makes a
    story worse: `repetition` (an action used more than `free_uses` times, and
    A → B → A travel loops), `pacing` (a mission won before
    `mission_win_min_steps`), `base.unfinished_penalty` (a story cut before its
@@ -155,13 +158,89 @@ evolution:
   benchmark_top_k: 3            # champions are chosen on the benchmark among the 3 best
   min_diversity: 0.08           # below this: more immigrants...
   max_immigrant_rate: 0.3       # ...up to this share, and wider mutation
-  evaluation_threads: auto      # terminal: parallel evaluation...
-  parallel_backend: processes   # ...on several CPU cores
+  evaluation_threads: auto      # processes playing stories at once (auto: the CPUs)...
+  max_evaluation_processes: 16  # ...at most this many
+  parallel_backend: processes
 ```
 
 With a reproducibility seed, a run is fully reproducible: the same seed gives
-the same storytellers, stories, and learning curve. Tag similarity and
-similarity-based spawn rules are cached to reduce repeated scoring work.
+the same storytellers, stories, and learning curve, in one process or many.
+
+**Speed.** Every run (the studio, the API, the terminal) plays a generation's stories in a pool
+of processes, one story per task, so all CPUs stay busy (the studio and the API start the
+processes afresh and give them the world, which is safe in a server with threads). The
+benchmark's stories are fixed, so a storyteller kept from the generation before (an elite)
+keeps its benchmark score instead of playing them again. Tag similarity, similarity-based
+spawn rules and the places where the quest can advance are cached. None of this changes a
+score: a run gives the same result, only sooner.
+
+## Who controls what: the director and the player
+
+A story has two sides, and evolution must reward only one of them. The **storyteller** (a genome)
+is the narrative controller, the director; the **player** chooses what to do.
+
+| The director (the storyteller, evolved) | The player (a person, or a simulated player in training) |
+| --- | --- |
+| The world it builds: outcome odds (`success_bias`), guards, leads | Which of the choices shown to take |
+| Who is where: which NPCs and items appear in a scene (`bias_*`, `spawn_prob`) | |
+| When events and encounters come (`event_prob`, `chaos_bias`, `threat_prob`) | |
+| How the story answers: setups and payoffs, stakes, failures, the climax (`setup_prob`, story beats) | |
+| Which choices are shown, and in what order (`player_options`: the ranking by its traits, `voyage_bias`, `discovery_bias`, `goal_bias`, `novelty_bias`, ...) | |
+
+Before, evolution let the storyteller also take the player's turns: a story told without a
+player's choice took the storyteller's own favourite (`GameState._storyteller_pick`). A
+storyteller could then score well partly because it chose well for the player, which does not
+transfer to people, who choose for themselves. Now **simulated players**
+([`core_engine/players.py`](../core_engine/players.py)) take the player's turns in every
+evaluated story. They choose among the choices shown with only what a person sees (the choices
+and their order, their kind, the skill check with its chance and cost, the quest log and who can
+help with it, the places and people already met, health), never the storyteller's scores:
+
+| Player | Chooses |
+| --- | --- |
+| `follower` | mostly one of the first choices shown (each next one about half as likely) |
+| `explorer` | new places and new people first |
+| `quester` | the quest's next step first: what the quest log still needs, people who can help |
+| `cautious` | avoids likely failures, the more so when hurt; likes choices without a check |
+| `random` | any choice shown |
+
+`evolution.player_mix` sets how often each plays. A story seed always has the same player making
+the same choices, so every storyteller meets the same players on the same stories and runs stay
+reproducible. `evolution.player: storyteller` brings back the older evaluation, to compare with;
+training states saved before simulated players continue with it, so they go on exactly. The
+judge's benchmarks, previews and the terminal's stories are played the same way (in the terminal,
+a person plays when `simulation.interactive` is on).
+
+Measured on 12 random storytellers, 6 whole stories each: with the storyteller playing for
+itself, mean fitness 758; with simulated players, 561, so about a quarter of the old score came
+from playing well. The two evaluations rank the storytellers differently (Spearman 0.43): what
+evolution selected was partly a player. Storytellers still differ as much with simulated players
+(spread 94 against 92), so evolution keeps a signal to learn from. A turn costs about 20% more
+(stories run longer: 58 turns against 48).
+
+## What fitness is, and what it is not
+
+Fitness is the **training objective**: what evolution maximises because it can be computed for
+thousands of stories. Its terms (events, changes of health, tags covered, clues planted and
+resolved, variety, pacing and coherence losses) are operational measures. They do not establish
+engagement, causality or a satisfying payoff: a fine quiet scene can score low and a mechanically
+busy story high. A higher fitness means a storyteller does more of what the measures count, not
+that its stories are better.
+
+Narrative quality is assessed apart from it:
+
+- **The judge** ([LLM.md](LLM.md)): Gemma 4 reads stories as a player would and rates engagement
+  and eight criteria; *6 · Evaluate with the judge* compares storytellers on the same seeds
+  (pairwise, both orders, with a confidence interval) and measures how well fitness agrees with the
+  judge. Fitting the fitness to the judge (`calibrate-fitness`) only aligns the objective better;
+  it does not make fitness a measure of quality.
+- **People playing**: the studio's play tab, the ANE AI in a game, and session reports
+  (`core_engine/progression.py`) are where quality shows.
+- **Judge in the loop** (`evolution.judge_weight`): the judge's engagement can be added to the
+  best storytellers' scores during training, at the cost of reproducibility.
+
+The studio reports fitness as "fitness on the benchmark (the training objective)", never as a
+quality score.
 
 ## Genome-driven decisions and learning
 

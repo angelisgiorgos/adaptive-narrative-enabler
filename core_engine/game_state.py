@@ -589,10 +589,35 @@ class GameState(StoryBeats, SessionScope):
         if key == "npc_removed":
             return f"Be rid of {self._called(value)}"
         if key == "outcome_tag":
-            return f"Bring about: {value}"
+            return f"Bring about: {str(value).replace('_', ' ')}"
         if key == "variables" and isinstance(value, dict):
             return "; ".join(f"{name.replace('_', ' ')} {rule}" for name, rule in value.items())
+        if key == "condition":
+            return self._condition_words(value)
         return f"{key.replace('_', ' ')}: {value}"
+
+    _FACT_WORDS = {"action_done": "{}", "has_item": "Get the {}", "item_collected": "Get the {}",
+                   "visited": "Reach the {}", "at_location": "Be at the {}", "event_done": "Live through: {}",
+                   "event_succeeded": "{}", "secret_known": "Learn {}'s secret", "outcome_tag": "Bring about: {}",
+                   "mission": "{}"}
+
+    def _condition_words(self, tree):
+        """A goal's condition in words: "Take the bounty or Ask about the thief", not its tree."""
+        if isinstance(tree, list):
+            tree = {"all": tree}
+        if not isinstance(tree, dict) or not tree:
+            return str(tree)
+        if len(tree) == 1:
+            (kind, value), = tree.items()
+            if kind in ("any", "all") and isinstance(value, list):
+                return (" or " if kind == "any" else " and ").join(self._condition_words(item) for item in value)
+            if kind == "not":
+                return "not: " + self._condition_words(value)
+            if kind == "npc_removed":
+                return f"Be rid of {self._called(value)}"
+            if kind in self._FACT_WORDS:
+                return self._FACT_WORDS[kind].format(str(value).replace("_", " ") if kind == "outcome_tag" else value)
+        return "; ".join(f"{name.replace('_', ' ')} {rule}" for name, rule in tree.items())
 
     def quest_log(self):
         """The story's mission as the player follows it, or None: {key, title, description,
@@ -609,8 +634,16 @@ class GameState(StoryBeats, SessionScope):
             "key": self.mission.name, "title": self.mission.title, "description": self.mission.description or "",
             "status": "completed" if self.won else "failed" if self.ended else "in progress",
             "stages": stages,
-            "todo": [self._goal_words(key, value) for key, value in self._pending_goal().items()],
+            "todo": self._todo(index),
         }
+
+    def _todo(self, index):
+        """What the current step still needs, in words. A step written as a tag to bring about
+        is told by its title ("Win a brawl in the Tavern's back room"), not by its tag."""
+        stages = getattr(self.mission, "stages", None) or []
+        titled = stages[index]["title"] if index < len(stages) else None
+        return [titled if key == "outcome_tag" and titled else self._goal_words(key, value)
+                for key, value in self._pending_goal().items()]
 
     def people_here(self):
         """The people the player sees here: [{name, called, description, wants, hostile,
@@ -1324,22 +1357,25 @@ class GameState(StoryBeats, SessionScope):
     def _goal_sites(self):
         """Locations where some unmet goal condition can be advanced."""
         pending = self._pending_goal()
-        key = (
+        # Everything the sites depend on: the goal, who is gone, what is used up, where the
+        # unique items are (every move is logged) and what is enabled. A change of the
+        # session's cast clears the cache (_clear_planning_caches).
+        cache_key = (
             tuple(sorted(pending.items(), key=str)), frozenset(self.removed_npcs),
-            len(self.spent_actions), len(self.closed_groups), self._condition_epoch(),
+            len(self.spent_actions), len(self.closed_groups), len(self.item_log), self._condition_epoch(),
         )
         cached = getattr(self, "_goal_sites_cache", None)
-        if cached and cached[0] == key:
+        if cached and cached[0] == cache_key:
             return cached[1]
         sites = set()
-        for key, value in pending.items():
-            if key == "coins":
+        for field, value in pending.items():
+            if field == "coins":
                 continue  # coins can be earned almost anywhere; no destination to plan for
-            if key == "location":
+            if field == "location":
                 sites.add(value)
-            elif key == "item":
+            elif field == "item":
                 sites |= self._item_sites(value)
-            elif key in ("event", "event_succeeded"):
+            elif field in ("event", "event_succeeded"):
                 for char in self.world.characters:
                     if char.encounter_event == value:
                         sites |= self._npc_sites(char.name)
@@ -1347,10 +1383,10 @@ class GameState(StoryBeats, SessionScope):
                 # A one-time option already used (for unique owners) is no longer a way to the goal.
                 if action.source != "npc" and self._is_closed(action):
                     continue
-                if key != "location" and self._advances(action, key, value, npc):
+                if field != "location" and self._advances(action, field, value, npc):
                     sites |= self._resolve_sites(action_sites)
         sites = {name for name in sites if name in self.world.locations and self.is_enabled(self.world.locations[name])}
-        self._goal_sites_cache = (key, sites)
+        self._goal_sites_cache = (cache_key, sites)
         return sites
 
     def _goal_distances(self):
@@ -1484,7 +1520,10 @@ class GameState(StoryBeats, SessionScope):
 
     def _mission_affinity(self, a, depth=0, npc=None):
         """How strongly an action works toward the mission: direct goal
-        conditions it advances, plus progress along the route to the goal."""
+        conditions it advances, plus progress along the route to the goal (approaching
+        someone: the best of what they offer)."""
+        if a.source == "approach":
+            return max((self._mission_affinity(m, depth, npc) for m in getattr(a, "members", ())), default=0.0)
         pending = self._pending_goal()
         if not pending:
             return 0.0
@@ -2405,11 +2444,51 @@ class GameState(StoryBeats, SessionScope):
     # ---- repeatable vs one-time options ------------------------------------
 
     def _repeat_rule(self, a):
-        """once | per_visit | always, from the action or action_rules.default_repeat."""
+        """once | per_visit | always, from the action or action_rules.default_repeat; a
+        question (``_is_question``) without its own ``repeat`` is asked once."""
+        if a.repeat:
+            return a.repeat
         defaults = {"location": "per_visit", "npc": "per_visit", "item": "once",
                     "event": "always", "navigation": "always", "conversation": "always"}
         defaults.update(config.get("action_rules.default_repeat") or {})
-        return a.repeat or defaults.get(a.source, "per_visit")
+        rule = defaults.get(a.source, "per_visit")
+        if rule != "once" and self._is_question(a):
+            return "once"
+        return rule
+
+    _TOLD = frozenset(("reveal_npc", "reveal_item", "reveal_location"))
+
+    @staticmethod
+    def _tells(o):
+        """Whether an outcome tells the player something: a place, a person or an item revealed,
+        a path opened, or the way shown."""
+        return bool(o.reveal_location or o.reveal_npc or o.reveal_object or o.spawn or o.lead_to_known
+                    or any(kind in GameState._TOLD for kind, _ in o.effects.items))
+
+    def _is_question(self, a):
+        """A choice that only tells (action_rules.questions_once): a place's or someone's
+        action without its own ``repeat`` whose outcomes change nothing but what the player
+        knows (_tells), at least one of them telling something. Asked and answered, it is not
+        offered again (an answer that told nothing leaves it for the next visit): "Ask about
+        the crown" once, not on every visit."""
+        if a.repeat or a.source not in ("npc", "location"):
+            return False
+        key = (a.source, a.owner, a.name)
+        cache = self.__dict__.setdefault("_question_cache", {})
+        if key not in cache:
+            cache[key] = bool(config.get("action_rules.questions_once", True)) and self._only_tells(a)
+        return cache[key]
+
+    def _only_tells(self, a):
+        if (a.triggers_event or a.collects_object or a.required_coins or a.required_object or a.required_tag
+                or a.consumes_object or not a.outcomes):
+            return False  # a purchase, an item used or taken, an event: something happens
+        for o in a.outcomes:
+            if (o.health_change or o.coin_change or o.move_to or o.move_to_tags or o.send_to or o.remove_npc
+                    or getattr(o, "return_to_previous", False) or getattr(o, "unlock_exit", False)
+                    or any(kind not in self._TOLD for kind, _ in o.effects.items)):
+                return False
+        return any(self._tells(o) for o in a.outcomes)
 
     def _action_scope(self, a, location=None):
         """Who a one-time choice belongs to. A generic NPC is a different person in
@@ -2462,21 +2541,27 @@ class GameState(StoryBeats, SessionScope):
             # Only a player locked in here escapes (lock_when: sent or always), and may try
             # again until it works.
             return self._location_is_locked()
-        return not (self._repeat_rule(a) == "per_visit" and a.name in self.visit_actions_performed)
+        if a.name in self.visit_actions_performed and (self._repeat_rule(a) == "per_visit" or self._is_question(a)):
+            return False
+        return True
 
     @staticmethod
     def _novelty_key(a):
         # Travelling counts per destination, so Harbor -> Market -> Harbor loops wear out.
         return ("travel", a.owner) if a.source == "navigation" else ("action", a.name)
 
-    def _record_choice(self, a, succeeded, scope, visit=None):
+    def _record_choice(self, a, succeeded, scope, visit=None, told=None):
         """Use the action up as its ``repeat`` says. With ``retry_on_failure`` a
         failed attempt uses nothing up: a ``once`` action stays until it succeeds,
-        and a ``per_visit`` one is offered again in the same visit."""
+        and a ``per_visit`` one is offered again in the same visit. A question
+        (_is_question) whose answer (``told``) told nothing stays for the next visit."""
         self.choice_counts[self._novelty_key(a)] += 1
         self.__dict__.setdefault("_last_used", {})[self._novelty_key(a)] = self.actions_taken  # games saved before
         rule, retry = self._repeat_rule(a), getattr(a, "retry_on_failure", False)
-        if rule == "once" and (succeeded or not retry):
+        spent = rule == "once" and (succeeded or not retry)
+        if spent and told is not None and not self._tells(told) and self._is_question(a):
+            spent = False
+        if spent:
             self.spent_actions.add((scope, a.name))
         if rule == "once":
             # Remembered: what was tried, how it went, and whether it is still on offer (a failed
@@ -2484,7 +2569,7 @@ class GameState(StoryBeats, SessionScope):
             self.__dict__.setdefault("unique_log", []).append({
                 "turn": self.actions_taken, "action": a.name, "source": a.source, "owner": a.owner,
                 "where": self.current.name, "succeeded": bool(succeeded),
-                "kept": bool(not succeeded and retry)})
+                "kept": not spent})
         if rule == "per_visit" and retry and not succeeded and visit == self._visit_id():
             self.visit_actions_performed.discard(a.name)  # marked when it was taken (step)
         if succeeded and a.exclusive_group:
@@ -2841,7 +2926,7 @@ class GameState(StoryBeats, SessionScope):
 
     # ---- the choices a player sees -------------------------------------------------------
 
-    def player_options(self, limit=None, order=None):
+    def player_options(self, limit=None, order=None, ranked=None):
         """The choices a player sees now (``player_options``): the most relevant of the
         storyteller's ranked options. What the moment is about comes first (a prisoner's
         way out, the quest's next step, the payoff of an open clue, a way on); then the
@@ -2849,20 +2934,155 @@ class GameState(StoryBeats, SessionScope):
         tense moment: ``focus_relevance``), a few ways on and a few conversations at
         most. Their number follows the moment: fewer when little is worth doing and in
         tense moments (``focus_limit``), never more than ``limit``. An event's choices
-        are shown as they are."""
+        are shown as they are. ``ranked``: (actions, the storyteller's ranked pairs) already
+        computed this turn (core_engine/players.py ranks once per turn)."""
         cfg = config.get("player_options") or {}
         limit = max(1, int(limit if limit is not None else cfg.get("limit", 6)))
         order = order or cfg.get("order", "ranked")
-        actions = self._actions_now()
-        pairs = self._rank_actions(actions)
-        if self.active_event or not cfg.get("relevance_filter", True):
+        if ranked is not None:
+            actions, pairs = ranked
+        else:
+            actions = self._actions_now()
+            pairs = self._rank_actions(actions)
+        pairs, talking = self._conversation_pairs(pairs)
+        if talking:  # a conversation's choices are shown as they are; leaving is always one
+            chosen = [action for _, action in pairs[:-1]][:limit - 1] + [pairs[-1][1]]
+        elif self.active_event or not cfg.get("relevance_filter", True):
             chosen = [action for _, action in pairs[:limit]]
         else:
             chosen = self._relevant_options(pairs, limit, cfg)
         if order == "world":
             position = {id(action): index for index, action in enumerate(actions)}
-            chosen = sorted(chosen, key=lambda action: position.get(id(action), len(position)))
+
+            def place(action):  # approaching someone: where their choices are; leaving: last
+                if action.source == "approach":
+                    return min((position.get(id(m), len(position)) for m in action.members), default=len(position))
+                return position.get(id(action), len(position) + (action.source == "leave"))
+            chosen = sorted(chosen, key=place)
         return chosen
+
+    # ---- conversations: the people present, approached one at a time ----------------------------
+
+    _CONVERSATION = ("approach", "leave")
+
+    @staticmethod
+    def _conversations():
+        """The conversations settings, or None when they are off (every person's choices are
+        on the scene, as before)."""
+        cfg = config.get("conversations") or {}
+        return cfg if cfg.get("enabled", False) else None
+
+    def conversation(self):
+        """The person the player is talking with, or None."""
+        return self.__dict__.get("talking_to")
+
+    @staticmethod
+    def _option_outcomes(a):
+        """An option's outcomes; approaching someone: the outcomes of what they offer."""
+        return list(a.outcomes) + [o for member in getattr(a, "members", ()) for o in member.outcomes]
+
+    def _conversation_pairs(self, pairs):
+        """What the player is offered of the storyteller's ranked ``pairs`` (conversations): on
+        the scene, each person present is one choice, "Approach <them>", worth the best of what
+        they offer, in its place; in a conversation, that person's choices, then "Leave the
+        conversation", worth what the scene offers instead. Someone who starts conversations
+        (``starts_conversation``) opens one the first time the player meets them. Returns
+        (pairs, whether in a conversation). Approaching and leaving take no turn
+        (take_option); after conversations.max_free_steps of them in a row without acting,
+        everything is on the scene again, so a story always moves on."""
+        cfg = self._conversations()
+        if cfg is None or self.active_event or self.ended:
+            return pairs, False
+        if self.__dict__.get("_free_steps", 0) >= int(cfg.get("max_free_steps", 6)):
+            return pairs, False
+        groups, rest = {}, []
+        for score, a in pairs:
+            person = a.character_name if a.source in ("npc", "conversation") else None
+            (groups.setdefault(person, []) if person else rest).append((score, a))
+        talking = self.__dict__.get("talking_to")
+        if talking not in groups:
+            if talking is not None:
+                self.talking_to = None  # they are gone, or have nothing left to say: it is over
+            talking = self._greeting(groups)
+        if talking is not None:
+            members = groups[talking]
+            instead = rest[0][0] if rest else members[-1][0] - 1.0
+            return members + [(instead, self._conversation_option("leave", talking))], True
+        left = self.__dict__.get("_left")
+        offered = list(rest)
+        for person, members in groups.items():
+            if rest and left is not None and tuple(left) == (person, self.actions_taken):
+                continue  # just left: not again before something happens
+            offered.append((members[0][0], self._conversation_option("approach", person, [a for _, a in members])))
+        offered.sort(key=lambda pair: pair[0], reverse=True)
+        return offered, False
+
+    def _greeting(self, groups):
+        """Someone present who starts the conversation the first time the player meets them."""
+        greeted = self.__dict__.setdefault("greeted", set())
+        for person in groups:
+            char = next((c for c in self.world.characters if c.name == person), None)
+            if char is not None and getattr(char, "starts_conversation", False) and person not in greeted:
+                greeted.add(person)
+                self.talking_to = person
+                called = self._called(person)
+                self._say("npc_approaches", npc=called, npc_cap=called[:1].upper() + called[1:])
+                return person
+        return None
+
+    def _conversation_option(self, kind, person, members=()):
+        called = self._called(person)
+        if kind == "approach":
+            option = Action(self.narrate("approach_npc", stable=person, npc=called), [], character_name=person,
+                            source="approach", owner=person, repeat="always")
+            option.members = list(members)
+        else:
+            option = Action(self.narrate("leave_conversation", stable=person, npc=called), [], character_name=person,
+                            source="leave", owner=person, repeat="always")
+        return option
+
+    def take_option(self, option, ranked=None):
+        """Take one of player_options(): approaching someone or leaving a conversation changes what
+        is offered and takes no turn; any other choice is a turn (step). ``ranked``: the
+        storyteller's ranked actions of this turn, when already at hand. Returns step()'s result."""
+        if option.source in self._CONVERSATION:
+            self._free_steps = self.__dict__.get("_free_steps", 0) + 1
+            person, called = option.character_name, self._called(option.character_name)
+            if option.source == "approach":
+                self.talking_to = person
+                self._say("approached", npc=called)
+            else:
+                self.talking_to = None
+                self._left = (person, self.actions_taken)
+                self._say("conversation_left", npc=called)
+            return True
+        ranked = list(ranked) if ranked is not None else self.ranked_available_actions()
+        index = next((i for i, a in enumerate(ranked) if a is option), None)
+        if index is None:
+            names = [a.name for a in ranked]
+            if option.name not in names:
+                raise ValueError(f"{option.name!r} is not on offer now.")
+            index = names.index(option.name)
+        return self.step(index, ranked=ranked)
+
+    def _after_conversation_turn(self, talking, place, chosen):
+        """After a turn: a conversation goes on while the player keeps talking with the same person
+        about things that settle nothing (questions, small talk). A decisive choice ends it: an
+        event or a fight, a payment, an item given, taken or used, one of an exclusive choice, an
+        outcome tagged conversations.decisive_tags, a move, or the person gone."""
+        self._free_steps = 0
+        if talking is None:
+            return
+        cfg = self._conversations() or {}
+        decisive = {str(tag).lower() for tag in cfg.get("decisive_tags", ["combat", "threat", "guards", "escape"])}
+        tags = {str(tag).lower() for tag in ((self.__dict__.get("turn_log") or [{}])[-1].get("tags") or [])} \
+            if self._turn is None else {str(tag).lower() for tag in self._turn.get("tags") or []}
+        if (self.ended or self.active_event is not None or self.current.name != place or chosen is None
+                or chosen.character_name != talking or chosen.source not in ("npc", "conversation")
+                or chosen.triggers_event or chosen.required_coins or chosen.required_object or chosen.required_tag
+                or chosen.consumes_object or chosen.collects_object or chosen.exclusive_group
+                or tags & decisive or talking in self.removed_npcs):
+            self.talking_to = None
 
     @staticmethod
     def _option_kind(a):
@@ -2895,7 +3115,8 @@ class GameState(StoryBeats, SessionScope):
         focus = max(floor, min(limit, int(cfg.get("focus_limit", 4))))
         tension = self.tension()
         cap = max(floor, min(limit, round(limit - tension * (limit - focus))))
-        kind_caps = {"navigation": int(cfg.get("travel_limit", 3)), "conversation": int(cfg.get("talk_limit", 2))}
+        kind_caps = {"navigation": int(cfg.get("travel_limit", 3)), "conversation": int(cfg.get("talk_limit", 2)),
+                     "approach": int((config.get("conversations") or {}).get("approach_limit", 3))}
         chosen = []
 
         def take(a):
@@ -2914,7 +3135,7 @@ class GameState(StoryBeats, SessionScope):
                 take(best[2])
         if self._open_clues():
             take(next((a for _, a in pairs if any(
-                str(tag).lower().startswith("payoff_") for o in a.outcomes for tag in o.tags)), None))
+                str(tag).lower().startswith("payoff_") for o in self._option_outcomes(a) for tag in o.tags)), None))
         take(next((a for _, a in pairs if a.source == "navigation"), None))
         # Backtracking: the way back where one came from stays a choice.
         previous = self.path[-2] if len(self.path) > 1 else None
@@ -3400,11 +3621,21 @@ class GameState(StoryBeats, SessionScope):
         if self.interactive or self.verbose:
             print(f"  >>> {message}")
 
-    def step(self, action_index=None):
-        """Executes one simulation step; the turn is added to ``turn_log``."""
+    def step(self, action_index=None, ranked=None):
+        """One turn; it is added to ``turn_log``. ``action_index`` is the player's choice in the
+        ranked options (ranked_available_actions); without it the storyteller takes its own
+        favourite (_storyteller_pick: only where nothing chooses for the player). ``ranked``: those
+        options, already ranked this turn (the same list; it is not ranked again)."""
         history_start = len(self.history)
         self._turn = None
-        result = self._step(action_index)
+        talking, place = self.__dict__.get("talking_to"), self.current.name
+        if talking is not None or self.__dict__.get("_free_steps"):
+            ranked = list(ranked) if ranked is not None else self.ranked_available_actions()
+        chosen = ranked[action_index] if ranked is not None and action_index is not None \
+            and 0 <= action_index < len(ranked) else None
+        result = self._step(action_index, ranked)
+        if talking is not None or self.__dict__.get("_free_steps"):
+            self._after_conversation_turn(talking, place, chosen)
         if self._turn is not None:
             turn, self._turn = self._turn, None
             self.__dict__.setdefault("turn_log", []).append({  # games saved before turn_log existed
@@ -3562,11 +3793,11 @@ class GameState(StoryBeats, SessionScope):
         start, end = entry["history"]
         return "\n".join(line.strip("\n") for line in self.history[start:end]).strip()
 
-    def _step(self, action_index=None):
+    def _step(self, action_index=None, ranked=None):
         if self.ended:
             return False
 
-        actions = self.ranked_available_actions()
+        actions = list(ranked) if ranked is not None else self.ranked_available_actions()
         if not actions:
             return False
 
@@ -3646,7 +3877,7 @@ class GameState(StoryBeats, SessionScope):
         self.history.append(self.narrate("action_taken", action=action.name))
         choice_scope = self._action_scope(action)  # before the action can move the player
         choice_visit = self._visit_id()
-        if self._repeat_rule(action) == "per_visit":
+        if self._repeat_rule(action) == "per_visit" or self._is_question(action):
             self.visit_actions_performed.add(action.name)
         
         # Outcomes and their transitions are selected by the objective function.
@@ -3725,7 +3956,7 @@ class GameState(StoryBeats, SessionScope):
                 if self._finalize_if_ended():
                     return False
 
-        self._record_choice(action, calculated_success, choice_scope, choice_visit)
+        self._record_choice(action, calculated_success, choice_scope, choice_visit, told)
         if calculated_success and action.source not in ("navigation", "conversation"):
             self.__dict__.setdefault("success_counts", Counter())[action.name] += 1
         self._update_alert(action, told if told is not None else attempt, calculated_success)
@@ -4159,6 +4390,7 @@ class GameState(StoryBeats, SessionScope):
                         )
                         if "social" in loc.tags: score += self.genome.bias_social
                         if "urban" in loc.tags: score += self.genome.bias_urban
+                        score += self._quest_pull(loc_name)  # a guide knows where your quest goes
                         scored.append((score, loc_name))
                     scored.sort(key=lambda x: x[0], reverse=True)
                     target = self._lead_toward(scored[0][1])  # the next place on the way to it
@@ -4255,6 +4487,15 @@ class GameState(StoryBeats, SessionScope):
         if progress[index] >= int(goal.get("needed") or cfg.get("progress_needed", 2)):
             self._fulfil_npc_goal(char, goal)
 
+    def _quest_pull(self, name):
+        """How much a place helps the quest: npc_leads.quest_weight / (1 + the steps from it to
+        where the quest can advance next); 0 when it cannot reach it or nothing is pending."""
+        weight = float(config.get("npc_leads.quest_weight", 3.0) or 0.0)
+        if not weight or not self.mission or self.won:
+            return 0.0
+        distance = self._goal_distances().get(name)
+        return weight / (1.0 + distance) if distance is not None else 0.0
+
     def _fulfil_npc_goal(self, char, goal):
         cfg = config.get("npc_goals") or {}
         self.__dict__.setdefault("allies", set()).add(char.name)
@@ -4265,8 +4506,9 @@ class GameState(StoryBeats, SessionScope):
         if reward == "lead":
             known = [name for name in char.known_locations if name in self.world.locations and name != self.current.name
                      and name not in self.current.connected and self.is_enabled(self.world.locations[name])]
-            if known:
-                self._open_route(sorted(known, key=lambda name: (self.location_counts.get(name, 0), name))[0])
+            if known:  # the way toward the quest first, then somewhere new
+                self._open_route(sorted(known, key=lambda name: (-self._quest_pull(name), self.location_counts.get(name, 0),
+                                                                 name))[0])
         elif reward == "item":
             here = [o.name for o in getattr(self, "location_objects", [])
                     if o.name in char.known_objects and o.name not in self.visible_objects]

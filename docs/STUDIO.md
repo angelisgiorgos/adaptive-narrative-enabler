@@ -3,6 +3,10 @@
 How to run the Adaptive Narrative Enabler and what each tab of the studio does. The REST API
 itself is in [API.md](API.md); the ANE AI that a game runs offline is in [UNP.md](UNP.md).
 
+The studio's header shows the workflow (① create the world → ② settings → ③ weights → ④ train
+the AI → ▶ play → export → ⑥ evaluate) and a status line: the active world's size, the trained
+AIs that can be played and exported, and whether recording is on.
+
 ## Running
 
 Start the application:
@@ -36,7 +40,10 @@ docker compose up --build
 
 The complete UI is available at `http://localhost:8003`, the REST API at
 `http://localhost:8004/v1`, and interactive API documentation at
-`http://localhost:8004/docs`. See [`docs/API.md`](API.md) for how the API
+`http://localhost:8004/docs`. The judge (Gemma 4 on vLLM, a GPU) is a separate service, off
+unless started: `docker compose --profile judge up -d judge` serves it to the API at
+`http://hamlet-ane-judge:8000/v1` (`ANE_JUDGE_URL`; [`docs/LLM.md`](LLM.md)). The judge's views
+in the studio say whether it is ready and, if not, why and what to do. See [`docs/API.md`](API.md) for how the API
 behaves (state, validation, status codes, limits), endpoint coverage, and
 request examples.
 
@@ -67,13 +74,13 @@ nothing is written.
 
 | Studio | What you can change | REST API |
 | --- | --- | --- |
-| **1 · World editor** → an entry | Name, tags, descriptions, goals; NPC **Unique**, **Encounter event**, **Repeat on every visit**, **Role in the story** and **Secret**; **Enabled if** (locations, NPCs, items); **Event title**; item **Stat bonus while held**; location **Stories can start here** and **Start weight** | `GET /v1/entities/{kind}?fields=names`, `GET/PUT/DELETE /v1/entities/{kind}/{name}` |
-| **1 · World editor** → *Every field of this entry (YAML)* | The whole entry as stored, including what the form does not show (an NPC's dialogue, known places and items, article; a location's distant views and exits) | `GET/PUT /v1/entities/{kind}/{name}/yaml` |
-| **1 · World editor** → *Map* | Which places border which (`world_definition.routes`), or no authored map | `GET/PUT /v1/documents/map` |
-| **1 · World editor** → *Failures that lead nowhere* | The actions whose failure changes nothing but health or coins and that no complication fits | `GET /v1/lint/failures` |
-| **1 · World editor** → *Actions & outcomes of this entry* | The entry's actions as YAML: `repeat`, `exclusive_group`, `triggers_event`, `skill_check`, requirements, and outcome effects (`on_check`, `change_stats`, `send_to`, `remove_npc`, `set_variables`, `change_variables`, …); one action's **Repeat** and **Retry after failure** | `GET/PUT /v1/entities/{kind}/{name}/actions/yaml` (or `/actions` as JSON), `GET/PUT /v1/entities/{kind}/{name}/actions/{index}/repetition` |
-| **1 · World editor** → *Uniqueness & scheduling* | An event's start rules, an item's uniqueness | `GET/PUT /v1/entities/{Events\|Items}/{name}/policy/yaml` (or `/policy`) |
-| **1 · World editor** → *Missions* | Missions, their goals, weights, and `enabled_if` | `GET/PUT /v1/documents/missions` (or `/v1/missions`) |
+| **1 · Create the world** → an entry | Name, tags, descriptions, goals; NPC **Unique**, **Encounter event**, **Repeat on every visit**, **Role in the story** and **Secret**; **Enabled if** (locations, NPCs, items); **Event title**; item **Stat bonus while held**; location **Stories can start here** and **Start weight** | `GET /v1/entities/{kind}?fields=names`, `GET/PUT/DELETE /v1/entities/{kind}/{name}` |
+| **1 · Create the world** → *Every field of this entry (YAML)* | The whole entry as stored, including what the form does not show (an NPC's dialogue, known places and items, article; a location's distant views and exits) | `GET/PUT /v1/entities/{kind}/{name}/yaml` |
+| **1 · Create the world** → *Map* | Which places border which (`world_definition.routes`), or no authored map | `GET/PUT /v1/documents/map` |
+| **1 · Create the world** → *Failures that lead nowhere* | The actions whose failure changes nothing but health or coins and that no complication fits | `GET /v1/lint/failures` |
+| **1 · Create the world** → *Actions & outcomes of this entry* | The entry's actions as YAML: `repeat`, `exclusive_group`, `triggers_event`, `skill_check`, requirements, and outcome effects (`on_check`, `change_stats`, `send_to`, `remove_npc`, `set_variables`, `change_variables`, …); one action's **Repeat** and **Retry after failure** | `GET/PUT /v1/entities/{kind}/{name}/actions/yaml` (or `/actions` as JSON), `GET/PUT /v1/entities/{kind}/{name}/actions/{index}/repetition` |
+| **1 · Create the world** → *Uniqueness & scheduling* | An event's start rules, an item's uniqueness | `GET/PUT /v1/entities/{Events\|Items}/{name}/policy/yaml` (or `/policy`) |
+| **1 · Create the world** → *Missions* | Missions, their goals, weights, and `enabled_if` | `GET/PUT /v1/documents/missions` (or `/v1/missions`) |
 | **2 · Simulation settings** → *Complete configuration file* | Upload and activate a combined YAML, or go back to the built-in files | `POST /v1/config/upload`, `POST /v1/config/reset` |
 | **2 · Simulation settings** | Population, steps, starting and **maximum health**, coins, reproducibility | `GET/PUT /v1/settings` |
 | **2** → *Story rules* | Mission pacing and route weight, default repeat rules, arrest location and confinement, following new paths, persistence (default profile, save on, evolution values), event fallback | `GET/PUT /v1/rules` |
@@ -83,14 +90,15 @@ nothing is written.
 | **2** → *Advanced · all hyperparameters* | Every hyperparameter as one YAML document | `GET/PUT /v1/hyperparameters` |
 | **2** → *The active configuration* | What new games and runs use now (every file merged, or the uploaded configuration), read only | `GET /v1/config` |
 | **3 · Weights** → *Skill Check Resolution* and the rest | Difficulty (easier/harder), difficulty over time, chance floor/ceiling, damage mitigation, and every other weight | `GET/PUT /v1/weights` |
-| **4 · Simulate & play** → evolution | Storytellers, generations, steps, **stories per storyteller**, **continue learning from earlier runs**; the **learning curve** and **what the storyteller learned**; forget the learning memory | `POST /v1/jobs/simulations` and `GET /v1/jobs/{id}` (or `POST /v1/simulations`), `GET/DELETE /v1/learning` |
-| **4 · Simulate & play** → *Load a previous best engine* | An engine model, an older engine ZIP, or a configuration YAML with its model-parameters YAML | `POST /v1/engines/load` (`file`, `parameters`, `profile`, `stats_mode`, `stats`) |
-| **4 · Simulate & play** | **Player profile**, the **quest to play** (any quest open to the profile, or one drawn by the story; *Quests in this world* lists them with their stages) and the player's **character stats** (story default, random, balanced, or own points with Randomize/Balance); the scene shows the quest and its current stage, health `x/max`, the **people here** (who they are, what they want, hostile or able to help with the quest, how often helped and whether an ally, how often spoken with), the **checks** of the choices, stats, the last check and remembered values; beside it the **quest log** (stages done, now, to come; what to do now) the **people met** (where, how often spoken with, allies, gone) and the **map** as the player knows it (places, paths, locked exits); taking one of the **most relevant choices**, each labelled with its check | `GET /v1/missions/playable`, `POST /v1/stats/allocate`, `POST /v1/sessions/{id}/actions` (structured state: `quest`, `people`, `people_met`, `ways_on`) |
-| **4 · Simulate & play** → *Export the engine* | Download the engine to run offline in a game, *Runs on* a system, Unity or Python, from the **finished runs**: the latest is chosen, choose several to download each (their own world, storyteller and training state; the export stays off until a run has finished). The Python version can also be made from a generation's champion, the best remembered storyteller, or the current game's. With or without the learning memory | `GET /v1/exports/platforms`, `GET /v1/exports/engines`, `POST /v1/exports`, `GET /v1/artifacts/{id}` |
-| **4 · Simulate & play** → *This session as a UNP sees it* | What the exported ANE AI does for a UNP, on this game: download its **save game** and **continue** one (from here or from the ANE AI; exactly, or rebuilt from its parameters), show its **parameters**, **set the player** (JSON) and tell it **what happened** in the UNP's game | `GET /v1/sessions/{id}/savegame`, `POST /v1/sessions/load`, `GET /v1/sessions/{id}/state`, `PATCH /v1/sessions/{id}/player`, `POST /v1/sessions/{id}/sync` |
-| **4 · Simulate & play** → *Export* → *Where the ANE AI runs, and the world it sends* | The standalone runtimes available here (or why not), and the world as the ANE AI sends it (JSON) | `GET /v1/exports/platforms`, `GET /v1/world/catalogue` |
-| **4 · Simulate & play** → *Judge this playthrough* | Gemma 4's judgement of the game played so far: engagement, the eight criteria, the best and weakest moments, a verdict | `POST /v1/sessions/{id}/judge` |
-| **4 · Simulate & play** → *Records* | Recorded engines, runs (their settings and every generation), worlds (download one as a configuration to upload) and stories; play with, continue or retrain an engine; download its model file and world; judge a recorded story, or compare two (which is the better game) | `GET /v1/records/...`, `POST /v1/records/engines/{id}/play`, `POST /v1/jobs/engines/{id}/continue\|retrain`, `POST /v1/records/stories/{id}/judge`, `POST /v1/judge/compare` |
+| **4 · Train the AI** → evolution | Storytellers, generations, steps, **stories per storyteller**, **continue learning from earlier runs**; the **learning curve** and **what the storyteller learned**; forget the learning memory | `POST /v1/jobs/simulations` and `GET /v1/jobs/{id}` (or `POST /v1/simulations`), `GET/DELETE /v1/learning` |
+| **4 · Train the AI** → *Load a previous best engine* | An engine model, an older engine ZIP, or a configuration YAML with its model-parameters YAML | `POST /v1/engines/load` (`file`, `parameters`, `profile`, `stats_mode`, `stats`) |
+| **4 · Train the AI** | **Player profile**, the **quest to play** (any quest open to the profile, or one drawn by the story; *Quests in this world* lists them with their stages) and the player's **character stats** (story default, random, balanced, or own points with Randomize/Balance); the scene shows the quest and its current stage, health `x/max`, the **people here** (who they are, what they want, hostile or able to help with the quest, how often helped and whether an ally, how often spoken with), the **checks** of the choices, stats, the last check and remembered values; beside it the **quest log** (stages done, now, to come; what to do now) the **people met** (where, how often spoken with, allies, gone) and the **map** as the player knows it (places, paths, locked exits); taking one of the **most relevant choices**, each labelled with its check | `GET /v1/missions/playable`, `POST /v1/stats/allocate`, `POST /v1/sessions/{id}/actions` (structured state: `quest`, `people`, `people_met`, `ways_on`) |
+| **4 · Train the AI** → *Export the engine* | Download the engine to run offline in a game, *Runs on* a system, Unity or Python, from the **finished runs**: the latest is chosen, choose several to download each (their own world, storyteller and training state; the export stays off until a run has finished). The Python version can also be made from a generation's champion, the best remembered storyteller, or the current game's. With or without the learning memory | `GET /v1/exports/platforms`, `GET /v1/exports/engines`, `POST /v1/exports`, `GET /v1/artifacts/{id}` |
+| **4 · Train the AI** → *This session as a UNP sees it* | What the exported ANE AI does for a UNP, on this game: download its **save game** and **continue** one (from here or from the ANE AI; exactly, or rebuilt from its parameters), show its **parameters**, **set the player** (JSON) and tell it **what happened** in the UNP's game | `GET /v1/sessions/{id}/savegame`, `POST /v1/sessions/load`, `GET /v1/sessions/{id}/state`, `PATCH /v1/sessions/{id}/player`, `POST /v1/sessions/{id}/sync` |
+| **4 · Train the AI** → *Export* → *Where the ANE AI runs, and the world it sends* | The standalone runtimes available here (or why not), and the world as the ANE AI sends it (JSON) | `GET /v1/exports/platforms`, `GET /v1/world/catalogue` |
+| **4 · Train the AI** → *Judge this playthrough* | Gemma 4's judgement of the game played so far: engagement, the eight criteria, the best and weakest moments, a verdict | `POST /v1/sessions/{id}/judge` |
+| **4 · Train the AI** → *Records* | Recorded engines, runs (their settings and every generation), worlds (download one as a configuration to upload) and stories; play with, continue or retrain an engine; download its model file and world; judge a recorded story, or compare two (which is the better game) | `GET /v1/records/...`, `POST /v1/records/engines/{id}/play`, `POST /v1/jobs/engines/{id}/continue\|retrain`, `POST /v1/records/stories/{id}/judge`, `POST /v1/judge/compare` |
+| **▶ Play** | Play the world after training: choose a trained AI (a finished run, the newest first; also without the records), a player profile, a quest and the character (story default, random, balanced), then **New game**, or continue a save game. The game screen shows the scene, what just happened, a button per choice with its skill check, the quest log, the people met and the map, how the story ended, the story so far; save the game or end it | `GET /v1/exports/engines`, `POST /v1/engines/{id}/play` (`latest`: the newest), `POST /v1/sessions/{id}/actions`, `GET /v1/sessions/{id}/transcript`, `GET /v1/sessions/{id}/savegame`, `POST /v1/sessions/load`, `POST /v1/sessions/{id}/end` |
 | **5 · Engine logic** | Every parameter of the engine's logic, section by section (no code editing) | `GET /v1/logic`, `GET/PUT /v1/logic/{section}` |
 | **5** → *App parameters* | The studio's limits, defaults, queue, and launch settings | `GET/PUT /v1/app-settings` |
 | **5** → *Background jobs* | Evolutions, continued trainings and judge runs started by any client, with their progress | `GET /v1/jobs` |
@@ -128,9 +136,9 @@ fitness, and the evolutionary search itself.
   go up to 400 candidates, 1000 generations, and 400 steps per simulation (the
   largest run the API accepts); `max_simulation_work` caps the total simulated
   turns of one run (candidates × generations × story length × stories per
-  storyteller; 300,000 by default, about ten minutes at most on a 20-core
-  server). The play tab shows what a run asks for under its sliders, before it
-  starts. These are stored in
+  storyteller; 1,000,000 by default, a few minutes on 16 CPUs, since a
+  generation's stories are played in parallel). The play tab shows what a run
+  asks for under its sliders, before it starts. These are stored in
   `config/ui_settings.yml` (`GET|PUT /v1/app-settings`). Restart the UI and
   the API after saving them. `ANE_UI_HOST`,
   `ANE_UI_PORT`, and `ANE_UI_SHARE` override the saved launch options.
@@ -147,19 +155,31 @@ mounted `/app/config` with the image's defaults in `/app/config.defaults` on
 every start. It copies in any default `*.yaml` file that is missing, such as
 `events.yaml` or `missions.yaml` in a volume created before those features. It
 logs `[config] Added missing default config file: …` for each one. Existing
-files are never overwritten, so your edits are safe. New *keys* inside
-existing files, e.g. `mission_settings` in an older `hyperparameters.yaml`,
-fall back to built-in defaults in code. A default file that you deleted from
+files are never replaced whole. A default file that you deleted from
 the volume is restored on the next start, so empty it instead (for example
 `world_definition: {events: {}}`) to switch its content off.
 
-A release's new entries refer to each other (a new mission names its new NPC), so a file kept
-from an older release next to a newer one could make a world that cannot be played (*unknown
-NPC `Thief`* on every run and edit). The entrypoint therefore also adds, once, each default
-place, NPC, item, event and mission that the volume's files lack, and logs
-`[config] Added the default entry …`. Entries already there are never changed, and an entry you
-delete afterwards stays deleted (the names already offered are kept in
-`.ane-default-entries.json` in the volume). After updating, run `docker compose up --build`.
+Then the volume is brought up to date with the release, entry by entry and setting by setting
+(`python -m utils.config_loader upgrade`, logged as `[config] <file>: …`):
+
+- **Added**: what the volume lacks, a setting (e.g. `mission_settings` in an older
+  `hyperparameters.yaml`) or a default place, NPC, item, event, mission or variable. A release's
+  new entries refer to each other (a new mission names its new NPC), so a file kept from an
+  older release next to a newer one could otherwise make a world that cannot be played. An entry
+  you delete afterwards stays deleted (the names offered are kept in `.ane-default-entries.json`).
+- **Updated**: an entry or a setting whose value is one an earlier release shipped was never
+  edited, so it takes this release's default. `config/default_history.json` lists every value
+  the defaults have had (`python packaging/default_history.py` rewrites it from git; a test
+  fails when it misses a current default).
+- **Kept as edited**: anything else, including whatever you added. To take this release's
+  defaults for edited ones too, set `ANE_CONFIG_TAKE_DEFAULTS` for a start: names
+  (`Aurora,Maskwright`), setting paths (`narrative_end.max_actions`) or `all` (`all` replaces
+  entries and settings one by one; your own additions stay). A request applies once per release,
+  so it does not undo later edits if left set.
+
+Every file changed is backed up first, in `.ane-backups/<time>/` in the volume. If the world the
+updated files would make cannot be built, only the additions are made. After updating, run
+`docker compose up --build`.
 
 A world that has a problem from before (such a volume, a file edited by hand) does not block
 other edits in the studio: an edit is refused only for the problems it makes, and the save says

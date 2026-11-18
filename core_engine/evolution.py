@@ -46,6 +46,7 @@ from typing import Optional
 
 from utils.config_loader import config
 
+from . import players
 from .game_state import GameState
 from .genome import TRAIT_BOUNDS, Genome, trait_bounds
 
@@ -105,6 +106,13 @@ DEFAULTS = {
     "judge_weight": 0.0,            # 0: off (no model needed, runs stay reproducible)
     "judge_top_k": 2,
     "judge_workers": 4,             # judgements sent to the model at once
+    # Who takes the player's turns in evaluated stories (core_engine/players.py): simulated players,
+    # who choose among the choices shown as people do, so a storyteller is rewarded for what it
+    # offers and how the story answers; or (storyteller) the storyteller's own favourite choice, the
+    # older evaluation, which can reward a storyteller for playing well. Training states saved
+    # before this setting existed continue with the storyteller.
+    "player": "simulated",
+    "player_mix": dict(players.DEFAULT_MIX),
 }
 AGGREGATES = ("mean", "mean_minus_std")
 
@@ -119,15 +127,14 @@ def evolution_settings(overrides=None):
 
 # ---- evaluation -------------------------------------------------------------------
 
-def play_episode(build_world, genome, seed, max_steps, situation=None):
-    """One story played by ``genome`` with the story seed ``seed``; ``situation``
-    (start, mission) fixes where it starts and what it is about."""
+def play_episode(build_world, genome, seed, max_steps, situation=None, player=None):
+    """One story told by ``genome`` with the story seed ``seed``; ``situation`` (start, mission)
+    fixes where it starts and what it is about. ``player`` (core_engine/players.py) takes the
+    player's turns; None: the storyteller takes its own favourite choice (evolution.player:
+    storyteller)."""
     start, mission = situation or (None, None)
     state = GameState(build_world(genome), genome, rng=random.Random(seed), start=start, mission=mission)
-    for _ in range(max_steps):
-        if state.health <= 0 or not state.step():
-            break
-    return state
+    return players.play(state, max_steps, player)
 
 
 def evaluate_task(task):
@@ -136,25 +143,61 @@ def evaluate_task(task):
     ``options``: ``situations`` (one (start, mission) per seed), ``aggregate``
     (mean or mean_minus_std) and ``consistency_weight``. A module-level
     function so a process pool can run it."""
+    return combine_stories(task, [evaluate_story(story) for story in story_tasks(task)])
+
+
+def story_tasks(task):
+    """The stories of an evaluate_task task, one task each (the same form, with one seed): a
+    pool of processes plays them all at once, whichever storyteller tells them."""
     build_world, fitness, traits, seeds, max_steps = task[:5]
     options = task[5] if len(task) > 5 else {}
     situations = options.get("situations") or [None] * len(seeds)
-    genome = Genome.from_traits(traits)
-    states = [play_episode(build_world, genome, seed, max_steps, situation)
-              for seed, situation in zip(seeds, situations)]
-    scores = [fitness(state) for state in states]
+    return [(build_world, fitness, traits, [seed], max_steps, {**options, "situations": [situation]})
+            for seed, situation in zip(seeds, situations)]
+
+
+def evaluate_story(task):
+    """One story (a story_tasks task) -> (score, signature): its fitness and, when the
+    storyteller is also scored for telling different stories, what it was made of
+    (fitness.story_signature; None for a story that never started)."""
+    build_world, fitness, traits, (seed,), max_steps = task[:5]
+    options = task[5] if len(task) > 5 else {}
+    situation = (options.get("situations") or [None])[0]
+    # Every storyteller meets the same player on the same story seed.
+    state = play_episode(build_world, Genome.from_traits(traits), seed, max_steps, situation,
+                         players.for_settings(seed, options))
+    signature = None
+    if _scores_alternatives(fitness, options) and getattr(state, "actions_taken", 0):
+        from .fitness import story_signature
+
+        signature = frozenset(story_signature(state))
+    return fitness(state), signature
+
+
+def _scores_alternatives(fitness, options):
+    # Telling different stories is part of the engine's own fitness (fitness.rewards_alternatives),
+    # not of any fitness a caller passes in.
+    return bool(float(options.get("alternatives_weight", 0.0) or 0.0)) and getattr(fitness, "rewards_alternatives", False)
+
+
+def combine_stories(task, stories):
+    """The score of an evaluate_task task from its stories' evaluate_story results, in order (a
+    plain number is a story's score)."""
+    fitness = task[1]
+    options = task[5] if len(task) > 5 else {}
+    stories = [story if isinstance(story, tuple) else (story, None) for story in stories]
+    scores = [score for score, _ in stories]
     if not scores:
         return float("-inf")
     score = statistics.mean(scores)
     if options.get("aggregate") == "mean_minus_std" and len(scores) > 1:
         score -= float(options.get("consistency_weight", 0.25)) * statistics.pstdev(scores)
-    # Telling different stories is part of the engine's own fitness (fitness.rewards_alternatives),
-    # not of any fitness a caller passes in.
-    weight = float(options.get("alternatives_weight", 0.0) or 0.0)
-    if weight and len(states) > 1 and getattr(fitness, "rewards_alternatives", False):
-        from .fitness import alternatives
+    if len(stories) > 1 and _scores_alternatives(fitness, options):
+        from .fitness import signature_alternatives
 
-        score += weight * alternatives(states)  # telling different stories, not one story again
+        # telling different stories, not one story again
+        score += float(options["alternatives_weight"]) * signature_alternatives(
+            [signature for _, signature in stories if signature is not None])
     return score
 
 
@@ -351,7 +394,11 @@ class NarrativeEvolution:
     def _options(self, situations):
         return {"situations": situations, "aggregate": self.settings["score_aggregate"],
                 "consistency_weight": self.settings["consistency_weight"],
-                "alternatives_weight": self.settings.get("alternatives_weight", 0.0)}
+                "alternatives_weight": self.settings.get("alternatives_weight", 0.0),
+                "player": self.settings["player"], "player_mix": dict(self.settings["player_mix"])}
+
+    def _player(self, seed):
+        return players.for_settings(seed, self.settings)
 
     def _episode_situations(self, generation, count):
         situations = self._situations()
@@ -365,6 +412,33 @@ class NarrativeEvolution:
         situations = self._situations()
         situations = [situations[i % len(situations)] for i in range(len(seeds))] if situations else None
         return (self.build_world, self.fitness, traits, seeds, self._max_steps(), self._options(situations))
+
+    def _evaluate(self, tasks):
+        """The scores of evaluate_task tasks. Their stories go to ``map_fn`` one by one
+        (evaluate_story), so a pool of processes plays them all at once, and are combined per
+        task exactly as evaluate_task combines them."""
+        stories, owners = [], []
+        for index, task in enumerate(tasks):
+            for story in story_tasks(task):
+                stories.append(story)
+                owners.append(index)
+        results = [[] for _ in tasks]
+        for owner, result in zip(owners, self.map_fn(evaluate_story, stories)):
+            results[owner].append(result)
+        return [combine_stories(task, told) for task, told in zip(tasks, results)]
+
+    def _benchmark(self, genomes):
+        """The benchmark scores of ``genomes``. The benchmark's stories are the same in every
+        generation and a story depends only on its storyteller and its seed, so a storyteller
+        benchmarked before (an elite kept from the generation before) keeps its score instead
+        of playing them again."""
+        known = self.__dict__.setdefault("_benchmark_scores", {})
+        traits = [genome.traits() for genome in genomes]
+        keys = [tuple(sorted(each.items())) for each in traits]
+        new = {key: each for key, each in zip(keys, traits) if key not in known}
+        for key, score in zip(new, self._evaluate([self.benchmark_task(each) for each in new.values()])):
+            known[key] = score
+        return [known[key] for key in keys]
 
     def _story_seeds(self, generation):
         """The shared story seeds of one generation."""
@@ -459,7 +533,7 @@ class NarrativeEvolution:
             return scored, None
         from evaluator.game_judge import digest_state
 
-        digests = [digest_state(play_episode(self.build_world, genome, seed, max_steps, situation))
+        digests = [digest_state(play_episode(self.build_world, genome, seed, max_steps, situation, self._player(seed)))
                    for _, genome in scored[:top_k]]
         try:
             with ThreadPoolExecutor(max_workers=max(1, min(int(self.settings.get("judge_workers") or 1), top_k))) as pool:
@@ -514,6 +588,7 @@ class NarrativeEvolution:
         if not isinstance(checkpoint, dict) or checkpoint.get("format") != cls.CHECKPOINT_FORMAT:
             raise ValueError("Not an evolution checkpoint.")
         settings = dict(checkpoint["settings"])
+        settings.setdefault("player", "storyteller")  # saved before simulated players: it goes on as it was trained
         if generations is not None:
             settings["generations"] = int(checkpoint["next_generation"]) + max(1, int(generations))
         return cls(build_world, fitness, settings=settings, seed=checkpoint.get("seed"), memory=memory, map_fn=map_fn,
@@ -528,6 +603,11 @@ class NarrativeEvolution:
         """
         if self.settings["score_aggregate"] not in AGGREGATES:
             raise ValueError(f"evolution.score_aggregate must be one of {', '.join(AGGREGATES)}.")
+        if self.settings["player"] not in players.MODES:
+            raise ValueError(f"evolution.player must be one of {', '.join(players.MODES)}.")
+        errors = players.mix_errors(self.settings["player_mix"])
+        if errors:
+            raise ValueError("; ".join(errors))
         generations = max(1, int(self.settings["generations"]))
         max_steps = self._max_steps()
         base_step = float(self.settings["mutation_step"])
@@ -560,7 +640,7 @@ class NarrativeEvolution:
             seeds = self._story_seeds(generation)
             options = self._options(self._episode_situations(generation, len(seeds)))
             tasks = [(self.build_world, self.fitness, genome.traits(), seeds, max_steps, options) for genome in population]
-            scores = self.map_fn(evaluate_task, tasks)
+            scores = self._evaluate(tasks)
             scored = sorted(zip(scores, population), key=lambda pair: pair[0], reverse=True)
             values = [score for score, _ in scored]  # the generation's fitness, before the judge's say
             # Judge in the loop (judge_weight > 0): the LLM judge's engagement moves the best few.
@@ -571,7 +651,7 @@ class NarrativeEvolution:
             # benchmark_top_k best on this generation's stories (a lucky story cannot crown it).
             top_k = max(1, min(int(self.settings["benchmark_top_k"]), len(scored)))
             contenders = [Genome.from_traits(genome.traits()) for _, genome in scored[:top_k]]
-            validations = self.map_fn(evaluate_task, [self.benchmark_task(g.traits()) for g in contenders])
+            validations = self._benchmark(contenders)
             order = sorted(range(top_k), key=lambda i: validations[i], reverse=True)
             validation, champion = validations[order[0]], contenders[order[0]]
             # The benchmarked ones lead the breeding pool in their benchmark order (the elites).
@@ -619,7 +699,7 @@ class NarrativeEvolution:
         best_score, best_genome, best_seeds = best
         situations = self.benchmark_task(best_genome.traits())[5]["situations"] or [None] * len(best_seeds)
         best_state = max(
-            (play_episode(self.build_world, best_genome, seed, max_steps, situation)
+            (play_episode(self.build_world, best_genome, seed, max_steps, situation, self._player(seed))
              for seed, situation in zip(best_seeds, situations)),
             key=self.fitness,
         )

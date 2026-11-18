@@ -441,10 +441,14 @@ class ShippedContentTests(unittest.TestCase):
     def test_no_way_past_the_guard_from_inside_and_no_free_pass(self):
         guard = next(npc for npc in self._world()["characters"] if npc["name"] == "Gate Guard")
         group = [a for a in guard["actions"] if a.get("exclusive_group") == "get_past_gate_guard"]
-        self.assertEqual(len(group), 4)  # a drink, a bribe, a fight, or settling his debt once his secret is out
+        self.assertEqual(len(group), 4)  # a drink, a fight, settling his debt once his secret is out, or a palace face
         self.assertTrue(all(a.get("enabled_if") for a in group))
-        coins = next(a for a in group if a["name"] == "Bribe with coins")
-        failed = next(o for o in coins["outcomes"] if o.get("on_check") == "fail")
+        self.assertFalse([a["name"] for a in guard["actions"] if "bribe" in a["name"].lower()])  # not at a gate
+        self.assertEqual(next(a for a in group if a.get("required_object"))["required_object"], "Official's Mask")
+        dungeon = self._world()["locations"]["Dungeon"]
+        bribe = next(a for a in dungeon["actions"] if a["name"].startswith("Bribe the jailer"))
+        self.assertIn("escape", next(o for o in bribe["outcomes"] if o.get("on_check") == "pass")["tags"])  # a prisoner's
+        failed = next(o for o in bribe["outcomes"] if o.get("on_check") == "fail")
         self.assertNotIn("move_to", failed)                                # a failed bribe gets you nowhere
 
     def test_hints_close_and_every_character_and_item_has_something(self):
@@ -465,6 +469,67 @@ class ShippedContentTests(unittest.TestCase):
         thief = self._world()["events"]["confront_thief"]
         failures = [o for a in thief["actions"] for o in a["outcomes"] if "failure" in o.get("tags", [])]
         self.assertTrue(failures and not any(o.get("remove_npc") for o in failures))  # a failure keeps the thief
+
+
+class ShippedQuestTests(unittest.TestCase):
+    """The shipped world's choices make sense where they are offered, and its quests in steps (the
+    thief's hunt, the smuggler's tunnels, the back room's champion, the masks) can be won."""
+
+    @staticmethod
+    def _state(seed=0, **kwargs):
+        genome = Genome(rng=random.Random(seed))
+        return GameState(engine.build_world(genome), genome, rng=random.Random(seed), **kwargs)
+
+    def test_choices_that_are_used_once_and_bribes_only_for_prisoners(self):
+        world = config.as_dict()["world_definition"]
+        npcs = {npc["name"]: npc for npc in world["characters"]}
+        commission = next(a for a in npcs["Maskwright"]["actions"] if a["name"] == "Commission a new identity")
+        self.assertEqual((commission["repeat"], commission["outcomes"][0]["effects"]),
+                         ("once", [{"give_item": "Official's Mask"}]))
+        self.assertNotIn("stealth", commission["outcomes"][0]["tags"])  # buying a mask is not a stealth check
+        crown = next(a for a in npcs["Aurora"]["actions"] if a["name"] == "Ask about the crown")
+        self.assertEqual(crown["repeat"], "once")
+        bribes = [(owner, a["name"]) for owner, actions in
+                  [(n["name"], n["actions"]) for n in world["characters"]]
+                  + [(name, place.get("actions") or []) for name, place in world["locations"].items()]
+                  for a in actions if "bribe" in a["name"].lower()]
+        self.assertEqual(sorted(bribes), [("Dungeon", "Bribe the jailer to open your cell"),
+                                          ("Smuggler", "Bribe the jailer to open both cells")])
+        # The jailer takes a bribe from a prisoner only: someone locked in the Dungeon.
+        state = self._state(start="Market")
+        state.apply(Outcome("You are arrested.", tags=["failure"], send_to="Dungeon"))
+        state.coins = 30
+        offered = [a.name for a in state.ranked_available_actions()]
+        self.assertIn("Bribe the jailer to open your cell", offered)
+        self.assertIn("(Smuggler) Bribe the jailer to open both cells", offered)  # free him: he knows the way
+        state.confined_in = None
+        state.unlocked_locations.add("Dungeon")
+        self.assertNotIn("Bribe the jailer to open your cell", [a.name for a in state.ranked_available_actions()])
+
+    def test_the_freed_smuggler_shows_the_way_out(self):
+        state = self._state(start="Market", mission="free_the_smuggler")
+        state.apply(Outcome("You are arrested.", tags=["failure"], send_to="Dungeon"))
+        smuggler = next(c for c in state.world.characters if c.name == "Smuggler")
+        pick = next(a for a in smuggler.actions if a.name.endswith("Pick the lock of his cell"))
+        state.apply(next(o for o in pick.outcomes if o.on_check == "pass"), action=pick)
+        self.assertIsNone(state.confined_in)
+        self.assertNotEqual(state.current.name, "Dungeon")  # he led the way out
+        self.assertIn("Smuggler", state.allies)
+
+    def test_every_new_quest_can_be_won(self):
+        from core_engine import players
+
+        for mission in ("rid_the_market_of_the_thief", "free_the_smuggler", "champion_of_the_back_room",
+                        "a_face_for_the_palace", "expose_the_fence"):
+            with self.subTest(mission=mission):
+                for seed in range(40):
+                    state = self._state(seed, mission=mission)
+                    self.assertGreaterEqual(len(state.mission.stages), 2)  # a quest in steps
+                    players.play(state, 300, players.player_for(seed))
+                    if state.won:
+                        break
+                self.assertTrue(state.won, f"no simulated player won {mission} in 40 stories")
+                self.assertEqual(state.mission_stage, len(state.mission.stages) - 1)
 
 
 class CoherenceTests(_Rules):

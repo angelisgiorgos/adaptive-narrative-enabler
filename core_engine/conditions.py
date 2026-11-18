@@ -34,6 +34,7 @@ Shorthand, as written before trees existed: a mapping of variable names means
 
     enabled_if: {thief_caught: false, reputation: {gte: 2, lt: 5}}
 """
+import functools
 import re
 
 OPERATORS = ("eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in")
@@ -62,8 +63,13 @@ class ConditionError(ValueError):
 
 def action_keys(name):
     """Match "(Priest) Seek a blessing" by its full name or as "Seek a blessing"."""
-    full = str(name).strip().lower()
-    return {full, _ACTION_PREFIX.sub("", full)}
+    return _action_keys(str(name))
+
+
+@functools.lru_cache(maxsize=4096)
+def _action_keys(name):  # asked for the same names every turn
+    full = name.strip().lower()
+    return frozenset((full, _ACTION_PREFIX.sub("", full)))
 
 
 # ---- reading ---------------------------------------------------------------------

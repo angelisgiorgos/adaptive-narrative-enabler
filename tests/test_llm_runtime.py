@@ -108,5 +108,78 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(vectors)
 
 
+class JudgeStatusTests(unittest.TestCase):
+    """Whether the judge can be used is known before anyone asks it for a judgement, with what to
+    do about it (GET /v1/judge/status, the studio's judge views)."""
+
+    def setUp(self):
+        patcher = patch.dict(llm_model_loader._RUNTIMES, {}, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _server(self, handler_code=200, models=("google/gemma-4-E4B-it",)):
+        import http.server
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(handler_code)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"data": [{"id": name} for name in models]}).encode())
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_port}/v1"
+
+    def test_the_environment_points_the_judge_at_a_server(self):
+        with patch.dict("os.environ", {"ANE_JUDGE_URL": "http://judge.example:8000/v1/", "ANE_JUDGE_MODEL": "m"}):
+            active = llm_model_loader.settings()
+            runtime = get_llm_runtime()
+        self.assertEqual((active["mode"], active["base_url"], active["model_name"]),
+                         ("server", "http://judge.example:8000/v1", "m"))
+        self.assertEqual((runtime.mode, runtime.model_name), ("server", "m"))
+        with patch.dict("os.environ", {"ANE_JUDGE_URL": ""}):
+            self.assertEqual(llm_model_loader.settings()["mode"], config.get("vllm.mode", "embedded"))
+
+    def test_the_status_says_why_the_judge_cannot_be_used_and_how_to_fix_it(self):
+        with patch.dict("os.environ", {"ANE_JUDGE_URL": "http://127.0.0.1:9/v1"}):  # nothing listens there
+            status = llm_model_loader.status(timeout=1)
+        self.assertFalse(status["available"])
+        self.assertIn("No vLLM server answers at http://127.0.0.1:9/v1", status["reason"])
+        self.assertIn("docker compose --profile judge up -d judge", status["how"])
+        with patch.dict("os.environ", {"ANE_JUDGE_URL": self._server(models=("other/model",))}):
+            self.assertIn("serves other/model", llm_model_loader.status()["reason"])
+        with patch.dict("os.environ", {"ANE_JUDGE_URL": self._server(handler_code=401)}):
+            self.assertIn("HTTP 401", llm_model_loader.status()["reason"])
+        with patch.dict("os.environ", {"ANE_JUDGE_URL": self._server()}):
+            ready = llm_model_loader.status()
+        self.assertTrue(ready["available"])
+        self.assertIsNone(ready["reason"])
+        with patch.dict("os.environ", {"ANE_JUDGE_URL": ""}), patch.dict(config._config, {"vllm": {"mode": "embedded"}}), \
+                patch.object(llm_model_loader.importlib.util, "find_spec", return_value=None):
+            embedded = llm_model_loader.status()
+        self.assertFalse(embedded["available"])
+        self.assertIn("not installed", embedded["reason"])
+
+    def test_the_api_and_the_studio_show_the_status(self):
+        from fastapi.testclient import TestClient
+
+        import api
+        import app
+
+        with patch.dict("os.environ", {"ANE_JUDGE_URL": "http://127.0.0.1:9/v1"}):
+            body = TestClient(api.api).get("/v1/judge/status").json()
+            shown = app.judge_status_ui()
+        self.assertFalse(body["available"])
+        self.assertIn("not available here", shown)
+        self.assertIn("--profile judge", shown)
+
+
 if __name__ == "__main__":
     unittest.main()

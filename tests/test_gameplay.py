@@ -461,7 +461,8 @@ class StoryRhythmTests(_Quiet):
         engine_fitness = lambda state: 0.0  # noqa: E731
         engine_fitness.rewards_alternatives = True  # as the engine's own fitness
         task = (engine.build_world, engine_fitness, _genome().traits(), [1, 2], 6)
-        with patch("core_engine.evolution.play_episode", lambda build, genome, seed, steps, situation=None: stories[seed]):
+        with patch("core_engine.evolution.play_episode",
+                   lambda build, genome, seed, steps, situation=None, player=None: stories[seed]):
             plain = evaluate_task(task + ({"alternatives_weight": 0},))
             rewarded = evaluate_task(task + ({"alternatives_weight": 40},))
         self.assertAlmostEqual(rewarded - plain, 40 * alternatives([one, other]))
@@ -633,9 +634,9 @@ class StoryCraftTests(_Quiet):
         genome = _genome()
         world = engine.build_world(genome)
         state = GameState(world, genome, start="Harbor", rng=random.Random(0))
-        bribe = next(a for c in world.characters if c.name == "Gate Guard" for a in c.actions if a.name.endswith("Bribe with coins"))
+        bribe = next(a for c in world.characters if c.name == "Gate Guard" for a in c.actions if a.name.endswith("Fight the guard"))
         with patch.dict(config._config["director"], {"fail_forward": 1.0}):
-            self.assertTrue(state._fail_forward(bribe, next(o for o in bribe.outcomes if "blocks the way" in o.desc)))
+            self.assertTrue(state._fail_forward(bribe, next(o for o in bribe.outcomes if "stronger than he looks" in o.desc)))
             self.assertEqual(state._pending_event[0], "guards_alerted")
             state._pending_event = None
             moved = Outcome("You run.", tags=["threat", "failure"], move_to="Market")

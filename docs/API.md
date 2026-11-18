@@ -90,7 +90,8 @@ state.
 | `413` | An upload above its limit: configuration 2 MB (`max_config_upload_bytes`), engine 20 MB (`max_engine_upload_bytes`), model parameters 100 KB |
 | `422` | The request's shape, types or ranges |
 
-Errors are JSON: `{"detail": "..."}` (or the list of `422`).
+Errors are JSON: `{"detail": "..."}` (or the list of `422`). They never show the server's file
+paths (where the records, saves and models are): only a file's name, when it matters.
 
 ### Runs: limits, work, and waiting
 
@@ -102,7 +103,7 @@ Errors are JSON: `{"detail": "..."}` (or the list of `422`).
    (by default the maximums). A request above a lowered limit runs at the
    limit; it is not refused.
 3. **Work.** Storytellers × generations × story length × stories per
-   storyteller must stay within `max_simulation_work` (300,000 simulated
+   storyteller must stay within `max_simulation_work` (1,000,000 simulated
    turns by default, an app parameter). With `evolution.full_length_stories`, a story counts as
    `narrative_end.max_actions` turns (at least 100), an upper bound since many end sooner. A
    run above this is refused with `400` before anything runs, and
@@ -169,6 +170,11 @@ Errors are JSON: `{"detail": "..."}` (or the list of `422`).
   `GET /v1/progression?profile=` the save game (goals achieved, playthroughs, session
   reports with their `delivery`), and `POST /v1/progression/reports/{id}/send?profile=`
   sends a kept report again.
+- `POST /v1/engines/{id}/play` (`{"profile", "mission", "stats_mode", "stats"}`) starts a game in
+  the world a finished run was trained on, with its storyteller (`latest`: the newest; the
+  finished runs are `GET /v1/exports/engines`, kept also without the records); its world and
+  tuning become the active ones, as when an engine is loaded; `409` before any run has
+  finished. `GET /v1/sessions/{id}/transcript` is the story so far.
 - A session as a UNP sees it, as the exported ANE AI does ([UNP.md](UNP.md)), so an
   integration can be tried here: `GET /v1/sessions/{id}/state` (its parameters,
   `ane.session_state/1`), `PATCH /v1/sessions/{id}/player` (set `stat_points`,
@@ -350,6 +356,9 @@ one); `tests/test_studio_coverage.py` checks it.
   engine still shows another way (`director.another_way`).
 
 **Evaluation** (Gemma 4 as the judge; `503` when no language model is available)
+- `GET /v1/judge/status`: whether the judge can be used here: `{available, mode (server |
+  embedded), model, server, reason, how}`. A server is asked which models it serves (3 s at
+  most). `ANE_JUDGE_URL` points the API at a vLLM server ([`docs/LLM.md`](LLM.md)).
 - `POST /v1/judge/compare` with `{"a": {"session_id" | "story_id": ...}, "b": {...}}`:
   which of two stories (a game in progress or a recorded story each) is the better
   game. The pair is judged in both orders and a side wins only where both agree:

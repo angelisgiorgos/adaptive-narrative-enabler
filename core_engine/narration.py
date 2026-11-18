@@ -54,6 +54,12 @@ DEFAULT_MESSAGES = {
     "sent": "[SENT] You are taken to the {location}. There is no way back the way you came.",
     # People and things
     "talk_action": "Talk with {npc}",
+    # Conversations (conversations in hyperparameters.yaml): option names, and what is told
+    "approach_npc": "Approach {npc}",
+    "leave_conversation": "Leave the conversation",
+    "approached": "You approach {npc}.",
+    "conversation_left": "You leave {npc} be.",
+    "npc_approaches": "{npc_cap} comes up to you, wanting a word.",
     "talk_default": "{npc} shares a few thoughts with you.",
     "talk_goal": " They speak about their goal: {goal}.",
     "reveal_npc": "[DISCOVERY] You noticed {npc} in the scene.",
