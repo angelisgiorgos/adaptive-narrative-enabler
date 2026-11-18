@@ -332,6 +332,83 @@ class ReadOnlyRecordsTests(unittest.TestCase):
         self.assertIn("Recording is off", app.records_status_text())
 
 
+class ConfigFolderTests(_Sandbox):
+    """A config folder kept from an older release (the Docker volume), and saves that change nothing."""
+
+    def test_an_older_folder_gets_the_new_default_entries_once(self):
+        from utils.config_loader import upgrade_config_dir
+
+        old = self.dir / "volume"
+        old.mkdir()
+        for name in ("npcs.yaml", "missions.yaml", "items.yaml"):
+            shutil.copy(store.CONFIG_DIR / name, old / name)
+        npcs = yaml.safe_load((old / "npcs.yaml").read_text())
+        mine = npcs["world_definition"]["characters"][0]
+        mine["descriptions"] = ["Edited by the writer."]
+        npcs["world_definition"]["characters"] = [c for c in npcs["world_definition"]["characters"]
+                                                  if c["name"] != "Thief"]  # as before the Thief came
+        (old / "npcs.yaml").write_text(yaml.safe_dump(npcs, sort_keys=False))
+        os.chmod(old / "npcs.yaml", 0o640)
+
+        added = upgrade_config_dir(str(store.CONFIG_DIR), str(old), log=lambda *_: None)
+        self.assertEqual(added, [("npcs.yaml", "Thief")])
+        upgraded = yaml.safe_load((old / "npcs.yaml").read_text())["world_definition"]["characters"]
+        self.assertIn("Thief", [c["name"] for c in upgraded])
+        self.assertEqual(next(c for c in upgraded if c["name"] == mine["name"])["descriptions"],
+                         ["Edited by the writer."])  # what is there is never changed
+        self.assertEqual((old / "npcs.yaml").stat().st_mode & 0o777, 0o640)
+        self.assertEqual(upgrade_config_dir(str(store.CONFIG_DIR), str(old), log=lambda *_: None), [])
+
+        # Deleted afterwards: it stays deleted.
+        upgraded = [c for c in upgraded if c["name"] != "Thief"]
+        (old / "npcs.yaml").write_text(yaml.safe_dump({"world_definition": {"characters": upgraded}}, sort_keys=False))
+        self.assertEqual(upgrade_config_dir(str(store.CONFIG_DIR), str(old), log=lambda *_: None), [])
+
+    def test_an_earlier_problem_of_the_world_does_not_block_other_edits(self):
+        world = store.config.as_dict()
+        world["world_definition"]["characters"] = [c for c in world["world_definition"]["characters"]
+                                                   if c["name"] != "Thief"]  # a mission still names it
+        store.config.use_override(world)
+        # The sandbox makes reload() do nothing: restore the world with the real one afterwards.
+        self.addCleanup(lambda: (setattr(store.config, "_override", None), type(store.config).reload(store.config)))
+        name = world["world_definition"]["objects"][0]["name"]
+        text = self.client.get(f"/v1/entities/Items/{name}/yaml").json()["yaml"]
+        saved = self.client.put(f"/v1/entities/Items/{name}/yaml", json={"yaml": text})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertIn("earlier problem", saved.json()["message"])
+        broken = yaml.safe_load(text)
+        broken["enabled_if"] = {"npc_removed": "Nobody"}  # a problem this edit makes is still refused
+        refused = self.client.put(f"/v1/entities/Items/{name}/yaml", json={"yaml": yaml.safe_dump(broken)})
+        self.assertEqual(refused.status_code, 400, refused.text)
+
+    def test_a_save_that_changes_nothing_keeps_the_file(self):
+        path = self.dir / "kept.yaml"
+        path.write_text("# A comment the writer wrote.\nworld_definition:\n  routes: {}\n")
+        before = path.read_bytes()
+        store._write_yaml(path, {"world_definition": {"routes": {}}})
+        self.assertEqual(path.read_bytes(), before)
+        store._write_yaml(path, {"world_definition": {"routes": {"A": ["B"]}}})
+        self.assertNotEqual(path.read_bytes(), before)
+
+    def test_the_work_a_run_asks_for_is_shown_before_it_starts(self):
+        import app
+
+        small = self.client.get("/v1/simulations/work", params={"candidate_count": 2, "generations": 1,
+                                                                "simulation_steps": 3, "episodes": 1}).json()
+        self.assertTrue(small["allowed"])
+        self.assertEqual(small["work"], 2 * 1 * 1 * small["story_turns"])
+        big = self.client.get("/v1/simulations/work", params={"candidate_count": 400, "generations": 1000,
+                                                              "simulation_steps": 400, "episodes": 10}).json()
+        self.assertFalse(big["allowed"])
+        self.assertIn("⚠", app.run_work_ui(400, 1000, 400, 10))
+        self.assertNotIn("⚠", app.run_work_ui(2, 1, 3, 1))
+        refused = self.client.post("/v1/simulations", json={"candidate_count": 400, "generations": 1000,
+                                                            "simulation_steps": 400, "episodes": 10})
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("max_simulation_work", refused.json()["detail"])
+        self.assertEqual(self.client.get("/v1/simulations/work", params={"episodes": 0}).status_code, 422)
+
+
 class StudioServiceTests(_Sandbox):
     """The endpoints the studio is built on: every studio tab works through the API."""
 
@@ -369,7 +446,7 @@ class StudioServiceTests(_Sandbox):
         # The largest run passes the API and reaches the backend unclamped; the total-work limit refuses it.
         response = self.client.post("/v1/simulations", json=largest)
         self.assertEqual(response.status_code, 400, response.text)
-        requested = int(re.search(r"requests ([\d,]+) simulated turns", response.json()["detail"]).group(1).replace(",", ""))
+        requested = int(re.search(r"requests (?:up to )?([\d,]+) simulated turns", response.json()["detail"]).group(1).replace(",", ""))
         self.assertGreaterEqual(requested, 400 * 1000 * 400)
 
     def test_documents(self):

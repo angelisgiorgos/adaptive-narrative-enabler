@@ -1,4 +1,24 @@
 # syntax=docker/dockerfile:1.7
+
+# ---- The ANE AI's Linux runtime, built from this same code ------------------------------------------
+# The API exports a standalone runtime only when it was built from its own engine code, so every image
+# builds its Linux one: exports for linux-x64 and unity work without CI's runtimes (Windows and macOS
+# ones can only be built on those systems: put CI's zips in runtimes/ before building to add them).
+# Debian 11 (glibc 2.31), so the exported program also starts on older Linux systems (Ubuntu 20.04+).
+FROM python:3.10-slim-bullseye AS ane-runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends binutils \
+    && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install "pyinstaller>=6,<7" "pyyaml>=6,<7" "numpy>=1.26,<3"
+WORKDIR /src
+COPY core_engine core_engine
+COPY narrative_runtime narrative_runtime
+COPY utils utils
+COPY packaging packaging
+RUN python packaging/build_runtime.py --target linux-x64 --dist /dist
+
+# ---- The API and the studio -----------------------------------------------------------------------
 FROM python:3.10-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -24,6 +44,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && python -m pip install -r /tmp/requirements.txt
 
 COPY . /app
+# The Linux runtime built above (with any runtimes put in runtimes/ before the build).
+COPY --from=ane-runtime /dist/ane-runtime-linux-x64.zip /app/runtimes/ane-runtime-linux-x64.zip
 # Pristine defaults: docker-entrypoint.sh seeds files missing from the config volume.
 RUN useradd --create-home --uid 10001 app \
     && cp -a /app/config /app/config.defaults \

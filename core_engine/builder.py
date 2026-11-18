@@ -557,7 +557,7 @@ def build_world(genome):
         raise ValueError("; ".join(spec_errors))
     errors = logic_errors(config_wd)  # every condition and effect list, before anything is built
     if errors:
-        raise ValueError("; ".join(errors))
+        raise ValueError("The world cannot be played: " + "; ".join(dict.fromkeys(errors)))
     stat_settings = stats.stats_config()
     stat_errors = stats.validate_settings(stat_settings)
     stat_names = list(stat_settings.get("stats") or {})

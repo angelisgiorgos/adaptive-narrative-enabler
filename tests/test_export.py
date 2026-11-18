@@ -239,8 +239,8 @@ class ExportEndpointsTests(_Exports):
 
     def test_studio(self):
         import app
-        path, status = app.export_engine_ui("A generation of this run", self.game["run_id"], "2", None, True, "")
-        self.assertTrue(zipfile.is_zipfile(path))
+        paths, status = app.export_engine_ui("A generation of this run", self.game["run_id"], "2", None, True, "")
+        self.assertTrue(zipfile.is_zipfile(paths[0]))
         self.assertIn("champion of generation 2", status)
         path, status = app.export_engine_ui("This game's storyteller", None, None, self.game["token"], False, "mine")
         self.assertIn("storyteller of the current game", status)
@@ -290,6 +290,37 @@ class ExportEndpointsTests(_Exports):
         # The Python version is still made from any storyteller.
         python = client.post("/v1/exports", json={"source": "run", "run_id": self.game["run_id"], "generation": 1})
         self.assertEqual(python.status_code, 200, python.text)
+
+    def test_the_studio_exports_the_finished_runs(self):
+        import app
+
+        second = sessions.run_simulation(3, 1, 3, True, episodes=1)  # another finished run, the latest
+        ids = [engine for _, engine in app.finished_run_choices()]
+        self.assertEqual(ids[0], second["engine_id"])  # newest first
+        self.assertIn(self.game["engine_id"], ids)
+        _, generation, chosen, note, button = app.export_form_ui("linux-x64")
+        self.assertEqual((chosen.value, button.interactive), ([second["engine_id"]], True))  # the finished run
+        self.assertFalse(generation.visible)
+
+        runtimes = Path(tempfile.mkdtemp(dir=self.dir))
+        with zipfile.ZipFile(runtimes / "ane-runtime-linux-x64.zip", "w") as zipped:
+            zipped.writestr("runtime.json", json.dumps({"format": "ane.runtime/1", "target": "linux-x64",
+                                                       "code_version": version.code_version(), "protocol": 1,
+                                                       "executable": "ane-ai"}))
+            zipped.writestr("ane-ai", "#!/bin/sh\n")
+        both = [self.game["engine_id"], second["engine_id"]]
+        with patch.dict(os.environ, {"ANE_RUNTIMES_DIR": str(runtimes)}):
+            files, status = app.export_engine_ui(app.FINISHED_RUNS, None, None, None, False, "both", "linux-x64", both)
+        self.assertEqual(len(files), 2)  # one download per finished run
+        exported = set()
+        for path in files:
+            with zipfile.ZipFile(path) as zipped:
+                manifest = json.loads(next(zipped.read(n) for n in zipped.namelist() if n.endswith("/engine.json")))
+            exported.add(manifest["engine_id"])
+        self.assertEqual(exported, set(both))
+        files, status = app.export_engine_ui(app.FINISHED_RUNS, None, None, None, False, "", "python", second["engine_id"])
+        self.assertEqual(len(files), 1)
+        self.assertIn(second["engine_id"][:8], status)
 
     def test_terminal_run_exports_automatically(self):
         run_dir = Path(tempfile.mkdtemp(dir=self.dir))
