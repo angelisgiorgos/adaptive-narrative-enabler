@@ -188,8 +188,9 @@ RUN_LIMITS = {"candidate_limit": 400, "generation_limit": 1000, "simulation_step
 APP_DEFAULTS = {
     "max_web_sessions": 100,
     # Simulated turns one run may take: whole stories are counted at narrative_end.max_actions, an
-    # upper bound (stories often end sooner). About 10 minutes on a 20-core server at most.
-    "max_simulation_work": 300000,
+    # upper bound (stories often end sooner). A generation's stories are played in parallel
+    # (evolution.max_evaluation_processes); a run of 1,000,000 takes a few minutes on 16 CPUs.
+    "max_simulation_work": 1_000_000,
     "max_config_upload_bytes": 2 * 1024 * 1024,
     "max_engine_upload_bytes": 20 * 1024 * 1024,
     "candidate_limit": RUN_LIMITS["candidate_limit"],
@@ -421,6 +422,8 @@ def _validate_complete_config(candidate: object, reference: object, path: str = 
                 errors.append(f"`{path}[{index}].unique` must be true or false.")
             elif "encounter_repeat" in entry and not isinstance(entry["encounter_repeat"], bool):
                 errors.append(f"`{path}[{index}].encounter_repeat` must be true or false.")
+            elif "starts_conversation" in entry and not isinstance(entry["starts_conversation"], bool):
+                errors.append(f"`{path}[{index}].starts_conversation` must be true or false.")
             elif entry.get("encounter_event") is not None and not isinstance(entry["encounter_event"], str):
                 errors.append(f"`{path}[{index}].encounter_event` must be an event name.")
             elif entry.get("role") is not None and not isinstance(entry["role"], str):

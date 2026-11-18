@@ -58,6 +58,7 @@ def play_state(state: GameState) -> dict:
         "mission_status": state.mission_status,
         "won": bool(state.won),
         "event": state.active_event.title if state.active_event else None,
+        "talking_to": state.conversation() if hasattr(state, "conversation") else None,
         "end_reason": state.end_reason,
         "profile": state.profile if state._store is not None else None,
         "variables": {k: v for k, v in state.variables.items() if k in state.variable_specs or k == "playthroughs"},
@@ -398,7 +399,37 @@ def play_engine(engine_id, profile=None, stats_choice=None, stats_points=None, o
     model.activate()
     engine.refresh_runtime_settings()
     return _game_for(model, profile, points, mode, origin,
-                     f"Recorded engine `{engine_id}` loaded. Benchmark score: **{model.score}**.", mission=mission)
+                     f"Recorded engine `{engine_id}` loaded. Fitness on the benchmark (the training objective): **{model.score}**.", mission=mission)
+
+
+def play_finished_run(engine_id=None, profile=None, stats_choice=None, stats_points=None, origin="studio",
+                      mission=None):
+    """Play the world a finished run was trained on, with its storyteller: a finished run (a
+    complete engine, in the records or kept with the saves); ``engine_id`` None or "latest": the
+    newest. Its world and tuning become the active ones, as when an engine is loaded."""
+    from .export import EngineRequired, complete_engine
+
+    profile = _profile(profile)
+    points, mode = _player_stats(stats_choice, stats_points)
+    try:
+        model = complete_engine("engine", engine_id=None if engine_id in (None, "", "latest") else engine_id)
+    except EngineRequired as exc:
+        if engine_id in (None, "", "latest"):
+            raise EngineRequired("No finished run yet: train the AI first (4 · Train the AI → Evolve storytellers "
+                                 "& start game), then play its world here.") from exc
+        raise
+    model.activate()
+    engine.refresh_runtime_settings()
+    when = (model.created or "")[:16].replace("T", " ")
+    return _game_for(model, profile, points, mode, origin,
+                     f"Playing the finished run of {when} (engine `{model.id[:8]}`): its world, with its storyteller.",
+                     mission=mission)
+
+
+def session_transcript(token):
+    """The story of a play session so far."""
+    with SESSION_LOCK:
+        return _session(token).get_full_story()
 
 
 def _option_limit():
@@ -564,12 +595,28 @@ def run_simulation(candidate_count: int, generations: int, simulation_steps: int
     run_id = uuid.uuid4().hex
     records.start_run(origin, settings=evolution.settings, parameters=parameters, seed=seed, run_id=run_id)
     try:
-        result = evolution.run(progress=progress)
+        result = _train(evolution, progress)
     except Exception as exc:
         records.finish_run(run_id, None, error=exc)
         raise
     return _finish_training(evolution, result, run_id, origin, profile, points, mode, candidate_count, episodes,
                             simulation_steps, title="Evolution complete.", mission=mission)
+
+
+def _train(evolution, progress=None, resume=None):
+    """Run ``evolution`` (its world active): a generation's stories, and its champions'
+    benchmark, are played by a pool of processes at once (engine.story_pool), with the same
+    scores as one process would give."""
+    settings = evolution.settings
+    stories = max(int(settings["pop_size"]) * int(settings["episodes_per_genome"]),
+                  int(settings.get("benchmark_top_k", 1)) * int(settings.get("validation_episodes", 1)))
+    serial = evolution.map_fn
+    with engine.story_pool(stories) as map_fn:
+        evolution.map_fn = map_fn or serial
+        try:
+            return evolution.run(progress=progress, resume=resume)
+        finally:
+            evolution.map_fn = serial  # the pool closes with the run
 
 
 def _finish_training(evolution, result, run_id, origin, profile, points, mode, candidate_count, episodes,
@@ -588,9 +635,13 @@ def _finish_training(evolution, result, run_id, origin, profile, points, mode, c
     scene, actions = _scene(player)
     history = result.history
     report = (
-        f"{title} Best benchmark score: **{score:.2f}** "
+        f"{title} Best fitness on the benchmark: **{score:.2f}** (the training objective, not a measure of "
+        "quality: judge the stories in *6 · Evaluate with the judge*) "
         f"({learning['improvement']:+.2f} since generation 0)  \n"
-        f"Generations: **{result.generations_run}** · Storytellers per generation: **{candidate_count}** · "
+        + ("Stories played by **simulated players** (they choose among the choices shown; the storyteller "
+           "only directs).  \n" if evolution.settings.get("player") == "simulated"
+           else "Stories played by the **storyteller itself** (evolution.player: storyteller).  \n")
+        + f"Generations: **{result.generations_run}** · Storytellers per generation: **{candidate_count}** · "
         f"Stories per storyteller: **{episodes}**"
         + (f"  \nStarted from **{result.warm_started}** storyteller(s) remembered from earlier runs." if result.warm_started else "")
         + f"  \nBenchmark per generation: {' → '.join(f'{h.validation:.0f}' for h in history)}  \n"
@@ -661,7 +712,7 @@ def continue_engine(engine_id, generations=1, profile=None, stats_choice=None, s
             engine.build_world, engine.fitness, model.checkpoint, generations=generations,
             memory=ModelMemory(model.memory) if model.memory or settings.get("warm_start") else None,
         )
-        result = evolution.run(progress=progress, resume=model.checkpoint)
+        result = _train(evolution, progress, resume=model.checkpoint)
     except Exception as exc:
         records.finish_run(run_id, None, error=exc)
         raise
@@ -698,7 +749,7 @@ def retrain_engine(engine_id, candidate_count=8, generations=5, simulation_steps
         memory.remember([(model.score if model.score is not None else 0.0, model.genome)], size=max(len(model.memory) + 1, 12))
         evolution = NarrativeEvolution(engine.build_world, engine.fitness, settings={**settings, "warm_start": True},
                                        seed=seed, memory=memory)
-        result = evolution.run(progress=progress)
+        result = _train(evolution, progress)
     except Exception as exc:
         records.finish_run(run_id, None, error=exc)
         raise
@@ -816,12 +867,11 @@ def play_action(token: str, selected_action: str):
         state = SESSIONS.get(token)
         if state is None:
             raise AuthoringError("Run a simulation first to start a game.")
-        offered = [action.name for action in _player_options(state)]
+        offered = {action.name: action for action in _player_options(state)}
         if selected_action not in offered:
             raise AuthoringError("That choice is no longer available. Select a current action.")
-        names = [action.name for action in state.ranked_available_actions()]  # step() indexes the ranked order
         before = len(state.history)
-        state.step(names.index(selected_action))
+        state.take_option(offered[selected_action])  # approaching someone or leaving a conversation: no turn
         turn_text = "\n\n".join(state.history[before:]).strip()
         scene, next_actions = _scene(state)
         records.update_story(SESSION_RECORDS.get(token), state)
@@ -1017,10 +1067,11 @@ def _benchmark(model):
 
 def _preview_story(model, engine_id, seed=0):
     """One whole story told by the engine on its world, recorded as the engine's preview game."""
+    from core_engine import players
+
     state = model.new_game(seed=seed)
     engine.refresh_runtime_settings()
-    while not state.ended and state.health > 0 and state.step():
-        pass
+    players.play(state, 10 ** 6, players.for_settings(seed, evolution_settings()))  # a simulated player
     return records.record_story(state, "import", "preview", engine_id=engine_id, seed=seed,
                                 parameters={"preview": True, "seed": seed})
 

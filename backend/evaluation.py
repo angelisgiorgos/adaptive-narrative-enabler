@@ -38,6 +38,8 @@ def _play(config_data, tag_vectors, count, first_seed, traits, budget):
     import random
 
     import main as engine
+    from core_engine import players
+    from core_engine.evolution import evolution_settings
     from core_engine.fitness import _fitness_breakdown
     from core_engine.game_state import GameState
     from core_engine.genome import Genome
@@ -51,8 +53,8 @@ def _play(config_data, tag_vectors, count, first_seed, traits, budget):
             for name, value in traits.items():
                 setattr(teller, name, value)
         state = GameState(engine.build_world(teller), teller, rng=random.Random(seed))
-        while not state.ended and state.step():
-            pass
+        # Played as in training: a simulated player takes the player's turns (evolution.player).
+        players.play(state, 10 ** 6, players.for_settings(seed, evolution_settings()))
         breakdown = _fitness_breakdown(state)
         stories.append({
             "seed": seed, "digest": digest_state(state, max_chars=budget), "breakdown": breakdown,

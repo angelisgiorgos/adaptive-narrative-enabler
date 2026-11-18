@@ -148,7 +148,7 @@ def enabled() -> bool:
         root.mkdir(parents=True, exist_ok=True)
         models_dir().mkdir(parents=True, exist_ok=True)
         if not writable():
-            raise PermissionError(f"{database_path()} or its folder is not writable by this user "
+            raise PermissionError(f"the records folder is not writable by this server's user "
                                   f"(uid {os.getuid() if hasattr(os, 'getuid') else '?'}); the records "
                                   "already there can still be read")
     except OSError as exc:
@@ -620,6 +620,12 @@ def get_engine(engine_id):
     return engine
 
 
+def model_readable(path) -> bool:
+    """Whether this process can read a recorded engine's model file (a records folder shared with
+    another user, e.g. the host's, may hold files only that user can read)."""
+    return Path(path).is_file() and os.access(path, os.R_OK)
+
+
 def load_engine(engine_id):
     """The EngineModel of a recorded engine: its model file, or (for a generation's
     champion) its genome with its run's world and the run's tag vectors."""
@@ -629,7 +635,10 @@ def load_engine(engine_id):
     if engine["model_path"]:
         path = Path(engine["model_path"])
         if not path.is_file():
-            raise LookupError(f"The model file of engine `{engine_id}` is missing: {path}")
+            raise LookupError(f"The model file of engine `{engine_id}` is missing from the records.")
+        if not model_readable(path):
+            raise LookupError(f"The model file of engine `{engine_id}` cannot be read by this server (it belongs to "
+                              "another user of the records folder): choose another engine.")
         if engine["model_sha256"] and _sha256(path) != engine["model_sha256"]:
             raise ValueError(f"The model file of engine `{engine_id}` has changed since it was recorded.")
         return EngineModel.load(path)

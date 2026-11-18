@@ -28,6 +28,7 @@ from __future__ import annotations
 import datetime
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -90,8 +91,11 @@ def complete_engines(limit=50):
             rows = records.list_engines(limit=500)
         except LookupError:  # no records yet
             rows = []
+        except Exception as exc:  # noqa: BLE001 - unreadable records: the runs kept with the saves are still offered
+            logging.getLogger("ane.export").warning("The recorded engines could not be read: %s", exc)
+            rows = []
         for row in rows:
-            if row.get("model_path") and Path(row["model_path"]).is_file():
+            if row.get("model_path") and records.model_readable(row["model_path"]):
                 found[row["id"]] = {"engine_id": row["id"], "created_at": row["created_at"], "source": row["source"],
                                     "score": row["score"], "run_id": row["run_id"],
                                     "resumable": bool(row.get("resumable")),
@@ -154,9 +158,11 @@ def complete_engine(source="run", run_id=None, generation=None, engine_id=None):
     if record is not None:
         try:
             return records.load_engine(engine_id)
-        except (LookupError, ValueError) as exc:
+        except (LookupError, ValueError, OSError) as exc:
             if kept is None:
-                raise AuthoringError(str(exc)) from exc
+                raise EngineRequired(str(exc) if not isinstance(exc, OSError) else
+                                     f"The engine of this run cannot be read by this server ({exc.strerror}): "
+                                     "choose another finished run.") from exc
     if kept is not None:
         return EngineModel.load(kept["model_path"])
     raise EngineRequired(f"No complete engine `{engine_id}` here (GET /v1/exports/engines lists them).")
@@ -185,7 +191,8 @@ def platforms() -> list[dict]:
         info = _runtime_info(platform)
         if info is None:
             result.append({"platform": platform, "available": False,
-                           "reason": f"no runtime: put ane-runtime-{platform}.zip in {runtimes_dir()}"})
+                           "reason": f"no runtime: put ane-runtime-{platform}.zip in the API's runtimes folder "
+                                     "(ANE_RUNTIMES_DIR) and restart it"})
         elif info.get("code_version") != version.code_version():
             result.append({"platform": platform, "available": False, "code_version": info.get("code_version"),
                            "reason": f"its runtime was built from other engine code ({info.get('code_version')}, "
