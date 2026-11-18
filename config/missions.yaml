@@ -26,9 +26,13 @@ world_definition:
       title: Expose the fence
       description: Find out who buys the goods stolen at the market.
       stages:                      # a quest in steps, completed in order
-      - title: Make the thief talk
-        description: Corner the market thief and get a name.
-        goal: {action: Interrogate the thief}
+      - title: Find out who buys the stolen goods
+        description: Corner the market thief and make them talk, or win the merchant's trust until they let it slip.
+        goal:
+          condition:
+            any:
+            - {action_done: Interrogate the thief}
+            - {secret_known: Merchant}
       - title: Find the fence's ledger
         description: The thief named someone in the Sewers; their ledger is the proof.
         goal: {item: Fence's Ledger}
@@ -61,11 +65,72 @@ world_definition:
       enabled_if: {thief_caught: false}
       title: Rid the market of the thief
       description: Drive the thief out of the market for good.
-      goal:
-        npc_removed: Thief
+      stages:
+      - title: Pick up the thief's trail
+        description: The captain of the watch pays a bounty; the merchants and the guards know who robs them.
+        goal:
+          condition:
+            any:
+            - {action_done: Take the bounty on the market thief}
+            - {action_done: Ask about the market thief}
+            - {action_done: Report the market thief}
+      - title: Catch the thief in the act
+        description: Patched cloak, quick fingers, the spice stalls at dusk. Mind their lookout.
+        goal: {event: confront_thief}
+        rewards:
+        - change_coins: 3
+      - title: Drive the thief out for good
+        description: Beat them, hand them to the watch, or make them lead you to their hideout.
+        goal: {npc_removed: Thief}
       rewards:                     # the merchants are grateful
       - change_variable: {reputation: 1}
       - change_coins: 10
+    free_the_smuggler:
+      title: The smuggler's tunnels
+      description: A smuggler in the Dungeon knows a way under every wall. Get him out, and he will show you.
+      stages:
+      - title: Get yourself thrown in the Dungeon
+        description: The only way in is in irons. Insult a guard to his face.
+        goal: {action: Insult the guard to his face}
+      - title: Free the smuggler
+        description: Bribe the jailer, pick the lock, or fight your way out, and take him with you.
+        goal: {outcome_tag: smuggler_freed}
+      - title: Follow his tunnels to the Vault
+        description: His tunnels come up under the Vault.
+        goal: {location: Vault}
+      rewards:
+      - change_coins: 15
+    champion_of_the_back_room:
+      enabled_if: {pit_champion: false}
+      title: Champion of the back room
+      description: The Tavern's back room has an undefeated champion. Earn the right to fight her, then beat her.
+      stages:
+      - title: Win a brawl in the Tavern's back room
+        description: Trade blows in the back room, or fight dirty; the Pit Champion is watching.
+        goal: {outcome_tag: brawl_won}
+        rewards:
+        - change_coins: 2
+      - title: Beat the Pit Champion
+        description: Challenge her in the Tavern. Toe to toe, or wear her down. Throwing the fight does not count.
+        goal: {outcome_tag: champion_beaten}
+      rewards:
+      - change_variable: {reputation: 1}
+    a_face_for_the_palace:
+      title: A face for the Palace
+      description: The Maskwright can make you anyone. Wear a palace official's face and find out who pays for the masks.
+      stages:
+      - title: Commission a mask from the Maskwright
+        description: The Maskwright sells faces at the Festival of Masks and the Market of the Ancients.
+        goal: {item: "Official's Mask"}
+      - title: Walk into the Palace
+        description: Gate guards salute a palace face.
+        goal: {location: Palace}
+      - title: Unmask the festival's patron
+        description: Someone who walks the Palace and its gardens pays for every mask.
+        goal: {action: "Unmask her as the festival's patron"}
+      rewards:
+      - change_coins: 12
+      - change_variable: {reputation: 1}
     clear_your_name:
       title: Clear your name
       description: Your reputation precedes you. Earn back the city's trust.

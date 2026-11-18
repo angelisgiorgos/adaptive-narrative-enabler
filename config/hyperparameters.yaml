@@ -35,6 +35,18 @@ evolution:
   judge_weight: 0.0            # 0: off (no model needed, runs stay reproducible); ~50 suits this fitness scale
   judge_top_k: 2
   judge_workers: 4             # judgements sent to the model at once
+  # Who takes the player's turns in the evaluated stories (core_engine/players.py, docs/AI.md "Who
+  # controls what"). The storyteller is the director: it shapes what is offered and how the story
+  # answers. simulated: players with their own preferences choose among the choices shown, as people
+  # do, so a storyteller is not rewarded for playing well itself. storyteller: the storyteller takes
+  # its own favourite choice (the older evaluation, to compare with).
+  player: simulated
+  player_mix:                 # how often each simulated player plays (the same story seed: the same player)
+    follower: 2               # mostly one of the first choices shown
+    explorer: 1               # new places and new people first
+    quester: 2                # the quest's next step first
+    cautious: 1               # avoids likely failures, the more so when hurt
+    random: 1                 # any choice shown
 story_rules:
   # Rules that keep stories coherent, paced and varied (core_engine/rules.py).
   failure_tags: [failure]     # these outcomes are told only when the attempt fails (as on_check: fail)
@@ -213,6 +225,22 @@ action_rules:
     npc: per_visit
     item: once
     event: always
+  # A question (an action that only tells: it reveals a place, a person or an item, opens a path
+  # or shows the way, and changes nothing else) is asked once unless it sets `repeat`; an answer
+  # that told nothing leaves it for the next visit. false: questions follow default_repeat.
+  questions_once: true
+conversations:
+  # The people present are approached one at a time: on the scene each is one choice, "Approach
+  # <them>"; in a conversation, their choices (talk, ask, bribe, fight, ...) and "Leave the
+  # conversation". Approaching and leaving take no turn. A decisive choice ends the conversation
+  # (an event or a fight, a payment, an item given, taken or used, one of an exclusive choice, a
+  # move, or an outcome tagged decisive_tags); questions and small talk go on. NPCs with
+  # `starts_conversation: true` come up to the player the first time they meet; hostile NPCs
+  # (encounter_event) still start their event. false: every person's choices are on the scene.
+  enabled: true
+  decisive_tags: [combat, threat, guards, escape]
+  approach_limit: 3            # at most this many "Approach" choices among the options shown
+  max_free_steps: 6            # approaches and leavings in a row, then everything is on the scene
 authored_events:
   enabled: true
   fallback_action: Step away from the situation
@@ -228,6 +256,7 @@ npc_leads:
   every_nth_interaction: 2     # NPCs share a lead on every n-th conversation (or a success)
   base_score: 1.0
   shared_tag_weight: 0.5
+  quest_weight: 3.0            # a guide (an NPC's lead, an ally's way) prefers places on the way to the quest
 unexpected_events:
   objective:                   # how the engine picks the effect of an unexpected event
     low_health_healing_weight: 2.0

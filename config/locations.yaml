@@ -314,6 +314,19 @@ world_definition:
         - desc: A ghost appears, offering advice on how to escape.
           tags:
           - neutral
+      - name: Bribe the jailer to open your cell
+        # The one bribe a guard takes: offered only to a prisoner (an escape: only while locked in).
+        required_coins: 8
+        skill_check: {stat: persuasion}
+        outcomes:
+        - desc: The jailer weighs your coins, looks both ways, and leaves your door unlocked on his round.
+          on_check: pass
+          tags: [escape, social, success]
+          change_variables: {reputation: -1}
+          move_to: Alley
+        - desc: '"Trying to buy your way out?" He keeps the coins and adds a night to your sentence.'
+          on_check: fail
+          tags: [guards, failure]
       - name: Talk to a nearby prisoner
         outcomes:
         - desc: An old man whispers about a secret tunnel in the Sewers.
@@ -358,6 +371,11 @@ world_definition:
         - desc: Only standard gossip and tall tales are heard.
           tags:
           - social
+      - name: Join the back-room brawl
+        triggers_event: tavern_brawl
+        outcomes:
+        - desc: You push through to the back room, where the furniture is already against the walls.
+          tags: [combat, brawl]
       - name: Participate in a drinking contest
         outcomes:
         - desc: You win! The patrons cheer and buy you a drink.

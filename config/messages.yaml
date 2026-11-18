@@ -65,6 +65,11 @@ messages:
 
   # --- People and things (talk_action is the name of the conversation option)
   talk_action: "Talk with {npc}"  # {npc}
+  approach_npc: "Approach {npc}"  # {npc}: the option that opens a conversation (conversations)
+  leave_conversation: "Leave the conversation"  # {npc}: the option that closes it
+  approached: "You approach {npc}."  # {npc}
+  conversation_left: "You leave {npc} be."  # {npc}
+  npc_approaches: "{npc_cap} comes up to you, wanting a word."  # {npc}, {npc_cap}: someone who starts the conversation
   talk_default: "{npc} shares a few thoughts with you."  # {npc}
   talk_goal: " They speak about their goal: {goal}."  # {goal}, {npc}
   reveal_npc: "[DISCOVERY] You noticed {npc} in the scene."  # {npc}

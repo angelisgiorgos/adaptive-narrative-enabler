@@ -171,3 +171,10 @@ world_definition:
       outcomes:
       - desc: You tuck the ledger under your cloak. Someone will pay dearly for it.
         tags: [neutral, success]
+  - name: Official's Mask
+    unique: true
+    # Bought from the Maskwright (give_item); its tags fit no place, so it lies nowhere to be found.
+    associated_tags: [mask, disguise, porcelain, official]
+    stat_bonus: {persuasion: 10, stealth: 5}
+    descriptions:
+    - A porcelain face of a minor palace official, faintly warm, as if someone were still wearing it.

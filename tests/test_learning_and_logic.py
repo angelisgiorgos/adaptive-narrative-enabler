@@ -262,5 +262,72 @@ class ReliableLearningTests(unittest.TestCase):
         self.assertEqual(len(keys), len(population))                # no two storytellers alike
 
 
+class TrainingSpeedTests(_TempSaves):
+    """What makes training fast never changes a result."""
+
+    SETTINGS = {"pop_size": 4, "generations": 3, "episodes_per_genome": 2, "validation_episodes": 2,
+                "full_length_stories": False, "max_steps": 12, "warm_start": False, "cover_situations": False,
+                "early_stop_generations": 0}
+
+    def _run(self, map_fn=None):
+        evolution = NarrativeEvolution(engine.build_world, engine.fitness, settings=self.SETTINGS, seed=5,
+                                       memory=None, map_fn=map_fn)
+        result = evolution.run()
+        return evolution, json.dumps([result.best_score, result.best_genome.traits(),
+                                      [h.__dict__ for h in result.history]], default=str)
+
+    def test_a_run_gives_the_same_result_in_a_pool_of_processes(self):
+        _, alone = self._run()
+        with patch.object(engine, "EVALUATION_THREADS", 2), engine.story_pool(8) as map_fn:
+            self.assertIsNotNone(map_fn)
+            _, pooled = self._run(map_fn)
+        self.assertEqual(alone, pooled)
+
+    def test_a_storyteller_is_benchmarked_once(self):
+        from core_engine.evolution import evaluate_task
+
+        played = []
+
+        def counting(function, tasks):
+            played.extend((tuple(sorted(task[2].items())), task[3][0]) for task in tasks)
+            return [function(task) for task in tasks]
+
+        evolution, _ = self._run(counting)
+        benchmark = set(evolution._validation_seeds())
+        benchmarked = [(traits, seed) for traits, seed in played if seed in benchmark]
+        self.assertTrue(benchmarked)
+        self.assertEqual(len(benchmarked), len(set(benchmarked)))  # no storyteller plays a benchmark story twice
+        for key, score in list(evolution._benchmark_scores.items())[:2]:
+            self.assertEqual(score, evaluate_task(evolution.benchmark_task(dict(key))))
+
+    def test_where_the_quest_advances_is_worked_out_once_per_change(self):
+        from core_engine import GameState
+
+        genome = Genome(random.Random(3))
+        state = GameState(engine.build_world(genome), genome, rng=random.Random(3))
+        self.assertTrue(state._pending_goal())  # a goal to work out the places of
+        self.assertIs(state._goal_sites(), state._goal_sites())
+        fresh = state._goal_sites()
+        state.__dict__.pop("_goal_sites_cache")
+        self.assertEqual(state._goal_sites(), fresh)
+
+    def test_copying_an_action_is_a_deep_copy(self):
+        import copy
+
+        genome = Genome(random.Random(3))
+        world = engine.build_world(genome)
+        action = next(a for loc in world.locations.values() for a in loc.actions if a.outcomes)
+        clone = copy.deepcopy(action)
+        self.assertIsNot(clone, action)
+        self.assertEqual(type(clone), type(action))
+        self.assertEqual(clone.__dict__.keys(), action.__dict__.keys())
+        self.assertIsNot(clone.outcomes, action.outcomes)
+        self.assertIsNot(clone.outcomes[0], action.outcomes[0])
+        self.assertIsNot(clone.outcomes[0].tags, action.outcomes[0].tags)
+        self.assertIs(clone.outcomes[0].effects, action.outcomes[0].effects)  # immutable, shared as before
+        clone.outcomes[0].move_to = "Elsewhere"
+        self.assertNotEqual(action.outcomes[0].move_to, "Elsewhere")
+
+
 if __name__ == "__main__":
     unittest.main()

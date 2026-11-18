@@ -84,27 +84,19 @@ world_definition:
         tags:
         - stealth
         health_change: 1
-    - id: gate_guard_bribe_coins
-      name: Bribe with coins
+    # No coin bribe at the gates: a guard on duty is bribed only in the Dungeon (the jailer, to
+    # open a cell or free a prisoner who knows the way; see the Dungeon and the Smuggler).
+    - id: gate_guard_show_mask
+      name: Show him your official's face
       exclusive_group: get_past_gate_guard
-      enabled_if: {not: {at_location: Vault}}   # it gets you into the Vault: not from inside
-      required_coins: 15
-      skill_check: {stat: persuasion}
+      enabled_if: {not: {any: [{at_location: Vault}, {at_location: Palace}]}}   # it gets you into the Palace
+      required_object: Official's Mask
       outcomes:
-      - id: gate_guard_bribe_success
-        on_check: pass
-        desc: He pockets the coins and looks the other way.
-        change_variables: {reputation: -1}
-        tags:
-        - neutral
+      - id: gate_guard_salutes_mask
+        desc: He snaps to attention at the sight of a palace official and waves you through.
+        tags: [social, deception, success]
         lead_to_known: true
-        linked_location: Vault
-      - id: gate_guard_bribe_warning
-        on_check: fail
-        desc: He takes the coins, laughs, and still blocks the way.   # a failed bribe gets you nowhere
-        tags:
-        - threat
-        - failure
+        linked_location: Palace
     - id: gate_guard_approach
       name: Approach the guard
       repeat: always
@@ -207,13 +199,34 @@ world_definition:
     - She carries the faint scent of jasmine and ancient parchment.
     - Her presence is both haunting and regal, as if she belongs to another era.
     actions:
+    dialogue:
+    - enabled_if: {action_done: Unmask her as the festival's patron}
+      text: Aurora smiles behind her fan. "One masked friend recognises another. The Vault's back door is yours."
+    - enabled_if: {has_item: "Official's Mask"}
+      text: Aurora studies your borrowed face a moment too long. "That is not the face you were born with."
+    actions:
     - name: Ask about the crown
+      repeat: once                                # what she knows, she tells once
       until: {action_done: Crack the main safe}   # once the safe is open, the secret is out
       outcomes:
       - desc: She cryptically mentions it's hidden in the Vault.
         tags:
         - spawn
         spawn: true
+    - name: Unmask her as the festival's patron
+      repeat: once
+      retry_on_failure: true   # seen through once, the mask can still convince her another time
+      enabled_if: {has_item: "Official's Mask"}   # only another mask can name the patron of masks
+      skill_check: {stat: persuasion}
+      outcomes:
+      - desc: Behind your borrowed face you name her the patron of the festival; she laughs, and trusts you with the Vault's back door.
+        on_check: pass
+        tags: [social, deception, success]
+        reveal_location: Vault
+        change_variables: {reputation: 1}
+      - desc: She sees through your mask at once and calls for the guards.
+        on_check: fail
+        tags: [guards, threat, failure]
   - name: Gardener
     unique: true
     associated_tags:
@@ -260,6 +273,13 @@ world_definition:
       - desc: The guard notes it down and thanks you; word of your honesty gets around.
         tags: [social, success]
         change_variables: {reputation: 1}
+    - name: Insult the guard to his face
+      # The only way into the Dungeon is in irons; out again without the smuggler, try again.
+      enabled_if: {all: [{mission: free_the_smuggler}, {not: {outcome_tag: smuggler_freed}}]}
+      outcomes:
+      - desc: You call him a coward in front of his sergeant. Two minutes later you are in irons.
+        tags: [guards, threat, arrest]
+        send_to: Dungeon
     - name: Ask about the prisoners
       repeat: once
       outcomes:
@@ -284,7 +304,20 @@ world_definition:
       talks: 2
       effects:
       - reveal_location: Sewers
+      - set_variable: {fence_exposed: true}   # now the ledger can be found
+    dialogue:
+    - enabled_if: {npc_removed: Thief}
+      text: The merchant presses a fig into your hand. "Since the thief is gone, I sleep at night. On the house."
+    - enabled_if: {thief_caught: true}
+      text: '"No thief in my market since you came through last time. The stalls still talk about it."'
     actions:
+    - name: Ask about the market thief
+      repeat: once
+      enabled_if: {not: {npc_removed: Thief}}
+      outcomes:
+      - desc: '"Patched cloak, quick fingers, works the spice stalls at dusk. And mind the boy with the cudgel: he watches for them."'
+        tags: [social, setup_clue, thief_trail]
+        reveal_npc: Thief
     - name: Threaten to expose the merchant's trade
       repeat: once
       enabled_if: {secret_known: Merchant}
@@ -315,6 +348,7 @@ world_definition:
     - A rain-soaked scholar tattoos new coastlines onto their arms as the weather changes.
     actions:
     - name: Compare maps of the storm
+      repeat: once
       outcomes:
       - desc: The cartographer identifies a safe current leading to the Drowned Archive.
         tags: [social, success, discovery]
@@ -332,12 +366,14 @@ world_definition:
     - Their robes are stitched from waterproof pages covered in censored names.
     actions:
     - name: Request the forbidden chapter
+      repeat: once
+      retry_on_failure: true   # the erased sentence can be asked for again
       outcomes:
       - desc: The archivist reveals that the orchard remembers every royal betrayal.
         tags: [social, setup_clue, discovery]
         reveal_location: Bone Orchard
       - desc: The chapter erases the last sentence spoken aloud.
-        tags: [unexpected, arcane]
+        tags: [unexpected, arcane, failure]
         health_change: -1
   - name: Memory Thief
     unique: true
@@ -377,15 +413,26 @@ world_definition:
     goals: [Craft the face of a perfect ruler, Unmask the festival patron]
     descriptions:
     - The artisan wears a blank porcelain face and speaks through nearby masks.
+    dialogue:
+    - enabled_if: {has_item: "Official's Mask"}
+      text: The blank porcelain face tilts. "It suits you. Gate guards salute it; a certain lady in the Palace will not."
+    - text: "Every face in this city was made by someone. For six coins, I make you a palace official's."
     actions:
     - name: Commission a new identity
+      repeat: once              # one face per traveler
+      required_coins: 6
       outcomes:
-      - desc: The maskwright gives you the face of a minor palace official.
-        tags: [stealth, social, success]
-        reveal_location: Palace
-      - desc: Your unfinished mask begins answering questions before you can.
-        tags: [unexpected, arcane, discovery]
-        reveal_location: Market of the Ancients
+      - desc: For six coins the maskwright shapes you the face of a minor palace official, still warm from the kiln.
+        tags: [social, deception, success]
+        effects:
+        - give_item: Official's Mask
+    - name: Ask who pays for the festival
+      repeat: once
+      outcomes:
+      - desc: '"A patron in the Palace gardens, who wears no mask by day." The maskwright says no more.'
+        tags: [social, setup_clue, deception]
+        reveal_npc: Aurora
+        reveal_location: Secret Garden
   - name: Runaway Apprentice
     unique: true
     associated_tags: [urban, science, social, discovery, threat]
@@ -396,12 +443,14 @@ world_definition:
     - A soot-covered teenager carries a jar containing a tiny, furious thundercloud.
     actions:
     - name: Help contain the bottled storm
+      repeat: once
+      retry_on_failure: true   # a storm that escaped can be caught again
       outcomes:
       - desc: The cloud calms and illuminates a hidden route through the sewers.
         tags: [success, discovery, social]
         reveal_location: Sewers
       - desc: Lightning escapes the jar and animates every metal object nearby.
-        tags: [unexpected, threat, science]
+        tags: [unexpected, threat, science, failure]
         health_change: -1
   - name: Thief
     unique: true
@@ -415,6 +464,174 @@ world_definition:
     descriptions:
     - A wiry figure drifts between the stalls, fingers never far from other people's purses.
     - Someone in a patched cloak watches the crowd a little too carefully.
+    dialogue:
+    - enabled_if: {event_done: lookout_ambush}
+      text: The thief's smile slips. "You hurt my lookout. That was a mistake."
+    - text: '"Lost something, friend? Markets are full of thieves. I would know."'
     actions:
     - name: Confront the thief
       triggers_event: confront_thief
+
+  # ---- the thief's hunt, the Dungeon's prisoner, the Sewers' fence, the Tavern's pit ----------
+  - name: Captain of the Watch
+    unique: true
+    starts_conversation: true   # comes up to the player the first time they meet
+    article: the
+    associated_tags: [market, trade, guard, law, protect]
+    known_locations: [Market, Palace]
+    goals:
+    - goal: Rid the market of its thief
+      tags: [thief_gone]
+      needed: 1
+      reward: lead
+    - Keep the peace
+    descriptions:
+    - A broad-shouldered captain with a scarred lip and a ledger of every crime in the city.
+    - The captain counts the market's losses on scarred fingers and runs out of fingers.
+    dialogue:
+    - enabled_if: {npc_removed: Thief}
+      text: '"The market breathes again. Come to me if you ever want a badge."'
+    - enabled_if: {reputation: {lt: 0}}
+      text: '"I know your face from the reports. Tread carefully in my market."'
+    - text: '"A thief works my market and I have not the men to catch them. Find them, and the bounty is yours."'
+    actions:
+    - name: Take the bounty on the market thief
+      repeat: once
+      enabled_if: {not: {npc_removed: Thief}}
+      outcomes:
+      - desc: The captain presses a warrant into your hand. "The merchants know more than they tell me. Mind the thief's lookouts."
+        tags: [social, success, thief_trail]
+        coin_change: 5
+    - name: Claim the bounty on the thief
+      repeat: once
+      enabled_if: {npc_removed: Thief}
+      outcomes:
+      - desc: The captain counts out the bounty in front of the whole market. "Rid of them at last. The watch owes you one."
+        tags: [social, success, thief_gone]
+        coin_change: 12
+        change_variables: {reputation: 1}
+  - name: Thief's Lookout
+    unique: false
+    # Hostile: once you hunt the thief, their lookout comes for you (once a story).
+    enabled_if:
+      all:
+      - {thief_caught: false}
+      - {not: {npc_removed: Thief}}
+      - any:
+        - {action_done: Take the bounty on the market thief}
+        - {action_done: Ask about the market thief}
+        - {action_done: Report the market thief}
+    encounter_event: lookout_ambush
+    associated_tags: [market, alley, stealth, threat]
+    known_locations: [Market, Alley]
+    goals: [Warn the thief, Earn a cut]
+    descriptions:
+    - A boy with a cudgel and an old man's eyes, who never looks at the stalls, only at you.
+    actions: []  # the confrontation lives in events.yaml (lookout_ambush)
+  - name: Smuggler
+    unique: true
+    starts_conversation: true   # a new prisoner next door: he calls you over to the bars
+    article: the
+    # A prisoner in the Dungeon: freed (a bribe, a lock, a fight), he leads the way toward your quest.
+    associated_tags: [prisoner, prison, smuggling, tunnels, underground]
+    known_locations: [Dungeon, Sewers, Vault, Market]
+    known_objects: [Fence's Ledger]
+    goals:
+    - goal: Get out of this cell
+      tags: [smuggler_freed]
+      needed: 1
+      reward: lead
+    - Settle the score with the fence
+    descriptions:
+    - A gaunt man with tar-black fingernails, who maps the city by the sound of water under it.
+    - He taps the wall in a rhythm only tunnel-diggers know.
+    dialogue:
+    - enabled_if: {fence_exposed: true}
+      text: '"The fence? I sold to him for years. His ledger is in the Sewers. Get me out and I will take you."'
+    - text: '"Get me out of here, and I know a way under every wall in this city: the Vault, the market, the fence''s den."'
+    actions:
+    - name: Bribe the jailer to open both cells
+      required_coins: 10
+      skill_check: {stat: persuasion}
+      outcomes:
+      - desc: 'The jailer counts your coins twice, then turns his key in two locks. The smuggler grins: "This way. I know where you need to go."'
+        on_check: pass
+        tags: [escape, social, success, smuggler_freed]
+        change_variables: {reputation: -1}
+        lead_to_known: true
+      - desc: The jailer pockets the coins and turns his back. "Bribing a jailer? That is another week for you."
+        on_check: fail
+        tags: [guards, failure]
+    - name: Pick the lock of his cell
+      skill_check: {stat: stealth}
+      outcomes:
+      - desc: A bent nail, three clicks, and the smuggler is beside you, pointing at a loose drain. "After me."
+        on_check: pass
+        tags: [escape, stealth, success, smuggler_freed]
+        lead_to_known: true
+      - desc: The nail snaps in the lock; the jailer's lantern swings your way.
+        on_check: fail
+        tags: [threat, failure]
+        health_change: -1
+    - name: Overpower the jailer
+      skill_check: {stat: attack}
+      outcomes:
+      - desc: One blow and the jailer drops his keys; the smuggler is out before they stop ringing. "This way, quick!"
+        on_check: pass
+        tags: [escape, combat, success, smuggler_freed]
+        change_variables: {reputation: -1}
+        lead_to_known: true
+      - desc: The jailer is bigger than he looked; he beats you back against the bars.
+        on_check: fail
+        tags: [combat, threat, failure]
+        health_change: -3
+  - name: Fence
+    unique: true
+    article: the
+    associated_tags: [underground, smuggling, foul, labyrinthine, threat]
+    known_locations: [Sewers]
+    known_objects: [Fence's Ledger]
+    goals: [Keep the ledger hidden, Buy cheap and sell dear]
+    descriptions:
+    - A soft-voiced dealer on a throne of stolen crates, guarded by a man the size of a door.
+    - The fence weighs every visitor like a purse.
+    dialogue:
+    - enabled_if: {fence_exposed: true}
+      text: '"So the little thief talked. Then you know what my ledger is worth, and what it will cost you."'
+    - text: '"Buying or selling? If neither, the tunnels are long and nobody counts the bodies."'
+    actions:
+    - name: Demand the fence's ledger
+      repeat: once
+      enabled_if: {fence_exposed: true}   # the ledger exists once the thief has named its keeper
+      triggers_event: fence_showdown
+      outcomes:
+      - desc: The fence sighs and snaps his fingers; his bodyguard steps out of the dark.
+        tags: [threat, confrontation]
+  - name: Pit Champion
+    unique: true
+    starts_conversation: true   # comes up to the player the first time they meet
+    article: the
+    associated_tags: [noisy, brawl, fight, champion, information]
+    known_locations: [Tavern]
+    goals: [Find a worthy opponent, Keep the title]
+    descriptions:
+    - A mountain of a woman with knuckles like walnuts, undefeated in the Tavern's back room.
+    - The champion cracks her neck and grins at everyone who walks in.
+    dialogue:
+    - enabled_if: {pit_champion: true}
+      text: '"You again. The back room still talks about the night you beat me."'
+    - enabled_if: {outcome_tag: brawl_won}
+      text: '"I saw that. Not bad. Now try someone who hits back."'
+    - text: '"Win a brawl in the back room first. Then we talk."'
+    actions:
+    - name: Ask for a bout in the back room
+      triggers_event: tavern_brawl
+      outcomes:
+      - desc: The champion jerks a thumb at the back room. "Show me in there first."
+        tags: [combat, brawl]
+    - name: Challenge the champion
+      enabled_if: {all: [{outcome_tag: brawl_won}, {pit_champion: false}, {not: {outcome_tag: champion_beaten}}]}
+      triggers_event: champion_bout
+      outcomes:
+      - desc: The crowd clears a ring and starts taking bets.
+        tags: [combat, confrontation]

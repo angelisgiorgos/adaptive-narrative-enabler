@@ -53,7 +53,7 @@ world_definition:
       - name: Fight the thief
         outcomes:
         - desc: A short scuffle ends with the thief fleeing empty-handed, leaving a purse behind.
-          tags: [combat, success]
+          tags: [combat, success, thief_gone]
           coin_change: 10
           remove_npc: true
           set_variables: {thief_caught: true}     # the thief stays gone in later playthroughs
@@ -79,6 +79,19 @@ world_definition:
           variants:
           - "The thief twists free again, quicker this time, and blows you a kiss from the crowd."
           - "Gone again: only a torn strip of the thief's cloak is left in your hand."
+          on_check: fail
+          tags: [social, failure]
+      - name: Hand the thief over to the watch
+        enabled_if: {action_done: Take the bounty on the market thief}   # with the captain's warrant
+        skill_check: {stat: persuasion}
+        outcomes:
+        - desc: You wave the captain's warrant; two guards march the thief off in irons, the market cheering.
+          on_check: pass
+          tags: [social, success, thief_gone]
+          remove_npc: true
+          set_variables: {thief_caught: true}
+          change_variables: {reputation: 1}
+        - desc: The guards squint at the warrant, and the thief is gone while they argue over the seal.
           on_check: fail
           tags: [social, failure]
       - name: Steal from the thief
@@ -191,3 +204,161 @@ world_definition:
         - desc: The forgery satisfies the thief, who reveals the ghostline entrance.
           tags: [stealth, social, success]
           reveal_location: Ghostline Station
+    lookout_ambush:
+      title: The thief's lookout
+      repeat: once
+      tags: [threat, ambush, market]
+      descriptions:
+      - A boy with a cudgel and an old man's eyes blocks your way. "You ask too many questions about my friend."
+      - Someone shoves you hard into a stall. "Stop looking for the patched cloak, or you will not see anything again."
+      actions:
+      - name: Fight the lookout
+        skill_check: {stat: attack}
+        outcomes:
+        - desc: The lookout goes down hard; in his pocket, a chalk map of the market with the spice stalls circled.
+          on_check: pass
+          tags: [combat, success, setup_clue]
+          remove_npc: true
+        - desc: He is quicker than he looks; a cudgel to the ribs, and he runs to warn the thief.
+          on_check: fail
+          tags: [combat, threat, failure]
+          health_change: -2
+          remove_npc: true
+      - name: Pay him to sell out the thief
+        required_coins: 5
+        skill_check: {stat: persuasion}
+        outcomes:
+        - desc: Five coins and a promise of no questions; he tells you the thief works the spice stalls at dusk.
+          on_check: pass
+          tags: [social, success, setup_clue]
+          remove_npc: true
+        - desc: He bites the coin, pockets it, and whistles; the crowd closes around you.
+          on_check: fail
+          tags: [threat, failure]
+          health_change: -1
+          remove_npc: true
+      - name: Slip away into the crowd
+        skill_check: {stat: stealth}
+        outcomes:
+        - desc: You duck under an awning and he loses you, cursing.
+          on_check: pass
+          tags: [stealth, success]
+          remove_npc: true
+        - desc: He catches your sleeve; the cudgel finds your shoulder before you break free.
+          on_check: fail
+          tags: [threat, failure]
+          health_change: -1
+          remove_npc: true
+    fence_showdown:
+      title: The fence's bodyguard
+      repeat: once
+      tags: [threat, underground, confrontation]
+      descriptions:
+      - The bodyguard cracks his knuckles. The fence does not look up from his ledger. "Make it quick."
+      actions:
+      - name: Fight the bodyguard
+        skill_check: {stat: attack, modifier: -10}   # a big man in a narrow tunnel
+        outcomes:
+        - desc: The bodyguard topples into the water; the fence slides his ledger across the crates without a word.
+          on_check: pass
+          tags: [combat, success, payoff_clue]
+          reveal_object: "Fence's Ledger"
+        - desc: The bodyguard throws you into the sewer channel; you crawl out half-drowned.
+          on_check: fail
+          tags: [combat, threat, failure]
+          health_change: -3
+      - name: Name the thief who sold him out
+        enabled_if: {fence_exposed: true}
+        skill_check: {stat: persuasion}
+        outcomes:
+        - desc: At the thief's name the fence goes pale; he would rather lose a ledger than his customers.
+          on_check: pass
+          tags: [social, success, payoff_clue]
+          reveal_object: "Fence's Ledger"
+        - desc: '"The thief lies for a living," the fence smiles, and the bodyguard shows you out.'
+          on_check: fail
+          tags: [social, failure]
+          return_to_previous: true
+      - name: Buy the ledger
+        required_coins: 15
+        outcomes:
+        - desc: Fifteen coins later, the ledger is yours. The fence is already counting.
+          tags: [neutral, success]
+          reveal_object: "Fence's Ledger"
+    tavern_brawl:
+      title: A brawl in the back room
+      cooldown: 3
+      max_occurrences: 4
+      tags: [combat, brawl, social]
+      descriptions:
+      - Tables are pushed back; a sailor with one ear wants to know if you can take a punch.
+      - The back room roars as someone shoves you into the ring.
+      actions:
+      - name: Trade blows
+        skill_check: {stat: attack}
+        outcomes:
+        - desc: A clean right hook and your opponent sits down hard; the room pays up.
+          on_check: pass
+          tags: [combat, success, brawl_won]
+          coin_change: 6
+        - desc: You eat a fist and the floorboards; someone pours beer on you to wake you up.
+          on_check: fail
+          tags: [combat, threat, failure]
+          health_change: -2
+      - name: Fight dirty
+        skill_check: {stat: stealth}
+        outcomes:
+        - desc: A chair leg where nobody was looking; you win, and nobody likes you for it.
+          on_check: pass
+          tags: [combat, stealth, success, brawl_won]
+          coin_change: 8
+          change_variables: {reputation: -1}
+        - desc: Caught with the chair leg; the whole room joins in against you.
+          on_check: fail
+          tags: [combat, threat, failure]
+          health_change: -2
+      - name: Bow out and buy a round
+        outcomes:
+        - desc: You buy the room a round instead; the sailor clinks your mug. "Next time."
+          tags: [social, neutral]
+          coin_change: -2
+    champion_bout:
+      title: The champion's bout
+      max_occurrences: 2   # a beaten challenger gets one rematch...
+      cooldown: 5          # ...once the bruises have had time
+      tags: [combat, brawl, champion]
+      descriptions:
+      - The champion rolls her shoulders. The room goes quiet enough to hear the bets change hands.
+      actions:
+      - name: Stand toe to toe
+        skill_check: {stat: attack, modifier: -10}   # she has never lost
+        outcomes:
+        - desc: Blow for blow until her knees give; the back room has a new champion.
+          on_check: pass
+          tags: [combat, success, champion_beaten]
+          coin_change: 20
+          change_stats: {attack: 5}
+          set_variables: {pit_champion: true}
+        - desc: She is everything they said; you wake up on a table with your purse lighter.
+          on_check: fail
+          tags: [combat, threat, failure]
+          health_change: -3
+      - name: Wear her down
+        skill_check: {stat: defence}
+        outcomes:
+        - desc: You take everything she throws until she has nothing left to throw; one push, and she falls.
+          on_check: pass
+          tags: [combat, success, champion_beaten]
+          coin_change: 15
+          change_stats: {defence: 5}
+          set_variables: {pit_champion: true}
+        - desc: Your guard breaks before her arms tire; the crowd groans and pays the other side.
+          on_check: fail
+          tags: [combat, threat, failure]
+          health_change: -2
+      - name: Throw the fight for a cut
+        outcomes:
+        - desc: You go down in the third round, as agreed; the bookmaker slips you twelve coins and a wink.
+          tags: [deception, thrown_fight]   # not a failure: the bout is lost on purpose
+          coin_change: 12
+          change_variables: {reputation: -1}
