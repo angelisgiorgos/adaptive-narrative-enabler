@@ -55,17 +55,20 @@ def spearman(a, b):
 
 
 def play_stories(count, first_seed=0, genome=None):
-    """``count`` finished stories (seeds first_seed..), by ``genome`` or random storytellers."""
+    """``count`` finished stories (seeds first_seed..), by ``genome`` or random storytellers,
+    played as in training: a simulated player takes the player's turns (evolution.player)."""
     import main as engine
+    from core_engine import players
+    from core_engine.evolution import evolution_settings
     from core_engine.game_state import GameState
     from core_engine.genome import Genome
 
+    settings = evolution_settings()
     stories = []
     for seed in range(first_seed, first_seed + count):
         teller = genome or Genome(rng=random.Random(seed))
         state = GameState(engine.build_world(teller), teller, rng=random.Random(seed))
-        while not state.ended and state.step():
-            pass
+        players.play(state, 10 ** 6, players.for_settings(seed, settings))
         stories.append(state)
     return stories
 

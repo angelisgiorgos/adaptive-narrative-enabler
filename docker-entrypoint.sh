@@ -2,11 +2,13 @@
 # Docker copies the image's config into a named volume only when the volume is
 # first created, so config files added in later releases (e.g. events.yaml,
 # missions.yaml) would never reach an existing volume. Seed any missing default
-# file on every start; existing files, including edited ones, are never replaced.
-# Then add, once, each default entry (place, NPC, item, event, mission) that the
-# volume's files lack: a release's new entries refer to each other (a new mission
-# names its new NPC), and an older file next to a newer one would otherwise make a
-# world that cannot be played. An entry deleted afterwards stays deleted.
+# file on every start; existing files are never replaced whole. Then bring the
+# volume up to date (utils/config_loader.upgrade_config_dir): what it lacks is
+# added (a default entry once: one deleted afterwards stays deleted), and entries
+# and settings nobody edited (a value an earlier release had) take this release's
+# default; edited ones are kept, unless ANE_CONFIG_TAKE_DEFAULTS names them
+# (comma-separated names or setting paths, or `all`). Changed files are backed up
+# in .ane-backups/ first.
 set -e
 
 defaults="${ANE_CONFIG_DEFAULTS:-/app/config.defaults}"
@@ -24,8 +26,8 @@ if [ -d "$defaults" ] && [ -d "$target" ]; then
             fi
         fi
     done
-    if ! python -m utils.config_loader upgrade "$defaults" "$target"; then
-        echo "[config] Could not add the new default entries to $target" >&2
+    if ! python -m utils.config_loader upgrade "$defaults" "$target" --take-defaults "${ANE_CONFIG_TAKE_DEFAULTS:-}"; then
+        echo "[config] Could not bring $target up to date with this release's defaults" >&2
     fi
 fi
 

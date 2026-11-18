@@ -245,6 +245,93 @@ class GenomeDrivenChoiceTests(unittest.TestCase):
         self.assertAlmostEqual(genome.novelty_bias, (low + high) / 2)
 
 
+class ConversationTests(unittest.TestCase):
+    """The people present are approached one at a time (conversations): on the scene each is one
+    choice; in a conversation, their choices and a way to leave. Approaching and leaving take no
+    turn; a decisive choice ends the conversation."""
+
+    def setUp(self):
+        patcher = patch.dict(config._config.setdefault("conversations", {}), {
+            "enabled": True, "decisive_tags": ["combat", "threat", "guards", "escape"], "max_free_steps": 6})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _offered(state):
+        return {option.name: option for option in state.player_options(limit=8)}
+
+    def _approach(self, state, person="Guard"):
+        return next(o for o in state.player_options(limit=8) if o.source == "approach" and o.character_name == person)
+
+    def test_a_person_is_approached_and_left_without_a_turn(self):
+        state = _state()
+        offered = self._offered(state)
+        self.assertFalse([name for name in offered if name.startswith("(Guard)")])  # behind "Approach"
+        self.assertIn("Wait at the Gate", offered)
+        state.take_option(self._approach(state))
+        self.assertEqual((state.conversation(), state.actions_taken), ("Guard", 0))  # no turn
+        talk = list(self._offered(state).values())
+        self.assertTrue(all(o.character_name == "Guard" for o in talk))
+        self.assertEqual(talk[-1].source, "leave")                                  # leaving is always a choice
+        self.assertIn("(Guard) Bribe with wine", [o.name for o in talk])
+        state.take_option(self._offered(state)["(Guard) Ask the time"])          # settles nothing: it goes on
+        self.assertEqual((state.conversation(), state.actions_taken), ("Guard", 1))
+        self.assertNotIn("(Guard) Ask the time", self._offered(state))
+        state.take_option(next(o for o in state.player_options() if o.source == "leave"))
+        self.assertEqual((state.conversation(), state.actions_taken), (None, 1))
+        self.assertNotIn("Approach", " ".join(self._offered(state)))  # not again before something happens
+        state.take_option(self._offered(state)["Wait at the Gate"])
+        self.assertTrue(any(o.source == "approach" for o in state.player_options(limit=8)))
+        self.assertTrue(any(line.startswith("You approach") for line in state.history))
+
+    def test_a_decisive_choice_ends_the_conversation(self):
+        state = _state()
+        state.take_option(self._approach(state))
+        state.take_option(self._offered(state)["(Guard) Bribe with wine"])  # one of an exclusive choice
+        self.assertIsNone(state.conversation())
+        self.assertEqual(state.actions_taken, 1)
+
+    def test_someone_may_start_the_conversation(self):
+        world = _world(unique=True)
+        world.characters[0].starts_conversation = True
+        state = GameState(world, _genome(), start="Gate", rng=random.Random(1))
+        state.npc_homes["Guard"] = "Gate"
+        state.player_options()
+        self.assertEqual(state.conversation(), "Guard")
+        self.assertTrue(any("comes up to you" in line for line in state.history))
+        state.take_option(next(o for o in state.player_options() if o.source == "leave"))
+        state.take_option(self._offered(state)["Wait at the Gate"])
+        state.player_options()
+        self.assertIsNone(state.conversation())  # only the first time they meet
+
+    def test_conversations_off_and_a_story_that_always_moves_on(self):
+        with patch.dict(config._config["conversations"], {"enabled": False}):
+            self.assertIn("(Guard) Salute", self._offered(_state()))  # every choice on the scene, as before
+        with patch.dict(config._config["conversations"], {"max_free_steps": 2}):
+            state = _state()
+            state.take_option(self._approach(state))
+            state.take_option(next(o for o in state.player_options() if o.source == "leave"))
+            self.assertIn("(Guard) Salute", self._offered(state))  # two free steps: everything on the scene
+        # The storyteller's own list is never behind conversations.
+        self.assertIn("(Guard) Salute", _names(_state()))
+
+    def test_simulated_players_and_the_runtime_take_conversations(self):
+        from core_engine import players
+
+        state = _state()
+        players.play(state, 12, players.Explorer(random.Random(0)))
+        self.assertEqual(state.actions_taken, 12)                      # 12 turns, whatever was approached
+        self.assertTrue(any(line.startswith("You approach") for line in state.history))
+
+        from narrative_runtime.engine import Game
+
+        game = Game(None, _state())
+        approach = next(name for name in game.actions() if name.startswith("Approach"))
+        view = game.choose(approach)
+        self.assertEqual((view["talking_to"], view["turn_number"]), ("Guard", 0))
+        self.assertEqual(view["actions"][-1], "Leave the conversation")
+
+
 class QuestionAndGuideTests(unittest.TestCase):
     """Choices that make sense: a question is asked once, and a guide leads toward the quest."""
 

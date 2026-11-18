@@ -1,0 +1,3119 @@
+{
+"files": {
+"events.yaml": {
+"world_definition": [
+"07755e9a0876548b",
+"1fee05f2994aa239",
+"22991bf1411d530a",
+"4d561dd6998c8aea",
+"81f85ab90a061210",
+"a860bf3a4af8e19c",
+"d8aa511c01fe73a4"
+],
+"world_definition.events[bandit_ambush]": [
+"707e487ad5ed4d49",
+"af8e3dcbc27a088b",
+"d73a8588c3f76ea1",
+"db670ad94d4907d8",
+"e906dce275cbbe93"
+],
+"world_definition.events[champion_bout]": [
+"9ab6ac57dc5b7439"
+],
+"world_definition.events[confront_thief]": [
+"19e043b76f34b675",
+"74dadcee47dbc049",
+"7f02938454b0f401",
+"89d26d69fee5afbb",
+"b9a29186f9fafb55"
+],
+"world_definition.events[fence_showdown]": [
+"a853436a14ae24af"
+],
+"world_definition.events[guards_alerted]": [
+"0f5cef7c4ecd1d7f",
+"795b59d717c437f5"
+],
+"world_definition.events[lookout_ambush]": [
+"823ce3ae8caf3f1e"
+],
+"world_definition.events[memory_theft]": [
+"184fde5951a4d847",
+"d5c789df7813da28"
+],
+"world_definition.events[tavern_brawl]": [
+"3a3508ac4fe582bc"
+]
+},
+"hyperparameters.yaml": {
+"action_rules": [
+"cfe96720c20cec78",
+"da1b613fbd93b1fe"
+],
+"action_rules.default_repeat": [
+"5e1fb783ff5cdd03"
+],
+"action_rules.default_repeat.event": [
+"17ce2e5ae2b098e1"
+],
+"action_rules.default_repeat.item": [
+"6688889cb7c04bc8"
+],
+"action_rules.default_repeat.location": [
+"c8882248fcf4dc33"
+],
+"action_rules.default_repeat.npc": [
+"c8882248fcf4dc33"
+],
+"action_rules.questions_once": [
+"b5bea41b6c623f7c"
+],
+"action_selection": [
+"176767b2e9d85efe",
+"317ee0431c9fae56",
+"68b8949397ddc206",
+"7c0cf23fd14304b3"
+],
+"action_selection.base_weight": [
+"7932a07a8cbc0885"
+],
+"action_selection.consistency_penalty_weight": [
+"d0ff5974b6aa52cf"
+],
+"action_selection.discovery_weight": [
+"9c193c604ad7de94"
+],
+"action_selection.event_trigger_weight": [
+"9f29a130438b8117"
+],
+"action_selection.heading_turns": [
+"2c624232cdd22177"
+],
+"action_selection.heading_weight": [
+"9f29a130438b8117"
+],
+"action_selection.location_penalties": [
+"aa42bc8b3140ce29"
+],
+"action_selection.location_penalties.Dungeon": [
+"bea7fed4d0fee54c"
+],
+"action_selection.location_penalties.Dungeon.action_terms": [
+"c118c99964168b1d"
+],
+"action_selection.location_penalties.Dungeon.action_terms.royal halls": [
+"77c52f3feed5acdd"
+],
+"action_selection.location_penalties.Dungeon.destination_tags": [
+"991eff301102aa8c"
+],
+"action_selection.location_penalties.Dungeon.destination_tags.grand": [
+"fbd04e1aae9ce0b1"
+],
+"action_selection.location_penalties.Dungeon.destination_tags.luxury": [
+"8ab31b5afaea5611"
+],
+"action_selection.location_penalties.Dungeon.destination_tags.palace": [
+"f1e42019aecc858f"
+],
+"action_selection.mission_goal_weight": [
+"8ab31b5afaea5611"
+],
+"action_selection.movement_weight": [
+"9f29a130438b8117"
+],
+"action_selection.recovery_weight": [
+"004a9e0878ff83e6"
+],
+"action_selection.repetition_penalty": [
+"d0ff5974b6aa52cf"
+],
+"action_selection.setup_weight": [
+"9f0e787f95cbd2f6"
+],
+"action_selection.skill_fit_weight": [
+"d84bdb34d4eeef40"
+],
+"action_selection.spawn_weight": [
+"9f29a130438b8117"
+],
+"action_selection.stay_penalty_power": [
+"914204c25f3f144d"
+],
+"action_selection.threat_weight": [
+"d0ff5974b6aa52cf"
+],
+"augmentation": [
+"7368ef0ed658da41"
+],
+"augmentation.enabled": [
+"b5bea41b6c623f7c"
+],
+"augmentation.min_items": [
+"f5ca38f748a1d6ea"
+],
+"augmentation.min_locations": [
+"6b51d431df5d7f14"
+],
+"augmentation.min_npcs": [
+"e629fa6598d73276"
+],
+"augmentation.min_outcomes": [
+"39fa9ec190eee7b6"
+],
+"augmentation.output_dir": [
+"f6011f91dffe2e8f"
+],
+"augmentation.save_to_source": [
+"b5bea41b6c623f7c"
+],
+"authored_events": [
+"63f5391cf22f92c2"
+],
+"authored_events.enabled": [
+"b5bea41b6c623f7c"
+],
+"authored_events.fallback_action": [
+"cb2a92c6ef994d99"
+],
+"authored_events.fallback_description": [
+"51de7157eaafbcb7"
+],
+"climax": [
+"7c541a584e3f5f09"
+],
+"climax.ally_choice": [
+"cc2bc00fae298292"
+],
+"climax.ally_choice.bonus": [
+"f5ca38f748a1d6ea"
+],
+"climax.ally_choice.desc": [
+"0121aa2c17774cc1"
+],
+"climax.ally_choice.name": [
+"cd8a3c5fcaa1c44e"
+],
+"climax.ally_choice.stat": [
+"32be0f10252d0a84"
+],
+"climax.ally_choice.tags": [
+"429e6b3dd794df07"
+],
+"climax.check_modifier": [
+"5feceb66ffc86f38"
+],
+"climax.choices": [
+"0354e8c10dd0a6e6"
+],
+"climax.description": [
+"e93074c8c03dcb78"
+],
+"climax.description_free": [
+"aac273680526d731"
+],
+"climax.enabled": [
+"b5bea41b6c623f7c"
+],
+"climax.failure_damage": [
+"d4735e3a265e16ee"
+],
+"climax.failure_desc": [
+"8383d87e9bad9a0f"
+],
+"climax.failure_desc_free": [
+"df71fb9a60f59e47"
+],
+"climax.max_attempts": [
+"d4735e3a265e16ee"
+],
+"climax.min_turns": [
+"e7f6c011776e8db7"
+],
+"climax.price_health": [
+"d4735e3a265e16ee"
+],
+"climax.retry_turns": [
+"6b86b273ff34fce1"
+],
+"climax.revelations": [
+"d4735e3a265e16ee"
+],
+"climax.title": [
+"dc1d21e19014522b"
+],
+"combat_resolution": [
+"440502305bfb869c"
+],
+"combat_resolution.attack_damage_mitigation": [
+"7932a07a8cbc0885"
+],
+"combat_resolution.attack_failure_weight": [
+"bb1a364b44db6381"
+],
+"combat_resolution.attack_lose_weight": [
+"a976726b1d1bda3e"
+],
+"combat_resolution.attack_outcome_weight": [
+"b4af4e0d40391d3a"
+],
+"combat_resolution.attack_success_weight": [
+"36819111cffb9e1e"
+],
+"combat_resolution.attack_tags": [
+"11b59be230afea1b"
+],
+"combat_resolution.attack_tags.combat": [
+"d2cbad71ff333de6"
+],
+"combat_resolution.attack_tags.dagger": [
+"ce5d3aa79ae56155"
+],
+"combat_resolution.attack_tags.fight": [
+"ce5d3aa79ae56155"
+],
+"combat_resolution.attack_tags.sword": [
+"d0ff5974b6aa52cf"
+],
+"combat_resolution.attack_tags.weapon": [
+"d0ff5974b6aa52cf"
+],
+"combat_resolution.defense_damage_mitigation": [
+"d2cbad71ff333de6"
+],
+"combat_resolution.defense_failure_weight": [
+"36819111cffb9e1e"
+],
+"combat_resolution.defense_lose_weight": [
+"d2cbad71ff333de6"
+],
+"combat_resolution.defense_outcome_weight": [
+"a30a043314fa8929"
+],
+"combat_resolution.defense_success_weight": [
+"a888fe9e2469182b"
+],
+"combat_resolution.defense_tags": [
+"6da52e1b839abb83"
+],
+"combat_resolution.defense_tags.armor": [
+"d0ff5974b6aa52cf"
+],
+"combat_resolution.defense_tags.defense": [
+"d0ff5974b6aa52cf"
+],
+"combat_resolution.defense_tags.guarded": [
+"f3e360d89952f40d"
+],
+"combat_resolution.defense_tags.protection": [
+"1e9d7c27c8bbc8dd"
+],
+"combat_resolution.defense_tags.shield": [
+"d0ff5974b6aa52cf"
+],
+"combat_resolution.failure_defense_mitigation": [
+"d2cbad71ff333de6"
+],
+"combat_resolution.power_failure_weight": [
+"a888fe9e2469182b"
+],
+"combat_resolution.power_lose_weight": [
+"a30a043314fa8929"
+],
+"combat_resolution.power_outcome_weight": [
+"f3e360d89952f40d"
+],
+"combat_resolution.power_success_weight": [
+"0602d7c813c1f6e7"
+],
+"config_editor": [
+"1a0959048004f8ab"
+],
+"config_editor.enabled": [
+"b5bea41b6c623f7c"
+],
+"config_editor.guided_mode": [
+"b5bea41b6c623f7c"
+],
+"config_editor.show_json_path_examples": [
+"b5bea41b6c623f7c"
+],
+"config_editor.show_story_browser_on_startup": [
+"b5bea41b6c623f7c"
+],
+"consequences": [
+"618ee1c37b9c8c54"
+],
+"consequences.delay": [
+"d4735e3a265e16ee"
+],
+"consequences.enabled": [
+"b5bea41b6c623f7c"
+],
+"consequences.kinds": [
+"ce3062d646de3ae0"
+],
+"consequences.kinds.ally": [
+"8b6eb144b2d7db8d"
+],
+"consequences.kinds.ally.texts": [
+"7e5c28f73310ed1d"
+],
+"consequences.kinds.defeated": [
+"9518d5cd192aee11"
+],
+"consequences.kinds.defeated.coins": [
+"4e07408562bedb8b"
+],
+"consequences.kinds.defeated.texts": [
+"7df4e67eb3504ea7"
+],
+"consequences.overdue": [
+"4e07408562bedb8b"
+],
+"director": [
+"05c80e3767755051",
+"13131e030a730146",
+"ba4dcd4d4f8de608",
+"dccd480232db0edc",
+"f0aba16ec8fdb5c0"
+],
+"director.another_way": [
+"b4af4e0d40391d3a"
+],
+"director.barred_turns": [
+"ef2d127de37b942b"
+],
+"director.boredom_event_pressure": [
+"7932a07a8cbc0885"
+],
+"director.boredom_turns": [
+"4e07408562bedb8b"
+],
+"director.boredom_weight": [
+"9f29a130438b8117"
+],
+"director.close_threads": [
+"b5bea41b6c623f7c"
+],
+"director.damage_escalation": [
+"b4af4e0d40391d3a"
+],
+"director.damage_scale": [
+"004a9e0878ff83e6"
+],
+"director.dead_end_penalty": [
+"d84bdb34d4eeef40"
+],
+"director.enabled": [
+"b5bea41b6c623f7c"
+],
+"director.escalation_start": [
+"221764976efe0413"
+],
+"director.escape_bonus": [
+"e629fa6598d73276"
+],
+"director.event_pressure": [
+"b4af4e0d40391d3a"
+],
+"director.explore_weight": [
+"d0ff5974b6aa52cf"
+],
+"director.fail_forward": [
+"973b372a514f91db"
+],
+"director.failure_refund": [
+"d2cbad71ff333de6"
+],
+"director.finale_actions": [
+"e629fa6598d73276"
+],
+"director.finale_goal_pull": [
+"d0ff5974b6aa52cf"
+],
+"director.loop_window": [
+"e7f6c011776e8db7"
+],
+"director.min_options": [
+"d4735e3a265e16ee"
+],
+"director.payoff_delay": [
+"e7f6c011776e8db7"
+],
+"director.payoff_due_weight": [
+"d84bdb34d4eeef40"
+],
+"director.ping_pong_penalty": [
+"b8736b9999090496"
+],
+"director.release_after": [
+"ef2d127de37b942b"
+],
+"director.retry_bonus": [
+"e629fa6598d73276"
+],
+"director.retry_cooldown": [
+"d4735e3a265e16ee"
+],
+"director.retry_cooldown_penalty": [
+"a416ea84421fa7e1"
+],
+"director.surprise": [
+"7932a07a8cbc0885"
+],
+"director.surprise_margin": [
+"d0ff5974b6aa52cf"
+],
+"director.surprise_top_k": [
+"4e07408562bedb8b"
+],
+"director.threat_weight": [
+"1e9d7c27c8bbc8dd"
+],
+"discovery_nodes": [
+"d9567a575519aff6"
+],
+"discovery_nodes.item_base": [
+"44896b09365746b5"
+],
+"discovery_nodes.item_discovery_weight": [
+"221764976efe0413"
+],
+"discovery_nodes.location_base": [
+"221764976efe0413"
+],
+"discovery_nodes.location_voyage_weight": [
+"f3e360d89952f40d"
+],
+"discovery_nodes.npc_base": [
+"44896b09365746b5"
+],
+"discovery_nodes.npc_social_weight": [
+"221764976efe0413"
+],
+"editor_suggester": [
+"fe2d94193b67b0e4"
+],
+"editor_suggester.enabled": [
+"b5bea41b6c623f7c"
+],
+"editor_suggester.max_new_tokens": [
+"51e8ea280b44e169"
+],
+"editor_suggester.temperature": [
+"973b372a514f91db"
+],
+"evolution": [
+"1d1c90b6b2079a6e",
+"33822f8e96831ec1",
+"462f46c68f163232",
+"7814196313568ef6",
+"b1e4634f51eb9e5d",
+"c03c323b1f8fb5a9",
+"dd8527d254fdbbd1"
+],
+"evolution.alternatives_weight": [
+"d59eced1ded07f84"
+],
+"evolution.benchmark_top_k": [
+"4e07408562bedb8b"
+],
+"evolution.blend_crossover_chance": [
+"a2cffa866c48b997"
+],
+"evolution.consistency_weight": [
+"a30a043314fa8929"
+],
+"evolution.cover_situations": [
+"b5bea41b6c623f7c"
+],
+"evolution.crossover_rate": [
+"ce5d3aa79ae56155"
+],
+"evolution.early_stop_generations": [
+"5feceb66ffc86f38"
+],
+"evolution.elitism_rate": [
+"36819111cffb9e1e"
+],
+"evolution.episodes_per_genome": [
+"e7f6c011776e8db7"
+],
+"evolution.evaluation_threads": [
+"2c624232cdd22177",
+"634635a2166efa2a"
+],
+"evolution.full_length_stories": [
+"b5bea41b6c623f7c"
+],
+"evolution.generations": [
+"27badc983df1780b"
+],
+"evolution.hall_of_fame_size": [
+"6b51d431df5d7f14"
+],
+"evolution.judge_top_k": [
+"d4735e3a265e16ee"
+],
+"evolution.judge_weight": [
+"8aed642bf5118b9d"
+],
+"evolution.judge_workers": [
+"4b227777d4dd1fc6"
+],
+"evolution.max_evaluation_processes": [
+"b17ef6d19c7a5b1e"
+],
+"evolution.max_immigrant_rate": [
+"221764976efe0413"
+],
+"evolution.max_mutation_step": [
+"f3e360d89952f40d"
+],
+"evolution.max_steps": [
+"39fa9ec190eee7b6",
+"ad57366865126e55"
+],
+"evolution.min_diversity": [
+"36819111cffb9e1e"
+],
+"evolution.mutation_rate": [
+"dc08a4e8bbdd4019"
+],
+"evolution.mutation_step": [
+"358e553bf44a364c"
+],
+"evolution.parallel_backend": [
+"733b15bd493f4674"
+],
+"evolution.player": [
+"fe9e6dd659967294"
+],
+"evolution.player_mix": [
+"3e5537a39ad43114"
+],
+"evolution.player_mix.cautious": [
+"6b86b273ff34fce1"
+],
+"evolution.player_mix.explorer": [
+"6b86b273ff34fce1"
+],
+"evolution.player_mix.follower": [
+"d4735e3a265e16ee"
+],
+"evolution.player_mix.quester": [
+"d4735e3a265e16ee"
+],
+"evolution.player_mix.random": [
+"6b86b273ff34fce1"
+],
+"evolution.pop_size": [
+"26d228663f13a885"
+],
+"evolution.random_immigrant_rate": [
+"36819111cffb9e1e"
+],
+"evolution.score_aggregate": [
+"8084048c6ca17081"
+],
+"evolution.stagnation_generations": [
+"4e07408562bedb8b"
+],
+"evolution.stratify_episodes": [
+"b5bea41b6c623f7c"
+],
+"evolution.tournament_size": [
+"4e07408562bedb8b"
+],
+"evolution.validation_episodes": [
+"4a44dc15364204a8"
+],
+"evolution.warm_start": [
+"b5bea41b6c623f7c"
+],
+"fitness": [
+"02818b2aab0a68b4",
+"2b42fbfadc762782",
+"48b7b2314bdd9749",
+"b21bd628b8e5e5f1",
+"c29233aab20f0e81",
+"c4b3907dc55b915a",
+"cf8dbbcf8db57734"
+],
+"fitness.base": [
+"0fffde6826012300",
+"35aa5e59906d26a5",
+"9344d8a44c5c0eac",
+"c3cbb7940019912b",
+"f0fdd6b7eee67058"
+],
+"fitness.base.action_limit_penalty": [
+"624b60c58c9d8bfb"
+],
+"fitness.base.completion_bonus": [
+"4a44dc15364204a8"
+],
+"fitness.base.death_penalty": [
+"9f14025af0065b30"
+],
+"fitness.base.dungeon_penalty": [
+"4a44dc15364204a8"
+],
+"fitness.base.max_action_completion_bonus": [
+"2c624232cdd22177",
+"5feceb66ffc86f38"
+],
+"fitness.base.mission_win_bonus": [
+"39fa9ec190eee7b6",
+"48449a14a4ff7d79"
+],
+"fitness.base.mission_win_min_steps": [
+"b7a56873cd771f2c",
+"f5ca38f748a1d6ea"
+],
+"fitness.base.npc_goal_bonus": [
+"2c624232cdd22177"
+],
+"fitness.base.stage_bonus": [
+"e629fa6598d73276"
+],
+"fitness.base.stall_penalty": [
+"624b60c58c9d8bfb",
+"f5ca38f748a1d6ea"
+],
+"fitness.base.unfinished_penalty": [
+"f5ca38f748a1d6ea"
+],
+"fitness.base.zero_step_penalty": [
+"b96b303663277134"
+],
+"fitness.beats": [
+"8ede30db30ee6054"
+],
+"fitness.beats.another_way_bonus": [
+"d4735e3a265e16ee"
+],
+"fitness.beats.climax_bonus": [
+"e629fa6598d73276"
+],
+"fitness.beats.consequence_bonus": [
+"4e07408562bedb8b"
+],
+"fitness.beats.consequence_cap": [
+"4e07408562bedb8b"
+],
+"fitness.beats.dead_end_penalty": [
+"4b227777d4dd1fc6"
+],
+"fitness.beats.enabled": [
+"b5bea41b6c623f7c"
+],
+"fitness.beats.reveal_bonus": [
+"4e07408562bedb8b"
+],
+"fitness.beats.reveal_cap": [
+"4b227777d4dd1fc6"
+],
+"fitness.beats.triumph_bonus": [
+"4b227777d4dd1fc6"
+],
+"fitness.beats.triumph_cap": [
+"4e07408562bedb8b"
+],
+"fitness.character_interaction_bonus": [
+"ef2d127de37b942b"
+],
+"fitness.character_spawn_bonus": [
+"e629fa6598d73276"
+],
+"fitness.combat_success_bonus": [
+"6b51d431df5d7f14",
+"b7a56873cd771f2c"
+],
+"fitness.contrast_weight": [
+"4a44dc15364204a8",
+"ef2d127de37b942b"
+],
+"fitness.discovery": [
+"71c55f27a178f72c"
+],
+"fitness.discovery.character_bonus": [
+"4e07408562bedb8b"
+],
+"fitness.discovery.inventory_bonus": [
+"d4735e3a265e16ee"
+],
+"fitness.discovery.location_bonus": [
+"4b227777d4dd1fc6"
+],
+"fitness.dramatic_arc": [
+"05e7cf2fbb13d636"
+],
+"fitness.dramatic_arc.climax_bonus": [
+"ef2d127de37b942b"
+],
+"fitness.dramatic_arc.climax_tags": [
+"d55aa33fd1996289"
+],
+"fitness.dramatic_arc.intro_bonus": [
+"d4735e3a265e16ee"
+],
+"fitness.dramatic_arc.intro_end": [
+"a30a043314fa8929"
+],
+"fitness.dramatic_arc.intro_tags": [
+"74ec4e5b7c974059"
+],
+"fitness.dramatic_arc.middle_bonus": [
+"4e07408562bedb8b"
+],
+"fitness.dramatic_arc.middle_end": [
+"ce5d3aa79ae56155"
+],
+"fitness.dramatic_arc.middle_tags": [
+"f3502b305701c072"
+],
+"fitness.engagement": [
+"244eb5be9ecdcee3",
+"61c3221fa9124c24",
+"d61224b42a89b347"
+],
+"fitness.engagement.escalation_bonus": [
+"b7a56873cd771f2c",
+"d59eced1ded07f84"
+],
+"fitness.engagement.filler_penalty": [
+"39fa9ec190eee7b6",
+"48449a14a4ff7d79",
+"ad57366865126e55"
+],
+"fitness.engagement.loop_penalty": [
+"2c624232cdd22177",
+"4b227777d4dd1fc6",
+"e7f6c011776e8db7"
+],
+"fitness.engagement.loop_window": [
+"e7f6c011776e8db7"
+],
+"fitness.engagement.novelty_fade_penalty": [
+"1a6562590ef19d10",
+"ad57366865126e55",
+"f369cb89fc627e66"
+],
+"fitness.health_balance": [
+"a291c8adb4842721"
+],
+"fitness.health_balance.bonus": [
+"624b60c58c9d8bfb"
+],
+"fitness.health_balance.max": [
+"e7f6c011776e8db7"
+],
+"fitness.health_balance.min": [
+"d4735e3a265e16ee"
+],
+"fitness.health_balance.penalty_per_unit": [
+"4b227777d4dd1fc6"
+],
+"fitness.health_balance.target": [
+"4e07408562bedb8b"
+],
+"fitness.length_normalization": [
+"7fed5c5fdce5f039"
+],
+"fitness.length_normalization.enabled": [
+"b5bea41b6c623f7c"
+],
+"fitness.length_normalization.floor_steps": [
+"f5ca38f748a1d6ea"
+],
+"fitness.length_normalization.mode": [
+"c86a4166da05165d"
+],
+"fitness.length_normalization.terms": [
+"c963414db95d0d4f"
+],
+"fitness.max_location_visits": [
+"4e07408562bedb8b"
+],
+"fitness.npc_interaction_cap": [
+"4e07408562bedb8b"
+],
+"fitness.npc_repeat_weight": [
+"4a44dc15364204a8"
+],
+"fitness.npc_similarity_weight": [
+"f5ca38f748a1d6ea"
+],
+"fitness.objective_losses": [
+"476c3d9ee0496c92",
+"7718b6cdfd5ebd64"
+],
+"fitness.objective_losses.enabled": [
+"b5bea41b6c623f7c"
+],
+"fitness.objective_losses.named_transition_dependence": [
+"ecf2a3e473a466c4"
+],
+"fitness.objective_losses.named_transition_dependence.allowed_ratio": [
+"d2cbad71ff333de6"
+],
+"fitness.objective_losses.named_transition_dependence.weight": [
+"26c9a96ce053a14d"
+],
+"fitness.objective_losses.scenario_duplication": [
+"1de8580a095ec029",
+"5836782d26b38dbf"
+],
+"fitness.objective_losses.scenario_duplication.power": [
+"d84bdb34d4eeef40"
+],
+"fitness.objective_losses.scenario_duplication.weight": [
+"648e5bca018ffe4b",
+"f20032c43d0ea68c"
+],
+"fitness.objective_losses.tag_coverage": [
+"6213aed531eeddba"
+],
+"fitness.objective_losses.tag_coverage.target_ratio": [
+"b4af4e0d40391d3a"
+],
+"fitness.objective_losses.tag_coverage.weight": [
+"e15274dcfe2d0cb5"
+],
+"fitness.objective_losses.transition_quality": [
+"46ffffc49119cf7c"
+],
+"fitness.objective_losses.transition_quality.missing_penalty": [
+"a19a1584344c1f37"
+],
+"fitness.objective_losses.transition_quality.target_similarity": [
+"4942870d7312d707"
+],
+"fitness.objective_losses.transition_quality.weight": [
+"db58b6c40698d737"
+],
+"fitness.objective_losses.world_extension": [
+"fbbf53ac8a2f5233"
+],
+"fitness.objective_losses.world_extension.branching_weight": [
+"7b1bd53949b752d1"
+],
+"fitness.objective_losses.world_extension.discovery_weight": [
+"94e634ac63620eab"
+],
+"fitness.objective_losses.world_extension.target_branching": [
+"0814305f8cfb2f14"
+],
+"fitness.objective_losses.world_extension.target_discovery_ratio": [
+"bffb16d6fe1445f0"
+],
+"fitness.pacing": [
+"5f8350d7fbe1710f"
+],
+"fitness.pacing.early_win_penalty_per_step": [
+"d4735e3a265e16ee"
+],
+"fitness.path_variety": [
+"3a37fd05089a6d07"
+],
+"fitness.path_variety.repeat_penalty_power": [
+"d4735e3a265e16ee"
+],
+"fitness.path_variety.repeat_penalty_weight": [
+"4a44dc15364204a8"
+],
+"fitness.path_variety.revisit_penalty": [
+"d4735e3a265e16ee"
+],
+"fitness.path_variety.unique_location_bonus": [
+"e7f6c011776e8db7"
+],
+"fitness.payoff_match_score": [
+"4a44dc15364204a8"
+],
+"fitness.repetition": [
+"676f59eecaebfd5c"
+],
+"fitness.repetition.action_repeat_penalty": [
+"4e07408562bedb8b"
+],
+"fitness.repetition.backtrack_penalty": [
+"d4735e3a265e16ee"
+],
+"fitness.repetition.free_uses": [
+"d4735e3a265e16ee"
+],
+"fitness.rhythm": [
+"7b1dadb702adc25a"
+],
+"fitness.rhythm.calm_allowed": [
+"4e07408562bedb8b"
+],
+"fitness.rhythm.enabled": [
+"b5bea41b6c623f7c"
+],
+"fitness.rhythm.event_bonus": [
+"ef2d127de37b942b"
+],
+"fitness.rhythm.event_cap": [
+"4b227777d4dd1fc6"
+],
+"fitness.rhythm.exploration_bonus": [
+"d4735e3a265e16ee"
+],
+"fitness.rhythm.exploration_cap": [
+"2c624232cdd22177"
+],
+"fitness.rhythm.open_thread_penalty": [
+"2c624232cdd22177"
+],
+"fitness.rhythm.predictability_penalty": [
+"e7f6c011776e8db7"
+],
+"fitness.rhythm.repeated_failure_penalty": [
+"e7f6c011776e8db7"
+],
+"fitness.rhythm.variety_bonus": [
+"4e07408562bedb8b"
+],
+"fitness.rhythm.variety_cap": [
+"19581e27de7ced00"
+],
+"fitness.setup_payoff": [
+"268db7dcd1ed5c03"
+],
+"fitness.setup_payoff.clue_variants": [
+"4e07408562bedb8b"
+],
+"fitness.setup_payoff.early_setup_bonus": [
+"4a44dc15364204a8"
+],
+"fitness.setup_payoff.gap_step_bonus": [
+"d4735e3a265e16ee"
+],
+"fitness.setup_payoff.late_payoff_bonus": [
+"4a44dc15364204a8"
+],
+"fitness.setup_payoff.min_gap_fraction": [
+"5547bf1b31f89255"
+],
+"fitness.setup_payoff.pair_bonus": [
+"e629fa6598d73276"
+],
+"fitness.setup_payoff.short_gap_bonus": [
+"ef2d127de37b942b"
+],
+"fitness.setup_payoff.target_count": [
+"d4735e3a265e16ee"
+],
+"fitness.setup_payoff.target_count_bonus": [
+"d4735e3a265e16ee"
+],
+"fitness.setup_payoff.unmatched_payoff_penalty": [
+"4e07408562bedb8b"
+],
+"fitness.setup_payoff.unmatched_setup_penalty": [
+"4b227777d4dd1fc6"
+],
+"fitness.story_length": [
+"ae10bf6fc8209bc8"
+],
+"fitness.story_length.bonus": [
+"b7a56873cd771f2c"
+],
+"fitness.story_length.max": [
+"39fa9ec190eee7b6"
+],
+"fitness.story_length.min": [
+"f5ca38f748a1d6ea"
+],
+"fitness.story_length.penalty_per_unit": [
+"d4735e3a265e16ee"
+],
+"fitness.story_length.target": [
+"9f14025af0065b30"
+],
+"fitness.term_weights": [
+"44136fa355b3678a"
+],
+"fitness.threat_balance": [
+"cb7cbb0f42063953"
+],
+"fitness.threat_balance.bonus": [
+"f5ca38f748a1d6ea"
+],
+"fitness.threat_balance.max": [
+"e629fa6598d73276"
+],
+"fitness.threat_balance.min": [
+"ef2d127de37b942b"
+],
+"fitness.threat_balance.penalty_per_unit": [
+"d4735e3a265e16ee"
+],
+"fitness.threat_balance.target": [
+"4a44dc15364204a8"
+],
+"fitness.tone_variety": [
+"d6e56861a51d1c55"
+],
+"fitness.tone_variety.density_weight": [
+"624b60c58c9d8bfb"
+],
+"fitness.tone_variety.ignore_patterns": [
+"c197bce93cfa28ea"
+],
+"fitness.tone_variety.unique_tag_bonus": [
+"9f29a130438b8117"
+],
+"fitness.unexpected_events": [
+"3b58995ee34b4ad2"
+],
+"fitness.unexpected_events.excess_penalty": [
+"4b227777d4dd1fc6"
+],
+"fitness.unexpected_events.target": [
+"4e07408562bedb8b"
+],
+"fitness.unexpected_events.variety_bonus": [
+"e7f6c011776e8db7"
+],
+"fitness.variety": [
+"01c95d6dd83328c1"
+],
+"fitness.variety.distinct_choice_weight": [
+"624b60c58c9d8bfb"
+],
+"fitness.variety.repeated_outcome_penalty": [
+"d4735e3a265e16ee"
+],
+"fitness.visit_penalty": [
+"ef2d127de37b942b"
+],
+"fitness.volatility": [
+"23b8f97c2072ae6c",
+"d8a85b85df7d771c"
+],
+"fitness.volatility.pair_weight": [
+"4a44dc15364204a8",
+"ef2d127de37b942b"
+],
+"fitness.volatility.recovery_patterns": [
+"6e3ce8c55c6c08ec"
+],
+"fitness.volatility.threat_patterns": [
+"06377d849aee92f0"
+],
+"fitness.volatility_pair_weight": [
+"4a44dc15364204a8"
+],
+"game_state": [
+"2558a847850827b2",
+"3ced711b392a5b24",
+"83855da6935b2739",
+"e25467521b7991a4"
+],
+"game_state.arrest_location": [
+"6177fba19615b967"
+],
+"game_state.auto_transfer_when_stuck": [
+"b5bea41b6c623f7c"
+],
+"game_state.auto_travel_commit_threshold": [
+"77ac319bfe1979e2"
+],
+"game_state.auto_travel_on_spawn": [
+"b5bea41b6c623f7c"
+],
+"game_state.auto_travel_on_spawn_chance": [
+"f3e360d89952f40d"
+],
+"game_state.auto_travel_on_spawn_threshold": [
+"9f29a130438b8117"
+],
+"game_state.commit_discovery_weight": [
+"f3e360d89952f40d"
+],
+"game_state.commit_revisit_penalty": [
+"b4af4e0d40391d3a"
+],
+"game_state.initial_coins": [
+"4a44dc15364204a8"
+],
+"game_state.initial_health": [
+"2c624232cdd22177"
+],
+"game_state.low_health_threshold": [
+"4b227777d4dd1fc6"
+],
+"game_state.max_health": [
+"4a44dc15364204a8"
+],
+"genome_bounds": [
+"0e78debf43515d6a",
+"5b0f281be36e13d5"
+],
+"genome_bounds.chaos_bias": [
+"34ba1a0ae6b918d2"
+],
+"genome_bounds.discovery_bias": [
+"34c6cbcd58107f0b"
+],
+"genome_bounds.event_prob": [
+"9c1e5a6e4e3838ed"
+],
+"genome_bounds.goal_bias": [
+"a9a72b1ed680a4c2"
+],
+"genome_bounds.guard_bias": [
+"04e1586bd971b55a"
+],
+"genome_bounds.lead_bias": [
+"34c6cbcd58107f0b"
+],
+"genome_bounds.novelty_bias": [
+"d852fb60dd63016d"
+],
+"genome_bounds.recovery_bias": [
+"3a865fbc8533680a"
+],
+"genome_bounds.setup_prob": [
+"103b22981ee6d4b4"
+],
+"genome_bounds.spawn_prob": [
+"97cc1e95a29e65df"
+],
+"genome_bounds.success_bias": [
+"b6eb2b83860c6eff"
+],
+"genome_bounds.threat_prob": [
+"04e1586bd971b55a"
+],
+"genome_bounds.voyage_bias": [
+"13b482adb6f9e805"
+],
+"llm_evaluator": [
+"481983ff870897b4",
+"9559597511efa86f"
+],
+"llm_evaluator.enabled": [
+"b5bea41b6c623f7c"
+],
+"llm_evaluator.max_new_tokens": [
+"bfa0ec8bdf294654",
+"e39eef82f61b21e2"
+],
+"llm_evaluator.model_name": [
+"45639934ccb7ea2d"
+],
+"llm_evaluator.temperature": [
+"221764976efe0413"
+],
+"llm_fallback": [
+"7eb5a963d51a907f"
+],
+"llm_fallback.enabled": [
+"b5bea41b6c623f7c"
+],
+"llm_fallback.local_files_only": [
+"fcbcf165908dd18a"
+],
+"llm_fallback.model_name": [
+"a9269ebf917395f4"
+],
+"llm_fallback.trust_remote_code": [
+"fcbcf165908dd18a"
+],
+"llm_judge": [
+"0c3e35cd08e40bc1",
+"28c16bbcdb8edc61"
+],
+"llm_judge.enabled": [
+"fcbcf165908dd18a"
+],
+"llm_judge.max_new_tokens": [
+"99ee50221221864d"
+],
+"llm_judge.max_turns": [
+"48449a14a4ff7d79"
+],
+"llm_judge.outcome_chars": [
+"a512db2741cd2069"
+],
+"llm_judge.pair_max_chars": [
+"8597f1e3043654da"
+],
+"llm_judge.samples": [
+"d4735e3a265e16ee"
+],
+"llm_judge.temperature": [
+"221764976efe0413"
+],
+"location_constraints": [
+"5a4e1cb9d7283abc",
+"78552c0dcb3ed1f5",
+"ce0e587310d80fd3"
+],
+"location_constraints.Dungeon": [
+"84d3c1a71e7cb861",
+"c2d4ff84f40dfd7d",
+"dd758b4e0f08dc55"
+],
+"location_constraints.Dungeon.entry": [
+"0fedef6303aa6443"
+],
+"location_constraints.Dungeon.escape_tags": [
+"71b85dff8fb66bbe"
+],
+"location_constraints.Dungeon.lock_when": [
+"0fedef6303aa6443"
+],
+"location_constraints.Dungeon.requires_escape": [
+"b5bea41b6c623f7c"
+],
+"memory": [
+"26b3426b2593763c"
+],
+"memory.enabled": [
+"b5bea41b6c623f7c"
+],
+"mission_selection": [
+"58df5d4d27460722"
+],
+"mission_selection.recent_missions": [
+"4e07408562bedb8b"
+],
+"mission_selection.repeat_factor": [
+"221764976efe0413"
+],
+"mission_settings": [
+"270579f8fe9218bd",
+"8483c22be9ef52ea",
+"cddcaec796aa84d9",
+"d8fd0da8f25d92cc"
+],
+"mission_settings.discovery_route_cost": [
+"d4735e3a265e16ee"
+],
+"mission_settings.enabled": [
+"b5bea41b6c623f7c"
+],
+"mission_settings.end_on_goal": [
+"b5bea41b6c623f7c"
+],
+"mission_settings.momentum_after": [
+"4ec9599fc203d176",
+"c2356069e9d1e79c"
+],
+"mission_settings.pursuit_full_step": [
+"624b60c58c9d8bfb",
+"d59eced1ded07f84"
+],
+"mission_settings.pursuit_start_step": [
+"4ec9599fc203d176",
+"6b51d431df5d7f14"
+],
+"mission_settings.route_weight": [
+"8ab31b5afaea5611"
+],
+"narrative_end": [
+"1363969bfefffdcb",
+"f7064a66e1a11fa3"
+],
+"narrative_end.end_on_dungeon": [
+"fcbcf165908dd18a"
+],
+"narrative_end.max_actions": [
+"6b51d431df5d7f14",
+"ad57366865126e55"
+],
+"narrative_end.max_consecutive_steps_in_location": [
+"ef2d127de37b942b"
+],
+"navigation": [
+"21dd7cc0a2d71340"
+],
+"navigation.player_directed": [
+"794b9442dad2887a"
+],
+"npc_goals": [
+"48ef7de9fcd1e68c"
+],
+"npc_goals.action_weight": [
+"d2cbad71ff333de6"
+],
+"npc_goals.ally_check_bonus": [
+"e629fa6598d73276"
+],
+"npc_goals.progress_needed": [
+"d4735e3a265e16ee"
+],
+"npc_goals.reward": [
+"8eb5ab83664ff112"
+],
+"npc_leads": [
+"24f9e20cdf8c1bf4",
+"abc069ab0067e8b8"
+],
+"npc_leads.base_score": [
+"d0ff5974b6aa52cf"
+],
+"npc_leads.every_nth_interaction": [
+"d4735e3a265e16ee"
+],
+"npc_leads.quest_weight": [
+"a416ea84421fa7e1"
+],
+"npc_leads.shared_tag_weight": [
+"d2cbad71ff333de6"
+],
+"npc_roles": [
+"2fb73d72cffeaa49"
+],
+"npc_roles.enabled": [
+"b5bea41b6c623f7c"
+],
+"npc_roles.infer": [
+"a17886ed55ad38dc"
+],
+"npc_roles.leads_name_hidden": [
+"b5bea41b6c623f7c"
+],
+"npc_roles.roles": [
+"60e589aa996fb703"
+],
+"npc_roles.roles.bystander": [
+"f372973ea9536770"
+],
+"npc_roles.roles.bystander.check_modifier": [
+"4a44dc15364204a8"
+],
+"npc_roles.roles.bystander.importance": [
+"5feceb66ffc86f38"
+],
+"npc_roles.roles.bystander.label": [
+"5bb1aca3e18b1df1"
+],
+"npc_roles.roles.informant": [
+"3916bec763347aef"
+],
+"npc_roles.roles.informant.check_modifier": [
+"5feceb66ffc86f38"
+],
+"npc_roles.roles.informant.importance": [
+"6b86b273ff34fce1"
+],
+"npc_roles.roles.informant.label": [
+"0eb01e89d713ecca"
+],
+"npc_roles.roles.lieutenant": [
+"3ef07163c5b121d2"
+],
+"npc_roles.roles.lieutenant.check_modifier": [
+"c171d4ec282b23db"
+],
+"npc_roles.roles.lieutenant.importance": [
+"d4735e3a265e16ee"
+],
+"npc_roles.roles.lieutenant.label": [
+"df59c7c4b8b8a393"
+],
+"npc_roles.roles.lieutenant.reveal_clues": [
+"6b86b273ff34fce1"
+],
+"npc_roles.roles.lieutenant.reveal_turns": [
+"ef2d127de37b942b"
+],
+"npc_roles.roles.minion": [
+"61a8d3e4ad16f6fc"
+],
+"npc_roles.roles.minion.check_modifier": [
+"ef2d127de37b942b"
+],
+"npc_roles.roles.minion.importance": [
+"6b86b273ff34fce1"
+],
+"npc_roles.roles.minion.label": [
+"7b54951783116bc9"
+],
+"npc_roles.roles.nemesis": [
+"04fba857dddcd80d"
+],
+"npc_roles.roles.nemesis.check_modifier": [
+"5e37b37c842d8df7"
+],
+"npc_roles.roles.nemesis.importance": [
+"4e07408562bedb8b"
+],
+"npc_roles.roles.nemesis.label": [
+"9cb98aea1f172ab6"
+],
+"npc_roles.roles.nemesis.reveal_clues": [
+"6b86b273ff34fce1"
+],
+"npc_roles.roles.nemesis.reveal_turns": [
+"e7f6c011776e8db7"
+],
+"npc_roles.roles.patron": [
+"14945d36f3fc1dd1"
+],
+"npc_roles.roles.patron.check_modifier": [
+"37aa1ccf80e48183"
+],
+"npc_roles.roles.patron.importance": [
+"d4735e3a265e16ee"
+],
+"npc_roles.roles.patron.label": [
+"952553dd5bac97f8"
+],
+"npc_roles.roles.patron.reveal_clues": [
+"6b86b273ff34fce1"
+],
+"npc_roles.roles.patron.reveal_turns": [
+"4e07408562bedb8b"
+],
+"npc_roles.secrets": [
+"b5bea41b6c623f7c"
+],
+"outcome_objective": [
+"132943ce8e59a24b"
+],
+"outcome_objective.coin_weight": [
+"7932a07a8cbc0885"
+],
+"outcome_objective.discovery_weight": [
+"d84bdb34d4eeef40"
+],
+"outcome_objective.health_weight": [
+"9f29a130438b8117"
+],
+"outcome_objective.low_health_risk_penalty": [
+"a416ea84421fa7e1"
+],
+"outcome_objective.movement_weight": [
+"b8736b9999090496"
+],
+"outcome_objective.payoff_weight": [
+"d84bdb34d4eeef40"
+],
+"outcome_objective.repetition_penalty": [
+"9f29a130438b8117"
+],
+"outcome_objective.setup_weight": [
+"9f29a130438b8117"
+],
+"outcome_objective.success_probability_weight": [
+"d84bdb34d4eeef40"
+],
+"outcome_objective.success_tag_bonus": [
+"d0ff5974b6aa52cf"
+],
+"outcome_objective.success_threshold": [
+"d2cbad71ff333de6"
+],
+"outcome_objective.threat_interest_weight": [
+"d0ff5974b6aa52cf"
+],
+"outcome_resolution": [
+"075dc7244c600d11",
+"9f2964e43f0db1e6",
+"c8a8745974f7e2ca"
+],
+"outcome_resolution.discovery_weight": [
+"9e08a62f297ef682"
+],
+"outcome_resolution.early_setup_bonus": [
+"0602d7c813c1f6e7"
+],
+"outcome_resolution.hidden_adjustments": [
+"fcbcf165908dd18a"
+],
+"outcome_resolution.lead_weight": [
+"9e08a62f297ef682"
+],
+"outcome_resolution.low_health_recovery_bonus": [
+"36819111cffb9e1e"
+],
+"outcome_resolution.navigation_floor": [
+"b8cbc38948375ba9"
+],
+"outcome_resolution.probability_ceiling": [
+"22fa3ce4995af8d9"
+],
+"outcome_resolution.probability_floor": [
+"0602d7c813c1f6e7"
+],
+"outcome_resolution.recovery_weight": [
+"4469f737b2dd8040"
+],
+"outcome_resolution.severe_risk_penalty": [
+"36819111cffb9e1e"
+],
+"outcome_resolution.stagnation_movement_bonus": [
+"14be4b45f18e0d8c"
+],
+"outcome_resolution.stagnation_threshold": [
+"d4735e3a265e16ee"
+],
+"outcome_resolution.success_bias_weight": [
+"221764976efe0413"
+],
+"outcome_resolution.tag_weights": [
+"71525c8e71a79154"
+],
+"outcome_resolution.tag_weights.luxury": [
+"36819111cffb9e1e"
+],
+"outcome_resolution.tag_weights.maritime": [
+"36819111cffb9e1e"
+],
+"outcome_resolution.tag_weights.setup": [
+"4469f737b2dd8040"
+],
+"outcome_resolution.tag_weights.social": [
+"4469f737b2dd8040"
+],
+"outcome_resolution.tag_weights.spawn": [
+"e6743df815da2b68"
+],
+"outcome_resolution.tag_weights.stealth": [
+"4469f737b2dd8040"
+],
+"outcome_resolution.tag_weights.threat": [
+"fbf5ca6081b2993f"
+],
+"outcome_resolution.tag_weights.urban": [
+"36819111cffb9e1e"
+],
+"outcome_resolution.voyage_weight": [
+"e6743df815da2b68"
+],
+"outcome_scoring": [
+"3b044b53d1317f7b"
+],
+"outcome_scoring.discovery_bonus": [
+"1a948f1b4374f4e3"
+],
+"outcome_scoring.lead_bonus": [
+"1a948f1b4374f4e3"
+],
+"outcome_scoring.movement_bonus": [
+"8f65223004a75f44"
+],
+"outcome_scoring.payoff_bonus": [
+"77ac319bfe1979e2"
+],
+"outcome_scoring.recovery_bonus": [
+"77ac319bfe1979e2"
+],
+"outcome_scoring.setup_bonus": [
+"b05e244762b1e472"
+],
+"outcome_scoring.spawn_bonus": [
+"8f65223004a75f44"
+],
+"persistence": [
+"22bf5f4595b1d2dc"
+],
+"persistence.path": [
+"d7605d4489bbe751"
+],
+"persistence.profile": [
+"1080a60800d9e5bd"
+],
+"persistence.save_on": [
+"f1d58fbb264a7ece"
+],
+"persistence.simulate_with": [
+"b71c3a4be15c942c"
+],
+"player_options": [
+"4cf7c818534984a1",
+"5c24e3bca21f102a",
+"5c7254002875a2ff"
+],
+"player_options.focus_limit": [
+"4b227777d4dd1fc6"
+],
+"player_options.focus_relevance": [
+"d2cbad71ff333de6"
+],
+"player_options.limit": [
+"2c624232cdd22177",
+"e7f6c011776e8db7"
+],
+"player_options.min": [
+"4e07408562bedb8b"
+],
+"player_options.order": [
+"09bf524dc6f52721"
+],
+"player_options.relevance": [
+"a30a043314fa8929"
+],
+"player_options.relevance_filter": [
+"b5bea41b6c623f7c"
+],
+"player_options.talk_limit": [
+"d4735e3a265e16ee"
+],
+"player_options.tense_tags": [
+"ebee1e17610c77a3"
+],
+"player_options.travel_limit": [
+"4e07408562bedb8b"
+],
+"player_options.way_back": [
+"b5bea41b6c623f7c"
+],
+"power_model": [
+"3003ebb3fc113dba",
+"5eb4dad0f6d6ca78",
+"abb6e6bff3850522"
+],
+"power_model.attack_weight": [
+"d0ff5974b6aa52cf"
+],
+"power_model.base_power": [
+"8aed642bf5118b9d"
+],
+"power_model.check_weight": [
+"e7f6c011776e8db7"
+],
+"power_model.combat_stats": [
+"eae614b11acaeb72"
+],
+"power_model.defense_weight": [
+"1e9d7c27c8bbc8dd"
+],
+"power_model.health_weight": [
+"9f29a130438b8117"
+],
+"power_model.low_health_penalty": [
+"d2cbad71ff333de6"
+],
+"power_model.max_power": [
+"a19a1584344c1f37"
+],
+"power_model.min_power": [
+"8aed642bf5118b9d"
+],
+"power_model.stat_weight": [
+"9f29a130438b8117"
+],
+"progression": [
+"78a90d3d5e7483df"
+],
+"progression.goals_once": [
+"b5bea41b6c623f7c"
+],
+"progression.history": [
+"1a6562590ef19d10"
+],
+"reproducibility": [
+"0dc13b298519175b",
+"2a6d2033c7eb061d"
+],
+"reproducibility.deterministic": [
+"b5bea41b6c623f7c"
+],
+"reproducibility.seed": [
+"73475cb40a568e8d"
+],
+"scene": [
+"1dac18fbdcc1455b",
+"78beb4e6b0edd537",
+"d6ae08bbe9707fad"
+],
+"scene.generic_npc_tags": [
+"02427213ba267626"
+],
+"scene.location_npc_tags": [
+"fc69378b62585035"
+],
+"scene.location_npc_tags.Dungeon": [
+"25858746f102b8bd"
+],
+"scene.location_npc_tags.Harbor": [
+"f2a1b99cf9b214b9"
+],
+"scene.location_npc_tags.Market": [
+"48c62a1d73094130"
+],
+"scene.location_npc_tags.Palace": [
+"c8bb22f89f722d01"
+],
+"scene.location_tag_match_bonus": [
+"fbd04e1aae9ce0b1"
+],
+"scene.max_visible_npcs": [
+"4e07408562bedb8b"
+],
+"scene.max_visible_objects": [
+"d4735e3a265e16ee"
+],
+"scene.npc_exact_tag_weight": [
+"004a9e0878ff83e6"
+],
+"scene.npc_generic_tag_weight": [
+"0602d7c813c1f6e7"
+],
+"scene.npc_known_location_bonus": [
+"a416ea84421fa7e1"
+],
+"scene.npc_semantic_weight": [
+"d0ff5974b6aa52cf"
+],
+"scene.npc_similarity_threshold": [
+"dfef75e45d0c9d09"
+],
+"scene.visibility": [
+"bc7d23a9542b0b42"
+],
+"scene.visibility.item_combat_bias_weight": [
+"44896b09365746b5"
+],
+"scene.visibility.item_maritime_bias_weight": [
+"f3e360d89952f40d"
+],
+"scene.visibility.item_similarity_weight": [
+"d84bdb34d4eeef40"
+],
+"scene.visibility.item_urban_bias_weight": [
+"f3e360d89952f40d"
+],
+"scene.visibility.npc_social_bias_weight": [
+"d0ff5974b6aa52cf"
+],
+"scene.visibility.npc_threat_bias_weight": [
+"d2cbad71ff333de6"
+],
+"scene.visibility.npc_urban_bias_weight": [
+"a30a043314fa8929"
+],
+"session_report": [
+"2f80f7201b00d0b9"
+],
+"session_report.enabled": [
+"b5bea41b6c623f7c"
+],
+"session_report.timeout": [
+"ef2d127de37b942b"
+],
+"session_report.url": [
+"12ae32cb1ec02d01"
+],
+"session_scope": [
+"7faaeff0aa2393ff"
+],
+"session_scope.enabled": [
+"b5bea41b6c623f7c"
+],
+"session_scope.keep_share": [
+"0194523eb8af5c9a"
+],
+"session_scope.keep_share.events": [
+"1e9d7c27c8bbc8dd"
+],
+"session_scope.keep_share.items": [
+"ce5d3aa79ae56155"
+],
+"session_scope.keep_share.locations": [
+"1e181f0934d44144"
+],
+"session_scope.keep_share.npcs": [
+"973b372a514f91db"
+],
+"session_scope.min_pool": [
+"4b227777d4dd1fc6"
+],
+"session_scope.min_value": [
+"a976726b1d1bda3e"
+],
+"session_scope.relevance_weight": [
+"d0ff5974b6aa52cf"
+],
+"session_scope.richness_weight": [
+"d2cbad71ff333de6"
+],
+"session_scope.variety_weight": [
+"b4af4e0d40391d3a"
+],
+"simulation": [
+"01ad2bf736535439"
+],
+"simulation.interactive": [
+"b5bea41b6c623f7c"
+],
+"simulation.mutation_rate": [
+"44896b09365746b5"
+],
+"simulation.verbose": [
+"b5bea41b6c623f7c"
+],
+"skill_check_resolution": [
+"74a45f34789c9cca",
+"b9a4daa01bd44f67"
+],
+"skill_check_resolution.damage_mitigation_per_point": [
+"b7a56873cd771f2c"
+],
+"skill_check_resolution.dangerous_failure_damage": [
+"d4735e3a265e16ee"
+],
+"skill_check_resolution.difficulty_penalty": [
+"5feceb66ffc86f38"
+],
+"skill_check_resolution.difficulty_rate_per_step": [
+"221764976efe0413",
+"8aed642bf5118b9d"
+],
+"skill_check_resolution.difficulty_rate_start_step": [
+"4a44dc15364204a8",
+"e629fa6598d73276"
+],
+"skill_check_resolution.failure_damage": [
+"6b86b273ff34fce1"
+],
+"skill_check_resolution.failure_mitigation_threshold": [
+"48449a14a4ff7d79"
+],
+"skill_check_resolution.max_chance": [
+"ad48ff99415b2f00"
+],
+"skill_check_resolution.min_chance": [
+"ef2d127de37b942b"
+],
+"skill_check_resolution.roll_sides": [
+"ad57366865126e55"
+],
+"spawn_selection": [
+"6f37d97d35a97d7e",
+"82bff39f41378859",
+"853c3c9a4b58aaeb"
+],
+"spawn_selection.character_alignment_weight": [
+"d84bdb34d4eeef40"
+],
+"spawn_selection.contrast_weight": [
+"b8736b9999090496"
+],
+"spawn_selection.fallback_candidates": [
+"ef2d127de37b942b"
+],
+"spawn_selection.fallback_similarity_threshold": [
+"44896b09365746b5"
+],
+"spawn_selection.immediate_repeat_penalty": [
+"f1e42019aecc858f"
+],
+"spawn_selection.repeat_visit_penalty": [
+"a416ea84421fa7e1"
+],
+"spawn_selection.story_phases": [
+"eaf7aceefd9e4aed"
+],
+"spawn_selection.story_phases.climax_start": [
+"ce5d3aa79ae56155"
+],
+"spawn_selection.story_phases.climax_tags": [
+"06f2d7a9cf5b2c5b"
+],
+"spawn_selection.story_phases.climax_weight": [
+"d84bdb34d4eeef40"
+],
+"spawn_selection.story_phases.intro_end": [
+"a30a043314fa8929"
+],
+"spawn_selection.story_phases.intro_tags": [
+"74ec4e5b7c974059"
+],
+"spawn_selection.story_phases.intro_weight": [
+"9f29a130438b8117"
+],
+"spawn_selection.story_phases.middle_tags": [
+"f3502b305701c072"
+],
+"spawn_selection.story_phases.middle_weight": [
+"f4881c772c895093"
+],
+"spawn_selection.target_tag_weight": [
+"f1e42019aecc858f"
+],
+"stakes": [
+"880e9bda6ee504ab"
+],
+"stakes.alert": [
+"9e67635444d1aa58"
+],
+"stakes.alert.check_penalty": [
+"4e07408562bedb8b"
+],
+"stakes.alert.decay_turns": [
+"4e07408562bedb8b"
+],
+"stakes.alert.enabled": [
+"b5bea41b6c623f7c"
+],
+"stakes.alert.manhunt_event": [
+"d1ef9419ab12d4dc"
+],
+"stakes.alert.max": [
+"e7f6c011776e8db7"
+],
+"stakes.alert.raise_on_failure": [
+"61c56bcc60c9651c"
+],
+"stakes.alert.raise_on_failure.bribe": [
+"d4735e3a265e16ee"
+],
+"stakes.alert.raise_on_failure.combat": [
+"6b86b273ff34fce1"
+],
+"stakes.alert.raise_on_failure.fight": [
+"6b86b273ff34fce1"
+],
+"stakes.alert.raise_on_failure.guards": [
+"d4735e3a265e16ee"
+],
+"stakes.alert.raise_on_failure.stealth": [
+"6b86b273ff34fce1"
+],
+"stakes.alert.raise_on_failure.threat": [
+"6b86b273ff34fce1"
+],
+"stakes.alert.raise_on_success": [
+"168094d0bf180f23"
+],
+"stakes.alert.raise_on_success.bribe": [
+"6b86b273ff34fce1"
+],
+"stakes.alert.raise_on_success.fight": [
+"d4735e3a265e16ee"
+],
+"stakes.alert.raise_on_success.guards": [
+"6b86b273ff34fce1"
+],
+"stakes.alert.raise_on_success.rob": [
+"d4735e3a265e16ee"
+],
+"stakes.alert.raise_on_success.steal": [
+"d4735e3a265e16ee"
+],
+"stakes.alert.reset_to": [
+"6b86b273ff34fce1"
+],
+"stakes.alert.warn_at": [
+"4b227777d4dd1fc6"
+],
+"stakes.alert.warnings": [
+"5ca0cafe3fd1947f"
+],
+"stakes.alert.watched_tags": [
+"dbcba2a0971aa3bb"
+],
+"stakes.show_failure_costs": [
+"b5bea41b6c623f7c"
+],
+"start_selection": [
+"2a7a97b3ac2cbfff",
+"a8c8a63f94641538"
+],
+"start_selection.default_location": [
+"52830688cc608177"
+],
+"start_selection.mission_variety": [
+"b5bea41b6c623f7c"
+],
+"start_selection.recency_factors": [
+"5a3ce28b34b42dc6"
+],
+"start_selection.recent_starts": [
+"4e07408562bedb8b"
+],
+"start_selection.repeat_factor": [
+"a30a043314fa8929"
+],
+"story_rules": [
+"da58cd737bab21ab",
+"ebb2daae96ead541"
+],
+"story_rules.backtrack_penalty": [
+"9f29a130438b8117"
+],
+"story_rules.clue_matching": [
+"251ecb599a3f3a2f"
+],
+"story_rules.collect_weight": [
+"d0ff5974b6aa52cf"
+],
+"story_rules.early_goal_avoidance": [
+"d0ff5974b6aa52cf"
+],
+"story_rules.failure_tags": [
+"a4e45d39032fc955"
+],
+"story_rules.follow_outcome_text": [
+"b5bea41b6c623f7c"
+],
+"story_rules.gate_payoffs": [
+"b5bea41b6c623f7c"
+],
+"story_rules.max_open_clues": [
+"d4735e3a265e16ee"
+],
+"story_rules.on_stall": [
+"c1becffaa3515c69"
+],
+"story_rules.payoff_route_weight": [
+"9f29a130438b8117"
+],
+"story_rules.payoff_weight": [
+"d84bdb34d4eeef40"
+],
+"story_rules.repetition_power": [
+"9f29a130438b8117"
+],
+"story_rules.tie_epsilon": [
+"14be4b45f18e0d8c"
+],
+"transition_objective": [
+"8b939df377dabe5b",
+"ff5e19fd98589803"
+],
+"transition_objective.available_action_weight": [
+"44896b09365746b5"
+],
+"transition_objective.character_goal_weight": [
+"d84bdb34d4eeef40"
+],
+"transition_objective.discovery_weight": [
+"1e9d7c27c8bbc8dd"
+],
+"transition_objective.exact_intent_weight": [
+"d84bdb34d4eeef40"
+],
+"transition_objective.intent_similarity_weight": [
+"fbd04e1aae9ce0b1"
+],
+"transition_objective.known_location_bonus": [
+"a416ea84421fa7e1"
+],
+"transition_objective.novelty_weight": [
+"d84bdb34d4eeef40"
+],
+"transition_objective.revisit_penalty": [
+"b8736b9999090496"
+],
+"transition_objective.story_phase_weight": [
+"1e9d7c27c8bbc8dd"
+],
+"transition_objective.story_phases": [
+"34edb198033add5a"
+],
+"transition_objective.story_phases.climax_start": [
+"ce5d3aa79ae56155"
+],
+"transition_objective.story_phases.climax_tags": [
+"84cc673845a161c7"
+],
+"transition_objective.story_phases.intro_end": [
+"221764976efe0413"
+],
+"transition_objective.story_phases.intro_tags": [
+"988706d1e86d7018"
+],
+"transition_objective.story_phases.middle_tags": [
+"7c102db3f10bdc25"
+],
+"transition_objective.voyage_weight": [
+"d0ff5974b6aa52cf"
+],
+"travel": [
+"3a3d4cf0b4eea373"
+],
+"travel.fast_travel": [
+"b5bea41b6c623f7c"
+],
+"travel.fast_travel_cooldown": [
+"4e07408562bedb8b"
+],
+"travel.fast_travel_options": [
+"d4735e3a265e16ee"
+],
+"travel.first_trip": [
+"5d5cc4616791fb03"
+],
+"travel.first_trip.by_tag": [
+"cc4e42505c4fcd0d"
+],
+"travel.first_trip.by_tag.ancient": [
+"d42a63b7741dc901"
+],
+"travel.first_trip.by_tag.arcane": [
+"79a34890af2d0598"
+],
+"travel.first_trip.by_tag.commercial": [
+"aaeb5307cfc4695b"
+],
+"travel.first_trip.by_tag.crowded": [
+"41b757921ab469f2"
+],
+"travel.first_trip.by_tag.damp": [
+"0fb085b444ff3118"
+],
+"travel.first_trip.by_tag.dark": [
+"29d367f5fe6fedb2"
+],
+"travel.first_trip.by_tag.foul": [
+"6f82964f0b4ba2f3"
+],
+"travel.first_trip.by_tag.luxury": [
+"479e2fb900461376"
+],
+"travel.first_trip.by_tag.maritime": [
+"cd6f1bc8283be5cd"
+],
+"travel.first_trip.by_tag.market": [
+"2a3b8f234c51a57e"
+],
+"travel.first_trip.by_tag.nature": [
+"0c7c67eccfb762b1"
+],
+"travel.first_trip.by_tag.palace": [
+"a19409877e46f9a8"
+],
+"travel.first_trip.by_tag.port": [
+"2c759cfc362fb46d"
+],
+"travel.first_trip.by_tag.spectral": [
+"2bd8c612896c7595"
+],
+"travel.first_trip.by_tag.urban": [
+"6b987e0c7e63fbd5"
+],
+"travel.first_trip.chance": [
+"d2cbad71ff333de6"
+],
+"travel.first_trip.default": [
+"671061d3ca445a6f"
+],
+"travel.first_trip.enabled": [
+"b5bea41b6c623f7c"
+],
+"travel.first_trip.road_word": [
+"b5bea41b6c623f7c"
+],
+"travel.max_free_turns": [
+"4a44dc15364204a8"
+],
+"unexpected_events": [
+"39e10d7623ccf633",
+"43cb7c7974a790c2",
+"8d1051c61fb98975",
+"bf779f6ea3f916a9"
+],
+"unexpected_events.actors": [
+"eec19b6dde556094"
+],
+"unexpected_events.base_chance": [
+"36819111cffb9e1e"
+],
+"unexpected_events.chaos_weight": [
+"e6743df815da2b68"
+],
+"unexpected_events.coin_budget": [
+"4a44dc15364204a8"
+],
+"unexpected_events.cooldown_steps": [
+"4b227777d4dd1fc6",
+"d4735e3a265e16ee"
+],
+"unexpected_events.effect_repeat_penalty": [
+"d0ff5974b6aa52cf"
+],
+"unexpected_events.effects": [
+"0ac2700580cc6ec8",
+"148e76fc48d9be17"
+],
+"unexpected_events.enabled": [
+"b5bea41b6c623f7c"
+],
+"unexpected_events.genome_weight": [
+"221764976efe0413"
+],
+"unexpected_events.max_per_story": [
+"4e07408562bedb8b",
+"ef2d127de37b942b"
+],
+"unexpected_events.name_location": [
+"b5bea41b6c623f7c"
+],
+"unexpected_events.objective": [
+"aef2ab7e8a6938fa"
+],
+"unexpected_events.objective.coin_weight": [
+"14be4b45f18e0d8c"
+],
+"unexpected_events.objective.healing_weight": [
+"d2cbad71ff333de6"
+],
+"unexpected_events.objective.low_health_healing_weight": [
+"d84bdb34d4eeef40"
+],
+"unexpected_events.objective.low_health_threat_penalty": [
+"d84bdb34d4eeef40"
+],
+"unexpected_events.objective_threshold": [
+"6382e07f9de0c852"
+],
+"unexpected_events.omens": [
+"300754239a00fafc"
+],
+"unexpected_events.stagnation_pressure": [
+"a888fe9e2469182b"
+],
+"unexpected_events.twist_payoff_delay": [
+"e7f6c011776e8db7"
+],
+"unexpected_events.twists": [
+"163540630784fb8f"
+],
+"variation": [
+"44086a90255a9078"
+],
+"variation.enabled": [
+"b5bea41b6c623f7c"
+],
+"variation.max_repeat_penalty": [
+"f5ca38f748a1d6ea"
+],
+"variation.repeat_check_penalty": [
+"ef2d127de37b942b"
+],
+"variation.repeat_lines": [
+"b5bea41b6c623f7c"
+],
+"vllm": [
+"5bbfa7108a6bac46",
+"76c5729b35877d5e"
+],
+"vllm.api_key": [
+"8619dfb2c4555eb0"
+],
+"vllm.base_url": [
+"3283e22b75fde01b"
+],
+"vllm.cpu_offload_gb": [
+"5feceb66ffc86f38"
+],
+"vllm.dtype": [
+"634635a2166efa2a"
+],
+"vllm.enable_prefix_caching": [
+"b5bea41b6c623f7c"
+],
+"vllm.enforce_eager": [
+"b5bea41b6c623f7c"
+],
+"vllm.gpu_memory_utilization": [
+"a2cffa866c48b997"
+],
+"vllm.limit_mm_per_prompt": [
+"bda5d217a62e06a6"
+],
+"vllm.limit_mm_per_prompt.audio": [
+"5feceb66ffc86f38"
+],
+"vllm.limit_mm_per_prompt.image": [
+"5feceb66ffc86f38"
+],
+"vllm.max_model_len": [
+"864a936a35324151",
+"8b926d75599a618e"
+],
+"vllm.max_num_seqs": [
+"6b86b273ff34fce1"
+],
+"vllm.mode": [
+"50f15024ec2bffb3"
+],
+"vllm.model_name": [
+"132721685459a6fb",
+"65171c940dacc61b"
+],
+"vllm.quantization": [
+"74234e98afe7498f"
+],
+"vllm.timeout_seconds": [
+"7b69759630f869f2"
+],
+"vllm.trust_remote_code": [
+"fcbcf165908dd18a"
+],
+"world_definition": [
+"b2b40761b22825ec",
+"d531a15f4d4264a0"
+],
+"world_definition.similarity_threshold": [
+"d2cbad71ff333de6"
+],
+"world_definition.spawn_strategy": [
+"46c62730a9d328df"
+],
+"world_definition.story_map": [
+"9de0435edf84c831"
+],
+"world_definition.story_map.enabled": [
+"b5bea41b6c623f7c"
+],
+"world_definition.story_map.neighbors": [
+"4e07408562bedb8b"
+]
+},
+"items.yaml": {
+"world_definition": [
+"5ccc9bdb05682579",
+"9c4fc9fa8c764613",
+"b0f72c6df97a38a2",
+"e8ae2835d7e9ed06",
+"ec575f85761386bd",
+"f26e508b3db7d5c7"
+],
+"world_definition.objects[Ancient Map]": [
+"5760a4bb823279c7",
+"f917f61219ff09da"
+],
+"world_definition.objects[Antique Statue]": [
+"229b2d7733f1eaad",
+"578f0f575e5e4846"
+],
+"world_definition.objects[Fence's Ledger]": [
+"68d0e6e755b0287d",
+"bb71b3345f01b180"
+],
+"world_definition.objects[Gold Coins]": [
+"47bbd13efe4653db",
+"d681ac61ba418bbe"
+],
+"world_definition.objects[Heavy Shield]": [
+"563071e541950b2e",
+"85fedea89f66695b"
+],
+"world_definition.objects[Official's Mask]": [
+"cfeb03fa5a445b12"
+],
+"world_definition.objects[Rusty Sword]": [
+"20b528db697a39d8",
+"746f61835797d481",
+"ee3dae49d253a24d"
+],
+"world_definition.objects[Steel Dagger]": [
+"5a1c0af6b16d85d2",
+"6508f24e17f6b5d1"
+],
+"world_definition.objects[Vintage Wine]": [
+"095e881e8aaa90e5",
+"1c1d72dfa2e2a60e"
+]
+},
+"locations.yaml": {
+"world_definition": [
+"05d4f0ad97253061",
+"50ba99da456d25e5",
+"af1deaccf524e34f",
+"bba51e1ae21ecb3b",
+"c10d9e760968e427",
+"ccd6d0526924a5de",
+"e30bf460d1c75bc0",
+"f8eb026acf9ec6ee"
+],
+"world_definition.locations[Abandoned Church]": [
+"bb196a0accfe5477"
+],
+"world_definition.locations[Alley]": [
+"6c8c2d7fcd2aba3a"
+],
+"world_definition.locations[Bone Orchard]": [
+"4d190aa3407d53d3",
+"502c113e81a9234d"
+],
+"world_definition.locations[Drowned Archive]": [
+"1dc40e272473ea2d",
+"3552b7aa9fb175ed"
+],
+"world_definition.locations[Dungeon]": [
+"62c3b4198b77930b",
+"737507f55e09b640",
+"d524a16e7ff30d6a"
+],
+"world_definition.locations[Festival of Masks]": [
+"8cb89dbc7c5c4a2a",
+"bcb2d41deae66501",
+"f45c55a7906839e2"
+],
+"world_definition.locations[Ghostline Station]": [
+"7c8c13d338953023"
+],
+"world_definition.locations[Harbor]": [
+"0e3b179ed77e66fb",
+"0f713afe48a45611",
+"3e33731e81708b1e"
+],
+"world_definition.locations[Market of the Ancients]": [
+"73c9bde76e9ef23c",
+"79d390c2e5a69270",
+"a02d900485277211"
+],
+"world_definition.locations[Market]": [
+"0f6bcbb2cd3a3fd5",
+"9790bbcc0adf79f8"
+],
+"world_definition.locations[Palace]": [
+"edd7f5ac4220b27d",
+"f5b9e39867c84549"
+],
+"world_definition.locations[Secret Garden]": [
+"7e837d21a4ae5d46"
+],
+"world_definition.locations[Sewers]": [
+"189f1b2a71396e88"
+],
+"world_definition.locations[Storm Observatory]": [
+"1e88c10366f1d5c3"
+],
+"world_definition.locations[Tavern]": [
+"3ce9aca18083b9e0",
+"41d65b2cb5abc367",
+"5f3fe21949fcd122"
+],
+"world_definition.locations[Vault]": [
+"10f604882740d764",
+"5c76f01f97fa1a8f",
+"ae2c45f79e5b903f",
+"cd1828de1207f499"
+],
+"world_definition.routes": [
+"d1c9e99ade72d76a"
+],
+"world_definition.routes.Abandoned Church": [
+"4703a4463caed9e5"
+],
+"world_definition.routes.Alley": [
+"25cf730b547cb815"
+],
+"world_definition.routes.Bone Orchard": [
+"254d850e74e6d3f8"
+],
+"world_definition.routes.Drowned Archive": [
+"4f755bc105f1c30d"
+],
+"world_definition.routes.Dungeon": [
+"8c253859838b0691"
+],
+"world_definition.routes.Festival of Masks": [
+"0e2115674f299f91"
+],
+"world_definition.routes.Ghostline Station": [
+"12af2d12f544a53b"
+],
+"world_definition.routes.Harbor": [
+"80be055d6a5aebf5"
+],
+"world_definition.routes.Market": [
+"0852d250b6ee78e6"
+],
+"world_definition.routes.Market of the Ancients": [
+"c17f1e87555c771f"
+],
+"world_definition.routes.Palace": [
+"8caec96ddc4f4061"
+],
+"world_definition.routes.Secret Garden": [
+"25455a65241f1c19"
+],
+"world_definition.routes.Sewers": [
+"c6597e7221495fb0"
+],
+"world_definition.routes.Storm Observatory": [
+"44d389ea38f210f5"
+],
+"world_definition.routes.Tavern": [
+"4bf1e8249ce9793e"
+],
+"world_definition.routes.Vault": [
+"9229e4321ded9189"
+]
+},
+"messages.yaml": {
+"messages": [
+"11def9b95befe701",
+"1cace454197aa0a5",
+"4c66493ed5069120",
+"59a414f8ea6c7b8d",
+"625c41ffd1ed8cbe",
+"c3199c8e96a38cd1",
+"d381ec9df372f216",
+"d5293ca8a0ded69b",
+"d803930bc77e4696",
+"ef05cf4a21aa5330"
+],
+"messages.action_taken": [
+"e5ff1fee568b33eb"
+],
+"messages.alert_calm": [
+"b865cabecfef9cd6"
+],
+"messages.alert_up": [
+"e935cdd2574fcbe0"
+],
+"messages.another_way_lead": [
+"9fa90b21c748c511"
+],
+"messages.another_way_witness": [
+"dc9ee4d99f749711"
+],
+"messages.arrival": [
+"17cc9d7f4a8d8afb"
+],
+"messages.arrival_item": [
+"55e83cd0e34e48f9",
+"fba5c6fd87135707"
+],
+"messages.arrival_npc": [
+"b4c19d1576d3a156",
+"f34ad5aaa0ac0d4e"
+],
+"messages.auto_transfer": [
+"c194b78a2b981c6a"
+],
+"messages.callback": [
+"f1518b3329369acf"
+],
+"messages.check_failed": [
+"53845f675bef3509"
+],
+"messages.check_passed": [
+"0bdb2d5337014d67"
+],
+"messages.climax_price": [
+"0c5b889674cf75c4"
+],
+"messages.climax_setback": [
+"a14a492944261d76"
+],
+"messages.climax_start": [
+"67acd47297434dbc"
+],
+"messages.climax_won": [
+"d7cb14b94bee7c06"
+],
+"messages.consequence": [
+"f8b73d78d64751e4"
+],
+"messages.continue_here": [
+"7af3c5f5ff0da353"
+],
+"messages.encounter": [
+"7757ac15b36894cc"
+],
+"messages.end_abandoned": [
+"1305a5e5e5e56939"
+],
+"messages.end_action_limit": [
+"a412e064faa4e2c7"
+],
+"messages.end_death": [
+"6b114217c9a0753d"
+],
+"messages.end_dungeon": [
+"31ccaa274e599a67"
+],
+"messages.end_epilogue": [
+"7d207c12de90ddd9",
+"d29c795510079971"
+],
+"messages.end_line": [
+"0841d6ef5e12a013"
+],
+"messages.end_mission": [
+"ad0d996179409d63"
+],
+"messages.end_stalled": [
+"483bcbf7808ac591"
+],
+"messages.end_victory": [
+"df02345824170c0c"
+],
+"messages.epilogue_mission_open": [
+"188527181f8c7232"
+],
+"messages.escape": [
+"fc393a7632215ea7"
+],
+"messages.event_chain": [
+"10d162eba91fee08"
+],
+"messages.event_end_moved": [
+"24ff804ff8b8ff40"
+],
+"messages.event_end_return": [
+"d14fd777fd7404d7"
+],
+"messages.event_start": [
+"55af167b6def38c5"
+],
+"messages.event_trigger_result": [
+"8ce0393f9340350b"
+],
+"messages.event_unknown": [
+"6d464b693aed3be5"
+],
+"messages.exit_unlocked": [
+"27020ac87e7721c7"
+],
+"messages.failure": [
+"4af426f195a866ad"
+],
+"messages.failure_arrest": [
+"92015ff072a01021"
+],
+"messages.finale_start": [
+"6fcaa881228001f2"
+],
+"messages.finale_start_free": [
+"a79e047bfb83c76e"
+],
+"messages.fled_back": [
+"dd05e1679eb60cbb"
+],
+"messages.health_capped": [
+"b56d4b3b54deac5d"
+],
+"messages.item_collected": [
+"bcbedda22f076155"
+],
+"messages.item_used": [
+"99b3fd205866f2cb"
+],
+"messages.last_time": [
+"1e7a27c4a450340a"
+],
+"messages.lead_move": [
+"ed1f19aa24110dfd"
+],
+"messages.lead_path": [
+"22ea6dd037e3899a"
+],
+"messages.lead_via": [
+"7bc4ce79690a2878"
+],
+"messages.location_current": [
+"87ab99fd271d8f56"
+],
+"messages.location_moved": [
+"b18ee894088f88e6"
+],
+"messages.location_stayed": [
+"ad50b65129d4531d"
+],
+"messages.manhunt": [
+"a9c70848e1f089f1"
+],
+"messages.mission_complete": [
+"872fffddaf508c5c"
+],
+"messages.mission_pool_done": [
+"5e5ead9d648bf3df"
+],
+"messages.mission_start": [
+"76f03777ed08f498"
+],
+"messages.mission_start_brief": [
+"160b60545dcb5083"
+],
+"messages.npc_goal_done": [
+"734b607fb16acf2a"
+],
+"messages.npc_named": [
+"47ec73f8a9cb01c8"
+],
+"messages.npc_removed": [
+"74d61719a3718ece"
+],
+"messages.npc_removed_scene": [
+"5a3772433a3873d8"
+],
+"messages.npc_reveal": [
+"7d7bbdeacb303a8e"
+],
+"messages.npc_triumph": [
+"257726dcc323f591"
+],
+"messages.on_the_way": [
+"2f9076548320f631"
+],
+"messages.paid": [
+"92d18f2ce5d18823"
+],
+"messages.refund": [
+"c6cb856cfb2b48fc"
+],
+"messages.released": [
+"8897477b2e307e3d"
+],
+"messages.remembered_foe": [
+"0d42b4f7a211c09b"
+],
+"messages.remembered_friend": [
+"368678284dcd94dc"
+],
+"messages.result": [
+"e7cf41bd668145ad"
+],
+"messages.result_again": [
+"578e26ca5f00fe56"
+],
+"messages.result_habit": [
+"4861e7b962d5d1f1"
+],
+"messages.resumed": [
+"d58294d313a65cdf"
+],
+"messages.reveal_item": [
+"7cd769a5cd1bf1aa"
+],
+"messages.reveal_npc": [
+"a0845a754b59a7fe"
+],
+"messages.revelation": [
+"d9811a46520ce2c4"
+],
+"messages.road_word": [
+"9fb4c81e70b3cd2c"
+],
+"messages.route_via": [
+"8c2c4024677fa28f"
+],
+"messages.secret": [
+"955d4da391aa5f6d"
+],
+"messages.sent": [
+"3fe7a1c255f0f11f"
+],
+"messages.spawn": [
+"b22e58b08773f25c"
+],
+"messages.spawn_forced": [
+"d8df803602531e16"
+],
+"messages.stage_complete": [
+"ded1724e13fd9837"
+],
+"messages.stall_move": [
+"cde392ddb979e89f"
+],
+"messages.stat_changed": [
+"0900ded1a3e29fbb"
+],
+"messages.talk_action": [
+"9362b12a4d9813b5"
+],
+"messages.talk_default": [
+"4fe010c5957f617a"
+],
+"messages.talk_goal": [
+"09a82f58c22e35f8"
+],
+"messages.travel_fast": [
+"e9ee182384ca4004"
+],
+"messages.travel_fast_result": [
+"3f2f6f6ee3fa93a8"
+],
+"messages.travel_first": [
+"3f7efe7383c7d0a5"
+],
+"messages.travel_new": [
+"261c5336b95c2981"
+],
+"messages.travel_result": [
+"78b8a4571827b082"
+],
+"messages.travel_return": [
+"240f0e2334761232"
+],
+"messages.twist_payoff": [
+"3d7dc392df12e822"
+],
+"messages.unexpected_discovery": [
+"884d58d8bc63f501"
+],
+"messages.unexpected_effect": [
+"eacd9db519396deb"
+],
+"messages.unexpected_event": [
+"149e375e81ede9cb"
+],
+"messages.variable_changed": [
+"ec7f70b6c01d0ab5"
+],
+"messages.voyage": [
+"d07c279cf103227c"
+]
+},
+"missions.yaml": {
+"world_definition": [
+"38fede667e3d5cad",
+"591a6f2e5be8c01f",
+"8ab3b52500f1b173",
+"b8691787216f1c16",
+"d8a0b65d387e2148"
+],
+"world_definition.missions[a_face_for_the_palace]": [
+"6b119798a094f49e"
+],
+"world_definition.missions[break_into_the_vault]": [
+"31a02f29df9a1269",
+"7a841806b7f2100c",
+"868b4827f8925632"
+],
+"world_definition.missions[champion_of_the_back_room]": [
+"4678d9a3c314d35d"
+],
+"world_definition.missions[clear_your_name]": [
+"715b2244bef22e9c"
+],
+"world_definition.missions[expose_the_fence]": [
+"16fdc27480b79197",
+"7e4e1b337cd89c5e",
+"d7b3191a070a0dd4",
+"ec6d50098c3752d7"
+],
+"world_definition.missions[free_the_smuggler]": [
+"7e5d1c224872a0dd"
+],
+"world_definition.missions[rid_the_market_of_the_thief]": [
+"0773463ad5570415",
+"b91394aa08811ff7",
+"de0f60deac2485f3",
+"ec11f66aa382abf3"
+],
+"world_definition.missions[royal_audience]": [
+"53d0444705ae4e6c",
+"b27edde63ae4db57"
+],
+"world_definition.missions[shield_bearer]": [
+"fa3799802cc15f23"
+]
+},
+"npcs.yaml": {
+"world_definition": [
+"2725cde4d48c9b2b",
+"3497f983bee3aeae",
+"5613d5b7e6ddc81b",
+"86e13b3588608636",
+"89acdbbfbb73e41c",
+"f299a981b927ba8c",
+"f379f9fc394deb56"
+],
+"world_definition.characters[Aurora]": [
+"2a1438c622c94eea",
+"be90908d4a1f072c",
+"ca80636fd2f5d80c",
+"ecdc33e696e089e5"
+],
+"world_definition.characters[Bandit]": [
+"01db746dde63fabf",
+"528778450b2838ec",
+"e89be4853a5604c7"
+],
+"world_definition.characters[Captain of the Watch]": [
+"9971a4261486a977"
+],
+"world_definition.characters[Dock Worker]": [
+"ae743d11e8c35fa4",
+"e8f2638cdef3bfb6"
+],
+"world_definition.characters[Exiled Archivist]": [
+"12bf9e1c7c9cba0c",
+"f63c23671684c7df"
+],
+"world_definition.characters[Fence]": [
+"013a18d41f1d5605"
+],
+"world_definition.characters[Gardener]": [
+"0deb670353f2a1e5",
+"58f805356faa8971",
+"d105654cd137be5f"
+],
+"world_definition.characters[Gate Guard]": [
+"152455cc667a4911",
+"2afa4ee416485a82",
+"3cbf275404d0ec0a",
+"460dd8c366abf293",
+"472c6b70ba24e629",
+"be48ecc67850f5f9",
+"f1ddbb6dd5350195"
+],
+"world_definition.characters[Guard]": [
+"89af019a4df26a87",
+"961673d44f22e31b",
+"a23a610f39f95ca7",
+"eab180acdb3fe722"
+],
+"world_definition.characters[Maskwright]": [
+"9d6401afd8c9fffb",
+"b939e12324a5812e"
+],
+"world_definition.characters[Memory Thief]": [
+"11c0f3b504215479",
+"fbc294c87772faaf"
+],
+"world_definition.characters[Merchant]": [
+"092afe0117f438ed",
+"b062f45eb2949b1f",
+"b6946d3526bbfa96",
+"f01ff8090366ca38"
+],
+"world_definition.characters[Pale Conductor]": [
+"f2ff8a1c43e11de1"
+],
+"world_definition.characters[Pit Champion]": [
+"a4194cd776ca3895"
+],
+"world_definition.characters[Priest]": [
+"00a9819f9f15222a",
+"2d3e7a3e32b93457",
+"57a0c6a0e9cc7f26",
+"b48240203175c863"
+],
+"world_definition.characters[Runaway Apprentice]": [
+"12ef51470a183311",
+"834773f365d179ac"
+],
+"world_definition.characters[Smuggler]": [
+"7f50ee87c3f778f9"
+],
+"world_definition.characters[Storm Cartographer]": [
+"70819fe8eca5d59b",
+"b213c9a0ee384bbd"
+],
+"world_definition.characters[Thief's Lookout]": [
+"e6c33713e42a9171"
+],
+"world_definition.characters[Thief]": [
+"038d1ae4945d1306",
+"b19db795eaa555b6",
+"f248bd39dfb87980"
+]
+},
+"stats.yaml": {
+"world_definition": [
+"97b96623635c539e"
+],
+"world_definition.character_stats": [
+"00e6990e1b9c1bca"
+],
+"world_definition.character_stats.allocation": [
+"46854b0b5d9bc58a"
+],
+"world_definition.character_stats.allocation.max_points": [
+"f5ca38f748a1d6ea"
+],
+"world_definition.character_stats.allocation.min_points": [
+"ef2d127de37b942b"
+],
+"world_definition.character_stats.allocation.total_points": [
+"1a6562590ef19d10"
+],
+"world_definition.character_stats.allocation.value_per_point": [
+"ef2d127de37b942b"
+],
+"world_definition.character_stats.damage_reduction_stat": [
+"4b9f71d39011fa80"
+],
+"world_definition.character_stats.defined_points": [
+"20b665ddbddeeb9c"
+],
+"world_definition.character_stats.defined_points.attack": [
+"3fdba35f04dc8c46"
+],
+"world_definition.character_stats.defined_points.defence": [
+"3fdba35f04dc8c46"
+],
+"world_definition.character_stats.defined_points.persuasion": [
+"6b51d431df5d7f14"
+],
+"world_definition.character_stats.defined_points.stealth": [
+"6b51d431df5d7f14"
+],
+"world_definition.character_stats.mode": [
+"60204117ffa6ea06"
+],
+"world_definition.character_stats.stats": [
+"c8e0e40eedf4b376"
+],
+"world_definition.character_stats.stats.attack": [
+"e18076120b94d262"
+],
+"world_definition.character_stats.stats.attack.description": [
+"02fbc4bd9871aab6"
+],
+"world_definition.character_stats.stats.defence": [
+"2c61556f7012c12e"
+],
+"world_definition.character_stats.stats.defence.description": [
+"3bed985fc8978162"
+],
+"world_definition.character_stats.stats.persuasion": [
+"7e0ee4523ee82264"
+],
+"world_definition.character_stats.stats.persuasion.bribing and bargaining your way through.": [
+"74234e98afe7498f"
+],
+"world_definition.character_stats.stats.persuasion.description": [
+"014ae9ac9a09120e"
+],
+"world_definition.character_stats.stats.stealth": [
+"a6c5aa8a6d644519"
+],
+"world_definition.character_stats.stats.stealth.description": [
+"442051d515ce58b0"
+],
+"world_definition.character_stats.stats.stealth.picking pockets and locks.": [
+"74234e98afe7498f"
+],
+"world_definition.character_stats.tag_checks": [
+"1561413b1f4bf26b"
+],
+"world_definition.character_stats.tag_checks.combat": [
+"5606de526d2238f4"
+],
+"world_definition.character_stats.tag_checks.stealth": [
+"aa3f4bdf32277110"
+]
+},
+"variables.yaml": {
+"world_definition": [
+"2e1de59e0947dd44",
+"64dd0f6bc9fc064f"
+],
+"world_definition.variables[fence_exposed]": [
+"f7d63d018291889c"
+],
+"world_definition.variables[pit_champion]": [
+"383c7c17810bd817"
+],
+"world_definition.variables[reputation]": [
+"283cfae03c8b9be5"
+],
+"world_definition.variables[thief_caught]": [
+"142347103ab441d7"
+]
+}
+},
+"format": 1
+}

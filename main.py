@@ -1,6 +1,9 @@
 import random
+import contextlib
 import copy
 import os
+import pickle
+import tempfile
 import datetime
 import sys
 import threading
@@ -13,7 +16,8 @@ from core_engine import Genome, Location, WorldGraph, Action, Outcome, GameState
 from core_engine.actions import REPEAT_RULES
 from core_engine.narration import message
 from core_engine import stats, variables
-from core_engine.evolution import LearningMemory, NarrativeEvolution
+from core_engine import players
+from core_engine.evolution import LearningMemory, NarrativeEvolution, evolution_settings
 # World building and fitness live in core_engine (also shipped in offline engine exports).
 from core_engine.builder import (  # noqa: F401  (re-exported for callers of main)
     _SPAWN_RULES_CACHE, _build_action, _build_outcome, _build_spawn_rules, _coerce_list, _interaction_prompts,
@@ -192,13 +196,15 @@ def evaluate_genome(genome, rng_seed=None, stop_event=None):
 
         world = build_world(genome)
         state = GameState(world, genome, rng=rng)
+        # A simulated player takes the player's turns (evolution.player, core_engine/players.py).
+        player = players.for_settings(f"{rng_seed}:{episodes_completed}", evolution_settings())
 
         for _ in range(MAX_STEPS):
             if stop_event and stop_event.is_set():
                 break
             if state.health <= 0:
                 break
-            if not state.step():
+            if not (players.take_turn(state, player) if player is not None else state.step()):
                 break
 
         episode_score = fitness(state)
@@ -266,12 +272,66 @@ def _worker_evaluate_genome(args):
     return index, score, episode_score
 
 
-def _evaluation_worker_count(population_size):
+def _usable_cpus():
+    """The CPUs this process may run on (a container's CPU set), else all of them."""
+    try:
+        return len(os.sched_getaffinity(0)) or 1
+    except (AttributeError, OSError):
+        return os.cpu_count() or 1
+
+
+def _evaluation_worker_count(parallel_tasks):
+    """Processes for ``parallel_tasks`` evaluations at once: evolution.evaluation_threads (auto:
+    the CPUs this process may use), at most evolution.max_evaluation_processes."""
     configured = EVALUATION_THREADS
     if isinstance(configured, str) and configured.lower() == "auto":
-        configured = os.cpu_count() or 1
+        configured = _usable_cpus()
     maximum = int(config.get("evolution.max_evaluation_processes", 16))
-    return max(1, min(int(configured), maximum, population_size))
+    return max(1, min(int(configured), maximum, int(parallel_tasks)))
+
+
+@contextlib.contextmanager
+def story_pool(stories_per_generation):
+    """``map_fn`` for NarrativeEvolution while the block runs: a pool of processes plays a
+    generation's stories at once (None when one process is enough, or with
+    evolution.parallel_backend other than processes). The processes are started afresh
+    (spawned) with this process's world and tag vectors, so they score exactly as this process
+    would, and a server with threads can start them safely (a forked copy of it could inherit
+    a lock another thread holds)."""
+    workers = _evaluation_worker_count(stories_per_generation)
+    if workers <= 1 or PARALLEL_BACKEND != "processes":
+        yield None
+        return
+    import multiprocessing
+
+    from core_engine.model import world_tags
+    from utils.tag_similarity import export_tag_vectors
+
+    active = config.as_dict()
+    # The world goes to the processes in a file: sent along with each process, it would hold
+    # up the start of the next one until this one had read it (a pipe holds 64 KB).
+    handle, world_file = tempfile.mkstemp(prefix="ane-world-", suffix=".pickle")
+    finished = False
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            pickle.dump((active, export_tag_vectors(world_tags(active))), stream, protocol=pickle.HIGHEST_PROTOCOL)
+        pool = ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
+                                   initializer=_init_story_worker, initargs=(world_file,))
+        try:
+            yield lambda function, tasks: list(pool.map(function, tasks))
+            finished = True
+        finally:  # a stopped or failed run does not wait for the stories still being played
+            pool.shutdown(wait=finished, cancel_futures=True)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(world_file)
+
+
+def _init_story_worker(world_file):
+    """A story_pool process starts from the world and tag vectors story_pool wrote."""
+    with open(world_file, "rb") as stream:
+        config_data, tag_vectors = pickle.load(stream)
+    _init_spawned_worker(config_data, tag_vectors)
 
 
 def evaluate_population(population, generation, base_seed, stop_event=None, executor=None):
@@ -349,7 +409,7 @@ def evolve(stop_event=None, progress=None):
 
     Returns (best mean score, best genome, best episode score, best episode state).
     """
-    max_workers = _evaluation_worker_count(POP_SIZE)
+    max_workers = _evaluation_worker_count(POP_SIZE * max(1, int(EPISODES_PER_GENOME)))  # one task per story
     executor = None
     if max_workers > 1:
         executor = (_new_process_pool(max_workers) if PARALLEL_BACKEND == "processes"
@@ -654,9 +714,11 @@ def run_story(world_path=None):
                             interactive=sim_interactive)
     story_id = records.record_story(final_state, "terminal", "terminal", run_id=run_id, engine_id=model.id,
                                     parameters={"interactive": sim_interactive})
+    # A person plays it in the terminal (interactive); otherwise a simulated player does.
+    final_player = None if sim_interactive else players.for_settings(0, evolution_settings())
     for _ in range(max(MAX_STEPS, config.get("narrative_end.max_actions", 100))):  # the whole story
         if final_state.health <= 0: break
-        if not final_state.step(): break
+        if not (players.take_turn(final_state, final_player) if final_player else final_state.step()): break
         records.update_story(story_id, final_state)
     records.update_story(story_id, final_state)
     
@@ -736,7 +798,7 @@ def _load_model(reference):
 
 
 def _parallel_map():
-    workers = _evaluation_worker_count(POP_SIZE)
+    workers = _evaluation_worker_count(POP_SIZE * max(1, int(EPISODES_PER_GENOME)))  # one task per story
     if workers <= 1:
         return None, None
     executor = _new_process_pool(workers) if PARALLEL_BACKEND == "processes" else ThreadPoolExecutor(max_workers=workers)

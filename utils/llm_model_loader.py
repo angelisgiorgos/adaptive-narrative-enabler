@@ -5,7 +5,9 @@ separate model copies. It supports an embedded vLLM engine and an optional
 OpenAI-compatible vLLM server.
 """
 
+import importlib.util
 import json
+import os
 import threading
 import urllib.error
 import urllib.request
@@ -13,13 +15,68 @@ import urllib.request
 from utils.config_loader import config
 
 
+# How to make the judge available, for messages that say it is not.
+HOW_TO_ENABLE = (
+    "Start a vLLM server with the judge model and point the API at it: with Docker, "
+    "`docker compose --profile judge up -d judge` (the API finds it at http://hamlet-ane-judge:8000/v1, "
+    "set by ANE_JUDGE_URL); otherwise set ANE_JUDGE_URL to the server's /v1 address, or vllm.mode: server "
+    "and vllm.base_url in 5 · Engine logic."
+)
+
+
+def settings():
+    """The language model's settings: vllm.* (hyperparameters.yaml), with the environment over
+    them: ANE_JUDGE_URL (an OpenAI-compatible vLLM server's /v1 address: server mode),
+    ANE_JUDGE_API_KEY and ANE_JUDGE_MODEL."""
+    url = os.environ.get("ANE_JUDGE_URL", "").strip()
+    return {
+        "mode": "server" if url else config.get("vllm.mode", "embedded"),
+        "base_url": (url or config.get("vllm.base_url", "http://127.0.0.1:8000/v1")).rstrip("/"),
+        "api_key": os.environ.get("ANE_JUDGE_API_KEY", "").strip() or config.get("vllm.api_key", "local-vllm"),
+        "model_name": os.environ.get("ANE_JUDGE_MODEL", "").strip()
+        or config.get("vllm.model_name", "google/gemma-4-E4B-it"),
+    }
+
+
+def status(timeout=3.0):
+    """Whether the language model can be used from here: {available, mode, model, server,
+    reason, how}; a server is asked which models it serves."""
+    active = settings()
+    found = {"available": False, "mode": active["mode"], "model": active["model_name"],
+             "server": active["base_url"] if active["mode"] == "server" else None, "reason": None, "how": HOW_TO_ENABLE}
+    if active["mode"] == "server":
+        request = urllib.request.Request(f"{active['base_url']}/models",
+                                         headers={"Authorization": f"Bearer {active['api_key']}"})
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                served = [model.get("id") for model in json.loads(response.read().decode("utf-8")).get("data") or []]
+        except urllib.error.HTTPError as exc:  # it answers, but refuses (a wrong API key, ...)
+            found["reason"] = (f"The vLLM server at {active['base_url']} refused the request (HTTP {exc.code}); "
+                               "check vllm.api_key or ANE_JUDGE_API_KEY.")
+            return found
+        except (OSError, ValueError) as exc:  # not running, unreachable, refused, not a vLLM server
+            found["reason"] = f"No vLLM server answers at {active['base_url']} ({getattr(exc, 'reason', exc)})."
+            return found
+        if served and active["model_name"] not in served:
+            found["reason"] = (f"The vLLM server at {active['base_url']} serves {', '.join(map(str, served))}, "
+                               f"not {active['model_name']} (vllm.model_name or ANE_JUDGE_MODEL).")
+            return found
+    elif active["mode"] == "embedded":
+        if importlib.util.find_spec("vllm") is None:
+            found["reason"] = "vLLM is not installed here, so the model cannot run inside this process."
+            return found
+    else:
+        found["reason"] = "vllm.mode must be either 'embedded' or 'server'."
+        return found
+    found["available"], found["how"] = True, None
+    return found
+
+
 class VLLMRuntime:
     def __init__(self, model_name=None):
-        self.model_name = model_name or config.get(
-            "vllm.model_name",
-            "google/gemma-4-E4B-it",
-        )
-        self.mode = config.get("vllm.mode", "embedded")
+        active = settings()
+        self.model_name = model_name or active["model_name"]
+        self.mode = active["mode"]
         self._engine = None
         self._sampling_params_class = None
         self._lock = threading.Lock()
@@ -32,8 +89,7 @@ class VLLMRuntime:
             from vllm import LLM, SamplingParams
         except ImportError as exc:
             raise RuntimeError(
-                "vLLM is required for LLM features. Install the environment or "
-                "set vllm.mode to 'server' and start a vLLM server."
+                "vLLM is required for LLM features and is not installed here. " + HOW_TO_ENABLE
             ) from exc
 
         engine_kwargs = {
@@ -93,7 +149,8 @@ class VLLMRuntime:
         return outputs[0].outputs[0].text
 
     def _generate_server(self, prompt, max_new_tokens, temperature, **kwargs):
-        base_url = config.get("vllm.base_url", "http://127.0.0.1:8000/v1").rstrip("/")
+        active = settings()
+        base_url = active["base_url"]
         request_body = json.dumps({
             "model": self.model_name,
             "messages": [{"role": "user", "content": prompt}],
@@ -107,7 +164,7 @@ class VLLMRuntime:
             method="POST",
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {config.get('vllm.api_key', 'local-vllm')}",
+                "Authorization": f"Bearer {active['api_key']}",
             },
         )
         try:
@@ -118,7 +175,8 @@ class VLLMRuntime:
                 payload = json.loads(response.read().decode("utf-8"))
         except (urllib.error.URLError, TimeoutError) as exc:
             raise RuntimeError(
-                f"Could not reach the vLLM server at {base_url}: {exc}"
+                f"Could not reach the vLLM server at {base_url} ({getattr(exc, 'reason', exc)}). "
+                + HOW_TO_ENABLE
             ) from exc
         return payload["choices"][0]["message"]["content"]
 
@@ -145,11 +203,9 @@ _RUNTIMES_LOCK = threading.Lock()
 
 
 def get_llm_runtime(model_name=None):
-    active_model = model_name or config.get(
-        "vllm.model_name",
-        "google/gemma-4-E4B-it",
-    )
-    key = (config.get("vllm.mode", "embedded"), active_model)
+    active = settings()
+    active_model = model_name or active["model_name"]
+    key = (active["mode"], active_model)
     with _RUNTIMES_LOCK:
         if key not in _RUNTIMES:
             _RUNTIMES[key] = VLLMRuntime(model_name=active_model)

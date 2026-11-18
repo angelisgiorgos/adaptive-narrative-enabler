@@ -121,6 +121,8 @@ class Game:
             "choices": [{"name": name, "check": state.check_hint(a)} for name, a in
                         zip(actions, state.player_options())] if hasattr(state, "check_hint") and actions else [],
             "event": state.active_event.title if state.active_event else None,
+            # the person the player is talking with (their choices, and leaving), or None
+            "talking_to": state.conversation() if hasattr(state, "conversation") else None,
             "variables": {k: v for k, v in state.variables.items() if k in state.variable_specs or k == "playthroughs"},
             "ended": bool(state.ended),
             "won": bool(state.won),
@@ -136,9 +138,12 @@ class Game:
         index = action if isinstance(action, int) else names.index(action) if action in names else -1
         if not 0 <= index < len(names):
             raise ValueError(f"Unknown action {action!r}. Available: {names}")
-        ranked = [option.name for option in self.state.ranked_available_actions()]  # step() indexes the ranked order
         before = len(self.state.history)
-        self.state.step(ranked.index(names[index]))
+        if hasattr(self.state, "take_option"):  # approaching someone or leaving a conversation: no turn
+            self.state.take_option(next(option for option in self.state.player_options() if option.name == names[index]))
+        else:
+            ranked = [option.name for option in self.state.ranked_available_actions()]  # step() indexes the ranked order
+            self.state.step(ranked.index(names[index]))
         turn = "\n".join(line.strip("\n") for line in self.state.history[before:]).strip()
         return {**self.view(), "turn": turn}  # "turn": the story text of this turn
 

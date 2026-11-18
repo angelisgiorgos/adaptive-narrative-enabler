@@ -12,8 +12,10 @@ engine plays the world as a game, in the studio or offline inside another game a
   persistent variables, and every sentence the engine writes ([WORLD.md](docs/WORLD.md)).
 - **One condition and effect language** for every `enabled_if`, action, event, dialogue line and
   mission goal.
-- **An evolutionary storyteller AI** with a configurable fitness (dramatic arc, setup and payoff,
-  variety, pacing, coherence) and a learning memory across runs ([AI.md](docs/AI.md)).
+- **An evolutionary storyteller AI**: the storyteller directs (the world it builds, who is where,
+  events, which choices are offered) while simulated players choose, as people do. Its fitness (a
+  training objective of operational measures: arc, setup and payoff, variety, pacing, coherence) is
+  not a measure of quality; a language-model judge and playtests assess that ([AI.md](docs/AI.md)).
 - **The studio** (Gradio) and **a REST API** (FastAPI) with the same services: edit, train, play,
   record, judge and export ([STUDIO.md](docs/STUDIO.md), [API.md](docs/API.md)).
 - **Engine models and records**: every run saves a complete engine (world, storyteller, training
@@ -38,8 +40,10 @@ python main.py                               # the terminal generator
 With Docker, `docker compose up --build` serves the studio at `http://localhost:8003` and the API
 at `http://localhost:8004/v1` (interactive documentation at `/docs`).
 
-In the studio: edit the world (*1 · World editor*), set the simulation (*2*), run an evolution
-and play its best storyteller (*4 · Simulate & play*), then export the engine for a game.
+In the studio: create the world (*1 · Create the world*), set the simulation (*2*), train the AI
+(*4 · Train the AI*), then **play your world** in *▶ Play*: choose a trained AI (a finished
+run), start a new game or continue a save game, and play it, choice by choice. Export it to run in
+another game.
 
 ## Documentation
 

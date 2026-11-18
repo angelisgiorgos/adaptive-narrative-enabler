@@ -15,12 +15,12 @@ stories are recorded with the studio as their origin. Errors arrive as ``APIErro
 with the API's message and are shown as UI errors. Files the API offers for
 download are fetched into a temporary folder, since the file widgets need local paths.
 
-    Tab 1 · World editor           /v1/entities/... (form, actions, rules, every field as YAML),
+    Tab 1 · Create the world           /v1/entities/... (form, actions, rules, every field as YAML),
                                    /v1/documents/missions, /v1/documents/map, /v1/lint/failures
     Tab 2 · Simulation settings    /v1/config/..., /v1/settings, /v1/documents/..., /v1/variables/...,
                                    /v1/rules, /v1/hyperparameters
     Tab 3 · Weights                /v1/weights
-    Tab 4 · Simulate & play        /v1/jobs/..., /v1/engines/load, /v1/sessions/... (and its judge),
+    Tab 4 · Train the AI        /v1/jobs/..., /v1/engines/load, /v1/sessions/... (and its judge),
                                    /v1/stats/..., /v1/learning, /v1/exports, /v1/records/... (and their
                                    judge), /v1/judge/compare
     Tab 5 · Engine logic & app     /v1/logic/..., /v1/app-settings
@@ -209,9 +209,25 @@ def _path(*parts):
 
 
 CSS = """
-.hero {padding: 1.25rem; border-radius: 18px; background: linear-gradient(120deg,#17233f,#4a244f); color:#fff}
+.hero {padding: 1.1rem 1.4rem; border-radius: 18px; background: linear-gradient(120deg,#17233f,#4a244f); color:#fff}
+.hero h1 {margin: 0 0 .2rem 0; color: #fff}
+.hero p {margin: 0; opacity: .9; color: #fff}
+.workflow {padding: .35rem .9rem; border-radius: 12px; border: 1px solid var(--border-color-primary);
+           background: var(--background-fill-secondary); font-size: .95rem}
 .status {border-left: 4px solid #8b5cf6; padding-left: 1rem}
+.play-hud {padding: .55rem .95rem; border-radius: 12px; border: 1px solid var(--border-color-primary);
+           background: var(--background-fill-secondary); font-size: 1.02rem}
+.scene-card {padding: .9rem 1.2rem; border-radius: 14px; border: 1px solid var(--border-color-primary);
+             background: var(--block-background-fill); line-height: 1.55}
+.turn-card {padding: .2rem 1.2rem; border-left: 4px solid #8b5cf6}
+.ending {padding: .6rem 1rem; border-radius: 12px; border-left: 6px solid #22c55e;
+         background: var(--background-fill-secondary)}
+button.choice {justify-content: flex-start !important; text-align: left !important; white-space: normal !important;
+               font-weight: 500}
 """
+THEME = gr.themes.Soft(primary_hue="violet", secondary_hue="indigo", neutral_hue="slate")
+WORKFLOW = ("**① Create the world** → **② Simulation settings** → **③ Weights** → **④ Train the AI** → "
+            "**▶ Play** your world → **Export** it for a game (in ④) → **⑥ Evaluate** with the judge")
 EMPTY_ENTITY = {"name": "", "tags": [], "descriptions": [], "goals": [], "unique": False, "encounter_event": None,
                 "encounter_repeat": False, "enabled_if": None, "title": None, "stat_bonus": None,
                 "start_eligible": False, "start_weight": 1.0, "role": None, "secret": None}
@@ -680,7 +696,7 @@ def learning_memory_text():
     if not memory["size"]:
         return "The AI has not learned anything yet: the next run starts from random storytellers."
     best = max(entry["score"] for entry in memory["hall_of_fame"])
-    return (f"The AI remembers **{memory['size']}** storyteller(s) from earlier runs (best score {best:.1f}). "
+    return (f"The AI remembers **{memory['size']}** storyteller(s) from earlier runs (best fitness {best:.1f}). "
             "New runs continue from them when *Continue learning* is on.")
 
 
@@ -990,7 +1006,7 @@ def _export_status(result):
     score = f"{result['score']:.1f}" if isinstance(result["score"], (int, float)) else "not benchmarked"
     if result.get("engine_id"):
         score += f", engine `{result['engine_id'][:8]}`"
-    return (f"Exported **{result['name']}**: {result['source']} (benchmark score {score}). "
+    return (f"Exported **{result['name']}**: {result['source']} (fitness {score}, the training objective). "
             f"World: {result['world']['locations']} locations, {result['world']['npcs']} NPCs, "
             f"{result['world']['missions']} missions. "
             + ("Unzip it and run `python run.py play` or `python run.py serve`." if result.get("platform", "python") == "python"
@@ -1028,6 +1044,136 @@ def export_engine_ui(source_label, run_id, generation, token, include_memory, na
     return [API.download(result["download_url"])], _export_status(result)
 
 
+# ---- ▶ Play: the world of a finished run, as a game ---------------------------------------------
+
+CHOICE_BUTTONS = 8
+PLAY_STATS = ["story default", "random", "balanced"]
+
+
+def studio_status_ui():
+    """One line on the studio's state: the active world, the trained AIs, recording."""
+    parts = []
+    try:
+        world = API.get("/v1/world/catalogue")
+        parts.append(f"🌍 **World:** {len(world['locations'])} places · {len(world['npcs'])} people · "
+                     f"{len(world['items'])} items · {len(world['events'])} events · {len(world['missions'])} quests")
+    except APIError as exc:
+        LOG.warning("The world could not be read: %s", exc)
+    try:
+        runs = API.get("/v1/exports/engines")["engines"]
+        parts.append(f"🧠 **Trained AIs:** {len(runs)}" + ("" if runs else " (train one in ④)"))
+    except APIError as exc:
+        LOG.warning("The trained AIs could not be read: %s", exc)
+    try:
+        parts.append("🗂 Recording " + ("on" if API.get("/v1/records")["enabled"] else "off"))
+    except APIError:
+        pass
+    return " · ".join(parts)
+
+
+def _hud(state):
+    """The game's status bar: where, health (a bar), coins, the quest's current step, an event."""
+    health, most = state.get("health"), state.get("max_health")
+    parts = [f"📍 **{state.get('location') or '?'}**"]
+    if isinstance(health, int) and most:
+        filled = max(0, min(10, round(10 * max(0, health) / most)))
+        parts.append(f"❤ `{'█' * filled}{'░' * (10 - filled)}` {health}/{most}")
+    if state.get("coins") is not None:
+        parts.append(f"🪙 {state['coins']}")
+    quest = state.get("quest") or {}
+    if quest:
+        now = next((stage["title"] for stage in quest.get("stages") or [] if stage.get("state") == "current"), None)
+        parts.append(f"🎯 {quest.get('title')}" + (f" · now: {now}" if now else ""))
+    if state.get("event"):
+        parts.append(f"⚡ {state['event']}")
+    if state.get("talking_to"):
+        parts.append(f"💬 talking with {state['talking_to']}")
+    return "  ·  ".join(parts)
+
+
+def _play_screen(state):
+    """The game screen for a play state: how the story ended (when it has), the status bar, the
+    scene, what just happened, a button per choice (with the check it involves), the quest log,
+    the people and the map, and the choices' names (what the buttons take)."""
+    actions = list(state.get("actions") or [])
+    checks = {item["name"]: item.get("check") for item in state.get("choices") or []}
+    buttons = [gr.Button(value=f"{i + 1}.  {actions[i]}"
+                         + (f"   ·   🎲 {_check_text(checks[actions[i]])}" if checks.get(actions[i]) else ""),
+                         visible=True) if i < len(actions) else gr.Button(visible=False)
+               for i in range(CHOICE_BUTTONS)]
+    ending = ""
+    if state.get("ended"):
+        ending = ("## 🏆 Quest complete\n" if state.get("won") else "## The end\n") + (state.get("end_reason") or "")
+    turn = state.get("last_turn") or ""
+    return (gr.Markdown(value=ending, visible=bool(ending)), gr.Markdown(value=_hud(state), visible=True),
+            state["scene"], gr.Markdown(value=f"### What happened\n{turn}" if turn else "", visible=bool(turn)),
+            *buttons, quest_markdown(state.get("quest")), people_markdown(state), actions)
+
+
+def _story_so_far(token):
+    try:
+        return API.get(_path("/v1/sessions", token, "transcript"))["transcript"]
+    except APIError:
+        return ""
+
+
+def play_runs_ui(chosen=None):
+    """The trained AIs to play (finished runs, newest first; the newest chosen)."""
+    choices = finished_run_choices()
+    ids = [value for _, value in choices]
+    return gr.Dropdown(choices=choices, value=chosen if chosen in ids else (ids[0] if ids else None))
+
+
+def play_quests_ui(profile):
+    choices, _ = quest_overview(profile)
+    return gr.Dropdown(choices=choices, value="")
+
+
+@ui
+def play_new_game_ui(engine_id, profile, mission, stats_choice):
+    """A new game in the world of the chosen finished run (the newest when none is chosen)."""
+    body = {"profile": profile or None, "mission": mission or None}
+    if stats_choice in ("random", "balanced"):
+        body["stats_mode"] = stats_choice
+    game = API.post(_path("/v1/engines", engine_id or "latest", "play"), body)
+    return (game["session_id"], *_play_screen(game), _story_so_far(game["session_id"]), game.get("report") or "")
+
+
+@ui
+def play_choose_ui(token, actions, index):
+    """The player takes the choice of button ``index``."""
+    if not token:
+        raise gr.Error("Start a new game first (choose a trained AI and press New game).")
+    if index >= len(actions or []):
+        raise gr.Error("That choice is no longer there.")
+    state = API.post(_path("/v1/sessions", token, "actions"), {"action": actions[index]})
+    return (*_play_screen(state), _story_so_far(token))
+
+
+@ui
+def play_end_ui(token):
+    """Stop here: the progression is saved and the session reported."""
+    if not token:
+        raise gr.Error("Start a new game first.")
+    state = API.post(_path("/v1/sessions", token, "end"))
+    return (*_play_screen(state), _story_so_far(token))
+
+
+@ui
+def play_continue_ui(upload, token):
+    """Continue a save game (from here, tab 4 or the ANE AI)."""
+    if not upload:
+        raise gr.Error("Choose a save game (.json) to continue.")
+    try:
+        doc = json.loads(Path(upload).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise gr.Error(f"Not a JSON save game: {exc}") from exc
+    state = API.post("/v1/sessions/load", {"savegame": doc, "session_id": token or None})
+    status = ("Continued exactly where it was saved." if state["restored"] == "exact"
+              else f"Rebuilt from its parameters ({state.get('note') or 'no usable snapshot'}).")
+    return (state["session_id"], *_play_screen(state), _story_so_far(state["session_id"]), status)
+
+
 # ---- records (/v1/records) -------------------------------------------------------------------
 
 def _recorded(path, key, **params):
@@ -1047,10 +1193,12 @@ def records_status_text():
         info = API.get("/v1/records")
     except APIError as exc:
         return f"The records cannot be reached: {exc}"
-    status = (f"Recording to `{info['directory']}`." if info["enabled"]
-              else f"Recording is off: {info.get('reason') or 'ANE_RECORDS=off'}."
-              + (" The records already there are shown." if info.get("readable") else ""))
-    return status + " Every run, engine, world and story generated here, in the API or in the terminal is kept there."
+    if info["enabled"]:
+        return ("Recording is on: every run, engine, world and story generated here, in the API or in the terminal "
+                "is kept in the records.")
+    return (f"Recording is off: {info.get('reason') or 'ANE_RECORDS=off'}."
+            + (" The records already there are shown." if info.get("readable") else "")
+            + " Finished runs are kept with the saves, so they can still be exported.")
 
 
 @ui
@@ -1097,7 +1245,7 @@ def run_detail_ui(run_id):
         return "", pd.DataFrame()
     run = API.get(_path("/v1/records/runs", run_id))
     best = f"{run['best_score']:.1f}" if isinstance(run.get("best_score"), (int, float)) else "-"
-    head = (f"**{run['origin']} {run['kind']}** · {run['status']} · best score {best} · "
+    head = (f"**{run['origin']} {run['kind']}** · {run['status']} · best fitness {best} · "
             f"{run.get('generations_run') or 0} generation(s) · world `{run.get('world_id')}` · "
             f"{len(run.get('engines') or [])} engine(s), {len(run.get('stories') or [])} story(ies)"
             + (f"\n\n**Error:** {run['error']}" if run.get("error") else ""))
@@ -1201,6 +1349,17 @@ def story_view_ui(story_id):
 
 # ---- the judge (Gemma 4 as a game critic: /v1/sessions/{id}/judge, /v1/records/stories/{id}/judge,
 # /v1/judge/compare) -------------------------------------------------------------------------------
+
+def judge_status_ui():
+    """Whether the judge can be used here and, if not, why and how to make it available
+    (GET /v1/judge/status)."""
+    status = API.get("/v1/judge/status")
+    if status.get("available"):
+        where = f" at `{status['server']}`" if status.get("server") else " (in the API's process)"
+        return f"✅ **The judge is ready:** {status.get('model')}{where}."
+    return (f"⚠ **The judge is not available here.** {status.get('reason') or ''}\n\n"
+            f"{status.get('how') or ''}")
+
 
 def judgement_markdown(result, title="Judgement"):
     """A judgement of one story: engagement, the criteria, the best and weakest moments, the verdict."""
@@ -1354,12 +1513,15 @@ def build_app():
         session_token = gr.State("")
         gr.Markdown(
             "# Adaptive Narrative Studio\n"
-            "Author the world, test its narrative behavior, then play the generated game.",
+            "Create a world, train an AI storyteller on it, then play it as a game.",
             elem_classes="hero",
         )
+        gr.Markdown(WORKFLOW, elem_classes="workflow")
+        studio_status = gr.Markdown(elem_classes="status")
+        demo.load(studio_status_ui, None, studio_status)
 
         with gr.Tabs():
-            with gr.Tab("1 · World editor"):
+            with gr.Tab("1 · Create the world"):
                 with gr.Row():
                     kind = gr.Radio(REFERENCE["entity_kinds"], value="Locations", label="Content type")
                     entity = gr.Dropdown(label="Entry", choices=names, value=selected_name)
@@ -1761,7 +1923,7 @@ def build_app():
                 weights_status = gr.Markdown()
                 save_weights_button.click(save_weights, [gr.State(weight_paths), *weight_components], weights_status)
 
-            with gr.Tab("4 · Simulate & play"):
+            with gr.Tab("4 · Train the AI"):
                 gr.Markdown("Run a quick tournament of narrative genomes. The strongest result becomes your playable game.")
                 with gr.Accordion("Load a previous best engine", open=False):
                     gr.Markdown(
@@ -1959,8 +2121,10 @@ def build_app():
                             end_session_button = gr.Button("End this session", variant="stop")
                         turn_result = gr.Textbox(label="Last turn", lines=7, interactive=False)
                         with gr.Accordion("Judge this playthrough (Gemma 4 as a game critic)", open=False):
+                            game_judge_status = gr.Markdown()
                             judge_game_button = gr.Button("Judge the game played so far")
                             game_judgement = gr.Markdown()
+                            demo.load(judge_status_ui, None, game_judge_status)
                     with gr.Column(scale=2):
                         quest_panel = gr.Markdown("### Quest\nStart a game to see its quest.")
                         people_panel = gr.Markdown("### People met\nNobody yet.")
@@ -2064,6 +2228,69 @@ def build_app():
                 for button in (run_button, load_engine_button):
                     button.click(refresh_records_ui, None, record_lists)
 
+            with gr.Tab("▶ Play"):
+                gr.Markdown(
+                    "### Play the world after training\n"
+                    "Choose a **trained AI** (a finished run: the newest is chosen), who plays and the quest, and "
+                    "press **New game**: you play the world it was trained on, and its storyteller directs the "
+                    "story (what is offered, who is where, events, how the story answers). Each button is a "
+                    "choice, with its skill check. Save the game to continue it later, here or in the ANE AI."
+                )
+                play_token = gr.State("")
+                play_actions = gr.State([])
+                play_finished = finished_run_choices()
+                play_first_quests, _ = quest_overview(profiles["default"])
+                with gr.Row():
+                    play_run = gr.Dropdown(play_finished, value=play_finished[0][1] if play_finished else None,
+                                           label="Trained AI (finished run)", scale=3,
+                                           info="Newest first. Train one in 4 · Train the AI.")
+                    play_refresh = gr.Button("↻ Refresh", scale=0, min_width=110)
+                    play_who = gr.Dropdown(profiles["profiles"], value=profiles["default"], allow_custom_value=True,
+                                           label="Player profile", scale=2,
+                                           info="Its progression and persistent variables are kept.")
+                    play_quest = gr.Dropdown(play_first_quests, value="", label="Quest", scale=2)
+                    play_stats = gr.Radio(PLAY_STATS, value="story default", label="Character", scale=2)
+                with gr.Row():
+                    play_new = gr.Button("New game", variant="primary", scale=2)
+                    play_upload = gr.File(label="…or continue a save game (.json)", file_types=[".json"],
+                                          type="filepath", scale=2)
+                    play_continue = gr.Button("Continue it", scale=1)
+                play_status = gr.Markdown()
+                with gr.Row():
+                    with gr.Column(scale=3):
+                        play_ending = gr.Markdown(elem_classes="ending", visible=False)
+                        play_hud = gr.Markdown(elem_classes="play-hud", visible=False)
+                        play_scene = gr.Markdown("Choose a trained AI and press **New game**.", elem_classes="scene-card")
+                        play_turn = gr.Markdown(elem_classes="turn-card", visible=False)
+                        play_buttons = [gr.Button(visible=False, elem_classes="choice", size="lg")
+                                        for _ in range(CHOICE_BUTTONS)]
+                        with gr.Row():
+                            play_save = gr.Button("Save game")
+                            play_stop = gr.Button("End the game", variant="stop")
+                        play_save_file = gr.File(label="Save game (JSON)", interactive=False)
+                    with gr.Column(scale=2):
+                        play_quest_log = gr.Markdown("### Quest\nStart a game to see its quest.")
+                        play_people = gr.Markdown("### People met\nNobody yet.")
+                with gr.Accordion("The story so far", open=False):
+                    play_story = gr.Textbox(lines=16, max_lines=40, interactive=False, show_label=False,
+                                            autoscroll=True)
+                play_screen = [play_ending, play_hud, play_scene, play_turn, *play_buttons, play_quest_log,
+                               play_people, play_actions]
+                play_refresh.click(play_runs_ui, play_run, play_run)
+                demo.load(play_runs_ui, play_run, play_run)
+                for event in engine_events:  # a run has finished: it is the newest to play
+                    event.then(lambda: play_runs_ui(), None, play_run).then(studio_status_ui, None, studio_status)
+                play_who.change(play_quests_ui, play_who, play_quest)
+                play_new.click(play_new_game_ui, [play_run, play_who, play_quest, play_stats],
+                               [play_token, *play_screen, play_story, play_status], concurrency_limit=1)
+                play_continue.click(play_continue_ui, [play_upload, play_token],
+                                    [play_token, *play_screen, play_story, play_status], concurrency_limit=1)
+                for index, button in enumerate(play_buttons):
+                    button.click(lambda token, actions, index=index: play_choose_ui(token, actions, index),
+                                 [play_token, play_actions], [*play_screen, play_story], concurrency_limit=1)
+                play_stop.click(play_end_ui, play_token, [*play_screen, play_story], concurrency_limit=1)
+                play_save.click(download_savegame_ui, play_token, [play_save_file, play_status])
+
             with gr.Tab("5 · Engine logic & app parameters"):
                 gr.Markdown(
                     "The engine's logic runs in the backend scripts; here you change **how it behaves** "
@@ -2114,6 +2341,11 @@ def build_app():
                     "Stories are played in a separate process, so the games in progress keep their settings. "
                     "The judge also runs in the loop of evolution when `evolution.judge_weight` > 0 (Engine logic)."
                 )
+                with gr.Row():
+                    judge_status = gr.Markdown()
+                    judge_status_button = gr.Button("Check the judge again", size="sm", scale=0)
+                demo.load(judge_status_ui, None, judge_status)
+                judge_status_button.click(judge_status_ui, None, judge_status)
                 with gr.Accordion("Judge the engine's stories", open=True):
                     with gr.Row():
                         bench_stories = gr.Slider(1, 60, value=10, step=1, label="Stories")
@@ -2161,7 +2393,9 @@ def build_app():
     return demo
 
 
-demo = build_app()
+# The engine's worker processes (training stories, evaluations) are spawned, and a spawned
+# process imports the script that started the studio again, as __mp_main__: it needs no UI.
+demo = build_app() if __name__ != "__mp_main__" else None
 
 
 if __name__ == "__main__":
@@ -2171,4 +2405,5 @@ if __name__ == "__main__":
         server_port=int(os.getenv("ANE_UI_PORT", str(launch["server_port"]))),
         share=os.getenv("ANE_UI_SHARE", str(launch["share"])).lower() in {"1", "true", "yes"},
         css=CSS,
+        theme=THEME,
     )

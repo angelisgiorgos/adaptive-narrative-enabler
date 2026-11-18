@@ -7,14 +7,17 @@ configuration overrides and play sessions are intentionally held in process.
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, Field
 
 import yaml
@@ -272,21 +275,43 @@ api = FastAPI(
     ),
 )
 
+@api.exception_handler(StarletteHTTPException)
+async def _public_http_errors(request, exc):
+    """Every error the API answers, without this server's file paths (public_message)."""
+    if isinstance(exc.detail, str):
+        exc = StarletteHTTPException(status_code=exc.status_code, detail=public_message(exc.detail),
+                                     headers=getattr(exc, "headers", None))
+    return await http_exception_handler(request, exc)
+
+
 origins = [item.strip() for item in os.getenv("ANE_CORS_ORIGINS", "").split(",") if item.strip()]
 if origins:
     api.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
         allow_credentials=False,
-        allow_methods=["GET", "PUT", "POST", "DELETE"],
+        allow_methods=["GET", "PUT", "PATCH", "POST", "DELETE"],
         allow_headers=["Content-Type", "Authorization", "X-ANE-Client"],
     )
 
 
+_SERVER_PATH = re.compile(r"(?<![\w.:/-])/(?!v1/)[\w.@+-]+(?:/[\w.@+-]+)+")
+
+
+def public_message(message: str) -> str:
+    """An error message without this server's file paths (only a file's name): where the records,
+    saves and models are on the server is not the client's business. API routes (/v1/...) stay."""
+    return _SERVER_PATH.sub(lambda match: Path(match.group(0)).name, str(message))
+
+
 def _fail(exc: Exception):
-    message = getattr(exc, "message", None) or str(exc)
+    if isinstance(exc, PermissionError):
+        message = (f"This server is not allowed to use {Path(exc.filename).name if exc.filename else 'a file it needs'} "
+                   "(permission denied).")
+    else:
+        message = getattr(exc, "message", None) or str(exc)
     status = 409 if isinstance(exc, (export.RuntimeUnavailable, export.EngineRequired)) else 400
-    raise HTTPException(status_code=status, detail=message) from exc
+    raise HTTPException(status_code=status, detail=public_message(message)) from exc
 
 
 def _origin(x_ane_client: str | None = Header(default=None)) -> str:
@@ -1065,7 +1090,8 @@ def records_info():
     folder is not writable by this process, recording is off and the records already there
     are still read (``readable``)."""
     enabled = records.enabled()
-    return {"enabled": enabled, "reason": records.disabled_reason(), "directory": str(records.directory()),
+    reason = records.disabled_reason()
+    return {"enabled": enabled, "reason": public_message(reason) if reason else None, "directory": str(records.directory()),
             "database": str(records.database_path()), "models": str(records.models_dir()),
             "readable": records.database_path().exists()}
 
@@ -1117,6 +1143,27 @@ def download_engine_model(engine_id: str):
     os.close(handle)
     model.save(path)
     return FileResponse(path, filename=f"engine-{engine_id}.ane.zip", media_type="application/zip")
+
+
+@api.post("/v1/engines/{engine_id}/play", response_model=SimulationResponse, tags=["Evolution and play"])
+def play_finished_run(engine_id: str, body: EnginePlayRequest | None = None, origin: str = Depends(_origin)):
+    """Play the world a finished run was trained on, with its storyteller (``latest``: the newest
+    finished run; GET /v1/exports/engines lists them). Works without the records: finished runs
+    are kept with the saves. Its world and tuning become the active ones, as when an engine is
+    loaded. 409 before any run has finished."""
+    try:
+        return _game_response(sessions.play_finished_run(engine_id, origin=origin, **_player(body or EnginePlayRequest())))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.get("/v1/sessions/{session_id}/transcript", tags=["Evolution and play"])
+def get_session_transcript(session_id: str):
+    """The story of a play session so far, as text."""
+    return {"session_id": session_id,
+            "transcript": _session_call(session_id, lambda: sessions.session_transcript(session_id))}
 
 
 @api.post("/v1/records/engines/{engine_id}/play", response_model=SimulationResponse, tags=["Records"])
@@ -1499,6 +1546,16 @@ def _evaluation_error(exc):
     if isinstance(exc, RuntimeError):
         raise HTTPException(status_code=503, detail=f"The language model judge is not available: {exc}") from exc
     _fail(exc)
+
+
+@api.get("/v1/judge/status", tags=["Evaluation"])
+def judge_status():
+    """Whether the language model judge (Gemma 4 through vLLM) can be used: {available, mode
+    (server | embedded), model, server (its /v1 address in server mode), reason (why not),
+    how (how to make it available)}. A server is asked which models it serves (3 s at most)."""
+    from utils.llm_model_loader import status
+
+    return status()
 
 
 @api.post("/v1/judge/compare", tags=["Evaluation"])
