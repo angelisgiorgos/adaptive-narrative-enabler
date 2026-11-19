@@ -7,6 +7,28 @@ that introduces them.
 
 ## [Unreleased]
 
+### World editor: drafts, and nothing discarded without asking
+
+#### Added
+- *🌍 World → 📝 Entries* tracks a draft of the entry: *Fields*, *Actions & outcomes*, *Scheduling*,
+  *More details* and the three YAML editors, each against what it held right after its last load or
+  save (read back from the browser, so loads are never edits). A line under the entry says whether
+  anything is unsaved, and which part.
+- Changing the entry, the content type or the action, *New entry*, *New action*, another World section
+  or another destination with unsaved changes is undone and asked about: **Save** (each changed part
+  with its own save, then on), **Discard** (then on) or **Stay**. Closing or reloading the page asks too.
+
+#### Fixed
+- Changing the entry or the content type used to reload every form at once, silently discarding what
+  was being edited; so did *New entry*, adding the language model's proposals (which also changed the
+  entry), and another action replacing an edited one.
+- A failed save no longer reloads anything: the *Every field (YAML)*, scheduling YAML and actions YAML
+  saves used to reload the other forms even when they failed, and the entry's save its YAML. A
+  successful save reloads only what it made out of date and has no unsaved changes of its own.
+- An NPC with a structured goal (`{goal, tags, needed, reward}`, e.g. the Smuggler) could not be opened
+  in the editor (`GET /v1/entities/NPCs/{name}` failed with 500), and saving its fields would have
+  turned the goal into text: it is now a line of YAML in *Goals*, saved back as the structured goal.
+
 ### Train: a run, its progress, its completed engine; the game in ▶ Play
 
 #### Changed

@@ -2756,7 +2756,8 @@ def _prop_value(component):
 
 
 def _error_text(exc):
-    return str(getattr(exc, "message", None) or exc)
+    """An error as the prompt shows it: escaped (a YAML error names '<stream end>', not a tag)."""
+    return html.escape(str(getattr(exc, "message", None) or exc))
 
 
 def _save_draft(dirty, loaded, values):

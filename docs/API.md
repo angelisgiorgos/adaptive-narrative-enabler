@@ -367,8 +367,11 @@ one); `tests/test_studio_coverage.py` checks it.
 **World authoring**
 - `GET /v1/entities/{kind}` lists Locations, NPCs, Items, or Events.
 - `GET|PUT|DELETE /v1/entities/{kind}/{name}` reads, creates, renames,
-  updates, or deletes an entry. Optional fields, which keep their stored value
-  when omitted on `PUT`:
+  updates, or deletes an entry. `goals` is a list of strings; a structured goal
+  (`{goal, tags, needed, reward}`) is one line of YAML in it (`{goal: Get out of
+  this cell, tags: [smuggler_freed], needed: 1, reward: lead}`), and such a line
+  sent back on `PUT` is stored as the structured goal (it used to fail with `500`
+  on `GET`). Optional fields, which keep their stored value when omitted on `PUT`:
   - `unique`, `encounter_event` (send `""` to remove it), and
     `encounter_repeat`: NPCs only.
   - `enabled_if`: locations, NPCs, items, and events (send `{}` to remove it).
