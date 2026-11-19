@@ -1089,7 +1089,9 @@ class StudioServiceTests(_Sandbox):
             self.assertEqual(response.json()["settings"]["candidate_limit"], 30)
             self.assertEqual(yaml.safe_load((self.dir / "ui.yml").read_text())["candidate_limit"], 30)
             self.assertEqual(self.client.put("/v1/app-settings", json={"settings": {"colour": "red"}}).status_code, 400)
-            self.assertEqual(self.client.put("/v1/app-settings", json={"settings": {"candidate_limit": 1}}).status_code, 400)
+            self.assertEqual(self.client.put("/v1/app-settings", json={"settings": {"candidate_limit": 0}}).status_code, 400)
+            # A limit below the saved engine default is allowed: a run's population is held to it (with a note).
+            self.assertEqual(self.client.put("/v1/app-settings", json={"settings": {"candidate_limit": 1}}).status_code, 200)
             for limit, maximum in (("candidate_limit", 400), ("generation_limit", 1000), ("simulation_step_limit", 400)):
                 with self.subTest(limit=limit):
                     self.assertEqual(settings["defaults"][limit], maximum)
