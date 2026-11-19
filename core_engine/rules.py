@@ -128,3 +128,70 @@ def clue_pairs(setup_indices, payoff_indices, matching="any"):
         open_setups.remove(match)
         pairs.append((match[0], match[1], payoff, step))
     return pairs, [tag for tag, _ in open_setups], unmatched
+
+
+# ---- what people do, by their tags (npc_behaviour) ------------------------------------------------
+
+BEHAVIOURS = {
+    # they come up to the player and open a conversation: never, the first time they meet, every visit
+    "starts_conversation": ("never", "first_meeting", "every_visit"),
+    # in how many visits of a story they are shown: always (whenever they fit the scene), once, or a number
+    "appearances": ("always", "once"),
+}
+BEHAVIOUR_DEFAULTS = {"starts_conversation": "never", "appearances": "always"}
+
+
+def npc_behaviour(tags, key, cfg=None):
+    """How someone with ``tags`` behaves (npc_behaviour in hyperparameters.yaml): for ``key``, the
+    first rule that sets it and shares a tag with them, else the default."""
+    if cfg is None:
+        cfg = config.get("npc_behaviour") or {}
+    tags = {str(tag).lower() for tag in tags}
+    for rule in cfg.get("rules") or []:
+        if key in rule and tags & {str(tag).lower() for tag in rule.get("tags") or []}:
+            return rule[key]
+    return (cfg.get("default") or {}).get(key, BEHAVIOUR_DEFAULTS[key])
+
+
+def appearance_limit(value):
+    """The most visits someone is shown in (None: no limit) for an ``appearances`` value."""
+    if value == "once":
+        return 1
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def validate_npc_behaviour(cfg):
+    """Problems of npc_behaviour (empty when it can be used)."""
+    if cfg is None:
+        return []
+    if not isinstance(cfg, dict):
+        return ["npc_behaviour must be a mapping with `default` and `rules`."]
+    errors = []
+
+    def check(values, where):
+        for key, value in values.items():
+            if key == "tags":
+                continue
+            if key not in BEHAVIOURS:
+                errors.append(f"{where}: unknown behaviour `{key}`; use {', '.join(BEHAVIOURS)}.")
+            elif key == "appearances" and isinstance(value, int) and not isinstance(value, bool):
+                if value < 1:
+                    errors.append(f"{where}: appearances must be always, once or a number of visits (1 or more).")
+            elif value not in BEHAVIOURS[key]:
+                choices = ", ".join(BEHAVIOURS[key]) + (" or a number of visits" if key == "appearances" else "")
+                errors.append(f"{where}: {key} must be {choices}, not {value!r}.")
+
+    if not isinstance(cfg.get("default") or {}, dict):
+        errors.append("npc_behaviour.default must be a mapping.")
+    else:
+        check(cfg.get("default") or {}, "npc_behaviour.default")
+    rules_ = cfg.get("rules") or []
+    if not isinstance(rules_, list):
+        return errors + ["npc_behaviour.rules must be a list of {tags, behaviour: value}."]
+    for number, rule in enumerate(rules_, start=1):
+        where = f"npc_behaviour.rules[{number}]"
+        if not isinstance(rule, dict) or not isinstance(rule.get("tags"), list) or not rule["tags"]:
+            errors.append(f"{where} needs `tags`, a list of the tags it is for.")
+            continue
+        check(rule, where)
+    return errors

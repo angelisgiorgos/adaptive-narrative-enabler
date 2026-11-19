@@ -30,13 +30,12 @@ class Character(Conditional):
     DialogueLines chosen by condition when the player talks with the NPC."""
     role = None     # class defaults: games saved before these fields load unchanged
     secret = None
-    starts_conversation = False  # True: they come up to the player the first time they meet
 
     def __init__(self, name, associated_tags, goals=None, 
                  descriptions=None, actions=None, 
                  known_locations=None, known_objects=None, unique=False,
                  encounter_event=None, encounter_repeat=False, enabled_if=None, dialogue=None, article=None,
-                 role=None, secret=None, starts_conversation=False):
+                 role=None, secret=None):
         self.name = name
         # The NPC's part in the story (npc_roles.roles), None: inferred from tags; and a
         # secret the story can reveal ({text, talks, clues, tags, effects}).
@@ -50,7 +49,6 @@ class Character(Conditional):
         self.unique = bool(unique)
         self.encounter_event = encounter_event or None
         self.encounter_repeat = bool(encounter_repeat)
-        self.starts_conversation = bool(starts_conversation)
         self.associated_tags = set(associated_tags)
         self.goals = goals or []
         self.descriptions = descriptions or []

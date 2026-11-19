@@ -1930,9 +1930,36 @@ class GameState(StoryBeats, SessionScope):
             return False
         if not explicit and not self._role_revealed(char):
             return False  # someone who matters, not found yet (npc_roles)
+        if self._appearances_used(char):
+            return False  # seen in as many visits as they appear in (npc_behaviour.appearances)
         if char.unique:
             return self.npc_homes.get(char.name) == self.current.name
         return explicit or self._npc_fits_location(char)
+
+    def _appearances_used(self, char):
+        """Whether ``char`` was already shown in as many visits as their tags allow
+        (npc_behaviour.appearances: once, or a number of visits), this visit not counted. Someone
+        the quest needs now is always shown."""
+        limit = rules.appearance_limit(rules.npc_behaviour(char.associated_tags, "appearances"))
+        if limit is None:
+            return False
+        visits = [tuple(visit) for visit in (self.__dict__.get("npc_visits") or {}).get(char.name, [])]
+        if tuple(self._visit_id()) in visits or len(visits) < limit:
+            return False
+        return not self._quest_needs(char)
+
+    def _quest_needs(self, char):
+        """Whether the quest needs ``char`` now: a target of it, or someone whose choices (or the
+        events they start) advance its current step."""
+        if not self.mission or self.won:
+            return False
+        if char.name in self._mission_targets():
+            return True
+        pending = {key: value for key, value in self._pending_goal().items() if key != "location"}
+        choices = list(char.actions)
+        choices += [ev_a for a in char.actions if a.triggers_event in self.world.events
+                    for ev_a in self.world.events[a.triggers_event].actions]
+        return any(self._advances(a, key, value, char.name) for a in choices for key, value in pending.items())
 
     def _location_is_locked(self, location_name=None):
         """Whether the player cannot leave a location until they escape.
@@ -2788,6 +2815,11 @@ class GameState(StoryBeats, SessionScope):
             # 2. Dynamic NPC visibility (Discovery System)
             self.visible_inhabitants = {c.name for c in self.current_inhabitants}
             self.current_inhabitants = [c for c in self.world.characters if c.name in self.visible_inhabitants]
+            visit = list(self._visit_id())
+            for name in sorted(self.visible_inhabitants):  # in which visits each was shown (appearances)
+                shown = self.__dict__.setdefault("npc_visits", {}).setdefault(name, [])
+                if visit not in shown:
+                    shown.append(visit)
 
             # 3. Dynamic Object visibility (generic items by rank; unique items where their instance lies)
             self.location_objects, self.visible_objects = self._scene_objects(self.current)
@@ -3018,12 +3050,15 @@ class GameState(StoryBeats, SessionScope):
         return offered, False
 
     def _greeting(self, groups):
-        """Someone present who starts the conversation the first time the player meets them."""
+        """Someone present who starts the conversation (npc_behaviour.starts_conversation, by
+        their tags): the first time the player meets them, or on every visit."""
         greeted = self.__dict__.setdefault("greeted", set())
         for person in groups:
             char = next((c for c in self.world.characters if c.name == person), None)
-            if char is not None and getattr(char, "starts_conversation", False) and person not in greeted:
-                greeted.add(person)
+            when = rules.npc_behaviour(char.associated_tags, "starts_conversation") if char is not None else "never"
+            key = person if when == "first_meeting" else "{}@{}#{}".format(person, *self._visit_id())
+            if when in ("first_meeting", "every_visit") and key not in greeted:
+                greeted.add(key)
                 self.talking_to = person
                 called = self._called(person)
                 self._say("npc_approaches", npc=called, npc_cap=called[:1].upper() + called[1:])
