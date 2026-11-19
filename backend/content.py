@@ -307,6 +307,17 @@ def load_entity_yaml(kind: str, name: str) -> str:
     return yaml.safe_dump(copy.deepcopy(_record(kind, name)[2]), sort_keys=False, allow_unicode=True)
 
 
+def _entry_errors(kind: str, record: dict) -> list:
+    """An entry's own problems: its actions, an NPC's role and secret, its condition."""
+    errors = validate_entity_actions(kind, record.get("actions") or [])
+    if kind == "NPCs":
+        if record.get("role") is not None and record["role"] not in role_names():
+            errors.append(f"Unknown role `{record['role']}`; use one of {', '.join(role_names())}.")
+        errors.extend(secret_errors(record.get("secret")))
+    errors.extend(conditions.validate(record.get("enabled_if"), _references(), where="enabled_if"))
+    return errors
+
+
 def save_entity_yaml(kind: str, name: str, yaml_text: str) -> str:
     """Validate and save every field of an entry from YAML (the entry keeps its name: rename it
     with the entry form). The whole world is checked with the entry in place (fields, actions,
@@ -324,12 +335,7 @@ def save_entity_yaml(kind: str, name: str, yaml_text: str) -> str:
             raise AuthoringError("Rename an entry with the entry form (Name), not here.")
     else:
         record.pop("name", None)
-    errors = validate_entity_actions(kind, record.get("actions") or [])
-    if kind == "NPCs":
-        if record.get("role") is not None and record["role"] not in role_names():
-            errors.append(f"Unknown role `{record['role']}`; use one of {', '.join(role_names())}.")
-        errors.extend(secret_errors(record.get("secret")))
-    errors.extend(conditions.validate(record.get("enabled_if"), _references(), where="enabled_if"))
+    errors = _entry_errors(kind, record)
     key = ENTITY_FILES[kind][1]
     world = copy.deepcopy(config.get("world_definition") or {})
     entries = world.setdefault(key, {} if shape == "mapping" else [])
@@ -896,8 +902,15 @@ def _stored_missions() -> dict:
 # The fields of an entry the studio's details form edits (the rest: the entry form, the YAML).
 DETAIL_FIELDS = {
     "NPCs": ("known_locations", "known_objects", "article", "dialogue"),
-    "Locations": ("distant_descriptions", "entered_descriptions", "interact_prompts", "exit_locked"),
+    "Locations": ("distant_descriptions", "entered_descriptions", "interact_prompts", "exit_locked",
+                  "interaction_points"),
 }
+
+
+# A place's points of interest (the terminal editor's interaction points): what the player can
+# look at there, and the action, place, person or item each leads to.
+INTERACTION_POINT_FIELDS = ("id", "label", "prompt", "linked_action", "linked_outcome", "linked_location",
+                            "linked_npc", "linked_item", "notes")
 
 
 def load_entity_details(kind: str, name: str) -> dict:
@@ -925,6 +938,18 @@ def save_entity_details(kind: str, name: str, details: dict) -> dict:
     for number, line in enumerate((details or {}).get("dialogue") or [], start=1):
         if not isinstance(line, dict) or not str(line.get("text", "")).strip():
             errors.append(f"dialogue line {number} needs a text.")
+    people = {entry.get("name") for entry in world.get("characters") or [] if isinstance(entry, dict)}
+    for number, point in enumerate((details or {}).get("interaction_points") or [], start=1):
+        if not isinstance(point, dict) or not str(point.get("label") or point.get("prompt") or "").strip():
+            errors.append(f"interaction point {number} needs a label or a prompt.")
+            continue
+        unknown = sorted(set(point) - set(INTERACTION_POINT_FIELDS))
+        if unknown:
+            errors.append(f"interaction point {number}: no field {', '.join(unknown)}; use {', '.join(INTERACTION_POINT_FIELDS)}.")
+        for field, known, what in (("linked_location", places, "location"), ("linked_npc", people, "NPC"),
+                                   ("linked_item", items, "item")):
+            if point.get(field) and point[field] not in known:
+                errors.append(f"interaction point {number}: {field} `{point[field]}` is not a {what}.")
     if errors:
         raise AuthoringError("The details are invalid:\n" + "\n".join(f"- {e}" for e in errors))
     record = copy.deepcopy(_record(kind, name)[2])
@@ -976,3 +1001,126 @@ def set_borders(place: str, borders) -> tuple:
     order = list(routes) + sorted(set(adjacency) - set(routes))
     updated = {name: sorted(adjacency[name]) for name in order if adjacency.get(name)}
     return save_map(updated or None)
+
+
+# ---- with the language model: suggestions for a field, and the world expanded (proposals) ----------
+
+SUGGESTION_FIELDS = {"descriptions": "Descriptions", "goals": "Goals", "tags": "Tags",
+                     "distant_descriptions": "Distant descriptions", "entered_descriptions": "Entered descriptions",
+                     "interact_prompts": "Interact prompts", "dialogue": "Dialogue lines"}
+
+
+def _need_language_model():
+    """RuntimeError (with how to enable it) when the language model cannot be used from here."""
+    from utils import llm_model_loader
+
+    found = llm_model_loader.status()
+    if not found["available"]:
+        raise RuntimeError(f"The language model is not available: {found['reason']} {found['how'] or ''}".strip())
+
+
+def _world_names():
+    world = config.get("world_definition") or {}
+    return {"locations": sorted(world.get("locations") or {}),
+            "npcs": [c.get("name") for c in world.get("characters") or [] if isinstance(c, dict)],
+            "items": [o.get("name") for o in world.get("objects") or [] if isinstance(o, dict)],
+            "events": sorted(world.get("events") or {}),
+            "missions": {key: (m or {}).get("title") for key, m in (world.get("missions") or {}).items()}}
+
+
+def suggest(kind: str, name: str, field: str) -> list:
+    """Gemma's suggestions for a text field of an entry (the terminal editor's suggestions):
+    a few values in the world's voice. RuntimeError when the language model is not available."""
+    if field not in SUGGESTION_FIELDS:
+        raise AuthoringError(f"No suggestions for `{field}`; use {', '.join(SUGGESTION_FIELDS)}.")
+    from utils.llm_suggester import LLMSuggester
+
+    entry = copy.deepcopy(_record(kind, name)[2]) if name else {}
+    context = {
+        "selection": {"kind": kind, "field_name": field, "entry_name": name},
+        "current_entry": {"name": name, "tags": entry.get("tags") or entry.get("associated_tags") or [],
+                          "goals": entry.get("goals") or [], "descriptions": entry.get("descriptions") or [],
+                          "existing_values": entry.get(field) or [],
+                          "action_names": [a.get("name") for a in entry.get("actions") or [] if isinstance(a, dict)]},
+        "whole_case": _world_names(),
+    }
+    _need_language_model()
+    suggester = LLMSuggester()
+    if not suggester.available():
+        raise RuntimeError(suggester.last_error() or "The language model is not available.")
+    found = suggester.suggest_list(SUGGESTION_FIELDS[field], context)
+    if not found:
+        raise RuntimeError(suggester.last_error() or "The language model suggested nothing.")
+    return [str(value) for value in found]
+
+
+def world_size() -> dict:
+    """How big the world is against augmentation's targets: {have: {...}, want: {...}, enough}."""
+    world = config.get("world_definition") or {}
+    have = {"locations": len(world.get("locations") or {}), "items": len(world.get("objects") or []),
+            "npcs": len(world.get("characters") or []),
+            "outcomes": sum(len(action.get("outcomes") or []) for place in (world.get("locations") or {}).values()
+                            for action in place.get("actions") or [] if isinstance(action, dict))}
+    want = {"locations": int(config.get("augmentation.min_locations", 10)), "items": int(config.get("augmentation.min_items", 5)),
+            "npcs": int(config.get("augmentation.min_npcs", 5)), "outcomes": int(config.get("augmentation.min_outcomes", 30))}
+    return {"have": have, "want": want, "enough": all(have[key] >= want[key] for key in want)}
+
+
+def propose_additions() -> dict:
+    """Gemma's proposal of new places, people and items for this world; nothing is written (add
+    the ones wanted with add_world_entries). RuntimeError without a language model."""
+    from core_engine.augmenter import WorldAugmenter
+
+    _need_language_model()
+    proposal = WorldAugmenter().propose()
+    if proposal is None:
+        raise RuntimeError("The language model proposed nothing usable; try again.")
+    return proposal
+
+
+def add_world_entries(additions: dict) -> dict:
+    """Add new places, people and items (e.g. a proposal): each must be new, and the whole world is
+    checked with them in place; nothing is written when it is invalid. Returns what was added."""
+    from .store import _validate_complete_config
+
+    additions = additions or {}
+    places, items, people = (dict(additions.get("locations") or {}), list(additions.get("objects") or []),
+                             list(additions.get("characters") or []))
+    if not (places or items or people):
+        raise AuthoringError("Nothing to add: give new locations, objects (items) or characters (NPCs).")
+    world = copy.deepcopy(config.get("world_definition") or {})
+    errors = [f"`{name}` is already a location." for name in places if name in (world.get("locations") or {})]
+    known = {e.get("name") for e in (world.get("objects") or []) + (world.get("characters") or []) if isinstance(e, dict)}
+    errors += [f"`{entry.get('name') if isinstance(entry, dict) else entry}` already exists or has no name."
+               for entry in items + people
+               if not isinstance(entry, dict) or not entry.get("name") or entry["name"] in known]
+    named = [entry.get("name") for entry in items + people if isinstance(entry, dict) and entry.get("name")]
+    errors += [f"`{name}` is added twice." for name in sorted({n for n in named if named.count(n) > 1})]
+    for kind, entries in (("Locations", [{**entry, "name": name} for name, entry in places.items()
+                                         if isinstance(entry, dict)]),
+                          ("Items", items), ("NPCs", people)):
+        for entry in entries:
+            if isinstance(entry, dict):
+                errors.extend(f"{entry.get('name')}: {e}" for e in _entry_errors(kind, entry))
+    world.setdefault("locations", {}).update(places)
+    world["objects"] = list(world.get("objects") or []) + items
+    world["characters"] = list(world.get("characters") or []) + people
+    for key, value in (("locations", world["locations"]), ("objects", world["objects"]), ("characters", world["characters"])):
+        errors.extend(_validate_complete_config(value, None, f"world_definition.{key}"))
+    earlier = list(dict.fromkeys(logic_errors(config.get("world_definition") or {})))
+    errors.extend(e for e in logic_errors(world) if e not in earlier)
+    if errors:
+        raise AuthoringError("The additions are invalid:\n" + "\n".join(f"- {e}" for e in dict.fromkeys(errors)))
+    with CONFIG_LOCK:
+        for kind, new in (("Locations", places), ("Items", items), ("NPCs", people)):
+            if not new:
+                continue
+            path, data, records, shape = _entity_records(kind)
+            if shape == "mapping":
+                records.update(new)
+            else:
+                records.extend(new)
+            _write_yaml(path, data)
+        config.clear_override()
+        config.reload()
+    return {"locations": sorted(places), "objects": [e["name"] for e in items], "characters": [e["name"] for e in people]}

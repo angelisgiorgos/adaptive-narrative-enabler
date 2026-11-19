@@ -46,8 +46,12 @@ ENGINES: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
 
 def play_state(state: GameState) -> dict:
     """Structured snapshot of a game, for clients that render their own UI."""
+    description, _, objects = state._describe_visible_scene()
     return {
         "location": state.current.name,
+        "scene_name": state.scene_name,
+        "description": description or "",
+        "items_here": [{"name": name, "text": text} for name, text in objects] if not state.ended else [],
         "start_location": state.start_location,
         "health": state.health,
         "max_health": state.max_health,
@@ -59,6 +63,7 @@ def play_state(state: GameState) -> dict:
         "won": bool(state.won),
         "event": state.active_event.title if state.active_event else None,
         "talking_to": state.conversation() if hasattr(state, "conversation") else None,
+        "turn_summary": (state.journal() or [None])[-1] if hasattr(state, "journal") else None,
         "end_reason": state.end_reason,
         "profile": state.profile if state._store is not None else None,
         "variables": {k: v for k, v in state.variables.items() if k in state.variable_specs or k == "playthroughs"},
@@ -415,8 +420,8 @@ def play_finished_run(engine_id=None, profile=None, stats_choice=None, stats_poi
         model = complete_engine("engine", engine_id=None if engine_id in (None, "", "latest") else engine_id)
     except EngineRequired as exc:
         if engine_id in (None, "", "latest"):
-            raise EngineRequired("No finished run yet: train the AI first (4 · Train the AI → Evolve storytellers "
-                                 "& start game), then play its world here.") from exc
+            raise EngineRequired("No finished run yet: train the AI first (🧠 Train & export → Evolve "
+                                 "storytellers), then play its world here.") from exc
         raise
     model.activate()
     engine.refresh_runtime_settings()
@@ -424,6 +429,12 @@ def play_finished_run(engine_id=None, profile=None, stats_choice=None, stats_poi
     return _game_for(model, profile, points, mode, origin,
                      f"Playing the finished run of {when} (engine `{model.id[:8]}`): its world, with its storyteller.",
                      mission=mission)
+
+
+def session_journal(token):
+    """A play session turn by turn (GameState.journal)."""
+    with SESSION_LOCK:
+        return _session(token).journal()
 
 
 def session_transcript(token):
@@ -637,7 +648,7 @@ def _finish_training(evolution, result, run_id, origin, profile, points, mode, c
     history = result.history
     report = (
         f"{title} Best fitness on the benchmark: **{score:.2f}** (the training objective, not a measure of "
-        "quality: judge the stories in *6 · Evaluate with the judge*) "
+        "quality: judge the stories in *⚖ Evaluate*) "
         f"({learning['improvement']:+.2f} since generation 0)  \n"
         + ("Stories played by **simulated players** (they choose among the choices shown; the storyteller "
            "only directs).  \n" if evolution.settings.get("player") == "simulated"
@@ -684,7 +695,7 @@ def _training_guard(pop_size, generations, episodes, steps):
             f"This run requests up to {asked['work']:,} simulated turns ({pop_size} storytellers x {generations} "
             f"generations x {episodes} stories x {asked['story_turns']} turns), above the limit of "
             f"{asked['limit']:,}. Use fewer storytellers, generations or stories per storyteller, or raise "
-            "`max_simulation_work` (5 · Engine logic & app parameters → App parameters).")
+            "`max_simulation_work` (⚙ Settings → App & jobs → App parameters).")
 
 
 def continue_engine(engine_id, generations=1, profile=None, stats_choice=None, stats_points=None, origin="studio",
@@ -1076,6 +1087,15 @@ def _preview_story(model, engine_id, seed=0):
     players.play(state, 10 ** 6, players.for_settings(seed, evolution_settings()))  # a simulated player
     return records.record_story(state, "import", "preview", engine_id=engine_id, seed=seed,
                                 parameters={"preview": True, "seed": seed})
+
+
+def import_folder() -> dict:
+    """The server's folder of earlier engines and games to import (ANE_ARTIFACT_DIR, else the
+    project's artifacts/): {folder, files (the names waiting there)}."""
+    folder = Path(os.getenv("ANE_ARTIFACT_DIR") or Path(__file__).resolve().parent.parent / "artifacts")
+    files = sorted(p.name for p in folder.iterdir()
+                   if p.is_file() and p.suffix.lower() in (".zip", ".yaml", ".yml")) if folder.is_dir() else []
+    return {"folder": str(folder), "files": files}
 
 
 def import_artifacts(folder, move=True, preview=True, progress=print):

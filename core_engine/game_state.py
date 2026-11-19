@@ -582,10 +582,12 @@ class GameState(StoryBeats, SessionScope):
             return f"Get {'the ' + value if called.startswith(('a ', 'an ', 'some ')) else called}"
         if key == "coins":
             return f"Have {value} coins (you have {self.coins})"
-        if key in ("action", "event_succeeded"):
+        if key == "action":
             return str(value)
-        if key == "event":
-            return f"Live through: {value}"
+        if key in ("event", "event_succeeded"):
+            event = self.world.events.get(value)
+            title = getattr(event, "title", None) or str(value).replace("_", " ")
+            return f"Live through: {title}" if key == "event" else f"Come through: {title}"
         if key == "npc_removed":
             return f"Be rid of {self._called(value)}"
         if key == "outcome_tag":
@@ -3717,6 +3719,9 @@ class GameState(StoryBeats, SessionScope):
         options, already ranked this turn (the same list; it is not ranked again)."""
         history_start = len(self.history)
         self._turn = None
+        if "start_resources" not in self.__dict__:  # where the journal's first turn starts from
+            self.start_resources = {"health": self.health, "coins": self.coins,
+                                    "turns": len(self.__dict__.get("turn_log") or [])}
         talking, place = self.__dict__.get("talking_to"), self.current.name
         focus = self.__dict__.get("focus_place")
         if talking is not None or focus is not None or self.__dict__.get("_free_steps"):
@@ -3738,6 +3743,8 @@ class GameState(StoryBeats, SessionScope):
                 "ended": bool(self.ended),
                 "end_kind": self.end_kind,
                 "history": [history_start, len(self.history)],  # this turn's lines of the story
+                "stage": getattr(self, "mission_stage", 0),     # the quest's step after the turn
+                "won": bool(self.won),
             })
             self._update_rhythm(self.turn_log[-1])
         return result
@@ -3877,6 +3884,60 @@ class GameState(StoryBeats, SessionScope):
             return 0
         chosen = near[int(self._story_draw("pick", self.actions_taken) * len(near))]
         return next(index for index, a in enumerate(actions) if a is chosen)
+
+    def journal(self):
+        """The story turn by turn, as a player follows it: [{turn, action, with (the person, or
+        None), where, moved_to, check {stat, roll, needed, passed} or None, succeeded, told,
+        health, health_change, coins, coin_change, items_gained, items_lost, met, new_places,
+        event, quest_done (the steps this turn completed), quest_now (the step after it),
+        quest_complete, ended, end_reason}]."""
+        log = self.__dict__.get("turn_log") or []
+        stages = [stage["title"] for stage in (getattr(self.mission, "stages", None) or [])] if self.mission else []
+        start = self.__dict__.get("start_resources") or {}
+        first = log[0] if log else {}
+        health = start.get("health", first.get("health")) if not start.get("turns") else first.get("health")
+        coins = start.get("coins", first.get("coins")) if not start.get("turns") else first.get("coins")
+        stage, won, seen = 0, False, {self.start_location}
+        items = {}
+        for entry in self.__dict__.get("item_log") or []:
+            if entry.get("what") in ("collected", "received"):
+                items.setdefault(entry.get("step"), ([], []))[0].append(entry["item"])
+            elif entry.get("what") in ("used", "removed", "given", "lost"):
+                items.setdefault(entry.get("step"), ([], []))[1].append(entry["item"])
+        met = {}
+        for name, entry in (self.__dict__.get("met") or {}).items():
+            met.setdefault(entry.get("first_turn"), []).append(name)
+        characters = {c.name for c in self.world.characters}
+        journal = []
+        for entry in log:
+            turn = entry.get("turn")
+            check = entry.get("check") or None
+            after_stage = int(entry.get("stage", stage) or 0)
+            done = stages[stage:after_stage] if stages else []
+            if entry.get("won") and not won:
+                done = stages[stage:] if stages else [self.mission.title if self.mission else ""]
+            moved = entry.get("location_after") if entry.get("location_after") != entry.get("location_before") else None
+            new_places = [moved] if moved and moved not in seen else []
+            seen.update([entry.get("location_before"), entry.get("location_after")])
+            gained, lost = items.get(turn, ([], []))
+            journal.append({
+                "turn": turn, "action": entry.get("action"),
+                "with": entry.get("owner") if entry.get("source") in ("npc", "conversation") and entry.get("owner") in characters else None,
+                "where": entry.get("location_before"), "moved_to": moved,
+                "check": {"stat": check.get("stat"), "roll": check.get("roll"), "needed": check.get("target"),
+                          "passed": bool(check.get("passed"))} if check else None,
+                "succeeded": bool(entry.get("succeeded", True)), "told": entry.get("outcome"),
+                "health": entry.get("health"), "health_change": (entry.get("health") or 0) - (health or 0),
+                "coins": entry.get("coins"), "coin_change": (entry.get("coins") or 0) - (coins or 0),
+                "items_gained": list(gained), "items_lost": list(lost), "met": sorted(met.get(turn, [])),
+                "new_places": new_places, "event": entry.get("event") or entry.get("event_after"),
+                "quest_done": [title for title in done if title],
+                "quest_now": stages[after_stage] if stages and after_stage < len(stages) and not entry.get("won") else None,
+                "quest_complete": bool(entry.get("won")) and not won,
+                "ended": bool(entry.get("ended")), "end_reason": self.end_reason if entry.get("ended") else None,
+            })
+            health, coins, stage, won = entry.get("health"), entry.get("coins"), after_stage, won or bool(entry.get("won"))
+        return journal
 
     def turn_text(self, entry):
         """The story text of one ``turn_log`` entry."""

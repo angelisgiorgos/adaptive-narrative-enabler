@@ -54,7 +54,28 @@ class WorldAugmenter:
 
     def augment(self, update_config=True):
         print("World is insufficient. Starting LLM augmentation...")
-        
+        current_world = config.get("world_definition", {})
+        proposal = self.propose()
+        if proposal is None:
+            return None
+        # Deep merge (a deep copy: the world in memory is not changed in place)
+        final_world = copy.deepcopy(current_world)
+        final_world['locations'] = {**current_world.get('locations', {}), **proposal["locations"]}
+        final_world['objects'] = current_world.get('objects', []) + proposal["objects"]
+        final_world['characters'] = current_world.get('characters', []) + proposal["characters"]
+
+        # 4. Save and return
+        print("Successfully merged augmented world data.")
+        filepath = self.save_augmentation(final_world)
+        if update_config:
+            print("Updating config in memory with augmented world.")
+            config.set_world_definition(final_world)
+        return final_world, filepath
+
+    def propose(self):
+        """Gemma's proposal of new places, people and items for the active world, nothing written:
+        {locations: {name: entry}, objects: [entry], characters: [entry]} (only places that are new
+        scenarios), or None when it proposed nothing usable."""
         current_world = config.get("world_definition", {})
         existing_locs = list(current_world.get('locations', {}).keys())
         
@@ -124,22 +145,11 @@ class WorldAugmenter:
         if not raw_locs and not raw_objs and not raw_chars:
             print("  WARNING: Augmented data is empty. Skipping file update to prevent corruption.")
             return None
-
-        # Deep merge (a deep copy: the world in memory is not changed in place)
-        final_world = copy.deepcopy(current_world)
-        final_world['locations'] = {**current_world.get('locations', {}), **raw_locs}
-        final_world['objects'] = current_world.get('objects', []) + raw_objs
-        final_world['characters'] = current_world.get('characters', []) + raw_chars
-
-        # 4. Save and return
-        print("Successfully merged augmented world data.")
-        filepath = self.save_augmentation(final_world)
-        if update_config:
-            print("Updating config in memory with augmented world.")
-            config.set_world_definition(final_world)
-        
-        
-        return final_world, filepath
+        names = {entry.get("name") for entry in current_world.get("objects", []) + current_world.get("characters", [])
+                 if isinstance(entry, dict)}
+        return {"locations": raw_locs,
+                "objects": [o for o in raw_objs if isinstance(o, dict) and o.get("name") and o["name"] not in names],
+                "characters": [c for c in raw_chars if isinstance(c, dict) and c.get("name") and c["name"] not in names]}
 
     @staticmethod
     def _new_scenarios(existing, generated):

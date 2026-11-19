@@ -198,9 +198,20 @@ class PlayState(BaseModel):
     last_turn: str = ""
     ended: bool
     event: str | None = Field(default=None, description="Title of the active event, if any.")
+    talking_to: str | None = Field(default=None, description="The person the player is talking with (their choices "
+                                                             "and leaving the conversation are offered), if any.")
+    turn_summary: dict[str, Any] | None = Field(
+        default=None, description="The last turn, as a player follows it (GET /v1/sessions/{id}/journal: every turn): "
+        "{turn, action, with, where, moved_to, check {stat, roll, needed, passed}, succeeded, told, health, "
+        "health_change, coins, coin_change, items_gained, items_lost, met, new_places, event, quest_done, quest_now, "
+        "quest_complete, ended, end_reason}.")
     mission: str | None = Field(default=None, description="Title of the story's mission, if any.")
     won: bool = Field(default=False, description="True once the mission goal has been achieved.")
     location: str | None = None
+    scene_name: str | None = Field(default=None, description="Where the player is, as the story names it "
+                                                             "(an event: its title at the place).")
+    description: str | None = Field(default=None, description="The place (or event) as the player sees it now.")
+    items_here: list[dict[str, Any]] = Field(default_factory=list, description="Items the player can see here: [{name, text}].")
     start_location: str | None = Field(default=None, description="Where this story started.")
     health: int | None = None
     max_health: int | None = None
@@ -1203,6 +1214,14 @@ def play_finished_run(engine_id: str, body: EnginePlayRequest | None = None, ori
         _fail(exc)
 
 
+@api.get("/v1/sessions/{session_id}/journal", tags=["Evolution and play"])
+def get_session_journal(session_id: str):
+    """A play session turn by turn, as a player follows it: every turn's choice, check, what happened,
+    what it changed (health, coins, items, places, people) and the quest steps it completed
+    ({journal: [...]}, oldest first; the play state's `turn_summary` is the last)."""
+    return {"session_id": session_id, "journal": _session_call(session_id, lambda: sessions.session_journal(session_id))}
+
+
 @api.get("/v1/sessions/{session_id}/transcript", tags=["Evolution and play"])
 def get_session_transcript(session_id: str):
     """The story of a play session so far, as text."""
@@ -1653,6 +1672,63 @@ def put_behaviour_rules(group: Literal["npcs", "locations"], body: BehaviourRule
         _fail(exc)
 
 
+# ---- with the language model: suggestions and a bigger world ------------------------------
+
+class SuggestionRequest(BaseModel):
+    kind: Literal["Locations", "NPCs", "Items", "Events"]
+    name: str | None = Field(default=None, description="The entry (none: a new one).")
+    field: str = Field(description="descriptions, goals, tags, distant_descriptions, entered_descriptions, "
+                                   "interact_prompts or dialogue")
+
+
+@api.post("/v1/suggestions", tags=["World authoring"])
+def suggest_values(body: SuggestionRequest):
+    """Gemma's suggestions for a text field of an entry, in the world's voice (the terminal editor's
+    suggestions): {suggestions: [...]}. Nothing is saved. 503 without the language model."""
+    if body.name:
+        _known_entity(body.kind, body.name)
+    try:
+        return {"suggestions": content.suggest(body.kind, body.name, body.field), "field": body.field}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.get("/v1/world/size", tags=["World authoring"])
+def get_world_size():
+    """How big the world is against the augmentation targets (augmentation.min_*): {have, want, enough}."""
+    return content.world_size()
+
+
+class WorldAdditions(BaseModel):
+    locations: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    objects: list[dict[str, Any]] = Field(default_factory=list, description="Items, each with a name.")
+    characters: list[dict[str, Any]] = Field(default_factory=list, description="NPCs, each with a name.")
+
+
+@api.post("/v1/jobs/world-proposal", status_code=202, tags=["Jobs", "World authoring"])
+def submit_world_proposal():
+    """Gemma proposes new places, people and items for this world, in the background (poll GET
+    /v1/jobs/{id}; the result is {locations, objects, characters}). Nothing is written: add the
+    ones wanted with POST /v1/world/additions."""
+    def work(progress):
+        return content.propose_additions()
+    return sessions.submit_job("world-proposal", work, "new places, people and items from the language model")
+
+
+@api.post("/v1/world/additions", tags=["World authoring"])
+def add_to_world(body: WorldAdditions):
+    """Add new places, people and items (e.g. some of a proposal). Each must be new and the world
+    is checked with them in place; nothing is written when it is invalid (400 says why)."""
+    try:
+        added = content.add_world_entries(body.model_dump())
+        return {"added": added, "message": "Added " + (", ".join(added["locations"] + added["objects"]
+                                                              + added["characters"]) or "nothing") + "."}
+    except Exception as exc:
+        _fail(exc)
+
+
 # ---- jobs: long runs with progress -------------------------------------------------------
 
 def _job_or_404(job_id):
@@ -1815,6 +1891,32 @@ def put_term_weights(body: TermWeights):
         return {"weights": weights, "message": message}
     except Exception as exc:
         _fail(exc)
+
+
+class RecordsImport(BaseModel):
+    move: bool = Field(default=False, description="Move the files into the records folder (else copy them).")
+    preview: bool = Field(default=True, description="Play a preview story of each new engine.")
+
+
+@api.get("/v1/records/import", tags=["Records"])
+def get_import_folder():
+    """The server's folder of earlier engines and games (ANE_ARTIFACT_DIR, else artifacts/): {folder, files}."""
+    return sessions.import_folder()
+
+
+@api.post("/v1/jobs/records-import", status_code=202, tags=["Jobs", "Records"])
+def submit_records_import(body: RecordsImport):
+    """Import every engine and game in the server's import folder into the records, in the background
+    (as `python main.py --import-artifacts`): poll GET /v1/jobs/{id} for the report."""
+    found = sessions.import_folder()
+    if not found["files"]:
+        raise HTTPException(status_code=400, detail=f"There is nothing to import in {found['folder']}.")
+    folder = found["folder"]
+
+    def work(progress):
+        return sessions.import_artifacts(folder, move=body.move, preview=body.preview,
+                                         progress=lambda text: progress(0, 1, text))
+    return sessions.submit_job("records-import", work, f"import the engines and games in {folder}")
 
 
 @api.get("/v1/jobs", tags=["Jobs"])

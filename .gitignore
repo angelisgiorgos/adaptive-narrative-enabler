@@ -178,3 +178,4 @@ core_engine/_build_info.py
 # Build output of the Unity library checks (unity/com.ane.ai/Tests~)
 unity/**/bin/
 unity/**/obj/
+CLAUDE.md

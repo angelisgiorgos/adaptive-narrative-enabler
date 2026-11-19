@@ -9,6 +9,7 @@ import sys
 import threading
 import yaml
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from utils.config_loader import config
 from utils.config_editor import ConfigEditor
 from utils.tag_similarity import semantic_tag_similarity
@@ -317,8 +318,20 @@ def story_pool(stories_per_generation):
             pickle.dump((active, export_tag_vectors(world_tags(active))), stream, protocol=pickle.HIGHEST_PROTOCOL)
         pool = ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
                                    initializer=_init_story_worker, initargs=(world_file,))
+        broken = []
+
+        def map_fn(function, tasks):
+            if not broken:
+                try:
+                    return list(pool.map(function, tasks))
+                except BrokenProcessPool as exc:  # e.g. a parent run from stdin, whose script cannot be imported
+                    broken.append(exc)
+                    print(f"[EVOLUTION] The evaluation processes stopped ({exc}); the stories are played here.",
+                          file=sys.stderr)
+            return [function(task) for task in tasks]  # the same scores, in this process
+
         try:
-            yield lambda function, tasks: list(pool.map(function, tasks))
+            yield map_fn
             finished = True
         finally:  # a stopped or failed run does not wait for the stories still being played
             pool.shutdown(wait=finished, cancel_futures=True)

@@ -123,6 +123,8 @@ class Game:
             "event": state.active_event.title if state.active_event else None,
             # the person the player is talking with (their choices, and leaving), or None
             "talking_to": state.conversation() if hasattr(state, "conversation") else None,
+            # the last turn as a player follows it: choice, check, result, changes, quest steps done
+            "turn_summary": (state.journal() or [None])[-1] if hasattr(state, "journal") else None,
             "variables": {k: v for k, v in state.variables.items() if k in state.variable_specs or k == "playthroughs"},
             "ended": bool(state.ended),
             "won": bool(state.won),

@@ -15,16 +15,18 @@ stories are recorded with the studio as their origin. Errors arrive as ``APIErro
 with the API's message and are shown as UI errors. Files the API offers for
 download are fetched into a temporary folder, since the file widgets need local paths.
 
-    Tab 1 · Create the world           /v1/entities/... (form, actions, rules, every field as YAML),
-                                   /v1/documents/missions, /v1/documents/map, /v1/lint/failures
-    Tab 2 · Simulation settings    /v1/config/..., /v1/settings, /v1/documents/..., /v1/variables/...,
-                                   /v1/rules, /v1/hyperparameters
-    Tab 3 · Weights                /v1/weights
-    Tab 4 · Train the AI        /v1/jobs/..., /v1/engines/load, /v1/sessions/... (and its judge),
-                                   /v1/stats/..., /v1/learning, /v1/exports, /v1/records/... (and their
-                                   judge), /v1/judge/compare
-    Tab 5 · Engine logic & app     /v1/logic/..., /v1/app-settings
-    Tab 6 · Evaluate with judge    /v1/jobs/judge-benchmark, /v1/jobs/calibrate-fitness, /v1/fitness/term-weights
+    🌍 World            entries (fields, actions & outcomes, scheduling, details, suggestions, YAML):
+                        /v1/entities/..., /v1/suggestions; missions, the map, behaviour by tags, growing the
+                        world, checks: /v1/missions/..., /v1/map/..., /v1/behaviours/..., /v1/world/...,
+                        /v1/jobs/world-proposal, /v1/lint/failures
+    ⚙ Settings          simulation, story (rules, messages, variables, stats), weights, engine logic, app
+                        and jobs: /v1/config/..., /v1/settings, /v1/rules, /v1/documents/..., /v1/variables/...,
+                        /v1/hyperparameters, /v1/weights, /v1/logic/..., /v1/app-settings, /v1/jobs
+    🧠 Train & export   train (/v1/jobs/simulations, /v1/learning), records (/v1/records/..., continue and
+                        retrain jobs, import), export (/v1/exports/...)
+    ▶ Play              a game with a trained AI, a recorded engine or a file: /v1/engines/..., /v1/sessions/...
+                        (choices, save and continue, the player, events, the judge), /v1/progression
+    ⚖ Evaluate          /v1/jobs/judge-benchmark, /v1/jobs/calibrate-fitness, /v1/fitness/term-weights
 
 tests/test_studio_api.py checks that every endpoint of the API is used here, or is named there
 as one other clients use (the studio reaches the same function through another endpoint).
@@ -209,25 +211,45 @@ def _path(*parts):
 
 
 CSS = """
-.hero {padding: 1.1rem 1.4rem; border-radius: 18px; background: linear-gradient(120deg,#17233f,#4a244f); color:#fff}
-.hero h1 {margin: 0 0 .2rem 0; color: #fff}
-.hero p {margin: 0; opacity: .9; color: #fff}
-.workflow {padding: .35rem .9rem; border-radius: 12px; border: 1px solid var(--border-color-primary);
-           background: var(--background-fill-secondary); font-size: .95rem}
+.hero {padding: .5rem 1.1rem; border-radius: 14px; background: linear-gradient(120deg,#17233f,#4a244f); color:#fff}
+.hero h1 {margin: 0; color: #fff; font-size: 1.35rem}
+.hero p {margin: 0; opacity: .9; color: #fff; font-size: .9rem}
+.workflow {padding: .2rem .8rem; border-radius: 10px; border: 1px solid var(--border-color-primary);
+           background: var(--background-fill-secondary)}
+.workflow p {font-size: .85rem; margin: .15rem 0}
+button[role="tab"] {font-size: .88rem !important; padding: .3rem .75rem !important; min-height: 0 !important}
+.main-tabs button[role="tab"] {font-weight: 600}
 .status {border-left: 4px solid #8b5cf6; padding-left: 1rem}
-.play-hud {padding: .55rem .95rem; border-radius: 12px; border: 1px solid var(--border-color-primary);
-           background: var(--background-fill-secondary); font-size: 1.02rem}
-.scene-card {padding: .9rem 1.2rem; border-radius: 14px; border: 1px solid var(--border-color-primary);
-             background: var(--block-background-fill); line-height: 1.55}
-.turn-card {padding: .2rem 1.2rem; border-left: 4px solid #8b5cf6}
-.ending {padding: .6rem 1rem; border-radius: 12px; border-left: 6px solid #22c55e;
+.play-hud {padding: .3rem .8rem; border-radius: 10px; border: 1px solid var(--border-color-primary);
+           background: var(--background-fill-secondary)}
+.play-hud p {font-size: .92rem; margin: .1rem 0}
+.scene-card {padding: .35rem .9rem; border-radius: 12px; border: 1px solid var(--border-color-primary);
+             background: var(--block-background-fill); line-height: 1.45}
+.scene-card p, .scene-card li {font-size: .93rem; margin: .25rem 0}
+.scene-card h3 {font-size: 1.08rem; margin: .15rem 0 .25rem 0}
+.turn-card {padding: .3rem .9rem; border-radius: 12px; border: 1px solid var(--border-color-primary);
+            border-left: 5px solid #8b5cf6; background: var(--background-fill-secondary); line-height: 1.45}
+.turn-card p, .turn-card li {font-size: .9rem; margin: .2rem 0}
+.turn-card h3 {font-size: .98rem; margin: .1rem 0 .2rem 0}
+.turn-card blockquote {margin: .25rem 0; border-left-color: #c4b5fd}
+.turn-card blockquote p {font-size: .96rem}
+.quest-card, .you-card {padding: .25rem .9rem; border-radius: 12px; border: 1px solid var(--border-color-primary);
+                        background: var(--block-background-fill)}
+.quest-card p, .quest-card li, .you-card p, .you-card li, .people-card p, .people-card li {font-size: .88rem;
+                                                                                         margin: .2rem 0}
+.quest-card h3, .you-card h3, .people-card h3 {font-size: 1rem; margin: .2rem 0}
+.journey table {font-size: .85rem}
+.story-book {max-height: 480px; overflow-y: auto; padding: .2rem 1rem; line-height: 1.55}
+.ending {padding: .4rem 1rem; border-radius: 12px; border-left: 6px solid #22c55e;
          background: var(--background-fill-secondary)}
+.ending h2 {font-size: 1.15rem; margin: .1rem 0}
 button.choice {justify-content: flex-start !important; text-align: left !important; white-space: normal !important;
-               font-weight: 500}
+               font-weight: 500; font-size: .9rem !important; padding: .32rem .8rem !important;
+               min-height: 0 !important; line-height: 1.3 !important}
 """
 THEME = gr.themes.Soft(primary_hue="violet", secondary_hue="indigo", neutral_hue="slate")
-WORKFLOW = ("**① Create the world** → **② Simulation settings** → **③ Weights** → **④ Train the AI** → "
-            "**▶ Play** your world → **Export** it for a game (in ④) → **⑥ Evaluate** with the judge")
+WORKFLOW = ("**🌍 World**: create it → **⚙ Settings**: tune the story → **🧠 Train & export**: train the AI "
+            "storyteller, export it for a game → **▶ Play** your world → **⚖ Evaluate** with the judge")
 EMPTY_ENTITY = {"name": "", "tags": [], "descriptions": [], "goals": [], "unique": False, "encounter_event": None,
                 "encounter_repeat": False, "enabled_if": None, "title": None, "stat_bonus": None,
                 "start_eligible": False, "start_weight": 1.0, "role": None, "secret": None}
@@ -579,18 +601,32 @@ def _player(profile, stats_choice, stats_points, mission=None):
     return player
 
 
-def quest_markdown(quest):
-    """The quest log of a game: the quest, its stages (done, now, still to come) and what to do now."""
+def quest_markdown(quest, journal=None):
+    """The quest log of a game: the quest, how far it is (a bar), its steps (done, with the turn;
+    now; still to come) and what to do now."""
     if not quest:
-        return "### Quest\nThis story has no quest: explore as you like."
+        return "### 🎯 Quest\nThis story has no quest: explore as you like."
     marks = {"done": "✅", "current": "▶️", "todo": "▫️"}
-    lines = [f"### Quest: {quest['title']}", quest.get("description") or ""]
-    for stage in quest.get("stages") or []:
+    stages = quest.get("stages") or []
+    done_at = {}
+    for entry in journal or []:
+        for title in entry.get("quest_done") or []:
+            done_at.setdefault(title, entry.get("turn"))
+    lines = [f"### 🎯 {quest['title']}", f"*{quest.get('description')}*" if quest.get("description") else ""]
+    if stages:
+        done = sum(1 for stage in stages if stage["state"] == "done")
+        lines.append(f"`{'▰' * done}{'▱' * (len(stages) - done)}` **{done} of {len(stages)} steps**")
+    for stage in stages:
         line = f"{marks.get(stage['state'], '▫️')} **{stage['title']}**"
+        if stage["state"] == "done" and done_at.get(stage["title"]):
+            line += f" · turn {done_at[stage['title']]}"
         if stage["state"] == "current" and stage.get("description"):
-            line += f" — {stage['description']}"
+            line += f"  \n{stage['description']}"
         lines.append(line)
-    if quest["status"] != "in progress":
+    if quest["status"] == "completed":
+        finished = next((entry.get("turn") for entry in journal or [] if entry.get("quest_complete")), None)
+        lines.append("🏆 **Completed**" + (f" at turn {finished}." if finished else "."))
+    elif quest["status"] != "in progress":
         lines.append(f"**{quest['status'].capitalize()}.**")
     elif quest.get("todo"):
         lines.append("**To do now:** " + "; ".join(quest["todo"]))
@@ -671,15 +707,17 @@ def map_markdown(known):
     return "\n".join(lines)
 
 
-def _game_outputs(game):
-    """What the play tab shows of a game the API started (simulation, loaded or recorded engine)."""
-    curve, traits = _learning_outputs(game.get("learning"))
-    generations = [str(stats["generation"]) for stats in (game.get("learning") or {}).get("history", [])]
-    return (game["session_id"], game["report"], game["scene"], _choices(game["actions"], game.get("choices")),
-            game.get("last_turn", ""),
-            API.download(game["config_download_url"]), API.download(game["engine_download_url"]),
-            quest_markdown(game.get("quest")), people_markdown(game), curve, traits,
-            game.get("run_id"), gr.Dropdown(choices=generations, value=generations[-1] if generations else None))
+def _training_outputs(result):
+    """What Train & export shows of a finished training (an evolution, a continued or retrained
+    engine): the report, its files, the learning curve, what the storyteller learned, the run and its
+    generations (for the export). The game it starts is played in ▶ Play."""
+    curve, traits = _learning_outputs(result.get("learning"))
+    generations = [str(stats["generation"]) for stats in (result.get("learning") or {}).get("history", [])]
+    report = (result.get("report") or "") + "\n\n**Play it in ▶ Play** (it is the newest trained AI there), or " \
+        "export it below."
+    return (report, API.download(result["config_download_url"]), API.download(result["engine_download_url"]),
+            curve, traits, result.get("run_id"),
+            gr.Dropdown(choices=generations, value=generations[-1] if generations else None))
 
 
 def _job_progress(progress, label="Generation"):
@@ -707,36 +745,17 @@ def forget_learning_ui():
 
 
 @ui
-def run_simulation_ui(candidate_count, generations, simulation_steps, deterministic, profile, stats_choice,
-                      stats_points, episodes, warm_start, mission=None, progress=gr.Progress()):
+def run_simulation_ui(candidate_count, generations, simulation_steps, deterministic, episodes, warm_start,
+                      progress=gr.Progress()):
+    """Evolve storytellers (a background job): the report, files, learning curve and traits, the
+    learning memory, the run (for the export). The trained AI is played in ▶ Play."""
     job = API.post("/v1/jobs/simulations", {
         "candidate_count": int(candidate_count), "generations": int(generations),
         "simulation_steps": int(simulation_steps), "deterministic": bool(deterministic),
         "episodes": int(episodes) if episodes else None, "warm_start": bool(warm_start),
-        **_player(profile, stats_choice, stats_points, mission),
     })
-    outputs = _game_outputs(API.wait(job, _job_progress(progress)))
-    return (*outputs[:11], learning_memory_text(), *outputs[11:])
-
-
-@ui
-def load_best_engine_ui(uploaded_file, model_parameters_file, profile, stats_choice, stats_points, mission=None):
-    if not uploaded_file:
-        raise gr.Error("Choose an engine model, an engine ZIP or a configuration YAML first.")
-    player = _player(profile, stats_choice, stats_points, mission)
-    game = API.upload("/v1/engines/load", {"file": uploaded_file, "parameters": model_parameters_file},
-                      profile=player["profile"], stats_mode=player.get("stats_mode"), mission=player["mission"],
-                      stats=json.dumps(player["stats"]) if "stats" in player else None)
-    return _game_outputs(game)[:11]
-
-
-@ui
-def play_action_ui(token, selected_action):
-    if not token:
-        raise gr.Error("Run a simulation first to start a game.")
-    state = API.post(_path("/v1/sessions", token, "actions"), {"action": selected_action or ""})
-    return state["scene"], _choices(state["actions"], state.get("choices")), state["last_turn"], \
-        quest_markdown(state.get("quest")), people_markdown(state)
+    outputs = _training_outputs(API.wait(job, _job_progress(progress)))
+    return (*outputs[:5], learning_memory_text(), *outputs[5:])
 
 
 def run_work_ui(candidate_count, generations, simulation_steps, episodes):
@@ -751,14 +770,8 @@ def run_work_ui(candidate_count, generations, simulation_steps, episodes):
             f"**{asked['limit']:,}** allowed.")
     if not asked["allowed"]:
         line = ("⚠ " + line + " It will be refused: use fewer storytellers, generations or stories, or raise "
-                "`max_simulation_work` in *5 · App parameters*.")
+                "`max_simulation_work` in *⚙ Settings → App & jobs*.")
     return line
-
-
-def _play_view(state):
-    """The play area for a play state: scene, choices, last turn, quest, people."""
-    return state["scene"], _choices(state["actions"], state.get("choices")), state["last_turn"], \
-        quest_markdown(state.get("quest")), people_markdown(state)
 
 
 # ---- the session as a UNP sees it (as the exported ANE AI does): save games, player, events ---------
@@ -771,7 +784,7 @@ SYNC_EVENTS = {  # what happened in the UNP's game -> the field it names
 
 def _need_game(token):
     if not token:
-        raise gr.Error("Start a game first (run a simulation, load an engine, or continue a save game).")
+        raise gr.Error("Start a game first in ▶ Play (New game, another engine, or continue a save game).")
 
 
 @ui
@@ -791,7 +804,7 @@ def update_player_ui(token, player_json):
         raise gr.Error(f"The player's state is not JSON: {exc}") from exc
     if not isinstance(player, dict):
         raise gr.Error('Write a JSON object, e.g. {"coins": 20, "add_items": ["Ancient Map"]}.')
-    return _play_view(API.patch(_path("/v1/sessions", token, "player"), player))
+    return _play_update(API.patch(_path("/v1/sessions", token, "player"), player), token)
 
 
 @ui
@@ -808,7 +821,7 @@ def sync_session_ui(token, kind, value):
             raise gr.Error("Give the amount as a whole number (negative for a loss).") from exc
     elif not str(value or "").strip():
         raise gr.Error(f"Name the {field}.")
-    return _play_view(API.post(_path("/v1/sessions", token, "sync"), {"type": kind, field: value}))
+    return _play_update(API.post(_path("/v1/sessions", token, "sync"), {"type": kind, field: value}), token)
 
 
 @ui
@@ -820,23 +833,6 @@ def download_savegame_ui(token):
     params = doc.get("parameters") or {}
     return path, (f"Saved after {params.get('turns', 0)} turn(s) at **{params.get('current_location')}** "
                        f"(`{doc['format']}`). *Continue a save game* goes on from it, here or in the ANE AI.")
-
-
-@ui
-def load_savegame_ui(upload, token):
-    """Continue a save game (from the studio or the ANE AI) as a new session."""
-    if not upload:
-        raise gr.Error("Choose a save game (.json).")
-    try:
-        doc = json.loads(Path(upload).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise gr.Error(f"Not a JSON save game: {exc}") from exc
-    state = API.post("/v1/sessions/load", {"savegame": doc, "session_id": token or None})
-    status = ("**Continued exactly** where it was saved." if state["restored"] == "exact"
-              else f"**Rebuilt from its parameters** ({state.get('note') or 'no usable snapshot'}).")
-    if state["restored"] == "exact" and state.get("note"):
-        status += f" {state['note'].capitalize()}."
-    return (state["session_id"], *_play_view(state), status)
 
 
 @ui
@@ -860,16 +856,6 @@ def export_platforms_table():
              (f"runtime {p['code_version']}, built {(p.get('built_at') or '')[:10]}" if p.get("code_version") else
               "the engine as Python code")} for p in listed]
     return pd.DataFrame(rows, columns=["runs on", "available", "details"])
-
-
-@ui
-def end_session_ui(token):
-    """End the session where it stands: the progression is saved and the session reported."""
-    if not token:
-        raise gr.Error("Start a game first.")
-    state = API.post(_path("/v1/sessions", token, "end"))
-    return state["scene"], _choices(state["actions"], state.get("choices")), state["last_turn"], \
-        quest_markdown(state.get("quest")), people_markdown(state)
 
 
 @ui
@@ -1047,7 +1033,16 @@ def export_engine_ui(source_label, run_id, generation, token, include_memory, na
 # ---- ▶ Play: the world of a finished run, as a game ---------------------------------------------
 
 CHOICE_BUTTONS = 8
-PLAY_STATS = ["story default", "random", "balanced"]
+PLAY_STATS = [("Story default", "story default"), ("Random", "random"), ("Balanced", "balanced"),
+              ("My own points", "defined")]
+# What the game screen shows, in the order _play_screen returns it (play_part picks one by name).
+PLAY_PARTS = ("ending", "hud", "place", "turn", *(f"choice {i + 1}" for i in range(CHOICE_BUTTONS)), "quest", "you",
+              "people", "actions", "journey")
+
+
+def play_part(outputs, name, offset=0):
+    """One part of a game screen's outputs (``offset``: the outputs before the screen, e.g. the session)."""
+    return outputs[offset + PLAY_PARTS.index(name)]
 
 
 def studio_status_ui():
@@ -1061,7 +1056,7 @@ def studio_status_ui():
         LOG.warning("The world could not be read: %s", exc)
     try:
         runs = API.get("/v1/exports/engines")["engines"]
-        parts.append(f"🧠 **Trained AIs:** {len(runs)}" + ("" if runs else " (train one in ④)"))
+        parts.append(f"🧠 **Trained AIs:** {len(runs)}" + ("" if runs else " (train one in 🧠 Train & export)"))
     except APIError as exc:
         LOG.warning("The trained AIs could not be read: %s", exc)
     try:
@@ -1091,10 +1086,197 @@ def _hud(state):
     return "  ·  ".join(parts)
 
 
-def _play_screen(state):
-    """The game screen for a play state: how the story ended (when it has), the status bar, the
-    scene, what just happened, a button per choice (with the check it involves), the quest log,
-    the people and the map, and the choices' names (what the buttons take)."""
+def place_markdown(state):
+    """Where the player is, compactly: the place (or event), who is here and what can be seen."""
+    if "description" not in state:  # an older API: its scene as it is
+        return state.get("scene") or ""
+    lines = [f"### 📍 {state.get('scene_name') or state.get('location') or ''}"]
+    if state.get("description"):
+        lines.append(state["description"])
+    people = []
+    for person in state.get("people") or []:
+        marks = "".join(mark for flag, mark in ((person.get("quest"), " ★"), (person.get("hostile"), " ⚠"),
+                                                (person.get("ally"), " ♥")) if flag)
+        role = f" · {person['role']}" if (person.get("importance") or 0) >= 2 and person.get("role") else ""
+        people.append(f"**{person['name']}**{marks}{role}")
+    if people:
+        lines.append("👥 " + " · ".join(people))
+    items = [item["name"] for item in state.get("items_here") or []]
+    if items:
+        lines.append("👁 You see: " + ", ".join(items))
+    return "\n\n".join(lines)
+
+
+def you_markdown(state):
+    """The player: inventory, stats (with what items add), what is remembered, the alert, the last check."""
+    lines = ["### 🧍 You", f"⚡ power {state['power']:.2f}" if isinstance(state.get("power"), (int, float)) else ""]
+    lines.append("🎒 " + (", ".join(state.get("inventory") or []) or "*nothing yet*"))
+    stats, points = state.get("stats") or {}, state.get("stat_points") or {}
+    if stats:
+        lines.append("📊 " + " · ".join(f"{name} **{value}**" + (f" (+{value - points[name]})"
+                                                                   if isinstance(points.get(name), int)
+                                                                   and value > points[name] else "")
+                                         for name, value in stats.items()))
+    remembered = {k: v for k, v in (state.get("variables") or {}).items() if k != "playthroughs"}
+    if remembered:
+        lines.append("💾 " + " · ".join(f"{k} {v}" for k, v in remembered.items()))
+    stakes = state.get("stakes") or {}
+    if stakes.get("alert"):
+        lines.append(f"🚨 alert {stakes['alert']}/{stakes.get('max')}"
+                     + (" — the watch is looking for you" if stakes["alert"] >= stakes.get("warn_at", 99) else ""))
+    last = state.get("last_check")
+    if last:
+        lines.append(f"🎲 last check: {last.get('stat')} {last.get('roll')} vs {last.get('target')} — "
+                     + ("passed" if last.get("passed") else "failed"))
+    return "\n\n".join(line for line in lines if line)
+
+
+# ---- how a game reads: the last turn, the journey, the quest, the story ---------------------------
+
+STORY_MARKS = {
+    "MISSION": "🎯", "MISSION COMPLETE": "🏆", "QUEST": "✅", "TRIUMPH": "🏆", "CLIMAX": "⚔", "FINALE": "⏳",
+    "EVENT": "⚡", "EVENT END": "⚡", "UNEXPECTED EVENT": "✨", "TWIST": "✨", "ENCOUNTER": "⚔", "EVENT EFFECT": "·",
+    "EVENT DISCOVERY": "🗺", "SPAWN": "🗺", "DISCOVERY": "🗺", "ROUTE": "🧭", "VOYAGE": "🧭", "LEAD": "🧭",
+    "ON THE WAY": "🧭", "BACK": "↩", "MOVE ON": "🧭", "AUTO TRANSFER": "🧭", "REVEAL": "👁", "REVELATION": "👁",
+    "SECRET": "🤫", "CALLBACK": "💡", "LAST TIME": "🕰", "CHECK": "🎲", "STAT": "📈", "HEALTH": "❤",
+    "RESOURCES": "🪙", "REFUND": "🪙", "PERSISTENT": "💾", "FAILURE": "✗", "SETBACK": "✗", "ANOTHER WAY": "↪",
+    "ALERT": "🚨", "MANHUNT": "🚨", "SENT": "⛓", "ESCAPE": "🔓", "RELEASED": "🔓", "UNLOCKED": "🔓",
+    "NPC REMOVED": "👋", "ALLY": "♥", "CONSEQUENCE": "↻", "END": "🏁", "EPILOGUE": "🏁", "RESUMED": "▶",
+}
+STRONG_MARKS = {"MISSION", "MISSION COMPLETE", "QUEST", "TRIUMPH", "END", "EPILOGUE", "FINALE", "CLIMAX"}
+_TAGGED = re.compile(r"^\[([A-Z ]+)\]\s*(.*)$", re.S)
+_ARRIVAL = re.compile(r"^You are in the (.+?)\.\s*(.*)$", re.S)
+
+
+def _story_line(line):
+    """One line of a story as the player reads it: (kind, Markdown), or None for engine bookkeeping
+    ("Continuing your activities…", "[LOCATION] Still at…"). Kinds: action, result, arrival, met, tagged
+    (with the tag), text."""
+    line = str(line or "").strip()
+    if not line or line.startswith("Continuing your activities"):
+        return None
+    if line.startswith("> "):
+        return "action", f"**▶ {line[2:].strip()}**"
+    if line.startswith("RESULT:"):
+        return "result", line[len("RESULT:"):].strip()
+    arrival = _ARRIVAL.match(line)
+    if arrival:
+        return "arrival", f"#### 📍 The {arrival.group(1)}\n{arrival.group(2)}".rstrip()
+    if line.startswith("Met "):
+        return "met", f"👤 {line}"
+    tagged = _TAGGED.match(line)
+    if tagged:
+        tag, text = tagged.group(1).strip(), tagged.group(2).strip()
+        if tag == "LOCATION":
+            return None  # the arrival says it, or nothing changed
+        mark = STORY_MARKS.get(tag, "•")
+        return f"tagged:{tag}", f"{mark} **{text}**" if tag in STRONG_MARKS else f"{mark} {text}"
+    return "text", line
+
+
+def story_markdown(text):
+    """A story (its transcript) as the player reads it: each turn's choice in bold after a thin rule,
+    places as headings, events, discoveries and the quest marked; engine bookkeeping left out."""
+    parts = []
+    for line in str(text or "").splitlines():
+        shown = _story_line(line)
+        if shown is None:
+            continue
+        kind, markdown = shown
+        if kind == "action" and parts:
+            parts.append("---")
+        parts.append(markdown)
+    return "\n\n".join(parts) or "*The story has not started yet.*"
+
+
+def _signed(value):
+    return f"+{value}" if value > 0 else f"−{-value}"
+
+
+def _changes(entry):
+    """What a turn changed, as short chips: ❤ −2 · 🪙 +5 · 🎒 Heavy Shield · 📍 Sewers (new) · 👤 the Thief."""
+    chips = []
+    if entry.get("health_change"):
+        chips.append(f"❤ {_signed(entry['health_change'])}")
+    if entry.get("coin_change"):
+        chips.append(f"🪙 {_signed(entry['coin_change'])}")
+    chips += [f"🎒 got {item}" for item in entry.get("items_gained") or []]
+    chips += [f"🎒 {item} gone" for item in entry.get("items_lost") or []]
+    if entry.get("moved_to"):
+        chips.append(f"📍 {entry['moved_to']}" + (" (new place)" if entry["moved_to"] in (entry.get("new_places") or [])
+                                                  else ""))
+    if entry.get("met"):
+        chips.append("👤 met " + ", ".join(entry["met"]))
+    return chips
+
+
+def turn_card_markdown(summary, turn_text=""):
+    """What just happened, at a glance: the choice, the check, what came of it, what it changed, the
+    quest's progress; then the rest of the turn's story."""
+    if not summary:
+        return ""
+    choice = re.sub(r"^\([^)]*\)\s*", "", str(summary.get("action") or ""))
+    who = summary.get("with")
+    lines = ["### What happened", f"**▶ Turn {summary.get('turn')}: you chose _{choice}_**"
+             + (f" — with {who}" if who and who.lower() not in choice.lower() else "")
+             + (f" · at {summary['where']}" if summary.get("where") else "")]
+    check = summary.get("check")
+    if check:
+        lines.append(f"🎲 **{check.get('stat')}** check: rolled {check.get('roll')}, needed {check.get('needed')} or "
+                     f"less → " + ("**passed ✓**" if check.get("passed") else "**failed ✗**"))
+    if summary.get("told"):
+        failed = not summary.get("succeeded", True) and not check  # a check already says how it went
+        lines.append(f"> {'✗ ' if failed else ''}{summary['told']}")
+    chips = _changes(summary) + ([f"⚡ {summary['event']}"] if summary.get("event") else [])
+    if chips:
+        lines.append(" · ".join(chips))
+    if summary.get("quest_complete"):
+        lines.append("🏆 **Quest complete!**")
+    elif summary.get("quest_done"):
+        lines.append("🎯 **Quest step done:** " + " · ".join(summary["quest_done"])
+                     + (f" → **now:** {summary['quest_now']}" if summary.get("quest_now") else ""))
+    more = []
+    for line in str(turn_text or "").splitlines():
+        shown = _story_line(line)
+        if shown is None or shown[0] in ("action", "result", "arrival", "met") \
+                or shown[0] in ("tagged:QUEST", "tagged:MISSION COMPLETE"):
+            continue
+        more.append(shown[1])
+    if more:
+        lines.append("\n".join(f"<small>{line}</small>  " for line in more[:6]))
+    return "\n\n".join(lines)
+
+
+def _cell_text(text, size=70):
+    text = str(text or "").replace("|", "/").replace("\n", " ").strip()
+    return text if len(text) <= size else text[:size - 1].rstrip() + "…"
+
+
+def journey_markdown(journal, show=15):
+    """The turns so far as a table (the last ``show``): where, the choice, what came of it, what it
+    changed, the quest steps done."""
+    if not journal:
+        return "*Your journey starts with your first choice.*"
+    rows = ["| # | Where | You chose | What happened | Changes | Quest |", "|---|---|---|---|---|---|"]
+    for entry in journal[-show:]:
+        mark = "✓" if entry.get("succeeded", True) else "✗"
+        if entry.get("check"):
+            mark = ("✓" if entry["check"].get("passed") else "✗") + f" 🎲{entry['check'].get('stat')}"
+        quest = "🏆 complete" if entry.get("quest_complete") else \
+            " · ".join(f"✅ {title}" for title in entry.get("quest_done") or [])
+        choice = re.sub(r"^\([^)]*\)\s*", "", str(entry.get("action") or ""))
+        rows.append(f"| {entry.get('turn')} | {_cell_text(entry.get('where'), 24)} | "
+                    f"{_cell_text(choice, 40)}{' · ' + _cell_text(entry['with'], 24) if entry.get('with') else ''} | "
+                    f"{mark} {_cell_text(entry.get('told'))} | {_cell_text(' · '.join(_changes(entry)), 60)} | "
+                    f"{_cell_text(quest, 60)} |")
+    earlier = len(journal) - show
+    return (f"*… {earlier} earlier turn(s)*\n\n" if earlier > 0 else "") + "\n".join(rows)
+
+
+def _play_screen(state, journal=None):
+    """The game screen for a play state (PLAY_PARTS): how the story ended (when it has), the status
+    bar, the place, what just happened, a button per choice (with the check it involves), the quest
+    log, the player, the people and the map, the choices' names (what the buttons take), the journey."""
     actions = list(state.get("actions") or [])
     checks = {item["name"]: item.get("check") for item in state.get("choices") or []}
     buttons = [gr.Button(value=f"{i + 1}.  {actions[i]}"
@@ -1105,16 +1287,28 @@ def _play_screen(state):
     if state.get("ended"):
         ending = ("## 🏆 Quest complete\n" if state.get("won") else "## The end\n") + (state.get("end_reason") or "")
     turn = state.get("last_turn") or ""
+    took_a_turn = any(line.startswith("> ") for line in turn.splitlines())  # not approaching or leaving someone
+    card = turn_card_markdown(state.get("turn_summary"), turn) if state.get("turn_summary") and took_a_turn else \
+        (f"### What happened\n{story_markdown(turn)}" if turn else "")
     return (gr.Markdown(value=ending, visible=bool(ending)), gr.Markdown(value=_hud(state), visible=True),
-            state["scene"], gr.Markdown(value=f"### What happened\n{turn}" if turn else "", visible=bool(turn)),
-            *buttons, quest_markdown(state.get("quest")), people_markdown(state), actions)
+            place_markdown(state), gr.Markdown(value=card, visible=bool(card)),
+            *buttons, quest_markdown(state.get("quest"), journal), you_markdown(state), people_markdown(state),
+            actions, journey_markdown(journal))
 
 
 def _story_so_far(token):
+    """The story so far, as the player reads it (story_markdown)."""
     try:
-        return API.get(_path("/v1/sessions", token, "transcript"))["transcript"]
+        return story_markdown(API.get(_path("/v1/sessions", token, "transcript"))["transcript"])
     except APIError:
         return ""
+
+
+def _journal(token):
+    try:
+        return API.get(_path("/v1/sessions", token, "journal"))["journal"]
+    except APIError:
+        return []
 
 
 def play_runs_ui(chosen=None):
@@ -1124,19 +1318,44 @@ def play_runs_ui(chosen=None):
     return gr.Dropdown(choices=choices, value=chosen if chosen in ids else (ids[0] if ids else None))
 
 
-def play_quests_ui(profile):
-    choices, _ = quest_overview(profile)
-    return gr.Dropdown(choices=choices, value="")
+def _new_game(game):
+    """A game just started: (its session, the game screen, the story so far, the report)."""
+    return (game["session_id"], *_play_screen(game, _journal(game["session_id"])), _story_so_far(game["session_id"]),
+            game.get("report") or "")
+
+
+def _play_update(state, token):
+    """The game screen and the story after something changed the session (the player set, an event)."""
+    return (*_play_screen(state, _journal(token)), _story_so_far(token))
 
 
 @ui
-def play_new_game_ui(engine_id, profile, mission, stats_choice):
+def play_new_game_ui(engine_id, profile, mission, stats_choice, stats_points=None):
     """A new game in the world of the chosen finished run (the newest when none is chosen)."""
-    body = {"profile": profile or None, "mission": mission or None}
-    if stats_choice in ("random", "balanced"):
-        body["stats_mode"] = stats_choice
-    game = API.post(_path("/v1/engines", engine_id or "latest", "play"), body)
-    return (game["session_id"], *_play_screen(game), _story_so_far(game["session_id"]), game.get("report") or "")
+    return _new_game(API.post(_path("/v1/engines", engine_id or "latest", "play"),
+                              _player(profile, stats_choice, stats_points, mission)))
+
+
+@ui
+def play_recorded_ui(engine_id, profile, mission, stats_choice, stats_points=None):
+    """A new game with a recorded engine (any run's best, a generation's champion, ...)."""
+    if not engine_id:
+        raise gr.Error("Choose a recorded engine first.")
+    return _new_game(API.post(_path("/v1/records/engines", engine_id, "play"),
+                              _player(profile, stats_choice, stats_points, mission)))
+
+
+@ui
+def play_engine_file_ui(uploaded_file, model_parameters_file, profile, mission, stats_choice, stats_points=None):
+    """A new game with an engine file (an engine model, an older engine ZIP, or a configuration with
+    its model parameters); the engine is kept, so it can be played again and exported."""
+    if not uploaded_file:
+        raise gr.Error("Choose an engine model, an engine ZIP or a configuration YAML first.")
+    player = _player(profile, stats_choice, stats_points, mission)
+    return _new_game(API.upload("/v1/engines/load", {"file": uploaded_file, "parameters": model_parameters_file},
+                                profile=player["profile"], stats_mode=player.get("stats_mode"),
+                                mission=player["mission"],
+                                stats=json.dumps(player["stats"]) if "stats" in player else None))
 
 
 @ui
@@ -1147,7 +1366,7 @@ def play_choose_ui(token, actions, index):
     if index >= len(actions or []):
         raise gr.Error("That choice is no longer there.")
     state = API.post(_path("/v1/sessions", token, "actions"), {"action": actions[index]})
-    return (*_play_screen(state), _story_so_far(token))
+    return (*_play_screen(state, _journal(token)), _story_so_far(token))
 
 
 @ui
@@ -1156,12 +1375,12 @@ def play_end_ui(token):
     if not token:
         raise gr.Error("Start a new game first.")
     state = API.post(_path("/v1/sessions", token, "end"))
-    return (*_play_screen(state), _story_so_far(token))
+    return (*_play_screen(state, _journal(token)), _story_so_far(token))
 
 
 @ui
 def play_continue_ui(upload, token):
-    """Continue a save game (from here, tab 4 or the ANE AI)."""
+    """Continue a save game (saved here or by the ANE AI)."""
     if not upload:
         raise gr.Error("Choose a save game (.json) to continue.")
     try:
@@ -1171,7 +1390,8 @@ def play_continue_ui(upload, token):
     state = API.post("/v1/sessions/load", {"savegame": doc, "session_id": token or None})
     status = ("Continued exactly where it was saved." if state["restored"] == "exact"
               else f"Rebuilt from its parameters ({state.get('note') or 'no usable snapshot'}).")
-    return (state["session_id"], *_play_screen(state), _story_so_far(state["session_id"]), status)
+    return (state["session_id"], *_play_screen(state, _journal(state["session_id"])),
+            _story_so_far(state["session_id"]), status)
 
 
 # ---- records (/v1/records) -------------------------------------------------------------------
@@ -1284,40 +1504,53 @@ def active_config_ui():
     return f"Active now: **{source}**.", to_yaml(data["config"])
 
 
+def import_folder_ui():
+    """What waits in the server's import folder (GET /v1/records/import)."""
+    found = API.get("/v1/records/import")
+    files = found["files"]
+    return (f"**{len(files)}** engine or game file(s) in the server's import folder `{Path(found['folder']).name}/`"
+            + (": " + ", ".join(files[:12]) + (" …" if len(files) > 12 else "") if files else
+               " (set `ANE_ARTIFACT_DIR`, or put `.ane.zip`, engine ZIPs and configurations in `artifacts/`)."))
+
+
+@ui
+def import_records_ui(move, preview, progress=gr.Progress()):
+    """Import every engine and game in the server's import folder into the records (a background job)."""
+    job = API.post("/v1/jobs/records-import", {"move": bool(move), "preview": bool(preview)})
+    report = API.wait(job, lambda state: progress(0.5, desc=str((state or {}).get("label") or "Importing…")))
+    failed = report.get("failed") or []
+    return (f"Imported **{report['engines']}** new engine(s), linked {report['linked']}, {report['runs']} run(s), "
+            f"{report['previews']} preview stor(ies) from {report['files']} file(s)"
+            + (f"; **{len(failed)} not imported**: " + "; ".join(f"{f['file']} ({f['error']})" for f in failed[:5])
+               if failed else "") + ".")
+
+
 def refresh_records_ui():
     return (gr.Dropdown(choices=recorded_engines()), gr.Dropdown(choices=recorded_stories()), recorded_runs(),
             records_status_text())
 
 
 @ui
-def play_recorded_ui(engine_id, profile, stats_choice, stats_points, mission=None):
+def continue_recorded_ui(engine_id, more_generations, progress=gr.Progress()):
+    """Train a recorded engine further, exactly where it stopped (a background job)."""
     if not engine_id:
         raise gr.Error("Choose a recorded engine first.")
-    return _game_outputs(API.post(_path("/v1/records/engines", engine_id, "play"),
-                                  _player(profile, stats_choice, stats_points, mission)))
-
-
-@ui
-def continue_recorded_ui(engine_id, more_generations, profile, stats_choice, stats_points, mission=None,
-                         progress=gr.Progress()):
-    if not engine_id:
-        raise gr.Error("Choose a recorded engine first.")
-    job = API.post(_path("/v1/jobs/engines", engine_id, "continue"),
-                   {"generations": int(more_generations), **_player(profile, stats_choice, stats_points, mission)})
-    return _game_outputs(API.wait(job, _job_progress(progress)))
+    job = API.post(_path("/v1/jobs/engines", engine_id, "continue"), {"generations": int(more_generations)})
+    return _training_outputs(API.wait(job, _job_progress(progress)))
 
 
 @ui
 def retrain_recorded_ui(engine_id, candidate_count, more_generations, simulation_steps, episodes, deterministic,
-                        profile, stats_choice, stats_points, mission=None, progress=gr.Progress()):
+                        progress=gr.Progress()):
+    """A new evolution seeded with a recorded engine's storyteller (a background job)."""
     if not engine_id:
         raise gr.Error("Choose a recorded engine first.")
     job = API.post(_path("/v1/jobs/engines", engine_id, "retrain"), {
         "candidate_count": int(candidate_count), "generations": int(more_generations),
         "simulation_steps": int(simulation_steps), "episodes": int(episodes) if episodes else None,
-        "deterministic": bool(deterministic), **_player(profile, stats_choice, stats_points, mission),
+        "deterministic": bool(deterministic),
     })
-    return _game_outputs(API.wait(job, _job_progress(progress)))
+    return _training_outputs(API.wait(job, _job_progress(progress)))
 
 
 @ui
@@ -1741,6 +1974,25 @@ def save_policy_form_ui(kind, name, trigger, chance, weight, cooldown, most, rep
 # An entry's details (/v1/entities/{kind}/{name}/details): what the entry form does not show.
 
 ARTICLES = [("automatic", ""), ("the", "the"), ("a", "a"), ("an", "an"), ("none: a proper name", "none")]
+# A place's points of interest (interaction_points): a row each.
+POINT_COLUMNS = ["Label", "Prompt", "Leads to place", "Person", "Item", "Action", "Outcome", "Notes", "Id"]
+POINT_FIELDS = ["label", "prompt", "linked_location", "linked_npc", "linked_item", "linked_action", "linked_outcome",
+                "notes", "id"]
+
+
+def _points_table(points):
+    return pd.DataFrame([[str(point.get(field) or "") for field in POINT_FIELDS] for point in points or []
+                         if isinstance(point, dict)], columns=POINT_COLUMNS)
+
+
+def _parse_points(table):
+    points = []
+    for _, row in (table if table is not None else pd.DataFrame()).iterrows():
+        point = {field: str(value).strip() for field, value in zip(POINT_FIELDS, row.tolist())
+                 if value is not None and str(value).strip() and str(value).strip().lower() != "nan"}
+        if point:
+            points.append(point)
+    return points
 
 
 @ui
@@ -1753,16 +2005,18 @@ def details_form_ui(kind, name):
                               else " / ".join(line.get("text") or [])] for line in details.get("dialogue") or []],
                             columns=["Said when (condition, empty: always)", "Says"])
     return (gr.update(visible=npc), gr.update(visible=place),
-            "" if npc or place else "Items and events have no more details than the form above shows.",
+            "" if npc or place else "Items and events have no more details than the entry's fields show.",
             gr.update(choices=places, value=details.get("known_locations") or []),
             gr.update(choices=items, value=details.get("known_objects") or []),
             "none" if article == "" else (article or ""), dialogue,
             "\n".join(details.get("distant_descriptions") or []), "\n".join(details.get("entered_descriptions") or []),
-            "\n".join(details.get("interact_prompts") or []), bool(details.get("exit_locked")))
+            "\n".join(details.get("interact_prompts") or []), bool(details.get("exit_locked")),
+            _points_table(details.get("interaction_points")))
 
 
 @ui
-def save_details_ui(kind, name, known_places, known_items, article, dialogue, distant, entered, prompts, locked):
+def save_details_ui(kind, name, known_places, known_items, article, dialogue, distant, entered, prompts, locked,
+                    points=None):
     if kind not in ("NPCs", "Locations") or not name:
         raise gr.Error("Pick a person or a place.")
     if kind == "NPCs":
@@ -1775,9 +2029,89 @@ def save_details_ui(kind, name, known_places, known_items, article, dialogue, di
                    "article": article or None, "dialogue": lines}
     else:
         details = {"distant_descriptions": _lines(distant), "entered_descriptions": _lines(entered),
-                   "interact_prompts": _lines(prompts), "exit_locked": bool(locked)}
+                   "interact_prompts": _lines(prompts), "exit_locked": bool(locked),
+                   "interaction_points": _parse_points(points)}
     API.put(_path(f"/v1/entities/{kind}", name, "details"), {"details": details})
     return f"Saved the details of **{name}**.", load_entity_yaml_ui(kind, name)
+
+
+# The language model in the editor (/v1/suggestions, /v1/world/size, /v1/jobs/world-proposal,
+# /v1/world/additions): suggestions for an entry's text, and new places, people and items.
+
+SUGGESTION_TARGETS = {"descriptions": "Descriptions", "goals": "Goals", "tags": "Tags",
+                      "distant_descriptions": "Seen from afar (place)", "entered_descriptions": "On arrival (place)",
+                      "interact_prompts": "Ways to go there (place)", "dialogue": "What they say (person)"}
+
+
+@ui
+def suggest_ui(kind, name, field):
+    """Gemma's suggestions for a field of the entry, to tick and add to the form."""
+    if not name:
+        raise gr.Error("Pick an entry first.")
+    found = API.post("/v1/suggestions", {"kind": kind, "name": name, "field": field})["suggestions"]
+    return gr.update(choices=found, value=found), f"{len(found)} suggestion(s) for **{SUGGESTION_TARGETS[field]}**: " \
+        "untick those you do not want and press *Add to the form*."
+
+
+def add_suggestions_ui(field, ticked, descriptions, goals, tags, distant, entered, prompts, dialogue):
+    """The ticked suggestions added to the form's field (saved with *Save entry* or *Save the details*)."""
+    ticked = [str(value) for value in ticked or []]
+    lines = {"descriptions": descriptions, "goals": goals, "distant_descriptions": distant,
+             "entered_descriptions": entered, "interact_prompts": prompts}
+    values = dict(lines)
+    if field in lines:
+        values[field] = "\n".join([*_lines(lines[field]), *(v for v in ticked if v not in _lines(lines[field]))])
+    tags = list(tags or []) + ([v for v in ticked if v not in (tags or [])] if field == "tags" else [])
+    if field == "dialogue":
+        rows = dialogue if dialogue is not None else pd.DataFrame(columns=["Said when (condition, empty: always)", "Says"])
+        dialogue = pd.concat([rows, pd.DataFrame([["", v] for v in ticked], columns=rows.columns)], ignore_index=True)
+    where = "*Save the details*" if field in ("distant_descriptions", "entered_descriptions", "interact_prompts",
+                                               "dialogue") else "*Save entry*"
+    return (values["descriptions"], values["goals"], gr.update(value=tags), values["distant_descriptions"],
+            values["entered_descriptions"], values["interact_prompts"], dialogue,
+            f"Added {len(ticked)} to the form: check it and press {where} to keep them.")
+
+
+def world_size_ui():
+    """How big the world is against the augmentation targets."""
+    size = API.get("/v1/world/size")
+    rows = [{"what": key, "the world has": size["have"][key], "target": size["want"][key],
+             "": "✓" if size["have"][key] >= size["want"][key] else "below"} for key in size["want"]]
+    return pd.DataFrame(rows, columns=["what", "the world has", "target", ""])
+
+
+def _proposal_choices(proposal):
+    return ([f"Place: {name}" for name in proposal.get("locations") or {}]
+            + [f"Person: {entry.get('name')}" for entry in proposal.get("characters") or []]
+            + [f"Item: {entry.get('name')}" for entry in proposal.get("objects") or []])
+
+
+@ui
+def propose_world_ui(progress=gr.Progress()):
+    """Gemma proposes new places, people and items (a background job); nothing is written."""
+    job = API.post("/v1/jobs/world-proposal")
+    progress(0.1, desc="The language model is writing new places, people and items…")
+    proposal = API.wait(job)
+    choices = _proposal_choices(proposal)
+    return (gr.update(choices=choices, value=choices), to_yaml(proposal),
+            f"Proposed {len(choices)} new entries. Read and edit them below, untick those you do not want, then "
+            "press *Add the ticked ones*.")
+
+
+@ui
+def add_proposal_ui(proposal_text, ticked):
+    """Add the ticked entries of the (edited) proposal to the world; the world is checked first."""
+    proposal = from_yaml(proposal_text, "The proposal") or {}
+    if not isinstance(proposal, dict):
+        raise gr.Error("The proposal must be a mapping with locations, characters and objects.")
+    ticked = set(ticked or [])
+    body = {"locations": {name: entry for name, entry in (proposal.get("locations") or {}).items()
+                          if f"Place: {name}" in ticked},
+            "characters": [entry for entry in proposal.get("characters") or [] if f"Person: {entry.get('name')}" in ticked],
+            "objects": [entry for entry in proposal.get("objects") or [] if f"Item: {entry.get('name')}" in ticked]}
+    if not any(body.values()):
+        raise gr.Error("Tick at least one entry to add.")
+    return API.post("/v1/world/additions", body)["message"], world_size_ui()
 
 
 # Missions (/v1/missions/{key}): a form, and its steps as a table.
@@ -2082,331 +2416,366 @@ def build_app():
         studio_status = gr.Markdown(elem_classes="status")
         demo.load(studio_status_ui, None, studio_status)
 
-        with gr.Tabs():
-            with gr.Tab("1 · Create the world"):
-                with gr.Row():
-                    kind = gr.Radio(REFERENCE["entity_kinds"], value="Locations", label="Content type")
-                    entity = gr.Dropdown(label="Entry", choices=names, value=selected_name)
-                    add_entry = gr.Button("New entry")
-                name = gr.Textbox(label="Name", value=initial["name"])
-                tags = gr.Dropdown(
-                    REFERENCE["common_tags"],
-                    value=initial["tags"],
-                    multiselect=True,
-                    allow_custom_value=True,
-                    label="Tags",
-                    info="Type a new tag and press Enter to add it.",
-                )
-                with gr.Row():  # what an NPC or a place does, given by its tags (npc_behaviour, location_behaviour)
-                    behaviour_a = gr.Dropdown([], label="Behaviour", visible=False, interactive=True,
-                                              info="Sets the tag that gives it (Save entry to keep it).")
-                    behaviour_b = gr.Dropdown([], label="Behaviour", visible=False, interactive=True,
-                                              info="Sets the tag that gives it (Save entry to keep it).")
-                descriptions = gr.Textbox(
-                    label="Descriptions", value="\n".join(initial["descriptions"]), lines=5,
-                    info="One description per line.",
-                )
-                goals = gr.Textbox(label="Goals", value="\n".join(initial["goals"]), lines=3, info="One goal per line.")
-                unique = gr.Checkbox(
-                    label="Unique NPC",
-                    visible=False,
-                    info="Unique: lives in one location for the whole game. "
-                    "Unchecked (generic, e.g. guards): may appear in every location that fits its tags.",
-                )
-                with gr.Row():
-                    encounter_event = gr.Dropdown(
-                        _event_choices(),
-                        value="",
-                        label="Encounter event",
-                        visible=False,
-                        info="Hostile NPCs: this event starts by itself when the NPC is in the scene, "
-                        "before the player can act or leave.",
-                    )
-                    encounter_repeat = gr.Checkbox(
-                        label="Repeat on every visit",
-                        visible=False,
-                        info="Unchecked: only the first encounter in a game.",
-                    )
-                enabled_if = gr.Textbox(
-                    label="Enabled if (condition)",
-                    value=to_yaml(initial.get("enabled_if"), flow=True),
-                    placeholder="e.g. {thief_caught: false, reputation: {gte: 1}} or "
-                    "{any: [{has_item: Ancient Map}, {stat: persuasion, op: gte, value: 60}]}",
-                    info="Leave empty to always enable. Variables in shorthand, or a tree with all / any / not and "
-                    "variable, stat, resource, has_item, visited, at_location, npc_removed, event_done, action_done, "
-                    "outcome_tag, mission. Comparisons: eq, ne, gt, gte, lt, lte, in, not_in.",
-                )
-                event_title = gr.Textbox(label="Event title", visible=False, info="Shown while the event is active.")
-                stat_bonus = gr.Textbox(
-                    label="Stat bonus while held", visible=False,
-                    placeholder="e.g. {attack: 15}", info="Added to the character's stats while the item is in the inventory.",
-                )
-                with gr.Row():
-                    start_eligible = gr.Checkbox(
-                        label="Stories can start here", value=bool(initial.get("start_eligible")),
-                        info="Each story starts at one of these locations, drawn at random (only where its "
-                        "mission can be reached). Unchecked: a story never starts here.",
-                    )
-                    start_weight = gr.Number(
-                        label="Start weight", value=initial.get("start_weight") or 1.0, minimum=0.01,
-                        info="Relative chance among the starting locations. A player's recent starts are drawn "
-                        "less often (`start_selection` in the engine logic).",
-                    )
-                with gr.Row():
-                    npc_role = gr.Dropdown(
-                        [INFERRED_ROLE, *REFERENCE.get("npc_roles", [])], value=INFERRED_ROLE, label="Role in the story",
-                        visible=False,
-                        info="How much the NPC matters: importance, how hard they are to find and to beat "
-                        "(`npc_roles` in the engine logic). Inferred: the first `npc_roles.infer` rule its tags match "
-                        "(the quest's hostile target is its nemesis).",
-                    )
-                    npc_secret = gr.Textbox(
-                        label="Secret", visible=False,
-                        placeholder="e.g. {text: '{npc} fences the stolen goods.', talks: 2, effects: [{reveal_location: Sewers}]}",
-                        info="Comes out once spoken with `talks` times (and `clues` things learned): [SECRET] text, its "
-                        "effects, and actions with `enabled_if: {secret_known: <this NPC>}`. Empty: no secret.",
-                    )
-                with gr.Row():
-                    save_entry = gr.Button("Save entry", variant="primary")
-                    delete_entry = gr.Button("Delete entry", variant="stop")
-                editor_status = gr.Markdown()
+        with gr.Tabs(elem_classes="main-tabs") as main_tabs:
+            with gr.Tab("🌍 World", id="world"):
+                with gr.Tabs():
+                    with gr.Tab("📝 Entries"):
+                        with gr.Row():
+                            kind = gr.Radio(REFERENCE["entity_kinds"], value="Locations", label="Content type")
+                            entity = gr.Dropdown(label="Entry", choices=names, value=selected_name)
+                            add_entry = gr.Button("New entry")
+                        places_now, people_now, items_now = _names_of("Locations"), _names_of("NPCs"), _names_of("Items")
+                        events_now, stats_now = _names_of("Events"), _stat_names()
+                        with gr.Tabs():
+                            with gr.Tab("Fields"):
+                                name = gr.Textbox(label="Name", value=initial["name"])
+                                tags = gr.Dropdown(
+                                    REFERENCE["common_tags"],
+                                    value=initial["tags"],
+                                    multiselect=True,
+                                    allow_custom_value=True,
+                                    label="Tags",
+                                    info="Type a new tag and press Enter to add it.",
+                                )
+                                with gr.Row():  # what an NPC or a place does, given by its tags (npc_behaviour, location_behaviour)
+                                    behaviour_a = gr.Dropdown([], label="Behaviour", visible=False, interactive=True,
+                                                              info="Sets the tag that gives it (Save entry to keep it).")
+                                    behaviour_b = gr.Dropdown([], label="Behaviour", visible=False, interactive=True,
+                                                              info="Sets the tag that gives it (Save entry to keep it).")
+                                descriptions = gr.Textbox(
+                                    label="Descriptions", value="\n".join(initial["descriptions"]), lines=5,
+                                    info="One description per line.",
+                                )
+                                goals = gr.Textbox(label="Goals", value="\n".join(initial["goals"]), lines=3, info="One goal per line.")
+                                unique = gr.Checkbox(
+                                    label="Unique NPC",
+                                    visible=False,
+                                    info="Unique: lives in one location for the whole game. "
+                                    "Unchecked (generic, e.g. guards): may appear in every location that fits its tags.",
+                                )
+                                with gr.Row():
+                                    encounter_event = gr.Dropdown(
+                                        _event_choices(),
+                                        value="",
+                                        label="Encounter event",
+                                        visible=False,
+                                        info="Hostile NPCs: this event starts by itself when the NPC is in the scene, "
+                                        "before the player can act or leave.",
+                                    )
+                                    encounter_repeat = gr.Checkbox(
+                                        label="Repeat on every visit",
+                                        visible=False,
+                                        info="Unchecked: only the first encounter in a game.",
+                                    )
+                                enabled_if = gr.Textbox(
+                                    label="Enabled if (condition)",
+                                    value=to_yaml(initial.get("enabled_if"), flow=True),
+                                    placeholder="e.g. {thief_caught: false, reputation: {gte: 1}} or "
+                                    "{any: [{has_item: Ancient Map}, {stat: persuasion, op: gte, value: 60}]}",
+                                    info="Leave empty to always enable. Variables in shorthand, or a tree with all / any / not and "
+                                    "variable, stat, resource, has_item, visited, at_location, npc_removed, event_done, action_done, "
+                                    "outcome_tag, mission. Comparisons: eq, ne, gt, gte, lt, lte, in, not_in.",
+                                )
+                                event_title = gr.Textbox(label="Event title", visible=False, info="Shown while the event is active.")
+                                stat_bonus = gr.Textbox(
+                                    label="Stat bonus while held", visible=False,
+                                    placeholder="e.g. {attack: 15}", info="Added to the character's stats while the item is in the inventory.",
+                                )
+                                with gr.Row():
+                                    start_eligible = gr.Checkbox(
+                                        label="Stories can start here", value=bool(initial.get("start_eligible")),
+                                        info="Each story starts at one of these locations, drawn at random (only where its "
+                                        "mission can be reached). Unchecked: a story never starts here.",
+                                    )
+                                    start_weight = gr.Number(
+                                        label="Start weight", value=initial.get("start_weight") or 1.0, minimum=0.01,
+                                        info="Relative chance among the starting locations. A player's recent starts are drawn "
+                                        "less often (`start_selection` in the engine logic).",
+                                    )
+                                with gr.Row():
+                                    npc_role = gr.Dropdown(
+                                        [INFERRED_ROLE, *REFERENCE.get("npc_roles", [])], value=INFERRED_ROLE, label="Role in the story",
+                                        visible=False,
+                                        info="How much the NPC matters: importance, how hard they are to find and to beat "
+                                        "(`npc_roles` in the engine logic). Inferred: the first `npc_roles.infer` rule its tags match "
+                                        "(the quest's hostile target is its nemesis).",
+                                    )
+                                    npc_secret = gr.Textbox(
+                                        label="Secret", visible=False,
+                                        placeholder="e.g. {text: '{npc} fences the stolen goods.', talks: 2, effects: [{reveal_location: Sewers}]}",
+                                        info="Comes out once spoken with `talks` times (and `clues` things learned): [SECRET] text, its "
+                                        "effects, and actions with `enabled_if: {secret_known: <this NPC>}`. Empty: no secret.",
+                                    )
+                                with gr.Row():
+                                    save_entry = gr.Button("Save entry", variant="primary")
+                                    delete_entry = gr.Button("Delete entry", variant="stop")
+                                editor_status = gr.Markdown()
 
-                places_now, people_now, items_now = _names_of("Locations"), _names_of("NPCs"), _names_of("Items")
-                events_now, stats_now = _names_of("Events"), _stat_names()
-                with gr.Accordion("Actions & outcomes of this entry", open=False):
-                    gr.Markdown("Pick one of the entry's actions to edit it, or add one. An action's **outcomes** are "
-                                "what can happen when it is taken; pick one to edit it. **Save action** checks the "
-                                "whole entry (fields, events, places, people, items, variables) before writing.")
-                    action_state = gr.State({})
-                    with gr.Row(equal_height=True):
-                        act_pick = gr.Dropdown(label="Action", choices=_action_choices("Locations", selected_name),
-                                               value=None, scale=4)
-                        act_new = gr.Button("➕ New action", scale=1)
-                        act_delete = gr.Button("🗑 Delete action", variant="stop", scale=1)
-                    with gr.Group():
+                            with gr.Tab("Actions & outcomes"):
+                                gr.Markdown("Pick one of the entry's actions to edit it, or add one. An action's **outcomes** are "
+                                            "what can happen when it is taken; pick one to edit it. **Save action** checks the "
+                                            "whole entry (fields, events, places, people, items, variables) before writing.")
+                                action_state = gr.State({})
+                                with gr.Row(equal_height=True):
+                                    act_pick = gr.Dropdown(label="Action", choices=_action_choices("Locations", selected_name),
+                                                           value=None, scale=4)
+                                    act_new = gr.Button("➕ New action", scale=1)
+                                    act_delete = gr.Button("🗑 Delete action", variant="stop", scale=1)
+                                with gr.Group():
+                                    with gr.Row():
+                                        act_name = gr.Textbox(label="Name", scale=3)
+                                        act_repeat = gr.Radio([REFERENCE["repeat_default"], *REFERENCE["repeat_rules"]],
+                                                              value=REFERENCE["repeat_default"], label="Offered", scale=3,
+                                                              info="once per game · again on each visit · every turn")
+                                        act_retry = gr.Checkbox(label="Retry after failure", scale=1,
+                                                                info="A failure uses nothing up.")
+                                    with gr.Row():
+                                        act_stat = gr.Dropdown([NONE, *stats_now], value=NONE, label="Skill check")
+                                        act_modifier = gr.Number(value=0, precision=0, label="Check modifier",
+                                                                 info="+ easier, - harder")
+                                        act_group = gr.Textbox(label="Exclusive group", info="Actions sharing it are one choice.")
+                                        act_event = gr.Dropdown([NONE, *events_now], value=NONE, label="Starts the event")
+                                    with gr.Row():
+                                        act_coins = gr.Number(value=0, precision=0, minimum=0, label="Costs coins")
+                                        act_item = gr.Dropdown([NONE, *items_now], value=NONE, label="Needs the item")
+                                        act_tag = gr.Textbox(label="Needs an item tagged")
+                                        act_consumes = gr.Checkbox(label="Uses the item up")
+                                        act_collects = gr.Dropdown([NONE, *items_now], value=NONE, label="Takes the item")
+                                    with gr.Row():
+                                        act_enabled = gr.Textbox(label="Offered only if", placeholder="e.g. reputation: {gte: 1}")
+                                        act_until = gr.Textbox(label="No longer offered once",
+                                                               placeholder="e.g. action_done: Crack the main safe")
+                                gr.Markdown("**Outcomes**")
+                                with gr.Row(equal_height=True):
+                                    out_pick = gr.Dropdown(label="Outcome", choices=[], value=None, scale=4)
+                                    out_new = gr.Button("➕ New outcome", scale=1)
+                                    out_delete = gr.Button("🗑 Delete outcome", variant="stop", scale=1)
+                                with gr.Group():
+                                    out_text = gr.Textbox(label="What is told", lines=2)
+                                    with gr.Row():
+                                        out_when = gr.Radio(["any", "pass", "fail"], value="any", label="When (with a skill check)")
+                                        out_tags = gr.Dropdown(REFERENCE["common_tags"], value=[], multiselect=True,
+                                                               allow_custom_value=True, label="Tags")
+                                    with gr.Row():
+                                        out_health = gr.Number(value=0, precision=0, label="Health ±")
+                                        out_coins = gr.Number(value=0, precision=0, label="Coins ±")
+                                        out_move = gr.Dropdown([NONE, *places_now], value=NONE, label="Moves to")
+                                        out_send = gr.Dropdown([NONE, *places_now], value=NONE, label="Sends to (one way)")
+                                    with gr.Row():
+                                        out_place = gr.Dropdown([NONE, *places_now], value=NONE, label="Reveals a place")
+                                        out_person = gr.Dropdown([NONE, *people_now], value=NONE, label="Reveals a person")
+                                        out_item = gr.Dropdown([NONE, *items_now], value=NONE, label="Reveals an item")
+                                        out_remove = gr.Dropdown([NONE, ACTING, *people_now], value=NONE, label="Removes a person")
+                                    with gr.Row():
+                                        out_spawn = gr.Checkbox(label="Opens a new path")
+                                        out_lead = gr.Checkbox(label="Someone shows the way")
+                                        out_sets = gr.Textbox(label="Sets variables", placeholder="thief_caught: true")
+                                        out_changes = gr.Textbox(label="Changes variables", placeholder="reputation: 1")
+                                        out_stats = gr.Textbox(label="Changes stats", placeholder="persuasion: 5")
+                                    out_effects = gr.Code(language="yaml", label="Other effects (YAML list, optional)", lines=2)
+                                with gr.Row():
+                                    act_save = gr.Button("Save action", variant="primary")
+                                    act_discard = gr.Button("Discard changes")
+                                actions_status = gr.Markdown()
+                                with gr.Accordion("All of this entry's actions as YAML (advanced)", open=False):
+                                    gr.Markdown(REFERENCE["action_reference"])
+                                    actions_editor = gr.Code(
+                                        value=load_entity_actions_yaml("Locations", selected_name), language="yaml", label="actions",
+                                    )
+                                    with gr.Row():
+                                        save_actions_button = gr.Button("Validate & save actions")
+                                        reload_actions_button = gr.Button("Reload from disk")
+
+                            with gr.Tab("Scheduling"):
+                                policy_note = gr.Markdown()
+                                with gr.Group(visible=False) as event_policy:
+                                    with gr.Row():
+                                        pol_trigger = gr.Radio(["action", "random"], value="action", label="Starts",
+                                                               info="action: something in the story starts it · random: also by itself")
+                                        pol_chance = gr.Slider(0, 1, value=0, step=0.01, label="Chance each turn (random)")
+                                        pol_weight = gr.Number(value=1.0, minimum=0, label="Weight among random events")
+                                    with gr.Row():
+                                        pol_cooldown = gr.Number(value=0, precision=0, minimum=0, label="Cooldown (turns)")
+                                        pol_most = gr.Number(value=0, precision=0, minimum=0, label="At most (times; 0: no limit)")
+                                        pol_repeat = gr.Radio(["once", "per_location", "per_visit", "always"], value="always",
+                                                              label="How often")
+                                with gr.Group(visible=False) as item_policy:
+                                    with gr.Row():
+                                        pol_unique = gr.Checkbox(label="Unique: one in each story")
+                                        pol_location = gr.Dropdown([NONE, *places_now], value=NONE,
+                                                                   label="Lies at (none: where it fits best)")
+                                with gr.Row():
+                                    save_policy_form = gr.Button("Save", variant="primary")
+                                policy_status = gr.Markdown()
+                                with gr.Accordion("As YAML (advanced)", open=False):
+                                    policy_editor = gr.Code(value=load_entity_policy_yaml("Locations", selected_name),
+                                                            language="yaml", label="rules")
+                                    with gr.Row():
+                                        save_policy_button = gr.Button("Validate & save rules")
+                                        reload_policy_button = gr.Button("Reload from disk")
+
+                            with gr.Tab("More details"):
+                                details_note = gr.Markdown()
+                                with gr.Group(visible=False) as npc_details:
+                                    with gr.Row():
+                                        det_places = gr.Dropdown(places_now, value=[], multiselect=True, label="Knows these places",
+                                                                 info="Where they can lead the player; unique ones live in one of them.")
+                                        det_items = gr.Dropdown(items_now, value=[], multiselect=True, label="Knows these items")
+                                        det_article = gr.Dropdown(ARTICLES, value="", label="The story calls them")
+                                    det_dialogue = gr.Dataframe(headers=["Said when (condition, empty: always)", "Says"],
+                                                                datatype=["str", "str"], column_count=(2, "fixed"), interactive=True,
+                                                                wrap=True, label="What they say when talked with (the first line "
+                                                                "whose condition holds)")
+                                with gr.Group(visible=False) as place_details:
+                                    with gr.Row():
+                                        det_distant = gr.Textbox(label="Seen from afar", lines=3, info="One per line.")
+                                        det_entered = gr.Textbox(label="On arrival", lines=3, info="One per line.")
+                                        det_prompts = gr.Textbox(label="Ways to go there", lines=3, info="Travel option names.")
+                                    det_locked = gr.Checkbox(label="Its exits are locked until an outcome opens them")
+                                    det_points = gr.Dataframe(
+                                        headers=POINT_COLUMNS, datatype=["str"] * len(POINT_COLUMNS),
+                                        column_count=(len(POINT_COLUMNS), "fixed"), interactive=True, wrap=True,
+                                        label="Points of interest: what the player can look at here, and the place, person, item, "
+                                              "action or outcome each leads to (one row each)")
+                                save_details = gr.Button("Save the details", variant="primary")
+                                details_status = gr.Markdown()
+
+                            with gr.Tab("✨ Suggest"):
+                                gr.Markdown("Ask the language model (Gemma, as the judge) for text in the world's voice for this entry. "
+                                            "Tick what you want and add it to the form; nothing is saved until you save the entry "
+                                            "(*Fields*) or its details (*More details*).")
+                                with gr.Row(equal_height=True):
+                                    suggest_field = gr.Dropdown([(label, key) for key, label in SUGGESTION_TARGETS.items()],
+                                                                value="descriptions", label="Suggest", scale=3)
+                                    suggest_button = gr.Button("✨ Suggest", variant="primary", scale=1)
+                                suggestions = gr.CheckboxGroup([], label="Suggestions")
+                                add_suggestions = gr.Button("Add the ticked ones to the form")
+                                suggest_status = gr.Markdown()
+
+                            with gr.Tab("Every field (YAML)"):
+                                gr.Markdown(
+                                    "The whole entry as stored: what the forms show and everything else. The whole world is "
+                                    "checked with the entry in place before it is saved; rename an entry with the form above."
+                                )
+                                entity_yaml_editor = gr.Code(value=load_entity_yaml_ui("Locations", selected_name), language="yaml",
+                                                             label="entry")
+                                with gr.Row():
+                                    save_entity_yaml_button = gr.Button("Validate & save the entry", variant="primary")
+                                    reload_entity_yaml_button = gr.Button("Reload from disk")
+                                entity_yaml_status = gr.Markdown()
+
+                    with gr.Tab("🎯 Missions"):
+                        gr.Markdown("Each story draws one mission (by weight) among those it may have. A mission is a "
+                                    "quest in **steps**, done in order; the last completes it. A step's **Goal** is one "
+                                    "or more of `location: Palace`, `item: Heavy Shield`, `action: Crack the main safe`, "
+                                    "`npc_removed: Thief`, `event: confront_thief`, `outcome_tag: brawl_won`, "
+                                    "`coins: 20`, `condition: {any: [...]}`, separated by `;` (all must hold). "
+                                    "**Rewards**: effects such as `change_coins: 10; change_variable: {reputation: 1}`.")
+                        mission_state = gr.State({})
+                        with gr.Row(equal_height=True):
+                            mis_pick = gr.Dropdown(label="Mission", choices=_mission_keys(), value=None, scale=4)
+                            mis_new = gr.Button("➕ New mission", scale=1)
+                            mis_delete = gr.Button("🗑 Delete mission", variant="stop", scale=1)
+                        with gr.Group():
+                            with gr.Row():
+                                mis_key = gr.Textbox(label="Key", info="letters, digits and _")
+                                mis_title = gr.Textbox(label="Title", scale=2)
+                                mis_weight = gr.Number(value=1.0, minimum=0, label="Weight")
+                            mis_description = gr.Textbox(label="Description", lines=2)
+                            with gr.Row():
+                                mis_enabled = gr.Textbox(label="Offered only if", placeholder="e.g. thief_caught: false")
+                                mis_rewards = gr.Textbox(label="Rewards when complete",
+                                                         placeholder="change_coins: 10; change_variable: {reputation: 1}")
+                            mis_stages = gr.Dataframe(headers=STAGE_COLUMNS, datatype=["str", "str", "str", "str"],
+                                                      column_count=(4, "fixed"), interactive=True, wrap=True,
+                                                      label="Steps (one row each; one row: a mission with one goal)")
+                        save_mission_form = gr.Button("Save mission", variant="primary")
+                        missions_status = gr.Markdown()
+                        with gr.Accordion("Every mission as YAML (advanced)", open=False):
+                            missions_editor = gr.Code(value=load_missions_yaml(), language="yaml", label="missions.yaml")
+                            with gr.Row():
+                                save_missions_button = gr.Button("Validate & save missions")
+                                reload_missions_button = gr.Button("Reload from disk")
+                        save_missions_button.click(save_missions_yaml, missions_editor, [missions_editor, missions_status])
+                        reload_missions_button.click(load_missions_yaml, None, missions_editor)
+
+                    with gr.Tab("🗺 Map"):
+                        gr.Markdown("Pick a place and tick the places it borders: a route holds both ways, and a far "
+                                    "place is reached through the places between. The map below shows every route.")
                         with gr.Row():
-                            act_name = gr.Textbox(label="Name", scale=3)
-                            act_repeat = gr.Radio([REFERENCE["repeat_default"], *REFERENCE["repeat_rules"]],
-                                                  value=REFERENCE["repeat_default"], label="Offered", scale=3,
-                                                  info="once per game · again on each visit · every turn")
-                            act_retry = gr.Checkbox(label="Retry after failure", scale=1,
-                                                    info="A failure uses nothing up.")
-                        with gr.Row():
-                            act_stat = gr.Dropdown([NONE, *stats_now], value=NONE, label="Skill check")
-                            act_modifier = gr.Number(value=0, precision=0, label="Check modifier",
-                                                     info="+ easier, - harder")
-                            act_group = gr.Textbox(label="Exclusive group", info="Actions sharing it are one choice.")
-                            act_event = gr.Dropdown([NONE, *events_now], value=NONE, label="Starts the event")
-                        with gr.Row():
-                            act_coins = gr.Number(value=0, precision=0, minimum=0, label="Costs coins")
-                            act_item = gr.Dropdown([NONE, *items_now], value=NONE, label="Needs the item")
-                            act_tag = gr.Textbox(label="Needs an item tagged")
-                            act_consumes = gr.Checkbox(label="Uses the item up")
-                            act_collects = gr.Dropdown([NONE, *items_now], value=NONE, label="Takes the item")
-                        with gr.Row():
-                            act_enabled = gr.Textbox(label="Offered only if", placeholder="e.g. reputation: {gte: 1}")
-                            act_until = gr.Textbox(label="No longer offered once",
-                                                   placeholder="e.g. action_done: Crack the main safe")
-                    gr.Markdown("**Outcomes**")
-                    with gr.Row(equal_height=True):
-                        out_pick = gr.Dropdown(label="Outcome", choices=[], value=None, scale=4)
-                        out_new = gr.Button("➕ New outcome", scale=1)
-                        out_delete = gr.Button("🗑 Delete outcome", variant="stop", scale=1)
-                    with gr.Group():
-                        out_text = gr.Textbox(label="What is told", lines=2)
-                        with gr.Row():
-                            out_when = gr.Radio(["any", "pass", "fail"], value="any", label="When (with a skill check)")
-                            out_tags = gr.Dropdown(REFERENCE["common_tags"], value=[], multiselect=True,
-                                                   allow_custom_value=True, label="Tags")
-                        with gr.Row():
-                            out_health = gr.Number(value=0, precision=0, label="Health ±")
-                            out_coins = gr.Number(value=0, precision=0, label="Coins ±")
-                            out_move = gr.Dropdown([NONE, *places_now], value=NONE, label="Moves to")
-                            out_send = gr.Dropdown([NONE, *places_now], value=NONE, label="Sends to (one way)")
-                        with gr.Row():
-                            out_place = gr.Dropdown([NONE, *places_now], value=NONE, label="Reveals a place")
-                            out_person = gr.Dropdown([NONE, *people_now], value=NONE, label="Reveals a person")
-                            out_item = gr.Dropdown([NONE, *items_now], value=NONE, label="Reveals an item")
-                            out_remove = gr.Dropdown([NONE, ACTING, *people_now], value=NONE, label="Removes a person")
-                        with gr.Row():
-                            out_spawn = gr.Checkbox(label="Opens a new path")
-                            out_lead = gr.Checkbox(label="Someone shows the way")
-                            out_sets = gr.Textbox(label="Sets variables", placeholder="thief_caught: true")
-                            out_changes = gr.Textbox(label="Changes variables", placeholder="reputation: 1")
-                            out_stats = gr.Textbox(label="Changes stats", placeholder="persuasion: 5")
-                        out_effects = gr.Code(language="yaml", label="Other effects (YAML list, optional)", lines=2)
-                    with gr.Row():
-                        act_save = gr.Button("Save action", variant="primary")
-                        act_discard = gr.Button("Discard changes")
-                    actions_status = gr.Markdown()
-                    with gr.Accordion("All of this entry's actions as YAML (advanced)", open=False):
-                        gr.Markdown(REFERENCE["action_reference"])
-                        actions_editor = gr.Code(
-                            value=load_entity_actions_yaml("Locations", selected_name), language="yaml", label="actions",
+                            with gr.Column(scale=2):
+                                map_place = gr.Dropdown(places_now, value=places_now[0] if places_now else None,
+                                                        label="Place")
+                                map_borders = gr.CheckboxGroup([], label="Borders")
+                                save_borders = gr.Button("Save the borders", variant="primary")
+                                map_status = gr.Markdown()
+                            with gr.Column(scale=3):
+                                map_view = gr.HTML()
+                        with gr.Accordion("The map as YAML (advanced)", open=False):
+                            map_editor = gr.Code(value=load_document("map"), language="yaml", label="map")
+                            with gr.Row():
+                                save_map_button = gr.Button("Validate & save the map")
+                                reload_map_button = gr.Button("Reload from disk")
+                            save_map_button.click(lambda text: save_document("map", text), map_editor,
+                                                  [map_editor, map_status])
+                            reload_map_button.click(lambda: load_document("map"), None, map_editor)
+
+                    with gr.Tab("🏷 Behaviour by tags"):
+                        gr.Markdown(
+                            "What people and places do comes from their **tags**: each row gives everyone (or "
+                            "everywhere) with one of its tags a behaviour, and the choices above set those tags. Leave a "
+                            "cell empty to leave that behaviour to other rules. **People** come up to the player "
+                            "`never`, `first_meeting` or `every_visit`, and are seen `always`, `once` or in a number of "
+                            "visits. **Places** draw the player in `never`, `first_visit` or `every_visit`, and may be "
+                            "visited `always`, `once` or a number of times. The first matching row decides; someone or "
+                            "somewhere the quest needs now is always there."
                         )
                         with gr.Row():
-                            save_actions_button = gr.Button("Validate & save actions")
-                            reload_actions_button = gr.Button("Reload from disk")
+                            with gr.Column():
+                                gr.Markdown("**People**")
+                                with gr.Row():
+                                    npc_default_a = gr.Dropdown(["never", "first_meeting", "every_visit"], value="never",
+                                                                label="Without a rule: comes up")
+                                    npc_default_b = gr.Dropdown(["always", "once", "2", "3", "5"], value="always",
+                                                                allow_custom_value=True, label="Without a rule: seen")
+                                npc_table = gr.Dataframe(headers=BEHAVIOUR_COLUMNS["npcs"], datatype=["str", "str", "str"],
+                                                         column_count=(3, "fixed"), interactive=True, wrap=True)
+                                save_npc_rules = gr.Button("Save the people's rules", variant="primary")
+                            with gr.Column():
+                                gr.Markdown("**Places**")
+                                with gr.Row():
+                                    place_default_a = gr.Dropdown(["never", "first_visit", "every_visit"], value="never",
+                                                                  label="Without a rule: draws in")
+                                    place_default_b = gr.Dropdown(["always", "once", "2", "3", "5"], value="always",
+                                                                  allow_custom_value=True, label="Without a rule: visits")
+                                place_table = gr.Dataframe(headers=BEHAVIOUR_COLUMNS["locations"],
+                                                           datatype=["str", "str", "str"], column_count=(3, "fixed"),
+                                                           interactive=True, wrap=True)
+                                save_place_rules = gr.Button("Save the places' rules", variant="primary")
+                        rules_status = gr.Markdown()
 
-                with gr.Accordion("Uniqueness & scheduling (events and items)", open=False):
-                    policy_note = gr.Markdown()
-                    with gr.Group(visible=False) as event_policy:
+                    with gr.Tab("✨ Grow the world"):
+                        gr.Markdown("The language model proposes new **places, people and items** that fit this world (its places "
+                                    "and tags). Nothing is written until you add them: each must be new, and the whole world is "
+                                    "checked with them in place. The targets are `augmentation.min_*` (⚙ Settings → Engine logic).")
                         with gr.Row():
-                            pol_trigger = gr.Radio(["action", "random"], value="action", label="Starts",
-                                                   info="action: something in the story starts it · random: also by itself")
-                            pol_chance = gr.Slider(0, 1, value=0, step=0.01, label="Chance each turn (random)")
-                            pol_weight = gr.Number(value=1.0, minimum=0, label="Weight among random events")
-                        with gr.Row():
-                            pol_cooldown = gr.Number(value=0, precision=0, minimum=0, label="Cooldown (turns)")
-                            pol_most = gr.Number(value=0, precision=0, minimum=0, label="At most (times; 0: no limit)")
-                            pol_repeat = gr.Radio(["once", "per_location", "per_visit", "always"], value="always",
-                                                  label="How often")
-                    with gr.Group(visible=False) as item_policy:
-                        with gr.Row():
-                            pol_unique = gr.Checkbox(label="Unique: one in each story")
-                            pol_location = gr.Dropdown([NONE, *places_now], value=NONE,
-                                                       label="Lies at (none: where it fits best)")
-                    with gr.Row():
-                        save_policy_form = gr.Button("Save", variant="primary")
-                    policy_status = gr.Markdown()
-                    with gr.Accordion("As YAML (advanced)", open=False):
-                        policy_editor = gr.Code(value=load_entity_policy_yaml("Locations", selected_name),
-                                                language="yaml", label="rules")
-                        with gr.Row():
-                            save_policy_button = gr.Button("Validate & save rules")
-                            reload_policy_button = gr.Button("Reload from disk")
+                            world_size = gr.Dataframe(label="The world's size", interactive=False, scale=2)
+                            with gr.Column(scale=1):
+                                grow_llm_status = gr.Markdown()
+                                propose_button = gr.Button("✨ Propose new entries", variant="primary")
+                        proposal_pick = gr.CheckboxGroup([], label="Add these")
+                        proposal_text = gr.Code(language="yaml", label="The proposal (edit it before adding)", lines=12)
+                        add_proposal = gr.Button("Add the ticked ones to the world", variant="primary")
+                        grow_status = gr.Markdown()
 
-                with gr.Accordion("Behaviour by tags (people and places)", open=False):
-                    gr.Markdown(
-                        "What people and places do comes from their **tags**: each row gives everyone (or "
-                        "everywhere) with one of its tags a behaviour, and the choices above set those tags. Leave a "
-                        "cell empty to leave that behaviour to other rules. **People** come up to the player "
-                        "`never`, `first_meeting` or `every_visit`, and are seen `always`, `once` or in a number of "
-                        "visits. **Places** draw the player in `never`, `first_visit` or `every_visit`, and may be "
-                        "visited `always`, `once` or a number of times. The first matching row decides; someone or "
-                        "somewhere the quest needs now is always there."
-                    )
-                    with gr.Row():
-                        with gr.Column():
-                            gr.Markdown("**People**")
-                            with gr.Row():
-                                npc_default_a = gr.Dropdown(["never", "first_meeting", "every_visit"], value="never",
-                                                            label="Without a rule: comes up")
-                                npc_default_b = gr.Dropdown(["always", "once", "2", "3", "5"], value="always",
-                                                            allow_custom_value=True, label="Without a rule: seen")
-                            npc_table = gr.Dataframe(headers=BEHAVIOUR_COLUMNS["npcs"], datatype=["str", "str", "str"],
-                                                     column_count=(3, "fixed"), interactive=True, wrap=True)
-                            save_npc_rules = gr.Button("Save the people's rules", variant="primary")
-                        with gr.Column():
-                            gr.Markdown("**Places**")
-                            with gr.Row():
-                                place_default_a = gr.Dropdown(["never", "first_visit", "every_visit"], value="never",
-                                                              label="Without a rule: draws in")
-                                place_default_b = gr.Dropdown(["always", "once", "2", "3", "5"], value="always",
-                                                              allow_custom_value=True, label="Without a rule: visits")
-                            place_table = gr.Dataframe(headers=BEHAVIOUR_COLUMNS["locations"],
-                                                       datatype=["str", "str", "str"], column_count=(3, "fixed"),
-                                                       interactive=True, wrap=True)
-                            save_place_rules = gr.Button("Save the places' rules", variant="primary")
-                    rules_status = gr.Markdown()
-
-                with gr.Accordion("Missions", open=False):
-                    gr.Markdown("Each story draws one mission (by weight) among those it may have. A mission is a "
-                                "quest in **steps**, done in order; the last completes it. A step's **Goal** is one "
-                                "or more of `location: Palace`, `item: Heavy Shield`, `action: Crack the main safe`, "
-                                "`npc_removed: Thief`, `event: confront_thief`, `outcome_tag: brawl_won`, "
-                                "`coins: 20`, `condition: {any: [...]}`, separated by `;` (all must hold). "
-                                "**Rewards**: effects such as `change_coins: 10; change_variable: {reputation: 1}`.")
-                    mission_state = gr.State({})
-                    with gr.Row(equal_height=True):
-                        mis_pick = gr.Dropdown(label="Mission", choices=_mission_keys(), value=None, scale=4)
-                        mis_new = gr.Button("➕ New mission", scale=1)
-                        mis_delete = gr.Button("🗑 Delete mission", variant="stop", scale=1)
-                    with gr.Group():
-                        with gr.Row():
-                            mis_key = gr.Textbox(label="Key", info="letters, digits and _")
-                            mis_title = gr.Textbox(label="Title", scale=2)
-                            mis_weight = gr.Number(value=1.0, minimum=0, label="Weight")
-                        mis_description = gr.Textbox(label="Description", lines=2)
-                        with gr.Row():
-                            mis_enabled = gr.Textbox(label="Offered only if", placeholder="e.g. thief_caught: false")
-                            mis_rewards = gr.Textbox(label="Rewards when complete",
-                                                     placeholder="change_coins: 10; change_variable: {reputation: 1}")
-                        mis_stages = gr.Dataframe(headers=STAGE_COLUMNS, datatype=["str", "str", "str", "str"],
-                                                  column_count=(4, "fixed"), interactive=True, wrap=True,
-                                                  label="Steps (one row each; one row: a mission with one goal)")
-                    save_mission_form = gr.Button("Save mission", variant="primary")
-                    missions_status = gr.Markdown()
-                    with gr.Accordion("Every mission as YAML (advanced)", open=False):
-                        missions_editor = gr.Code(value=load_missions_yaml(), language="yaml", label="missions.yaml")
-                        with gr.Row():
-                            save_missions_button = gr.Button("Validate & save missions")
-                            reload_missions_button = gr.Button("Reload from disk")
-                    save_missions_button.click(save_missions_yaml, missions_editor, [missions_editor, missions_status])
-                    reload_missions_button.click(load_missions_yaml, None, missions_editor)
-
-                with gr.Accordion("More about this entry", open=False):
-                    details_note = gr.Markdown()
-                    with gr.Group(visible=False) as npc_details:
-                        with gr.Row():
-                            det_places = gr.Dropdown(places_now, value=[], multiselect=True, label="Knows these places",
-                                                     info="Where they can lead the player; unique ones live in one of them.")
-                            det_items = gr.Dropdown(items_now, value=[], multiselect=True, label="Knows these items")
-                            det_article = gr.Dropdown(ARTICLES, value="", label="The story calls them")
-                        det_dialogue = gr.Dataframe(headers=["Said when (condition, empty: always)", "Says"],
-                                                    datatype=["str", "str"], column_count=(2, "fixed"), interactive=True,
-                                                    wrap=True, label="What they say when talked with (the first line "
-                                                    "whose condition holds)")
-                    with gr.Group(visible=False) as place_details:
-                        with gr.Row():
-                            det_distant = gr.Textbox(label="Seen from afar", lines=3, info="One per line.")
-                            det_entered = gr.Textbox(label="On arrival", lines=3, info="One per line.")
-                            det_prompts = gr.Textbox(label="Ways to go there", lines=3, info="Travel option names.")
-                        det_locked = gr.Checkbox(label="Its exits are locked until an outcome opens them")
-                    save_details = gr.Button("Save the details", variant="primary")
-                    details_status = gr.Markdown()
-
-                with gr.Accordion("Every field of this entry (YAML, advanced)", open=False):
-                    gr.Markdown(
-                        "The whole entry as stored: what the forms show and everything else. The whole world is "
-                        "checked with the entry in place before it is saved; rename an entry with the form above."
-                    )
-                    entity_yaml_editor = gr.Code(value=load_entity_yaml_ui("Locations", selected_name), language="yaml",
-                                                 label="entry")
-                    with gr.Row():
-                        save_entity_yaml_button = gr.Button("Validate & save the entry", variant="primary")
-                        reload_entity_yaml_button = gr.Button("Reload from disk")
-                    entity_yaml_status = gr.Markdown()
-
-                with gr.Accordion("Map: which places border which", open=False):
-                    gr.Markdown("Pick a place and tick the places it borders: a route holds both ways, and a far "
-                                "place is reached through the places between. The map below shows every route.")
-                    with gr.Row():
-                        with gr.Column(scale=2):
-                            map_place = gr.Dropdown(places_now, value=places_now[0] if places_now else None,
-                                                    label="Place")
-                            map_borders = gr.CheckboxGroup([], label="Borders")
-                            save_borders = gr.Button("Save the borders", variant="primary")
-                            map_status = gr.Markdown()
-                        with gr.Column(scale=3):
-                            map_view = gr.HTML()
-                    with gr.Accordion("The map as YAML (advanced)", open=False):
-                        map_editor = gr.Code(value=load_document("map"), language="yaml", label="map")
-                        with gr.Row():
-                            save_map_button = gr.Button("Validate & save the map")
-                            reload_map_button = gr.Button("Reload from disk")
-                        save_map_button.click(lambda text: save_document("map", text), map_editor,
-                                              [map_editor, map_status])
-                        reload_map_button.click(lambda: load_document("map"), None, map_editor)
-
-                with gr.Accordion("Failures that lead nowhere", open=False):
-                    gr.Markdown(
-                        "Actions that can fail (a skill check, or failure outcomes) where failing changes nothing but "
-                        "health or coins and no complication event fits: the failures worth writing a consequence for."
-                    )
-                    lint_button = gr.Button("Check the world's failures")
-                    lint_report = gr.Markdown()
-                    lint_button.click(failure_lint_ui, None, lint_report)
+                    with gr.Tab("🔍 Checks"):
+                        gr.Markdown(
+                            "Actions that can fail (a skill check, or failure outcomes) where failing changes nothing but "
+                            "health or coins and no complication event fits: the failures worth writing a consequence for."
+                        )
+                        lint_button = gr.Button("Check the world's failures")
+                        lint_report = gr.Markdown()
+                        lint_button.click(failure_lint_ui, None, lint_report)
 
                 npc_fields = [unique, encounter_event, encounter_repeat, enabled_if, event_title, stat_bonus,
                               start_eligible, start_weight, npc_role, npc_secret]
@@ -2420,7 +2789,7 @@ def build_app():
                 policy_fields = [pol_trigger, pol_chance, pol_weight, pol_cooldown, pol_most, pol_repeat, pol_unique,
                                  pol_location]
                 detail_fields = [det_places, det_items, det_article, det_dialogue, det_distant, det_entered, det_prompts,
-                                 det_locked]
+                                 det_locked, det_points]
                 mission_fields = [mis_key, mis_title, mis_description, mis_weight, mis_enabled, mis_rewards, mis_stages]
 
                 def entry_forms(kind_value, entity_value):
@@ -2504,416 +2873,559 @@ def build_app():
                                        [place_table, place_default_a, place_default_b], rules_status).then(
                     behaviour_fields_ui, [kind, tags], behaviours).then(behaviour_tables_ui, None, behaviour_tables)
 
-            with gr.Tab("2 · Simulation settings"):
-                gr.Markdown(
-                    "### Complete configuration file\n"
-                    "Upload one combined YAML file containing all sections from the four files in `config/`. "
-                    "It is checked completely before it can replace the built-in runtime configuration."
-                )
-                with gr.Row():
-                    config_upload = gr.File(label="Combined YAML configuration", file_types=[".yaml", ".yml"],
-                                            type="filepath")
-                    with gr.Column():
-                        activate_config = gr.Button("Validate & use uploaded config", variant="primary")
-                        restore_config = gr.Button("Use built-in config")
-                with gr.Row():
-                    pop_size = gr.Number(settings["pop_size"], label="Evolution population", precision=0, minimum=1)
-                    generations = gr.Number(settings["generations"], label="Generations", precision=0, minimum=1)
-                    episodes = gr.Number(settings["episodes_per_genome"], label="Episodes / genome", precision=0, minimum=1)
-                    max_steps = gr.Number(settings["max_steps"], label="Maximum simulation steps", precision=0, minimum=1)
-                with gr.Row():
-                    health = gr.Number(settings["initial_health"], label="Starting health", precision=0, minimum=1)
-                    max_health = gr.Number(
-                        settings["max_health"], label="Maximum health", precision=0, minimum=1,
-                        info="Healing never raises health above this value.",
-                    )
-                    coins = gr.Number(settings["initial_coins"], label="Starting coins", precision=0, minimum=0)
-                    max_actions = gr.Number(
-                        settings["max_actions"], label="Game action limit", precision=0, minimum=100,
-                        info="The action-limit cutoff cannot be set below 100; other ending conditions still apply.",
-                    )
-                with gr.Row():
-                    deterministic = gr.Checkbox(
-                        value=settings["deterministic"], label="Deterministic reproducibility",
-                        info="Repeat the same evolution when the configuration and seed are unchanged.",
-                    )
-                    seed = gr.Number(settings["seed"], label="Reproducibility seed", precision=0)
-                save_config = gr.Button("Save settings", variant="primary")
-                config_status = gr.Markdown()
-                setting_components = [pop_size, generations, episodes, max_steps, health, coins, max_actions,
-                                      deterministic, seed, max_health]
-                activate_config.click(upload_config, config_upload, [*setting_components, config_status])
-                restore_config.click(use_builtin_config, None, [*setting_components, config_status])
-                save_config.click(save_settings, setting_components, config_status)
+                # The language model: suggestions for this entry, and new entries for the world.
+                suggest_button.click(suggest_ui, [kind, entity, suggest_field], [suggestions, suggest_status],
+                                     concurrency_limit=1, concurrency_id="language_model")
+                add_suggestions.click(add_suggestions_ui,
+                                      [suggest_field, suggestions, descriptions, goals, tags, det_distant, det_entered,
+                                       det_prompts, det_dialogue],
+                                      [descriptions, goals, tags, det_distant, det_entered, det_prompts, det_dialogue,
+                                       suggest_status])
+                demo.load(world_size_ui, None, world_size)
+                demo.load(judge_status_ui, None, grow_llm_status)
+                propose_button.click(propose_world_ui, None, [proposal_pick, proposal_text, grow_status],
+                                     concurrency_limit=1, concurrency_id="language_model")
+                add_proposal.click(add_proposal_ui, [proposal_text, proposal_pick], [grow_status, world_size]).success(
+                    entity_names, kind, [entity, *entry_fields]).then(studio_status_ui, None, studio_status)
 
-                with gr.Accordion("Persistent variables", open=False):
-                    gr.Markdown(
-                        "Variables that carry over between playthroughs. Outcomes change them with "
-                        "`set_variables` / `change_variables`; locations, NPCs, items and missions use "
-                        "`enabled_if`. Only real play (the game on the Play tab) saves them."
-                    )
-                    variables_editor = gr.Code(value=load_variables_yaml(), language="yaml", label="variables.yaml")
-                    save_variables_button = gr.Button("Validate & save variable definitions", variant="primary")
-                    variables_status = gr.Markdown()
-                    gr.Markdown(
-                        "#### Stored values of a player profile\n"
-                        "Edit them to test later playthroughs (e.g. set `playthroughs: 1` or `reputation: -3`)."
-                    )
-                    values_profile = gr.Dropdown(profiles["profiles"], value=profiles["default"],
-                                                 allow_custom_value=True, label="Player profile")
-                    stored_values = gr.Code(value=stored_values_yaml(profiles["default"]), language="yaml",
-                                            label="Stored values")
-                    with gr.Row():
-                        save_values_button = gr.Button("Save stored values", variant="primary")
-                        refresh_values_button = gr.Button("Refresh")
-                        reset_values_button = gr.Button("Reset profile (new player)", variant="stop")
-                    values_status = gr.Markdown()
-                    save_variables_button.click(
-                        save_variables_yaml, variables_editor, [variables_editor, variables_status],
-                    ).then(stored_values_yaml, values_profile, stored_values)
-                    values_profile.change(stored_values_yaml, values_profile, stored_values)
-                    refresh_values_button.click(stored_values_yaml, values_profile, stored_values)
-                    save_values_button.click(save_stored_values_yaml, [values_profile, stored_values],
-                                             [stored_values, values_status])
-                    reset_values_button.click(reset_stored_values_ui, values_profile, [stored_values, values_status])
-                with gr.Accordion("Character stats", open=False):
-                    gr.Markdown(
-                        "Define the stats of this story (any names), the points budget, how players get their "
-                        "points, which outcome tags need a check (`tag_checks`) and which stat softens combat "
-                        "damage. Difficulty lives in the Weights tab (**Skill check resolution**)."
-                    )
-                    stats_editor = gr.Code(value=load_stats_yaml(), language="yaml", label="stats.yaml")
-                    with gr.Row():
-                        save_stats_button = gr.Button("Validate & save character stats", variant="primary")
-                        reload_stats_button = gr.Button("Reload from disk")
-                    stats_status = gr.Markdown()
-                    save_stats_button.click(save_stats_yaml, stats_editor, [stats_editor, stats_status])
-                    reload_stats_button.click(load_stats_yaml, None, stats_editor)
-                with gr.Accordion("Story rules", open=False):
-                    rules = dict(zip(REFERENCE["rule_fields"], load_rules_ui()))
-                    rule_choices = REFERENCE["rule_choices"]
-                    locations = _entity_names("Locations")
-                    gr.Markdown("**Missions and goal pursuit**")
-                    with gr.Row():
-                        rule_missions = gr.Checkbox(rules["missions_enabled"], label="Missions enabled")
-                        rule_end_on_goal = gr.Checkbox(rules["end_on_goal"], label="End the story when the goal is met")
-                        rule_start = gr.Number(rules["pursuit_start_step"], precision=0, minimum=0, label="Pursuit starts at step")
-                        rule_full = gr.Number(rules["pursuit_full_step"], precision=0, minimum=1, label="Full pursuit from step")
-                        rule_route = gr.Number(rules["route_weight"], label="Route weight")
-                    gr.Markdown("**How often options are offered** (unless an action sets `repeat`)")
-                    with gr.Row():
-                        rule_repeat = [
-                            gr.Dropdown(rule_choices["repeat"], value=rules[f"repeat_{source}"], label=f"{source.title()} actions")
-                            for source in ("location", "npc", "item", "event")
-                        ]
-                    gr.Markdown("**Arrests and discovery**")
-                    with gr.Row():
-                        rule_arrest = gr.Dropdown(locations, value=rules["arrest_location"], label="Arrest location")
-                        rule_lock = gr.Dropdown(
-                            rule_choices["arrest_lock_when"], value=rules["arrest_lock_when"], label="Confine until escape",
-                            info="sent: only when sent there; always: everyone; never: no escape needed",
+            with gr.Tab("⚙ Settings", id="settings"):
+                with gr.Tabs():
+                    with gr.Tab("Simulation"):
+                        gr.Markdown(
+                            "### Complete configuration file\n"
+                            "Upload one combined YAML file containing all sections from the four files in `config/`. "
+                            "It is checked completely before it can replace the built-in runtime configuration."
                         )
-                        rule_travel = gr.Checkbox(rules["auto_travel_on_spawn"], label="Follow compelling new paths")
-                        rule_threshold = gr.Number(rules["auto_travel_on_spawn_threshold"], label="Commitment threshold")
-                    gr.Markdown("**Persistent variables and events**")
-                    with gr.Row():
-                        rule_profile = gr.Textbox(rules["profile"], label="Default player profile")
-                        rule_save_on = gr.Dropdown(rule_choices["save_on"], value=rules["save_on"], label="Save variables on")
-                        rule_simulate = gr.Dropdown(rule_choices["simulate_with"], value=rules["simulate_with"],
-                                                    label="Evolution plays with")
-                    with gr.Row():
-                        rule_fallback = gr.Textbox(rules["fallback_action"], label="Event fallback option")
-                        rule_fallback_desc = gr.Textbox(rules["fallback_description"], label="Event fallback text")
-                    rule_by_field = {
-                        "missions_enabled": rule_missions, "end_on_goal": rule_end_on_goal,
-                        "pursuit_start_step": rule_start, "pursuit_full_step": rule_full, "route_weight": rule_route,
-                        "repeat_location": rule_repeat[0], "repeat_npc": rule_repeat[1], "repeat_item": rule_repeat[2],
-                        "repeat_event": rule_repeat[3], "arrest_location": rule_arrest, "arrest_lock_when": rule_lock,
-                        "auto_travel_on_spawn": rule_travel, "auto_travel_on_spawn_threshold": rule_threshold,
-                        "profile": rule_profile, "save_on": rule_save_on, "simulate_with": rule_simulate,
-                        "fallback_action": rule_fallback, "fallback_description": rule_fallback_desc,
-                    }
-                    rule_inputs = [rule_by_field[field] for field in REFERENCE["rule_fields"]]
-                    with gr.Row():
-                        save_rules_button = gr.Button("Save story rules", variant="primary")
-                        reload_rules_button = gr.Button("Reload")
-                    rules_status = gr.Markdown()
-                    save_rules_button.click(save_rules_ui, rule_inputs, rules_status)
-                    reload_rules_button.click(load_rules_ui, None, rule_inputs)
-                with gr.Accordion("Story messages", open=False):
-                    gr.Markdown(
-                        "Rewrite any sentence the engine adds to a story, e.g. `voyage: \"You head towards "
-                        "the {location}.\"`. Each entry lists its `{placeholders}`; a list of texts is used "
-                        "in turn. Unknown messages or placeholders are rejected."
-                    )
-                    messages_editor = gr.Code(value=load_messages_yaml(), language="yaml", label="messages.yaml")
-                    with gr.Row():
-                        save_messages_button = gr.Button("Validate & save messages", variant="primary")
-                        reload_messages_button = gr.Button("Reload from disk")
-                    messages_status = gr.Markdown()
-                    save_messages_button.click(save_messages_yaml, messages_editor, [messages_editor, messages_status])
-                    reload_messages_button.click(load_messages_yaml, None, messages_editor)
-                with gr.Accordion("Advanced · all hyperparameters", open=False):
-                    gr.Markdown(
-                        "Edit every hyperparameter as YAML. The complete structure and value types "
-                        "are validated before saving."
-                    )
-                    hyperparameters_editor = gr.Code(value=API.get("/v1/hyperparameters")["yaml"], language="yaml",
-                                                     label="hyperparameters.yaml")
-                    save_all_config = gr.Button("Validate & save all hyperparameters")
-                    advanced_status = gr.Markdown()
-                    save_all_config.click(save_all_hyperparameters, hyperparameters_editor,
-                                          [*setting_components, hyperparameters_editor, advanced_status])
-                with gr.Accordion("The active configuration (read only)", open=False):
-                    gr.Markdown("Every configuration file merged (or the uploaded configuration): what new games "
-                                "and runs use now.")
-                    show_config = gr.Button("Show")
-                    config_source = gr.Markdown()
-                    active_config = gr.Code(language="yaml", label="active configuration", interactive=False)
-                    show_config.click(active_config_ui, None, [config_source, active_config])
-
-            with gr.Tab("3 · Weights"):
-                gr.Markdown(
-                    "Configure every numeric weight, bonus, penalty, threshold, chance, rate, "
-                    "mitigation, floor, and power control used by scoring and the narrative engine."
-                )
-                weight_entries = list(API.get("/v1/weights")["values"].items())
-                weight_paths = [path for path, _ in weight_entries]
-                weight_components = []
-                grouped_weights = {}
-                for weight_path, value in weight_entries:
-                    grouped_weights.setdefault(weight_path.split(".")[0], []).append((weight_path, value))
-                for section, section_entries in grouped_weights.items():
-                    with gr.Accordion(section.replace("_", " ").title(), open=False):
-                        for index in range(0, len(section_entries), 3):
-                            with gr.Row():
-                                for weight_path, value in section_entries[index:index + 3]:
-                                    weight_components.append(gr.Number(value=value, label=weight_path))
-                save_weights_button = gr.Button("Save all weights", variant="primary")
-                weights_status = gr.Markdown()
-                save_weights_button.click(save_weights, [gr.State(weight_paths), *weight_components], weights_status)
-
-            with gr.Tab("4 · Train the AI"):
-                gr.Markdown("Run a quick tournament of narrative genomes. The strongest result becomes your playable game.")
-                with gr.Accordion("Load a previous best engine", open=False):
-                    gr.Markdown(
-                        "Upload an engine model (`.ane.zip`: world, storyteller, training state, memory and tag "
-                        "vectors), an older engine ZIP, or a complete configuration YAML with its model-parameters "
-                        "YAML. If the configuration already contains a `generated_run.genome`, the separate "
-                        "parameters file is optional."
-                    )
-                    with gr.Row():
-                        engine_upload = gr.File(label="Engine bundle or configuration", file_types=[".zip", ".yaml", ".yml"],
-                                                type="filepath")
-                        model_parameters_upload = gr.File(label="Model parameters (optional)", file_types=[".yaml", ".yml"],
-                                                          type="filepath")
-                        load_engine_button = gr.Button("Load best engine & start game", variant="primary")
-                with gr.Row():
-                    candidates = gr.Slider(1, limits["candidate_limit"], value=limits["default_candidates"], step=1,
-                                           label="Candidate genomes")
-                    generations = gr.Slider(1, limits["generation_limit"], value=limits["default_generations"], step=1,
-                                            label="Evolution generations")
-                    sim_steps = gr.Slider(1, limits["simulation_step_limit"], value=limits["default_simulation_steps"],
-                                          step=1, label="Steps per simulation")
-                    episodes = gr.Slider(
-                        1, 10, value=min(10, int(defaults["episodes_per_genome"])), step=1,
-                        label="Stories per storyteller", info="More stories per genome: fairer scores, slower learning.",
-                    )
-                run_work = gr.Markdown(run_work_ui(limits["default_candidates"], limits["default_generations"],
-                                                   limits["default_simulation_steps"],
-                                                   min(10, int(defaults["episodes_per_genome"]))))
-                for slider in (candidates, generations, sim_steps, episodes):
-                    slider.change(run_work_ui, [candidates, generations, sim_steps, episodes], run_work,
-                                  show_progress="hidden")
-                warm_start = gr.Checkbox(
-                    value=bool(defaults["warm_start"]), label="Continue learning from earlier runs",
-                    info="Seed the population with the best storytellers the AI remembers.",
-                )
-                with gr.Row():
-                    deterministic_run = gr.Checkbox(
-                        value=settings["deterministic"], label="Run deterministically",
-                        info="Uses the reproducibility seed saved in Simulation settings.",
-                    )
-                    play_profile = gr.Dropdown(
-                        profiles["profiles"], value=profiles["default"], allow_custom_value=True, label="Player profile",
-                        info="Persistent variables are saved to this profile. Type a new name for a new player.",
-                    )
-                    first_quests, quest_overview_text = quest_overview(profiles["default"])
-                    play_mission = gr.Dropdown(
-                        first_quests, value="", label="Quest to play",
-                        info="Choose the quest of the next game (every way of starting one), or let the story draw it.",
-                    )
-                with gr.Accordion("Quests in this world", open=False):
-                    quest_overview_md = gr.Markdown(quest_overview_text)
-                    refresh_quests = gr.Button("Refresh quests for this profile")
-                with gr.Accordion("Save game: this profile's progression", open=False):
-                    gr.Markdown("Every session saves the player's progression: its report (goal achieved or mission "
-                                "failed, stats, inventory) and, when achieved, its goal, which then leaves the goal "
-                                "pool (each goal once per save game). The report goes to the UNP "
-                                "(`session_report` in the engine logic). *Reset profile* (Simulation settings) starts "
-                                "a new save game.")
-                    with gr.Row():
-                        save_game_refresh = gr.Button("Show the save game")
-                        resend_report_button = gr.Button("Send the latest report to the UNP again")
-                    save_game_text = gr.Markdown()
-                    save_game_status = gr.Markdown()
-                    save_game_table = gr.Dataframe(label="Sessions", interactive=False, wrap=True)
-                with gr.Accordion("Character stats of the player", open=False):
-                    allocation = character_stats.get("allocation") or {}
-                    gr.Markdown(
-                        f"Spread **{allocation.get('total_points', 50)} points** over "
-                        f"{', '.join(f'`{stat}`' for stat in (character_stats.get('stats') or {})) or 'no stats'}; "
-                        f"each stat takes {allocation.get('min_points', 5)}-{allocation.get('max_points', 20)} points. "
-                        "Choose `defined` to play with the points below."
-                    )
-                    with gr.Row():
-                        stats_choice = gr.Dropdown(REFERENCE["player_stat_choices"], value="story default", label="Stats")
-                        randomize_stats = gr.Button("Randomize")
-                        balance_stats = gr.Button("Balance")
-                    stats_points = gr.Code(value=to_yaml(character_stats.get("defined_points") or {}), language="yaml",
-                                           label="Stat points")
-                    stats_check = gr.Markdown()
-                    randomize_stats.click(lambda: stats_points_text("random"), None, stats_points).then(
-                        lambda: "defined", None, stats_choice,
-                    )
-                    balance_stats.click(lambda: stats_points_text("balanced"), None, stats_points).then(
-                        lambda: "defined", None, stats_choice,
-                    )
-                    stats_points.change(check_points_text, stats_points, stats_check)
-                run_button = gr.Button("Evolve storytellers & start game", variant="primary")
-                simulation_report = gr.Markdown(elem_classes="status")
-                with gr.Row():
-                    learning_plot = gr.LinePlot(
-                        x="generation", y="score", color="series", label="Learning curve",
-                        x_title="Generation", y_title="Fitness", height=280,
-                    )
-                    learned_traits = gr.Dataframe(
-                        headers=["trait", "meaning", "evolved", "population", "tendency"],
-                        label="What the evolved storyteller learned", interactive=False, wrap=True,
-                    )
-                with gr.Accordion("Learning memory", open=False):
-                    memory_status = gr.Markdown(learning_memory_text())
-                    forget_button = gr.Button("Forget what the AI learned", variant="stop")
-                    forget_button.click(forget_learning_ui, None, memory_status)
-                run_state = gr.State(None)
-                with gr.Accordion("Export the engine (offline, for a game): the ANE AI", open=False):
-                    gr.Markdown(
-                        "Download the engine to run offline in a game. **The ANE AI** (*Runs on* Windows, macOS, "
-                        "Linux or Unity) is a standalone program that a UNP launches, drives over HTTP and stops, "
-                        "no Python needed. An export is made from a **finished run**: its engine (world, "
-                        "storyteller, training state, tag vectors). The latest is chosen; choose several to export "
-                        "each. Finished runs are kept (in the records, or with the saves) and can be exported later. "
-                        "**The Python version** (for developers: embed it with `NarrativeEngine`, `python run.py "
-                        "serve`, `play`, `evolve`) can also be made from a generation's champion, the remembered "
-                        "storyteller or this game's storyteller. Each download's README explains how to use it."
-                    )
-                    with gr.Row():
-                        export_platform = gr.Dropdown(
-                            export_platform_choices(), value="python", label="Runs on",
-                            info="A standalone program for that system (the ANE AI, no Python needed), the Unity "
-                            "package, or Python.")
-                        export_source = gr.Radio(list(EXPORT_SOURCES), value=FINISHED_RUNS, label="What to export",
-                                                 info="The Python version only; the ANE AI is made from finished runs.")
-                    finished = finished_run_choices()
-                    export_engine = gr.Dropdown(finished, value=[v for _, v in finished[:1]], multiselect=True,
-                                                label="Finished runs", info="Newest first: the latest is chosen. "
-                                                "Choose several to export each.")
-                    export_generation = gr.Dropdown([], label="Generation (for a generation's champion)", visible=False)
-                    export_engine_note = gr.Markdown()
-                    with gr.Row():
-                        export_memory = gr.Checkbox(True, label="Include the learning memory (keep training offline)")
-                        export_name = gr.Textbox(label="Name", placeholder="narrative-engine")
-                    export_button = gr.Button("Export", variant="primary")
-                    export_file = gr.File(label="Downloads (ZIP, or .unitypackage for Unity)", interactive=False,
-                                          file_count="multiple")
-                    export_status = gr.Markdown()
-                    with gr.Accordion("Where the ANE AI runs, and the world it sends", open=False):
-                        gr.Markdown("The standalone runtimes this API has (built by CI for each system, from the same "
-                                    "engine code), and the world as the ANE AI sends it to a UNP (`GET /world`). "
-                                    "How a UNP uses the ANE AI: `docs/UNP.md`.")
-                        export_platforms = gr.Dataframe(export_platforms_table(), interactive=False, wrap=True)
                         with gr.Row():
-                            refresh_platforms = gr.Button("Refresh")
-                            catalogue_button = gr.Button("Download the world as a UNP receives it (JSON)")
-                        catalogue_file = gr.File(label="World catalogue (ane.world/1)", interactive=False)
-                        catalogue_status = gr.Markdown()
-                        refresh_platforms.click(export_platforms_table, None, export_platforms)
-                        catalogue_button.click(world_catalogue_ui, None, [catalogue_file, catalogue_status])
-                    export_form = [export_source, export_generation, export_engine, export_engine_note, export_button]
-                    for control in (export_platform, export_source):
-                        control.change(export_form_ui, [export_platform, export_source, export_engine], export_form)
-                    demo.load(export_form_ui, [export_platform, export_source, export_engine], export_form)
-                    export_button.click(
-                        export_engine_ui,
-                        [export_source, run_state, export_generation, session_token, export_memory, export_name,
-                         export_platform, export_engine],
-                        [export_file, export_status],
-                    )
-                with gr.Accordion("Records: recorded engines, runs and stories", open=False):
-                    records_status = gr.Markdown(records_status_text())
+                            config_upload = gr.File(label="Combined YAML configuration", file_types=[".yaml", ".yml"],
+                                                    type="filepath")
+                            with gr.Column():
+                                activate_config = gr.Button("Validate & use uploaded config", variant="primary")
+                                restore_config = gr.Button("Use built-in config")
+                        with gr.Row():
+                            pop_size = gr.Number(settings["pop_size"], label="Evolution population", precision=0, minimum=1)
+                            generations = gr.Number(settings["generations"], label="Generations", precision=0, minimum=1)
+                            episodes = gr.Number(settings["episodes_per_genome"], label="Episodes / genome", precision=0, minimum=1)
+                            max_steps = gr.Number(settings["max_steps"], label="Maximum simulation steps", precision=0, minimum=1)
+                        with gr.Row():
+                            health = gr.Number(settings["initial_health"], label="Starting health", precision=0, minimum=1)
+                            max_health = gr.Number(
+                                settings["max_health"], label="Maximum health", precision=0, minimum=1,
+                                info="Healing never raises health above this value.",
+                            )
+                            coins = gr.Number(settings["initial_coins"], label="Starting coins", precision=0, minimum=0)
+                            max_actions = gr.Number(
+                                settings["max_actions"], label="Game action limit", precision=0, minimum=100,
+                                info="The action-limit cutoff cannot be set below 100; other ending conditions still apply.",
+                            )
+                        with gr.Row():
+                            deterministic = gr.Checkbox(
+                                value=settings["deterministic"], label="Deterministic reproducibility",
+                                info="Repeat the same evolution when the configuration and seed are unchanged.",
+                            )
+                            seed = gr.Number(settings["seed"], label="Reproducibility seed", precision=0)
+                        save_config = gr.Button("Save settings", variant="primary")
+                        config_status = gr.Markdown()
+                        setting_components = [pop_size, generations, episodes, max_steps, health, coins, max_actions,
+                                              deterministic, seed, max_health]
+                        activate_config.click(upload_config, config_upload, [*setting_components, config_status])
+                        restore_config.click(use_builtin_config, None, [*setting_components, config_status])
+                        save_config.click(save_settings, setting_components, config_status)
+
+                        with gr.Accordion("Advanced · all hyperparameters", open=False):
+                            gr.Markdown(
+                                "Edit every hyperparameter as YAML. The complete structure and value types "
+                                "are validated before saving."
+                            )
+                            hyperparameters_editor = gr.Code(value=API.get("/v1/hyperparameters")["yaml"], language="yaml",
+                                                             label="hyperparameters.yaml")
+                            save_all_config = gr.Button("Validate & save all hyperparameters")
+                            advanced_status = gr.Markdown()
+                            save_all_config.click(save_all_hyperparameters, hyperparameters_editor,
+                                                  [*setting_components, hyperparameters_editor, advanced_status])
+                        with gr.Accordion("The active configuration (read only)", open=False):
+                            gr.Markdown("Every configuration file merged (or the uploaded configuration): what new games "
+                                        "and runs use now.")
+                            show_config = gr.Button("Show")
+                            config_source = gr.Markdown()
+                            active_config = gr.Code(language="yaml", label="active configuration", interactive=False)
+                            show_config.click(active_config_ui, None, [config_source, active_config])
+
+                    with gr.Tab("Story"):
+                        with gr.Accordion("Story rules", open=True):
+                            rules = dict(zip(REFERENCE["rule_fields"], load_rules_ui()))
+                            rule_choices = REFERENCE["rule_choices"]
+                            locations = _entity_names("Locations")
+                            gr.Markdown("**Missions and goal pursuit**")
+                            with gr.Row():
+                                rule_missions = gr.Checkbox(rules["missions_enabled"], label="Missions enabled")
+                                rule_end_on_goal = gr.Checkbox(rules["end_on_goal"], label="End the story when the goal is met")
+                                rule_start = gr.Number(rules["pursuit_start_step"], precision=0, minimum=0, label="Pursuit starts at step")
+                                rule_full = gr.Number(rules["pursuit_full_step"], precision=0, minimum=1, label="Full pursuit from step")
+                                rule_route = gr.Number(rules["route_weight"], label="Route weight")
+                            gr.Markdown("**How often options are offered** (unless an action sets `repeat`)")
+                            with gr.Row():
+                                rule_repeat = [
+                                    gr.Dropdown(rule_choices["repeat"], value=rules[f"repeat_{source}"], label=f"{source.title()} actions")
+                                    for source in ("location", "npc", "item", "event")
+                                ]
+                            gr.Markdown("**Arrests and discovery**")
+                            with gr.Row():
+                                rule_arrest = gr.Dropdown(locations, value=rules["arrest_location"], label="Arrest location")
+                                rule_lock = gr.Dropdown(
+                                    rule_choices["arrest_lock_when"], value=rules["arrest_lock_when"], label="Confine until escape",
+                                    info="sent: only when sent there; always: everyone; never: no escape needed",
+                                )
+                                rule_travel = gr.Checkbox(rules["auto_travel_on_spawn"], label="Follow compelling new paths")
+                                rule_threshold = gr.Number(rules["auto_travel_on_spawn_threshold"], label="Commitment threshold")
+                            gr.Markdown("**Persistent variables and events**")
+                            with gr.Row():
+                                rule_profile = gr.Textbox(rules["profile"], label="Default player profile")
+                                rule_save_on = gr.Dropdown(rule_choices["save_on"], value=rules["save_on"], label="Save variables on")
+                                rule_simulate = gr.Dropdown(rule_choices["simulate_with"], value=rules["simulate_with"],
+                                                            label="Evolution plays with")
+                            with gr.Row():
+                                rule_fallback = gr.Textbox(rules["fallback_action"], label="Event fallback option")
+                                rule_fallback_desc = gr.Textbox(rules["fallback_description"], label="Event fallback text")
+                            rule_by_field = {
+                                "missions_enabled": rule_missions, "end_on_goal": rule_end_on_goal,
+                                "pursuit_start_step": rule_start, "pursuit_full_step": rule_full, "route_weight": rule_route,
+                                "repeat_location": rule_repeat[0], "repeat_npc": rule_repeat[1], "repeat_item": rule_repeat[2],
+                                "repeat_event": rule_repeat[3], "arrest_location": rule_arrest, "arrest_lock_when": rule_lock,
+                                "auto_travel_on_spawn": rule_travel, "auto_travel_on_spawn_threshold": rule_threshold,
+                                "profile": rule_profile, "save_on": rule_save_on, "simulate_with": rule_simulate,
+                                "fallback_action": rule_fallback, "fallback_description": rule_fallback_desc,
+                            }
+                            rule_inputs = [rule_by_field[field] for field in REFERENCE["rule_fields"]]
+                            with gr.Row():
+                                save_rules_button = gr.Button("Save story rules", variant="primary")
+                                reload_rules_button = gr.Button("Reload")
+                            rules_status = gr.Markdown()
+                            save_rules_button.click(save_rules_ui, rule_inputs, rules_status)
+                            reload_rules_button.click(load_rules_ui, None, rule_inputs)
+                        with gr.Accordion("Story messages", open=False):
+                            gr.Markdown(
+                                "Rewrite any sentence the engine adds to a story, e.g. `voyage: \"You head towards "
+                                "the {location}.\"`. Each entry lists its `{placeholders}`; a list of texts is used "
+                                "in turn. Unknown messages or placeholders are rejected."
+                            )
+                            messages_editor = gr.Code(value=load_messages_yaml(), language="yaml", label="messages.yaml")
+                            with gr.Row():
+                                save_messages_button = gr.Button("Validate & save messages", variant="primary")
+                                reload_messages_button = gr.Button("Reload from disk")
+                            messages_status = gr.Markdown()
+                            save_messages_button.click(save_messages_yaml, messages_editor, [messages_editor, messages_status])
+                            reload_messages_button.click(load_messages_yaml, None, messages_editor)
+                        with gr.Accordion("Persistent variables", open=False):
+                            gr.Markdown(
+                                "Variables that carry over between playthroughs. Outcomes change them with "
+                                "`set_variables` / `change_variables`; locations, NPCs, items and missions use "
+                                "`enabled_if`. Only real play (the game on the Play tab) saves them."
+                            )
+                            variables_editor = gr.Code(value=load_variables_yaml(), language="yaml", label="variables.yaml")
+                            save_variables_button = gr.Button("Validate & save variable definitions", variant="primary")
+                            variables_status = gr.Markdown()
+                            gr.Markdown(
+                                "#### Stored values of a player profile\n"
+                                "Edit them to test later playthroughs (e.g. set `playthroughs: 1` or `reputation: -3`)."
+                            )
+                            values_profile = gr.Dropdown(profiles["profiles"], value=profiles["default"],
+                                                         allow_custom_value=True, label="Player profile")
+                            stored_values = gr.Code(value=stored_values_yaml(profiles["default"]), language="yaml",
+                                                    label="Stored values")
+                            with gr.Row():
+                                save_values_button = gr.Button("Save stored values", variant="primary")
+                                refresh_values_button = gr.Button("Refresh")
+                                reset_values_button = gr.Button("Reset profile (new player)", variant="stop")
+                            values_status = gr.Markdown()
+                            save_variables_button.click(
+                                save_variables_yaml, variables_editor, [variables_editor, variables_status],
+                            ).then(stored_values_yaml, values_profile, stored_values)
+                            values_profile.change(stored_values_yaml, values_profile, stored_values)
+                            refresh_values_button.click(stored_values_yaml, values_profile, stored_values)
+                            save_values_button.click(save_stored_values_yaml, [values_profile, stored_values],
+                                                     [stored_values, values_status])
+                            reset_values_button.click(reset_stored_values_ui, values_profile, [stored_values, values_status])
+                        with gr.Accordion("Character stats", open=False):
+                            gr.Markdown(
+                                "Define the stats of this story (any names), the points budget, how players get their "
+                                "points, which outcome tags need a check (`tag_checks`) and which stat softens combat "
+                                "damage. Difficulty lives in the Weights tab (**Skill check resolution**)."
+                            )
+                            stats_editor = gr.Code(value=load_stats_yaml(), language="yaml", label="stats.yaml")
+                            with gr.Row():
+                                save_stats_button = gr.Button("Validate & save character stats", variant="primary")
+                                reload_stats_button = gr.Button("Reload from disk")
+                            stats_status = gr.Markdown()
+                            save_stats_button.click(save_stats_yaml, stats_editor, [stats_editor, stats_status])
+                            reload_stats_button.click(load_stats_yaml, None, stats_editor)
+                    with gr.Tab("Weights"):
+                        gr.Markdown(
+                            "Configure every numeric weight, bonus, penalty, threshold, chance, rate, "
+                            "mitigation, floor, and power control used by scoring and the narrative engine."
+                        )
+                        weight_entries = list(API.get("/v1/weights")["values"].items())
+                        weight_paths = [path for path, _ in weight_entries]
+                        weight_components = []
+                        grouped_weights = {}
+                        for weight_path, value in weight_entries:
+                            grouped_weights.setdefault(weight_path.split(".")[0], []).append((weight_path, value))
+                        for section, section_entries in grouped_weights.items():
+                            with gr.Accordion(section.replace("_", " ").title(), open=False):
+                                for index in range(0, len(section_entries), 3):
+                                    with gr.Row():
+                                        for weight_path, value in section_entries[index:index + 3]:
+                                            weight_components.append(gr.Number(value=value, label=weight_path))
+                        save_weights_button = gr.Button("Save all weights", variant="primary")
+                        weights_status = gr.Markdown()
+                        save_weights_button.click(save_weights, [gr.State(weight_paths), *weight_components], weights_status)
+
+                    with gr.Tab("Engine logic"):
+                        gr.Markdown(
+                            "The engine's logic runs in the backend scripts; here you change **how it behaves** "
+                            "through its parameters, section by section. Every section is checked (same settings, "
+                            "same value types) before it is saved, and new simulations and games use it at once."
+                        )
+                        sections = API.get("/v1/logic")["sections"]
+                        descriptions_by_section = {item["section"]: item["description"] for item in sections}
+                        logic_section = gr.Dropdown(list(descriptions_by_section), value="evolution", label="Logic section")
+                        logic_description = gr.Markdown(descriptions_by_section.get("evolution", ""))
+                        logic_editor = gr.Code(value=load_logic_section("evolution"), language="yaml", label="Parameters")
+                        with gr.Row():
+                            save_logic_button = gr.Button("Validate & save parameters", variant="primary")
+                            reload_logic_button = gr.Button("Reload")
+                        logic_status = gr.Markdown()
+                        logic_section.change(load_logic_section, logic_section, logic_editor)
+                        logic_section.change(lambda section: descriptions_by_section.get(section, ""), logic_section,
+                                             logic_description)
+                        reload_logic_button.click(load_logic_section, logic_section, logic_editor)
+                        save_logic_button.click(save_logic_section, [logic_section, logic_editor], logic_status)
+
+                    with gr.Tab("App & jobs"):
+                        with gr.Accordion("App parameters", open=True):
+                            gr.Markdown("Saved in config/ui_settings.yml. Upload limits are in bytes; crossover probability is between 0 and 1.")
+                            parameter_inputs = []
+                            for key, value in limits.items():
+                                label = key.replace("_", " ").title()
+                                if isinstance(value, bool):
+                                    component = gr.Checkbox(value=value, label=label)
+                                elif isinstance(value, str):
+                                    component = gr.Textbox(value=value, label=label)
+                                else:
+                                    component = gr.Number(value=value, label=label,
+                                                          precision=0 if isinstance(app_defaults[key], int) else None)
+                                parameter_inputs.append(component)
+                            save_parameters = gr.Button("Save app parameters", variant="primary")
+                            parameters_status = gr.Markdown()
+                            save_parameters.click(save_app_parameters, parameter_inputs, parameters_status)
+                        with gr.Accordion("Background jobs", open=False):
+                            gr.Markdown("Evolutions, continued trainings and judge runs started from here or by any client "
+                                        "of the API, newest first.")
+                            refresh_jobs = gr.Button("Refresh")
+                            jobs_table = gr.Dataframe(label="Jobs", interactive=False, wrap=True)
+                            refresh_jobs.click(jobs_table_ui, None, jobs_table)
+
+            with gr.Tab("🧠 Train & export", id="train"):
+                with gr.Tabs():
+                    with gr.Tab("Train"):
+                        gr.Markdown("Evolve AI storytellers on this world: a tournament of storytellers, each "
+                                    "scored on the stories it tells. The best becomes a **trained AI**: play it in "
+                                    "**▶ Play**, export it in **Export**.")
+                        with gr.Row():
+                            candidates = gr.Slider(1, limits["candidate_limit"], value=limits["default_candidates"],
+                                                   step=1, label="Candidate genomes")
+                            generations = gr.Slider(1, limits["generation_limit"], value=limits["default_generations"],
+                                                    step=1, label="Evolution generations")
+                            sim_steps = gr.Slider(1, limits["simulation_step_limit"],
+                                                  value=limits["default_simulation_steps"], step=1,
+                                                  label="Steps per simulation")
+                            episodes = gr.Slider(
+                                1, 10, value=min(10, int(defaults["episodes_per_genome"])), step=1,
+                                label="Stories per storyteller",
+                                info="More stories per genome: fairer scores, slower learning.",
+                            )
+                        run_work = gr.Markdown(run_work_ui(limits["default_candidates"], limits["default_generations"],
+                                                           limits["default_simulation_steps"],
+                                                           min(10, int(defaults["episodes_per_genome"]))))
+                        for slider in (candidates, generations, sim_steps, episodes):
+                            slider.change(run_work_ui, [candidates, generations, sim_steps, episodes], run_work,
+                                          show_progress="hidden")
+                        with gr.Row():
+                            warm_start = gr.Checkbox(
+                                value=bool(defaults["warm_start"]), label="Continue learning from earlier runs",
+                                info="Seed the population with the best storytellers the AI remembers.",
+                            )
+                            deterministic_run = gr.Checkbox(
+                                value=settings["deterministic"], label="Run deterministically",
+                                info="Uses the reproducibility seed saved in ⚙ Settings → Simulation.",
+                            )
+                        with gr.Row():
+                            run_button = gr.Button("🧠 Evolve storytellers", variant="primary", scale=3)
+                            play_it = gr.Button("▶ Play the newest", scale=1)
+                        simulation_report = gr.Markdown(elem_classes="status")
+                        with gr.Row():
+                            learning_plot = gr.LinePlot(
+                                x="generation", y="score", color="series", label="Learning curve",
+                                x_title="Generation", y_title="Fitness", height=260,
+                            )
+                            learned_traits = gr.Dataframe(
+                                headers=["trait", "meaning", "evolved", "population", "tendency"],
+                                label="What the evolved storyteller learned", interactive=False, wrap=True,
+                            )
+                        with gr.Accordion("The run's files: its story configuration and engine model", open=False):
+                            with gr.Row():
+                                generated_config = gr.File(label="Story configuration", interactive=False)
+                                generated_engine = gr.File(
+                                    label="Engine model (world, storyteller, training state, memory, tag vectors)",
+                                    interactive=False,
+                                )
+                        with gr.Accordion("Learning memory", open=False):
+                            memory_status = gr.Markdown(learning_memory_text())
+                            forget_button = gr.Button("Forget what the AI learned", variant="stop")
+                            forget_button.click(forget_learning_ui, None, memory_status)
+                        run_state = gr.State(None)
+
+                    with gr.Tab("Records"):
+                        records_status = gr.Markdown(records_status_text())
+                        with gr.Row(equal_height=True):
+                            record_engine = gr.Dropdown(recorded_engines(), label="Recorded engine", scale=4,
+                                                        info="Every run's best, every generation's champion, loaded, "
+                                                        "continued and retrained engines. Play one in ▶ Play.")
+                            refresh_records = gr.Button("↻ Refresh", scale=1)
+                        with gr.Row(equal_height=True):
+                            more_generations = gr.Slider(1, limits["generation_limit"], value=3, step=1,
+                                                         label="Further generations", scale=2)
+                            continue_record = gr.Button("Continue its training", scale=1)
+                            retrain_record = gr.Button("Retrain from it", scale=1)
+                        gr.Markdown("*Continue* trains it further exactly where it stopped; *Retrain* starts a new "
+                                    "evolution (with the Train tab's sizes) seeded with its storyteller.")
+                        with gr.Row():
+                            download_record = gr.Button("Download its model file and world")
+                        with gr.Row():
+                            record_model_file = gr.File(label="Engine model (.ane.zip)", interactive=False)
+                            record_world_file = gr.File(label="World and tuning (YAML)", interactive=False)
+                        with gr.Accordion("Recorded stories", open=False):
+                            record_story = gr.Dropdown(recorded_stories(), label="Recorded story")
+                            with gr.Row():
+                                judge_story_button = gr.Button("Judge this story (Gemma 4)")
+                                compare_story = gr.Dropdown(recorded_stories(), label="Compare with another recorded story")
+                                compare_button = gr.Button("Which is the better game?")
+                            story_judgement = gr.Markdown()
+                            story_view = gr.Markdown()
+                        with gr.Accordion("Recorded runs", open=False):
+                            runs_table = gr.Dataframe(recorded_runs(), label="Recorded runs", interactive=False)
+                            record_run = gr.Dropdown(recorded_run_choices(), label="A run: its settings and generations")
+                            run_detail = gr.Markdown()
+                            run_generations = gr.Dataframe(label="Generations", interactive=False)
+                        with gr.Accordion("Recorded worlds", open=False):
+                            with gr.Row():
+                                record_world = gr.Dropdown(recorded_world_choices(), label="Recorded world")
+                                download_world = gr.Button("Download it as a configuration to upload")
+                            record_world_download = gr.File(label="World and tuning (YAML)", interactive=False)
+                        with gr.Accordion("Import earlier engines and games (the server's import folder)", open=False):
+                            gr.Markdown("Engine models, offline exports, older engine ZIPs and story configurations "
+                                        "in the server's import folder are read, completed (tag vectors, a score, "
+                                        "their run, a preview story) and recorded; files that are not engines or "
+                                        "games, or whose world is invalid, stay where they are.")
+                            import_note = gr.Markdown()
+                            with gr.Row():
+                                import_move = gr.Checkbox(False, label="Move the files into the records (else copy)")
+                                import_preview = gr.Checkbox(True, label="Play a preview story of each new engine")
+                                import_button = gr.Button("Import", variant="primary")
+                            import_status = gr.Markdown()
+
+                    with gr.Tab("Export"):
+                        gr.Markdown(
+                            "Download the engine to run offline in a game. **The ANE AI** (*Runs on* Windows, macOS, "
+                            "Linux or Unity) is a standalone program that a UNP launches, drives over HTTP and stops, "
+                            "no Python needed. An export is made from a **finished run**: its engine (world, "
+                            "storyteller, training state, tag vectors). The latest is chosen; choose several to export "
+                            "each. Finished runs are kept (in the records, or with the saves) and can be exported later. "
+                            "**The Python version** (for developers: embed it with `NarrativeEngine`, `python run.py "
+                            "serve`, `play`, `evolve`) can also be made from a generation's champion, the remembered "
+                            "storyteller or this game's storyteller. Each download's README explains how to use it."
+                        )
+                        with gr.Row():
+                            export_platform = gr.Dropdown(
+                                export_platform_choices(), value="python", label="Runs on",
+                                info="A standalone program for that system (the ANE AI, no Python needed), the Unity "
+                                "package, or Python.")
+                            export_source = gr.Radio(list(EXPORT_SOURCES), value=FINISHED_RUNS, label="What to export",
+                                                     info="The Python version only; the ANE AI is made from finished runs.")
+                        finished = finished_run_choices()
+                        export_engine = gr.Dropdown(finished, value=[v for _, v in finished[:1]], multiselect=True,
+                                                    label="Finished runs", info="Newest first: the latest is chosen. "
+                                                    "Choose several to export each.")
+                        export_generation = gr.Dropdown([], label="Generation (for a generation's champion)", visible=False)
+                        export_engine_note = gr.Markdown()
+                        with gr.Row():
+                            export_memory = gr.Checkbox(True, label="Include the learning memory (keep training offline)")
+                            export_name = gr.Textbox(label="Name", placeholder="narrative-engine")
+                        export_button = gr.Button("Export", variant="primary")
+                        export_file = gr.File(label="Downloads (ZIP, or .unitypackage for Unity)", interactive=False,
+                                              file_count="multiple")
+                        export_status = gr.Markdown()
+                        with gr.Accordion("Where the ANE AI runs, and the world it sends", open=False):
+                            gr.Markdown("The standalone runtimes this API has (built by CI for each system, from the same "
+                                        "engine code), and the world as the ANE AI sends it to a UNP (`GET /world`). "
+                                        "How a UNP uses the ANE AI: `docs/UNP.md`.")
+                            export_platforms = gr.Dataframe(export_platforms_table(), interactive=False, wrap=True)
+                            with gr.Row():
+                                refresh_platforms = gr.Button("Refresh")
+                                catalogue_button = gr.Button("Download the world as a UNP receives it (JSON)")
+                            catalogue_file = gr.File(label="World catalogue (ane.world/1)", interactive=False)
+                            catalogue_status = gr.Markdown()
+                            refresh_platforms.click(export_platforms_table, None, export_platforms)
+                            catalogue_button.click(world_catalogue_ui, None, [catalogue_file, catalogue_status])
+                        export_form = [export_source, export_generation, export_engine, export_engine_note, export_button]
+                        for control in (export_platform, export_source):
+                            control.change(export_form_ui, [export_platform, export_source, export_engine], export_form)
+                        demo.load(export_form_ui, [export_platform, export_source, export_engine], export_form)
+                        export_button.click(
+                            export_engine_ui,
+                            [export_source, run_state, export_generation, session_token, export_memory, export_name,
+                             export_platform, export_engine],
+                            [export_file, export_status],
+                        )
+                train_outputs = [simulation_report, generated_config, generated_engine, learning_plot, learned_traits]
+                engine_events = [run_button.click(
+                    run_simulation_ui,
+                    [candidates, generations, sim_steps, deterministic_run, episodes, warm_start],
+                    [*train_outputs, memory_status, run_state, export_generation],
+                    concurrency_limit=1,
+                    concurrency_id="narrative_evolution",
+                )]
+                record_outputs = [*train_outputs, run_state, export_generation]
+                engine_events.append(continue_record.click(
+                    continue_recorded_ui, [record_engine, more_generations],
+                    record_outputs, concurrency_limit=1, concurrency_id="narrative_evolution"))
+                engine_events.append(retrain_record.click(
+                    retrain_recorded_ui,
+                    [record_engine, candidates, more_generations, sim_steps, episodes, deterministic_run],
+                    record_outputs, concurrency_limit=1, concurrency_id="narrative_evolution"))
+                record_lists = [record_engine, record_story, runs_table, records_status]
+                for event in engine_events:  # a finished run: it is chosen for the export (the newest), and recorded
+                    event.success(lambda platform, source: export_form_ui(platform, source),
+                                  [export_platform, export_source], export_form).then(
+                        refresh_records_ui, None, record_lists)
+                play_it.click(lambda: gr.Tabs(selected="play"), None, main_tabs)
+                refresh_records.click(refresh_records_ui, None, record_lists).then(
+                    lambda: gr.Dropdown(choices=recorded_stories()), None, compare_story,
+                )
+                refresh_records.click(lambda: (gr.Dropdown(choices=recorded_run_choices()),
+                                               gr.Dropdown(choices=recorded_world_choices())), None,
+                                      [record_run, record_world])
+                record_run.change(run_detail_ui, record_run, [run_detail, run_generations])
+                download_world.click(download_world_ui, record_world, record_world_download)
+                judge_story_button.click(judge_story_ui, record_story, story_judgement)
+                compare_button.click(compare_stories_ui, [record_story, compare_story], story_judgement)
+                download_record.click(download_recorded_ui, record_engine, [record_model_file, record_world_file])
+                record_story.change(story_view_ui, record_story, story_view)
+                demo.load(import_folder_ui, None, import_note)
+                import_button.click(import_records_ui, [import_move, import_preview], import_status,
+                                    concurrency_limit=1).then(refresh_records_ui, None, record_lists).then(
+                    import_folder_ui, None, import_note)
+
+            with gr.Tab("▶ Play", id="play"):
+                play_token = session_token  # the game played here (Export's "this game's storyteller" too)
+                play_actions = gr.State([])
+                play_finished = finished_run_choices()
+                play_first_quests, quest_overview_text = quest_overview(profiles["default"])
+                allocation = character_stats.get("allocation") or {}
+                with gr.Accordion("🎮 New game", open=True) as play_setup:
                     with gr.Row():
-                        record_engine = gr.Dropdown(recorded_engines(), label="Recorded engine",
-                                                    info="Every run's best, every generation's champion, loaded, "
-                                                    "continued and retrained engines.")
-                        refresh_records = gr.Button("Refresh")
+                        play_run = gr.Dropdown(play_finished, value=play_finished[0][1] if play_finished else None,
+                                               label="Trained AI", scale=3,
+                                               info="Finished runs and loaded engines, newest first.")
+                        play_who = gr.Dropdown(profiles["profiles"], value=profiles["default"], allow_custom_value=True,
+                                               label="Player profile", scale=2,
+                                               info="Its progression and persistent variables are kept.")
+                        play_quest = gr.Dropdown(play_first_quests, value="", label="Quest", scale=2,
+                                                 info="Or let the story draw one.")
+                        play_stats = gr.Dropdown(PLAY_STATS, value="story default", label="Character", scale=2,
+                                                 info="My own points: set them below.")
                     with gr.Row():
-                        play_record = gr.Button("Play with this engine", variant="primary")
-                        more_generations = gr.Slider(1, limits["generation_limit"], value=3, step=1,
-                                                     label="Further generations")
-                        continue_record = gr.Button("Continue its training")
-                        retrain_record = gr.Button("Retrain from it")
-                    download_record = gr.Button("Download its model file and world")
-                    with gr.Row():
-                        record_model_file = gr.File(label="Engine model (.ane.zip)", interactive=False)
-                        record_world_file = gr.File(label="World and tuning (YAML)", interactive=False)
-                    record_story = gr.Dropdown(recorded_stories(), label="Recorded story")
-                    with gr.Row():
-                        judge_story_button = gr.Button("Judge this story (Gemma 4)")
-                        compare_story = gr.Dropdown(recorded_stories(), label="Compare with another recorded story")
-                        compare_button = gr.Button("Which is the better game?")
-                    story_judgement = gr.Markdown()
-                    story_view = gr.Markdown()
-                    runs_table = gr.Dataframe(recorded_runs(), label="Recorded runs", interactive=False)
-                    record_run = gr.Dropdown(recorded_run_choices(), label="Recorded run: its settings and generations")
-                    run_detail = gr.Markdown()
-                    run_generations = gr.Dataframe(label="Generations", interactive=False)
-                    with gr.Row():
-                        record_world = gr.Dropdown(recorded_world_choices(), label="Recorded world")
-                        download_world = gr.Button("Download it as a configuration to upload")
-                    record_world_download = gr.File(label="World and tuning (YAML)", interactive=False)
+                        play_new = gr.Button("▶ New game", variant="primary", scale=3)
+                        play_upload = gr.UploadButton("📂 Continue a save game", file_types=[".json"],
+                                                      type="filepath", scale=2)
+                        play_refresh = gr.Button("↻ Refresh", scale=1)
+                    with gr.Accordion("🎲 My own stat points", open=False):
+                        gr.Markdown(
+                            f"Spread **{allocation.get('total_points', 50)} points** over "
+                            f"{', '.join(f'`{stat}`' for stat in (character_stats.get('stats') or {})) or 'no stats'}; "
+                            f"each stat takes {allocation.get('min_points', 5)}-{allocation.get('max_points', 20)} "
+                            "points. *Character: My own points* plays with them."
+                        )
+                        with gr.Row():
+                            randomize_stats = gr.Button("Randomize", size="sm")
+                            balance_stats = gr.Button("Balance", size="sm")
+                        stats_points = gr.Code(value=to_yaml(character_stats.get("defined_points") or {}),
+                                               language="yaml", label="Stat points", lines=4)
+                        stats_check = gr.Markdown()
+                    with gr.Accordion("🗂 Another engine: a recorded one, or a file", open=False):
+                        with gr.Row(equal_height=True):
+                            play_record_engine = gr.Dropdown(recorded_engines(), label="Recorded engine", scale=4,
+                                                             info="Any run's best, a generation's champion, ...")
+                            play_record = gr.Button("▶ Play with it", scale=1)
+                        gr.Markdown("Or an engine file: an engine model (`.ane.zip`), an older engine ZIP, or a complete "
+                                    "configuration YAML (with its model-parameters YAML when it has no "
+                                    "`generated_run.genome`). It is kept: play it again, or export it.")
+                        with gr.Row(equal_height=True):
+                            engine_upload = gr.File(label="Engine model or configuration",
+                                                    file_types=[".zip", ".yaml", ".yml"], type="filepath", scale=2)
+                            model_parameters_upload = gr.File(label="Model parameters (optional)",
+                                                              file_types=[".yaml", ".yml"], type="filepath", scale=2)
+                            load_engine_button = gr.Button("▶ Load & play", scale=1)
+                    with gr.Accordion("🎯 The world's quests, and this profile's save game", open=False):
+                        quest_overview_md = gr.Markdown(quest_overview_text)
+                        gr.Markdown("Every session saves the player's progression: its report (goal achieved or "
+                                    "mission failed, stats, inventory) and, when achieved, its goal, which then leaves "
+                                    "the goal pool (each goal once per save game). The report goes to the UNP "
+                                    "(`session_report` in the engine logic). *Reset profile* (⚙ Settings → Story → "
+                                    "Persistent variables) starts a new save game.")
+                        with gr.Row():
+                            refresh_quests = gr.Button("Refresh the quests", size="sm")
+                            save_game_refresh = gr.Button("Show the save game", size="sm")
+                            resend_report_button = gr.Button("Send the latest report to the UNP again", size="sm")
+                        save_game_text = gr.Markdown()
+                        save_game_status = gr.Markdown()
+                        save_game_table = gr.Dataframe(label="Sessions", interactive=False, wrap=True)
+                play_status = gr.Markdown()
                 with gr.Row():
                     with gr.Column(scale=3):
-                        scene = gr.Markdown("Run a simulation to begin.")
-                        choices = gr.Radio([], label="What do you do?", interactive=True,
-                                           info="The most relevant choices now: fewer in tense moments.")
+                        play_ending = gr.Markdown(elem_classes="ending", visible=False)
+                        play_hud = gr.Markdown(elem_classes="play-hud", visible=False)
+                        # Where you are, then what your last choice did, then what you can do now.
+                        play_scene = gr.Markdown("Choose a trained AI and press **▶ New game**.",
+                                                 elem_classes="scene-card")
+                        play_turn = gr.Markdown(elem_classes="turn-card", visible=False)
+                        play_buttons = [gr.Button(visible=False, elem_classes="choice", size="md")
+                                        for _ in range(CHOICE_BUTTONS)]
                         with gr.Row():
-                            choose = gr.Button("Take action", variant="primary")
-                            end_session_button = gr.Button("End this session", variant="stop")
-                        turn_result = gr.Textbox(label="Last turn", lines=7, interactive=False)
-                        with gr.Accordion("Judge this playthrough (Gemma 4 as a game critic)", open=False):
-                            game_judge_status = gr.Markdown()
-                            judge_game_button = gr.Button("Judge the game played so far")
-                            game_judgement = gr.Markdown()
-                            demo.load(judge_status_ui, None, game_judge_status)
+                            play_save = gr.Button("💾 Save game", size="sm")
+                            play_stop = gr.Button("End the game", variant="stop", size="sm")
+                        play_save_file = gr.File(label="Save game (JSON)", interactive=False, visible=False)
                     with gr.Column(scale=2):
-                        quest_panel = gr.Markdown("### Quest\nStart a game to see its quest.")
-                        people_panel = gr.Markdown("### People met\nNobody yet.")
-                with gr.Accordion("This session as a UNP sees it: save and continue, the player, events", open=False):
+                        play_quest_log = gr.Markdown("### 🎯 Quest\nStart a game to see its quest.",
+                                                     elem_classes="quest-card")
+                        play_you = gr.Markdown(elem_classes="you-card")
+                        with gr.Accordion("👥 People met & the map", open=False):
+                            play_people = gr.Markdown("### People met\nNobody yet.", elem_classes="people-card")
+                with gr.Accordion("🧭 Your journey: every choice and what came of it", open=False):
+                    play_journey = gr.Markdown("*Your journey starts with your first choice.*", elem_classes="journey")
+                with gr.Accordion("📖 The story so far", open=False):
+                    play_story = gr.Markdown(elem_classes="story-book")
+                with gr.Accordion("⚖ Judge this playthrough (Gemma 4 as a game critic)", open=False):
+                    game_judge_status = gr.Markdown()
+                    judge_game_button = gr.Button("Judge the game played so far")
+                    game_judgement = gr.Markdown()
+                with gr.Accordion("🔌 This session as a UNP sees it: the player, events, parameters", open=False):
                     gr.Markdown(
-                        "What the exported ANE AI does for a UNP, tried on this game: download its **save game** "
-                        "(`ane.savegame/1`) and **continue** one (exactly, or rebuilt from its parameters), read its "
-                        "**parameters**, **set the player** and tell it **what happened** in the UNP's game. "
-                        "Save games of the ANE AI continue here too."
+                        "What the exported ANE AI does for a UNP, tried on this game: **set the player**, tell it "
+                        "**what happened** in the UNP's game, read its **parameters** (`ane.session_state/1`). "
+                        "*Save game* above downloads its `ane.savegame/1`; *Continue a save game* goes on from one "
+                        "(the ANE AI's too), exactly or rebuilt from its parameters."
                     )
-                    with gr.Row():
-                        with gr.Column():
-                            savegame_button = gr.Button("Download this session's save game")
-                            savegame_file = gr.File(label="Save game (JSON)", interactive=False)
-                        with gr.Column():
-                            savegame_upload = gr.File(label="Continue a save game (.json)", file_types=[".json"],
-                                                      type="filepath")
-                            load_savegame_button = gr.Button("Continue it", variant="primary")
-                    savegame_status = gr.Markdown()
                     with gr.Row():
                         player_json = gr.Code(value='{"coins": 20}', language="json", lines=4,
                                               label="Set the player (stat_points, stat_changes, inventory, add_items, "
@@ -2927,185 +3439,55 @@ def build_app():
                                 sync_button = gr.Button("Tell the session")
                     parameters_button = gr.Button("Show the session's parameters (ane.session_state/1)")
                     parameters_view = gr.Code(language="json", label="Session parameters", interactive=False)
-                generated_config = gr.File(label="Generated story configuration", interactive=False, visible=True)
-                generated_engine = gr.File(
-                    label="Engine model (world, storyteller, training state, memory, tag vectors)",
-                    interactive=False, visible=True,
-                )
 
-                play_outputs = [
-                    session_token, simulation_report, scene, choices, turn_result,
-                    generated_config, generated_engine, quest_panel, people_panel,
+                play_screen = [play_ending, play_hud, play_scene, play_turn, *play_buttons, play_quest_log, play_you,
+                               play_people, play_actions, play_journey]
+                new_game_outputs = [play_token, *play_screen, play_story, play_status]
+                player_inputs = [play_who, play_quest, play_stats, stats_points]
+                started = [
+                    play_new.click(play_new_game_ui, [play_run, *player_inputs], new_game_outputs, concurrency_limit=1),
+                    play_record.click(play_recorded_ui, [play_record_engine, *player_inputs], new_game_outputs,
+                                      concurrency_limit=1),
+                    play_upload.upload(play_continue_ui, [play_upload, play_token], new_game_outputs,
+                                       concurrency_limit=1),
                 ]
-                engine_events = [run_button.click(
-                    run_simulation_ui,
-                    [candidates, generations, sim_steps, deterministic_run, play_profile, stats_choice, stats_points,
-                     episodes, warm_start, play_mission],
-                    [*play_outputs, learning_plot, learned_traits, memory_status, run_state, export_generation],
-                    concurrency_limit=1,
-                    concurrency_id="narrative_evolution",
-                )]
-                engine_events.append(load_engine_button.click(
-                    load_best_engine_ui,
-                    [engine_upload, model_parameters_upload, play_profile, stats_choice, stats_points, play_mission],
-                    [*play_outputs, learning_plot, learned_traits],
-                    concurrency_limit=1,
-                ))
-                choose.click(play_action_ui, [session_token, choices],
-                             [scene, choices, turn_result, quest_panel, people_panel], concurrency_limit=1)
-                end_session_button.click(end_session_ui, session_token,
-                                         [scene, choices, turn_result, quest_panel, people_panel], concurrency_limit=1)
-                save_game_refresh.click(progression_ui, play_profile, [save_game_text, save_game_table])
-                game_view = [scene, choices, turn_result, quest_panel, people_panel]
-                savegame_button.click(download_savegame_ui, session_token, [savegame_file, savegame_status])
-                load_savegame_button.click(load_savegame_ui, [savegame_upload, session_token],
-                                           [session_token, *game_view, savegame_status], concurrency_limit=1)
-                player_button.click(update_player_ui, [session_token, player_json], game_view, concurrency_limit=1)
-                sync_button.click(sync_session_ui, [session_token, sync_kind, sync_value], game_view,
-                                  concurrency_limit=1)
-                parameters_button.click(session_parameters_ui, session_token, parameters_view)
-                resend_report_button.click(resend_report_ui, play_profile, save_game_status)
-                play_profile.change(playable_quests_ui, play_profile, [play_mission, quest_overview_md])
-                refresh_quests.click(playable_quests_ui, play_profile, [play_mission, quest_overview_md])
-                record_outputs = [*play_outputs, learning_plot, learned_traits, run_state, export_generation]
-                player_inputs = [play_profile, stats_choice, stats_points, play_mission]
-                record_lists = [record_engine, record_story, runs_table, records_status]
-                refresh_records.click(refresh_records_ui, None, record_lists).then(
-                    lambda: gr.Dropdown(choices=recorded_stories()), None, compare_story,
-                )
-                judge_game_button.click(judge_session_ui, session_token, game_judgement)
-                refresh_records.click(lambda: (gr.Dropdown(choices=recorded_run_choices()),
-                                               gr.Dropdown(choices=recorded_world_choices())), None,
-                                      [record_run, record_world])
-                record_run.change(run_detail_ui, record_run, [run_detail, run_generations])
-                download_world.click(download_world_ui, record_world, record_world_download)
-                judge_story_button.click(judge_story_ui, record_story, story_judgement)
-                compare_button.click(compare_stories_ui, [record_story, compare_story], story_judgement)
-                play_record.click(play_recorded_ui, [record_engine, *player_inputs], record_outputs, concurrency_limit=1)
-                engine_events.append(continue_record.click(
-                    continue_recorded_ui, [record_engine, more_generations, *player_inputs],
-                    record_outputs, concurrency_limit=1, concurrency_id="narrative_evolution"))
-                engine_events.append(retrain_record.click(
-                    retrain_recorded_ui,
-                    [record_engine, candidates, more_generations, sim_steps, episodes, deterministic_run,
-                     *player_inputs],
-                    record_outputs, concurrency_limit=1, concurrency_id="narrative_evolution"))
-                for event in engine_events:  # a finished run: it is chosen for the export (the newest)
-                    event.then(lambda platform, source: export_form_ui(platform, source), [export_platform, export_source],
-                               export_form)
-                download_record.click(download_recorded_ui, record_engine, [record_model_file, record_world_file])
-                record_story.change(story_view_ui, record_story, story_view)
-                for button in (run_button, load_engine_button):
-                    button.click(refresh_records_ui, None, record_lists)
-
-            with gr.Tab("▶ Play"):
-                gr.Markdown(
-                    "### Play the world after training\n"
-                    "Choose a **trained AI** (a finished run: the newest is chosen), who plays and the quest, and "
-                    "press **New game**: you play the world it was trained on, and its storyteller directs the "
-                    "story (what is offered, who is where, events, how the story answers). Each button is a "
-                    "choice, with its skill check. Save the game to continue it later, here or in the ANE AI."
-                )
-                play_token = gr.State("")
-                play_actions = gr.State([])
-                play_finished = finished_run_choices()
-                play_first_quests, _ = quest_overview(profiles["default"])
-                with gr.Row():
-                    play_run = gr.Dropdown(play_finished, value=play_finished[0][1] if play_finished else None,
-                                           label="Trained AI (finished run)", scale=3,
-                                           info="Newest first. Train one in 4 · Train the AI.")
-                    play_refresh = gr.Button("↻ Refresh", scale=0, min_width=110)
-                    play_who = gr.Dropdown(profiles["profiles"], value=profiles["default"], allow_custom_value=True,
-                                           label="Player profile", scale=2,
-                                           info="Its progression and persistent variables are kept.")
-                    play_quest = gr.Dropdown(play_first_quests, value="", label="Quest", scale=2)
-                    play_stats = gr.Radio(PLAY_STATS, value="story default", label="Character", scale=2)
-                with gr.Row():
-                    play_new = gr.Button("New game", variant="primary", scale=2)
-                    play_upload = gr.File(label="…or continue a save game (.json)", file_types=[".json"],
-                                          type="filepath", scale=2)
-                    play_continue = gr.Button("Continue it", scale=1)
-                play_status = gr.Markdown()
-                with gr.Row():
-                    with gr.Column(scale=3):
-                        play_ending = gr.Markdown(elem_classes="ending", visible=False)
-                        play_hud = gr.Markdown(elem_classes="play-hud", visible=False)
-                        play_scene = gr.Markdown("Choose a trained AI and press **New game**.", elem_classes="scene-card")
-                        play_turn = gr.Markdown(elem_classes="turn-card", visible=False)
-                        play_buttons = [gr.Button(visible=False, elem_classes="choice", size="lg")
-                                        for _ in range(CHOICE_BUTTONS)]
-                        with gr.Row():
-                            play_save = gr.Button("Save game")
-                            play_stop = gr.Button("End the game", variant="stop")
-                        play_save_file = gr.File(label="Save game (JSON)", interactive=False)
-                    with gr.Column(scale=2):
-                        play_quest_log = gr.Markdown("### Quest\nStart a game to see its quest.")
-                        play_people = gr.Markdown("### People met\nNobody yet.")
-                with gr.Accordion("The story so far", open=False):
-                    play_story = gr.Textbox(lines=16, max_lines=40, interactive=False, show_label=False,
-                                            autoscroll=True)
-                play_screen = [play_ending, play_hud, play_scene, play_turn, *play_buttons, play_quest_log,
-                               play_people, play_actions]
-                play_refresh.click(play_runs_ui, play_run, play_run)
+                loaded = load_engine_button.click(play_engine_file_ui,
+                                                  [engine_upload, model_parameters_upload, *player_inputs],
+                                                  new_game_outputs, concurrency_limit=1)
+                for event in [*started, loaded]:  # a game is on: the setup folds away
+                    event.success(lambda: gr.Accordion(open=False), None, play_setup)
+                loaded.success(lambda: play_runs_ui(), None, play_run).then(
+                    lambda platform, source: export_form_ui(platform, source), [export_platform, export_source],
+                    export_form).then(studio_status_ui, None, studio_status)
+                play_refresh.click(play_runs_ui, play_run, play_run).then(
+                    lambda: gr.Dropdown(choices=recorded_engines()), None, play_record_engine)
                 demo.load(play_runs_ui, play_run, play_run)
                 for event in engine_events:  # a run has finished: it is the newest to play
-                    event.then(lambda: play_runs_ui(), None, play_run).then(studio_status_ui, None, studio_status)
-                play_who.change(play_quests_ui, play_who, play_quest)
-                play_new.click(play_new_game_ui, [play_run, play_who, play_quest, play_stats],
-                               [play_token, *play_screen, play_story, play_status], concurrency_limit=1)
-                play_continue.click(play_continue_ui, [play_upload, play_token],
-                                    [play_token, *play_screen, play_story, play_status], concurrency_limit=1)
+                    event.success(lambda: play_runs_ui(), None, play_run).then(studio_status_ui, None, studio_status)
+                play_who.change(playable_quests_ui, play_who, [play_quest, quest_overview_md])
+                refresh_quests.click(playable_quests_ui, play_who, [play_quest, quest_overview_md])
+                randomize_stats.click(lambda: stats_points_text("random"), None, stats_points).then(
+                    lambda: "defined", None, play_stats)
+                balance_stats.click(lambda: stats_points_text("balanced"), None, stats_points).then(
+                    lambda: "defined", None, play_stats)
+                stats_points.change(check_points_text, stats_points, stats_check)
                 for index, button in enumerate(play_buttons):
                     button.click(lambda token, actions, index=index: play_choose_ui(token, actions, index),
                                  [play_token, play_actions], [*play_screen, play_story], concurrency_limit=1)
                 play_stop.click(play_end_ui, play_token, [*play_screen, play_story], concurrency_limit=1)
-                play_save.click(download_savegame_ui, play_token, [play_save_file, play_status])
+                play_save.click(download_savegame_ui, play_token, [play_save_file, play_status]).success(
+                    lambda: gr.File(visible=True), None, play_save_file)
+                save_game_refresh.click(progression_ui, play_who, [save_game_text, save_game_table])
+                resend_report_button.click(resend_report_ui, play_who, save_game_status)
+                demo.load(judge_status_ui, None, game_judge_status)
+                judge_game_button.click(judge_session_ui, play_token, game_judgement)
+                player_button.click(update_player_ui, [play_token, player_json], [*play_screen, play_story],
+                                    concurrency_limit=1)
+                sync_button.click(sync_session_ui, [play_token, sync_kind, sync_value], [*play_screen, play_story],
+                                  concurrency_limit=1)
+                parameters_button.click(session_parameters_ui, play_token, parameters_view)
 
-            with gr.Tab("5 · Engine logic & app parameters"):
-                gr.Markdown(
-                    "The engine's logic runs in the backend scripts; here you change **how it behaves** "
-                    "through its parameters, section by section. Every section is checked (same settings, "
-                    "same value types) before it is saved, and new simulations and games use it at once."
-                )
-                with gr.Accordion("Engine logic", open=True):
-                    sections = API.get("/v1/logic")["sections"]
-                    descriptions_by_section = {item["section"]: item["description"] for item in sections}
-                    logic_section = gr.Dropdown(list(descriptions_by_section), value="evolution", label="Logic section")
-                    logic_description = gr.Markdown(descriptions_by_section.get("evolution", ""))
-                    logic_editor = gr.Code(value=load_logic_section("evolution"), language="yaml", label="Parameters")
-                    with gr.Row():
-                        save_logic_button = gr.Button("Validate & save parameters", variant="primary")
-                        reload_logic_button = gr.Button("Reload")
-                    logic_status = gr.Markdown()
-                    logic_section.change(load_logic_section, logic_section, logic_editor)
-                    logic_section.change(lambda section: descriptions_by_section.get(section, ""), logic_section,
-                                         logic_description)
-                    reload_logic_button.click(load_logic_section, logic_section, logic_editor)
-                    save_logic_button.click(save_logic_section, [logic_section, logic_editor], logic_status)
-                with gr.Accordion("App parameters", open=True):
-                    gr.Markdown("Saved in config/ui_settings.yml. Upload limits are in bytes; crossover probability is between 0 and 1.")
-                    parameter_inputs = []
-                    for key, value in limits.items():
-                        label = key.replace("_", " ").title()
-                        if isinstance(value, bool):
-                            component = gr.Checkbox(value=value, label=label)
-                        elif isinstance(value, str):
-                            component = gr.Textbox(value=value, label=label)
-                        else:
-                            component = gr.Number(value=value, label=label,
-                                                  precision=0 if isinstance(app_defaults[key], int) else None)
-                        parameter_inputs.append(component)
-                    save_parameters = gr.Button("Save app parameters", variant="primary")
-                    parameters_status = gr.Markdown()
-                    save_parameters.click(save_app_parameters, parameter_inputs, parameters_status)
-                with gr.Accordion("Background jobs", open=False):
-                    gr.Markdown("Evolutions, continued trainings and judge runs started from here or by any client "
-                                "of the API, newest first.")
-                    refresh_jobs = gr.Button("Refresh")
-                    jobs_table = gr.Dataframe(label="Jobs", interactive=False, wrap=True)
-                    refresh_jobs.click(jobs_table_ui, None, jobs_table)
-
-            with gr.Tab("6 · Evaluate with the judge"):
+            with gr.Tab("⚖ Evaluate", id="evaluate"):
                 gr.Markdown(
                     "Gemma 4 as a game critic (`vllm` in the engine logic: an embedded model or a vLLM server). "
                     "Stories are played in a separate process, so the games in progress keep their settings. "
