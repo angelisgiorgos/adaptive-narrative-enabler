@@ -7,6 +7,18 @@ that introduces them.
 
 ## [Unreleased]
 
+### Records: whose run it is
+
+#### Added
+- Every run has a user (`runs.user_id`). The studio's and the terminal's runs are `test`; a run
+  started through the API is the user the calling backend names in the header `X-ANE-User`, an
+  opaque id (a UUID, an account number; never a name or an e-mail address). A request that starts
+  a run through the API without one is refused (`400`). `GET /v1/records/runs?user_id=` lists one
+  user's runs, and the studio's runs table shows each run's user.
+- A records database made before is given the column, its runs the user `test`, the first time a
+  process that may write it opens it, after a backup next to it; a read-only one shows its runs as
+  `test`.
+
 ### Conversations: approach someone, talk, leave
 
 #### Added
@@ -25,6 +37,17 @@ that introduces them.
   and `hawker` (the Merchant) on the first meeting, `challenger` (the Pit Champion) on every visit;
   `wanderer` (the Runaway Apprentice) in two visits at most, `apparition` (the Pale Conductor)
   once. Hostile NPCs still start their event.
+- **Places too** (`location_behaviour`): `draws_in` (never, `first_visit`, `every_visit`): on
+  arrival the place's own activities are offered first, with *Look around* for the rest (no turn);
+  `visits` (always, `once`, a number): how many visits a story may have there, then it is no
+  destination (no travel option, lead or automatic move) unless the quest's next step happens there
+  or it is the only way on. Shipped: `lively` (the Tavern, first visit), `spectacle` (the Festival
+  of Masks, every visit), `secluded` (the Secret Garden, two visits), `fleeting` (the Bone Orchard,
+  once).
+- **In the studio**: *1 · Create the world* shows each behaviour of an NPC or a place as a choice
+  of the tags the rules give it (with what each does); choosing one sets that tag on the entry and
+  removes the others of that behaviour. *Behaviour by tags* edits the rules (a new rule's tag is a
+  new choice). `GET /v1/behaviours` lists them; the rules are checked as rules when saved.
 - `GameState.take_option(option)` takes any choice a player is offered; views say who the
   player is talking with (`talking_to`), and the studio's status bar shows it.
 
@@ -37,8 +60,10 @@ that introduces them.
   won about as often as with every choice on the scene: rid the market of the thief 17 (21 with
   every choice on the scene), a face for the Palace 21 (21), the smuggler's tunnels 19 (21),
   expose the fence 29 (27), champion of the back room 8 (6); without the tag rules, simulated
-  players won 15, 16, 13, 24 and 4. No choice was offered again after it was used; a story plays
-  at about 290 turns a second, as before.
+  players won 15, 16, 13, 24 and 4. With the places' rules too: 16, 15, 17, 25 and 5 (the Festival
+  of Masks, `spectacle`, draws players into its own activities on every visit before they find
+  the Maskwright). No choice was offered again after it was used; a story plays at about 290 turns
+  a second, as before.
 
 ### Choices that make sense, quests in steps, fights
 

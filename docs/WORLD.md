@@ -658,13 +658,18 @@ conversations:
   max_free_steps: 6
 ```
 
-### What people do, by their tags
+### What people and places do, by their tags
 
-Who comes up to the player, and how often someone is seen, are decided by tags, not character
-by character: a rule in `npc_behaviour` (`hyperparameters.yaml`) says what everyone with one of
-its tags does. Give an NPC the tag (in its `associated_tags`) and it behaves that way; change the
-rule and everyone with the tag changes. For each behaviour, the first rule that sets it and shares
-a tag with the NPC decides; without one, `default`.
+Who comes up to the player, how often someone is seen, which places draw the player in and how
+often a place may be visited are decided by tags, not entry by entry: a rule in `npc_behaviour`
+or `location_behaviour` (`hyperparameters.yaml`) says what everyone (or everywhere) with one of
+its tags does. Give an NPC or a place the tag and it behaves that way; change the rule and
+everything with the tag changes. For each behaviour, the first rule that sets it and shares a tag
+decides; without one, `default`. In the studio, *1 · Create the world* shows each behaviour as a
+choice of these tags for the entry (choosing one sets its tag), and *Behaviour by tags* edits the
+rules.
+
+**People** (`npc_behaviour`, tags in `associated_tags`):
 
 | Behaviour | Values |
 | --- | --- |
@@ -683,8 +688,25 @@ npc_behaviour:
   - {tags: [apparition], appearances: once}                    # the Pale Conductor: once in a story
 ```
 
+**Places** (`location_behaviour`, tags in `tags`):
+
+| Behaviour | Values |
+| --- | --- |
+| `draws_in` | `never`; `first_visit`: on arrival the place's own activities are offered first, with **Look around** for everything else (no turn passes; doing something else, or something decisive, ends it); `every_visit` |
+| `visits` | `always`; `once`; a number: how many visits a story may have there. After that the place is no destination (no travel option, no lead, no automatic move), unless the quest's next step happens there or it is the only way on; a written `move_to` still goes there |
+
+```yaml
+location_behaviour:
+  default: {draws_in: never, visits: always}
+  rules:
+  - {tags: [lively], draws_in: first_visit}       # the Tavern
+  - {tags: [spectacle], draws_in: every_visit}    # the Festival of Masks
+  - {tags: [secluded], visits: 2}                 # the Secret Garden
+  - {tags: [fleeting], visits: once}              # the Bone Orchard
+```
+
 An unknown behaviour or value, a rule without `tags`, or a number of visits below 1 stops the
-world build with a clear message.
+world build with a clear message (and a save of the rules in the studio).
 
 ### Player health and power
 

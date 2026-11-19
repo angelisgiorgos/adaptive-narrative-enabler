@@ -64,7 +64,8 @@ too. `StudioAPI`, at the top of [`app.py`](../app.py), is the connection:
   process, so it still runs on its own.
 
 The studio says who it is (`X-ANE-Client: studio`), so its runs and games are
-recorded with the origin `studio`. Long runs (evolution, continued or
+recorded with the origin `studio` and its runs with the user `test` (the records' runs table
+shows each run's user). Long runs (evolution, continued or
 retrained training) are background jobs that the studio polls, so the
 progress bar still moves generation by generation. Files the API offers
 (story configuration, engine model, exports, recorded worlds) are downloaded
@@ -75,6 +76,8 @@ nothing is written.
 | Studio | What you can change | REST API |
 | --- | --- | --- |
 | **1 · Create the world** → an entry | Name, tags, descriptions, goals; NPC **Unique**, **Encounter event**, **Repeat on every visit**, **Role in the story** and **Secret**; **Enabled if** (locations, NPCs, items); **Event title**; item **Stat bonus while held**; location **Stories can start here** and **Start weight** | `GET /v1/entities/{kind}?fields=names`, `GET/PUT/DELETE /v1/entities/{kind}/{name}` |
+| **1 · Create the world** → an NPC or a place: its behaviour | NPCs: **Comes up to the player** and **How often they are seen**; places: **Draws the player in** and **How many visits a story may have there**. The choices are every tag a rule gives that behaviour (with what it does); choosing one sets that tag on the entry and removes the others of that behaviour (**Save entry** keeps it), and they show the tag in effect when an entry is loaded or a tag typed | `GET /v1/behaviours` |
+| **1 · Create the world** → *Behaviour by tags (people and places)* | The rules themselves, as YAML: people (`npc_behaviour`) and places (`location_behaviour`). A rule with a new tag is a new choice above; an invalid rule is refused with why | `GET/PUT /v1/logic/npc_behaviour`, `GET/PUT /v1/logic/location_behaviour` |
 | **1 · Create the world** → *Every field of this entry (YAML)* | The whole entry as stored, including what the form does not show (an NPC's dialogue, known places and items, article; a location's distant views and exits) | `GET/PUT /v1/entities/{kind}/{name}/yaml` |
 | **1 · Create the world** → *Map* | Which places border which (`world_definition.routes`), or no authored map | `GET/PUT /v1/documents/map` |
 | **1 · Create the world** → *Failures that lead nowhere* | The actions whose failure changes nothing but health or coins and that no complication fits | `GET /v1/lint/failures` |

@@ -202,6 +202,23 @@ recorded. The origin is `studio` for requests with the header
 `main.py`. Recording is best effort: if the records folder is not usable,
 recording switches itself off and requests still succeed.
 
+**Whose run it is.** Every run has a user (`runs.user_id`), the one it was made for:
+
+- A request that starts a run through the API (`POST /v1/simulations`, `/v1/jobs/simulations`,
+  `/v1/records/engines/{id}/continue|retrain`, `/v1/jobs/engines/{id}/continue|retrain`) must say
+  whose it is in the header `X-ANE-User`: the id of the user as the backend that calls the API
+  knows them. It is an opaque id (a UUID, an account number: 1-128 letters, digits and `. _ : -`),
+  never a name or an e-mail address. Without one, or with another form, the request is refused
+  with `400` and nothing runs.
+- The studio's runs (`X-ANE-Client: studio`) and the terminal's are the user `test`, and so are
+  the runs recorded before runs had a user.
+- `GET /v1/records/runs?user_id=<id>` lists one user's runs; every run says its `user_id`.
+
+```bash
+curl -X POST http://localhost:8004/v1/simulations -H 'Content-Type: application/json' \
+     -H 'X-ANE-User: 8f14e45f-ceea-467f-a8f5-b1c3e1c2d6aa' -d '{"candidate_count": 8, "generations": 5}'
+```
+
 ### Files and browsers
 
 - Generated files are offered as download links (`*_download_url`,
@@ -210,7 +227,7 @@ recording switches itself off and requests still succeed.
   read in chunks up to their limit.
 - CORS is off unless `ANE_CORS_ORIGINS` lists the allowed origins (comma
   separated). It then allows `GET`, `PUT`, `POST`, `DELETE` and the headers
-  `Content-Type`, `Authorization`, and `X-ANE-Client`.
+  `Content-Type`, `Authorization`, `X-ANE-Client`, and `X-ANE-User`.
 
 ## Endpoint coverage
 
@@ -356,6 +373,11 @@ one); `tests/test_studio_coverage.py` checks it.
   engine still shows another way (`director.another_way`).
 
 **Evaluation** (Gemma 4 as the judge; `503` when no language model is available)
+- `GET /v1/behaviours`: what people and places do, by their tags (`npc_behaviour`,
+  `location_behaviour`): `{npcs: {starts_conversation, appearances}, locations: {draws_in,
+  visits}}`, each with its `values`, its `default` and every `{tag, value}` a rule gives it. An
+  entry behaves as the first such tag it has; the rules are edited with `PUT /v1/logic/npc_behaviour`
+  and `PUT /v1/logic/location_behaviour` (checked as rules: an unknown behaviour or value is `400`).
 - `GET /v1/judge/status`: whether the judge can be used here: `{available, mode (server |
   embedded), model, server, reason, how}`. A server is asked which models it serves (3 s at
   most). `ANE_JUDGE_URL` points the API at a vLLM server ([`docs/LLM.md`](LLM.md)).
@@ -391,8 +413,9 @@ one); `tests/test_studio_coverage.py` checks it.
   [FOLDER]` (see [ENGINES.md](ENGINES.md#records-database)); they then appear here with the
   origin `import`, their rebuilt runs and a preview story.
 - `GET /v1/records`: the records folder and whether recording is on.
-- `GET /v1/records/runs` and `GET /v1/records/runs/{id}`: runs with every
-  setting, every generation, their engines, stories, and files.
+- `GET /v1/records/runs` (`?user_id=`: one user's) and `GET /v1/records/runs/{id}`: runs with
+  every setting, every generation, their engines, stories, and files, and whose run each is
+  (`user_id`).
 - `GET /v1/records/worlds` and `GET /v1/records/worlds/{id}` (`?format=yaml`:
   a combined configuration to upload again).
 - `GET /v1/records/engines` (`run_id`, `source`), `GET /v1/records/engines/{id}`,
