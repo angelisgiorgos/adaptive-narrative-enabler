@@ -47,9 +47,10 @@ class _Sandbox(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.dir = Path(directory.name)
-        for name in ("npcs.yaml", "items.yaml", "events.yaml", "missions.yaml", "hyperparameters.yaml"):
+        for name in ("npcs.yaml", "items.yaml", "events.yaml", "missions.yaml", "hyperparameters.yaml", "locations.yaml"):
             shutil.copy(store.CONFIG_DIR / name, self.dir / name)
         entity_files = {
+            "Locations": (self.dir / "locations.yaml", "locations", "mapping"),
             "NPCs": (self.dir / "npcs.yaml", "characters", "list"),
             "Items": (self.dir / "items.yaml", "objects", "list"),
             "Events": (self.dir / "events.yaml", "events", "mapping"),
@@ -57,6 +58,7 @@ class _Sandbox(unittest.TestCase):
         for patcher in (
             patch.dict(content.ENTITY_FILES, entity_files),
             patch.object(content, "MISSIONS_PATH", self.dir / "missions.yaml"),
+            patch.object(content, "MAP_PATH", self.dir / "locations.yaml"),
             patch.object(store, "HYPERPARAMETERS_PATH", self.dir / "hyperparameters.yaml"),
             patch.object(store.config, "reload"),
             patch.dict(os.environ, {"ANE_SAVE_DIR": str(self.dir / "saves")}),
@@ -105,6 +107,137 @@ class BehaviourEditorTests(_Sandbox):
         self.assertIn("starts_conversation", refused.json()["detail"])
         places = self.client.get("/v1/behaviours").json()["locations"]
         self.assertEqual(places["visits"]["values"], ["always", "once", "a number of visits"])
+
+
+def _plain(value):
+    """A value without what is empty (None, False, 0, "", [], {}): the defaults it stands for."""
+    if isinstance(value, dict):
+        return {key: _plain(item) for key, item in value.items() if _plain(item) not in (None, False, 0, "", [], {})}
+    if isinstance(value, list):
+        return [_plain(item) for item in value]
+    return value
+
+
+class WorldFormsTests(_Sandbox):
+    """The world editor's forms (one action and its outcomes, scheduling, details, missions, the map,
+    the behaviour rules), each backed by a JSON endpoint: nothing a form does not show is lost."""
+
+    def test_one_action_at_a_time(self):
+        base = "/v1/entities/NPCs/Gate Guard/actions"
+        actions = self.client.get(base).json()["actions"]
+        first = self.client.get(f"{base}/0").json()["action"]
+        self.assertEqual(first, actions[0])
+        added = dict(first, name="Ask him the way", exclusive_group=None)
+        added.pop("exclusive_group")
+        self.assertEqual(self.client.put(f"{base}/{len(actions)}", json={"action": added}).status_code, 200)
+        self.assertEqual(self.client.get(base).json()["actions"][-1]["name"], "Ask him the way")
+        bad = dict(first, triggers_event="no_such_event")
+        refused = self.client.put(f"{base}/0", json={"action": bad})
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("no_such_event", refused.json()["detail"])
+        self.assertEqual(self.client.delete(f"{base}/{len(actions)}").status_code, 200)
+        self.assertEqual(self.client.get(base).json()["actions"], actions)
+        self.assertEqual(self.client.get(f"{base}/99").status_code, 404)
+
+    def test_the_action_and_outcome_forms_lose_nothing(self):
+        import app
+
+        for kind in ("Locations", "NPCs", "Items", "Events"):
+            for name in self.client.get(f"/v1/entities/{kind}", params={"fields": "names"}).json()["names"]:
+                for action in self.client.get(app._path(f"/v1/entities/{kind}", name, "actions")).json()["actions"]:
+                    with self.subTest(kind=kind, entry=name, action=action.get("name")):
+                        rebuilt = app._action_from(action, app._action_fields(action))
+                        rebuilt["outcomes"] = [app._outcome_from(o, app._outcome_fields(o))
+                                               for o in action.get("outcomes") or []]
+                        self.assertEqual(_plain(rebuilt), _plain(action))
+
+    def test_the_action_form_saves(self):
+        import app
+
+        names = [a["name"] for a in self.client.get("/v1/entities/NPCs/Gate Guard/actions").json()["actions"]]
+        index = names.index("Give him the {alcohol_desc}")
+        form = app.load_action_form_ui("NPCs", "Gate Guard", index)
+        state, values = form[0], list(form[1:15])
+        values[0] = "Give him the {alcohol_desc}, smiling"
+        outcome = list(form[16:])
+        outcome[0] = "He takes the bottle and grins."
+        saved = app.save_action_form_ui(state, *values, *outcome)
+        self.assertIn("Saved the action", saved[-2])
+        action = self.client.get(f"/v1/entities/NPCs/Gate Guard/actions/{index}").json()["action"]
+        self.assertEqual(action["name"], "Give him the {alcohol_desc}, smiling")
+        self.assertEqual(action["outcomes"][0]["desc"], "He takes the bottle and grins.")
+        self.assertEqual(action["outcomes"][0]["id"], "gate_guard_bribe_pass")  # what the form does not show stays
+
+    def test_scheduling_and_details(self):
+        import app
+
+        shown = app.policy_form_ui("Events", "tavern_brawl")
+        self.assertEqual((shown[0]["visible"], shown[1]["visible"]), (True, False))
+        self.assertEqual(app.save_policy_form_ui("Events", "tavern_brawl", "action", 0, 1, 5, 2, "always", False, None)[0],
+                         "Saved when **tavern_brawl** happens.")
+        self.assertEqual(self.client.get("/v1/entities/Events/tavern_brawl/policy").json()["policy"]["cooldown"], 5)
+        details = self.client.get("/v1/entities/NPCs/Smuggler/details").json()["details"]
+        self.assertIn("Vault", details["known_locations"])
+        changed = dict(details, known_locations=["Dungeon", "Sewers"], article="none")
+        self.assertEqual(self.client.put("/v1/entities/NPCs/Smuggler/details", json={"details": changed}).status_code, 200)
+        npc = next(c for c in self._yaml("npcs.yaml")["world_definition"]["characters"] if c["name"] == "Smuggler")
+        self.assertEqual((npc["known_locations"], npc["article"]), (["Dungeon", "Sewers"], ""))
+        self.assertTrue(npc["actions"])  # the rest of the entry stays
+        refused = self.client.put("/v1/entities/NPCs/Smuggler/details", json={"details": {"known_locations": ["Moon"]}})
+        self.assertEqual(refused.status_code, 400)
+        place = self.client.get("/v1/entities/Locations/Harbor/details").json()["details"]
+        self.assertTrue(place["distant_descriptions"])
+
+    def test_missions_one_at_a_time_and_their_form(self):
+        import app
+
+        for key in self.client.get("/v1/missions").json()["missions"]:
+            with self.subTest(mission=key):
+                state_values = app.mission_form_ui(key)
+                fields, state = state_values[:7], state_values[7]
+                app.save_mission_form_ui(state, *fields)
+                stored = self._yaml("missions.yaml")["world_definition"]["missions"][key]
+                self.assertEqual(_plain(stored), _plain(self._missions_before[key]))
+        mission = {"title": "Ring the bell", "description": "", "goal": {"location": "Storm Observatory"}}
+        self.assertEqual(self.client.put("/v1/missions/ring_the_bell", json={"mission": mission}).status_code, 200)
+        renamed = self.client.put("/v1/missions/ring_the_bell", json={"mission": mission, "rename": "ring_it"}).json()
+        self.assertIn("ring_it", renamed["missions"])
+        self.assertNotIn("ring_the_bell", renamed["missions"])
+        bad = {"title": "x", "goal": {"location": "Moon"}}
+        self.assertEqual(self.client.put("/v1/missions/ring_it", json={"mission": bad}).status_code, 400)
+        self.assertEqual(self.client.delete("/v1/missions/ring_it").status_code, 200)
+
+    def setUp(self):
+        super().setUp()
+        self._missions_before = self.client.get("/v1/missions").json()["missions"]
+
+    def test_the_map_one_place_at_a_time(self):
+        import app
+
+        found = self.client.get("/v1/map").json()
+        self.assertIn("Harbor", found["routes"])
+        borders = sorted(set(found["routes"]["Tavern"]) - {"Alley"} | {"Sewers"})
+        saved = self.client.put("/v1/map/Tavern", json={"borders": borders}).json()
+        self.assertIn("Tavern", saved["routes"]["Sewers"])                  # both ways
+        self.assertNotIn("Tavern", saved["routes"].get("Alley", []))
+        self.assertEqual(self.client.put("/v1/map/Tavern", json={"borders": ["Moon"]}).status_code, 400)
+        view, place, ticked = app.map_form_ui("Tavern")
+        self.assertIn("<svg", view)
+        self.assertIn("Tavern", view)
+        self.assertEqual(sorted(ticked.value), borders)
+
+    def test_the_behaviour_tables(self):
+        import app
+
+        table, *defaults = app.behaviour_tables_ui()[:3]
+        self.assertIn("prisoner", list(table.iloc[:, 0]))
+        table.loc[len(table)] = ["bard, singer", "every_visit", ""]
+        self.assertIn("Saved", app.save_behaviour_table_ui("npcs", table, *defaults))
+        rules = self._yaml("hyperparameters.yaml")["npc_behaviour"]["rules"]
+        self.assertEqual(rules[-1], {"tags": ["bard", "singer"], "starts_conversation": "every_visit"})
+        self.assertEqual(next(r for r in rules if r["tags"] == ["wanderer"])["appearances"], 2)  # numbers stay numbers
+        refused = self.client.put("/v1/behaviours/rules/npcs", json={"rules": [{"tags": ["x"], "appearances": "never"}]})
+        self.assertEqual(refused.status_code, 400)
 
 
 class EntityActionsTests(_Sandbox):

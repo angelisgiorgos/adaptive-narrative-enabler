@@ -343,6 +343,19 @@ one); `tests/test_studio_coverage.py` checks it.
   `max_occurrences`, `repeat`: once, per_location, per_visit or always) or an
   item's uniqueness (`unique`, `location`). A `PUT` replaces the whole policy,
   fields left out use their defaults, and an invalid policy writes nothing.
+- `GET|PUT|DELETE /v1/entities/{kind}/{name}/actions/{index}`: one action (`index`: its place,
+  from 0; a `PUT` with the number of actions adds one at the end), checked with the others as a
+  whole save is. `GET|PUT /v1/entities/{kind}/{name}/details`: what the entry form does not
+  show: an NPC's `known_locations`, `known_objects`, `article` (`the`, `a`, `an`, `none`: a
+  proper name; empty: automatic) and `dialogue` (`[{text, enabled_if}]`); a place's
+  `distant_descriptions`, `entered_descriptions`, `interact_prompts` and `exit_locked` (an empty
+  value removes the field; unknown places or items are `400`).
+- `GET|PUT|DELETE /v1/missions/{key}`: one mission (`PUT` adds or replaces it; `rename` gives it a
+  new key), checked with every other one. `GET /v1/map`: `{routes: {place: [borders]} or null,
+  places}`; `PUT /v1/map/{place}` `{borders}` sets a place's borders, both ways; `PUT /v1/map`
+  `{routes}` the whole map (null: every story draws its own).
+- `GET /v1/behaviours/rules` and `PUT /v1/behaviours/rules/{npcs|locations}` `{default, rules}`:
+  the rules that give people and places their behaviour by tags, as data (checked as rules).
 - `GET|PUT /v1/entities/{kind}/{name}/actions`: the entry's actions and
   outcomes as stored. This covers `repeat`, `exclusive_group`,
   `triggers_event`, `enabled_if` (a condition), `retry_on_failure` (a failed

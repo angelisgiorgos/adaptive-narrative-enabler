@@ -46,6 +46,7 @@ CLIENT_ONLY = {
     ("GET", "/v1/missions"): "/v1/documents/missions",
     ("PUT", "/v1/missions"): "/v1/documents/missions",
     ("PUT", "/v1/entities/{kind}/{name}/actions"): "/v1/entities/{kind}/{name}/actions/yaml",
+    ("PUT", "/v1/map"): "/v1/documents/map (the whole map; the studio's form sets one place's borders: /v1/map/{place})",
     ("GET", "/v1/entities/{kind}/{name}/policy"): "/v1/entities/{kind}/{name}/policy/yaml",
     ("PUT", "/v1/entities/{kind}/{name}/policy"): "/v1/entities/{kind}/{name}/policy/yaml",
     ("GET", "/v1/documents"): "/v1/reference lists the documents",

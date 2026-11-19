@@ -7,6 +7,30 @@ that introduces them.
 
 ## [Unreleased]
 
+### The world editor: forms instead of YAML
+
+#### Changed
+- *1 · Create the world* edits everything with forms; each section keeps its YAML under
+  *advanced*. **Actions & outcomes**: pick an action (or add, delete one) and edit it: how often it
+  is offered and whether a failure uses it up, its skill check, exclusive group, the event it
+  starts, its price and the item it needs, uses or takes, its conditions; its outcomes picked one by
+  one: what is told, when, tags, health and coins, where it moves or sends, what it reveals, who it
+  removes, a new path, a guide, variables, stats and other effects (choices list the world's
+  places, people, items, events and stats). **Uniqueness & scheduling**: an event's start rules or
+  an item's uniqueness as a form. **Behaviour by tags**: two tables, people and places, a row per
+  rule. **Missions**: a mission's fields and its steps as a table (the goal and rewards written
+  `key: value; ...`). **More about this entry** (new): what an NPC knows, how the story calls them
+  and what they say; how a place is seen from afar and on arrival, the ways to go there, locked
+  exits. **Map**: tick the places a place borders (both ways), beside a drawing of the whole map.
+- Nothing a form does not show is lost: every action and outcome of the shipped world, and every
+  mission, goes through its form and back unchanged (tested).
+
+#### Added
+- API: `GET|PUT|DELETE /v1/entities/{kind}/{name}/actions/{index}` (one action),
+  `GET|PUT /v1/entities/{kind}/{name}/details`, `GET|PUT|DELETE /v1/missions/{key}` (with
+  `rename`), `GET /v1/map`, `PUT /v1/map`, `PUT /v1/map/{place}` (borders, both ways),
+  `GET /v1/behaviours/rules`, `PUT /v1/behaviours/rules/{npcs|locations}`.
+
 ### Records: whose run it is
 
 #### Added
