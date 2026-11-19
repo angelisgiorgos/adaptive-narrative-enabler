@@ -554,7 +554,7 @@ def _scene(state: GameState) -> tuple[str, list[str]]:
 
 def run_simulation(candidate_count: int, generations: int, simulation_steps: int, deterministic: bool,
                    profile=None, stats_choice=None, stats_points=None, episodes=None, warm_start=None,
-                   progress=None, origin="studio", mission=None):
+                   progress=None, origin="studio", mission=None, user_id=None):
     """Evolve storytellers with the shared evolutionary AI and start a game with the best.
 
     ``progress(generation, total, GenerationStats)`` reports each generation.
@@ -593,7 +593,8 @@ def run_simulation(candidate_count: int, generations: int, simulation_steps: int
                   "episodes": episodes, "deterministic": bool(deterministic), "warm_start": warm_start,
                   "profile": profile, "stat_points": points, "stats_mode": mode}
     run_id = uuid.uuid4().hex
-    records.start_run(origin, settings=evolution.settings, parameters=parameters, seed=seed, run_id=run_id)
+    records.start_run(origin, settings=evolution.settings, parameters=parameters, seed=seed, run_id=run_id,
+                      user_id=user_id)
     try:
         result = _train(evolution, progress)
     except Exception as exc:
@@ -687,7 +688,7 @@ def _training_guard(pop_size, generations, episodes, steps):
 
 
 def continue_engine(engine_id, generations=1, profile=None, stats_choice=None, stats_points=None, origin="studio",
-                    progress=None, mission=None):
+                    progress=None, mission=None, user_id=None):
     """Continue a recorded engine's training exactly where it stopped, for
     ``generations`` more generations; records the run and starts a game with the result."""
     profile = _profile(profile)
@@ -704,7 +705,7 @@ def continue_engine(engine_id, generations=1, profile=None, stats_choice=None, s
     records.start_run(origin, kind="continue", settings={**settings, "generations": generations},
                       parameters={"generations": generations, "from_generation": model.checkpoint["next_generation"],
                                   "profile": profile}, seed=model.checkpoint.get("seed"), parent_engine_id=engine_id,
-                      run_id=run_id)
+                      run_id=run_id, user_id=user_id)
     try:
         from core_engine.evolution import ModelMemory
 
@@ -723,7 +724,8 @@ def continue_engine(engine_id, generations=1, profile=None, stats_choice=None, s
 
 
 def retrain_engine(engine_id, candidate_count=8, generations=5, simulation_steps=16, episodes=None, deterministic=True,
-                   profile=None, stats_choice=None, stats_points=None, origin="studio", progress=None, mission=None):
+                   profile=None, stats_choice=None, stats_points=None, origin="studio", progress=None, mission=None,
+                   user_id=None):
     """A new run whose first population starts from a recorded engine's storyteller
     and memory, on that engine's world; records it and starts a game with the result."""
     profile = _profile(profile)
@@ -741,7 +743,7 @@ def retrain_engine(engine_id, candidate_count=8, generations=5, simulation_steps
                 "episodes_per_genome": episodes, "crossover_rate": APP_SETTINGS["crossover_probability"]}
     run_id = uuid.uuid4().hex
     records.start_run(origin, kind="retrain", settings=settings, parameters={**settings, "profile": profile},
-                      seed=seed, parent_engine_id=engine_id, run_id=run_id)
+                      seed=seed, parent_engine_id=engine_id, run_id=run_id, user_id=user_id)
     try:
         from core_engine.evolution import ModelMemory
 

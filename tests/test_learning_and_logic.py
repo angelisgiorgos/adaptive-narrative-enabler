@@ -97,7 +97,7 @@ class EngineLogicTests(_TempSaves):
                         patch.object(store.config, "reload")):
             patcher.start()
             self.addCleanup(patcher.stop)
-        self.client = TestClient(api.api)
+        self.client = TestClient(api.api, headers={"X-ANE-User": "api-tests"})  # a backend calling the API, for its user
 
     def test_sections_are_listed_and_described(self):
         sections = {s["section"]: s["description"] for s in self.client.get("/v1/logic").json()["sections"]}
@@ -128,7 +128,7 @@ class EngineLogicTests(_TempSaves):
 
 class NoPythonInTheUITests(unittest.TestCase):
     def test_python_source_editing_is_gone(self):
-        client = TestClient(api.api)
+        client = TestClient(api.api, headers={"X-ANE-User": "api-tests"})  # a backend calling the API, for its user
         self.assertEqual(client.get("/v1/actions").status_code, 404)
         self.assertIn(client.put("/v1/actions", json={"source": "x"}).status_code, (404, 405))
         import app
@@ -145,7 +145,7 @@ class NoPythonInTheUITests(unittest.TestCase):
 
 class LearningInPlayTests(_TempSaves):
     def test_games_come_from_evolution_and_report_learning(self):
-        client = TestClient(api.api)
+        client = TestClient(api.api, headers={"X-ANE-User": "api-tests"})  # a backend calling the API, for its user
         body = {"candidate_count": 4, "generations": 3, "simulation_steps": 3, "episodes": 1, "deterministic": False}
         game = client.post("/v1/simulations", json=body)
         self.assertEqual(game.status_code, 200, game.text)

@@ -1218,8 +1218,8 @@ def recorded_stories():
 @ui
 def recorded_runs():
     return pd.DataFrame([
-        {"run": r["id"][:8], "created": r["created_at"][:16], "origin": r["origin"], "kind": r["kind"],
-         "status": r["status"], "generations": r["generations_run"], "best score": r["best_score"],
+        {"run": r["id"][:8], "created": r["created_at"][:16], "user": r.get("user_id") or "test", "origin": r["origin"],
+         "kind": r["kind"], "status": r["status"], "generations": r["generations_run"], "best score": r["best_score"],
          "engine": (r["best_engine_id"] or "")[:8]}
         for r in _recorded("/v1/records/runs", "runs")
     ])

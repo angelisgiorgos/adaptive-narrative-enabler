@@ -63,10 +63,48 @@ class _Sandbox(unittest.TestCase):
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
-        self.client = TestClient(api.api)
+        self.client = TestClient(api.api, headers={"X-ANE-User": "api-tests"})  # a backend calling the API, for its user
 
     def _yaml(self, name):
         return yaml.safe_load((self.dir / name).read_text())
+
+
+class BehaviourEditorTests(_Sandbox):
+    """What people and places do is chosen in the world editor: the choices are the rules' tags, and
+    choosing one sets that tag on the entry; the rules are edited in the same tab."""
+
+    def test_the_choices_are_the_rules_tags_and_set_them(self):
+        import app
+
+        conversation, appearances = app.behaviour_fields_ui("NPCs", ["urban", "prisoner"])
+        self.assertTrue(conversation["visible"])
+        self.assertIn(("prisoner · the first time they meet", "prisoner"), conversation["choices"])
+        self.assertIn(("challenger · on every visit", "challenger"), conversation["choices"])
+        self.assertEqual((conversation["value"], appearances["value"]), ("prisoner", ""))
+        self.assertIn(("wanderer · 2 visits", "wanderer"), appearances["choices"])
+        draws, visits = app.behaviour_fields_ui("Locations", ["dark", "fleeting"])
+        self.assertEqual((draws["label"], visits["value"]), ("Draws the player in", "fleeting"))
+        self.assertFalse(app.behaviour_fields_ui("Items", ["weapon"])[0]["visible"])
+        self.assertEqual(app.apply_behaviour_ui("NPCs", 0, "challenger", ["urban", "prisoner"])["value"],
+                         ["urban", "challenger"])           # one tag per behaviour: it replaces the other
+        self.assertEqual(app.apply_behaviour_ui("NPCs", 0, "", ["urban", "prisoner"])["value"], ["urban"])
+        self.assertEqual(app.apply_behaviour_ui("Locations", 1, "secluded", ["dark", "fleeting"])["value"],
+                         ["dark", "secluded"])
+
+    def test_the_rules_are_edited_and_checked(self):
+        text = self.client.get("/v1/logic/npc_behaviour").json()["parameters"]
+        added = text.rstrip() + "\n  - {tags: [bard], starts_conversation: every_visit}\n"
+        self.assertEqual(self.client.put("/v1/logic/npc_behaviour", json={"parameters": added}).status_code, 200)
+        self.assertIn("bard", self._yaml("hyperparameters.yaml")["npc_behaviour"]["rules"][-1]["tags"])
+        with patch.dict(store.config._config, {"npc_behaviour": self._yaml("hyperparameters.yaml")["npc_behaviour"]}):
+            tags = self.client.get("/v1/behaviours").json()["npcs"]["starts_conversation"]["tags"]
+        self.assertIn({"tag": "bard", "value": "every_visit"}, tags)  # a new choice in the editor
+        bad = text.rstrip() + "\n  - {tags: [bard], starts_conversation: sometimes}\n"
+        refused = self.client.put("/v1/logic/npc_behaviour", json={"parameters": bad})
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("starts_conversation", refused.json()["detail"])
+        places = self.client.get("/v1/behaviours").json()["locations"]
+        self.assertEqual(places["visits"]["values"], ["always", "once", "a number of visits"])
 
 
 class EntityActionsTests(_Sandbox):
@@ -364,7 +402,7 @@ class ReadOnlyRecordsTests(unittest.TestCase):
     def test_recording_is_off_and_the_records_are_still_read(self):
         self.assertFalse(records.enabled())
         self.assertIn("not writable", records.disabled_reason())
-        client = TestClient(api.api)
+        client = TestClient(api.api, headers={"X-ANE-User": "api-tests"})  # a backend calling the API, for its user
         listed = client.get("/v1/records/engines")
         self.assertEqual(listed.status_code, 200, listed.text)  # it used to be a 500 (a read-only database)
         self.assertEqual([e["id"] for e in listed.json()["engines"]], ["e1"])
@@ -396,7 +434,7 @@ class ReadOnlyRecordsTests(unittest.TestCase):
         from backend import export
 
         self.assertNotIn("m1", [e["engine_id"] for e in export.complete_engines()])
-        client = TestClient(api.api)
+        client = TestClient(api.api, headers={"X-ANE-User": "api-tests"})  # a backend calling the API, for its user
         for platform in ("python", "linux-x64"):
             with self.subTest(platform=platform):
                 refused = client.post("/v1/exports", json={"source": "engine", "engine_id": "m1", "platform": platform})
@@ -839,7 +877,7 @@ class ExampleWorldTests(unittest.TestCase):
     completed with the built-in tuning, trained on and played."""
 
     def setUp(self):
-        self.client = TestClient(api.api)
+        self.client = TestClient(api.api, headers={"X-ANE-User": "api-tests"})  # a backend calling the API, for its user
         self.addCleanup(lambda: self.client.post("/v1/config/reset"))
 
     def test_example_worlds_load_train_and_play(self):

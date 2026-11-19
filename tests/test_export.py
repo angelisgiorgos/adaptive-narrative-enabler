@@ -220,7 +220,7 @@ print(summary["warm_started_from_memory"], summary["adopted"], summary["new_stor
 
 class ExportEndpointsTests(_Exports):
     def test_api(self):
-        client = TestClient(api.api)
+        client = TestClient(api.api, headers={"X-ANE-User": "api-tests"})  # a backend calling the API, for its user
         runs = client.get("/v1/runs").json()["runs"]
         self.assertIn(self.game["run_id"], [run["run_id"] for run in runs])
         response = client.post("/v1/exports", json={"source": "run", "run_id": self.game["run_id"], "generation": 1})
@@ -250,7 +250,7 @@ class ExportEndpointsTests(_Exports):
                                                        "code_version": version.code_version(), "protocol": 1,
                                                        "executable": "ane-ai"}))
             zipped.writestr("ane-ai", "#!/bin/sh\n")
-        client = TestClient(api.api)
+        client = TestClient(api.api, headers={"X-ANE-User": "api-tests"})  # a backend calling the API, for its user
         engine_id = self.game["engine_id"]
         with patch.dict(os.environ, {"ANE_RUNTIMES_DIR": str(runtimes)}):
             listed = client.get("/v1/exports/engines").json()["engines"]

@@ -400,6 +400,63 @@ class NpcBehaviourTests(unittest.TestCase):
                 engine.build_world(_genome())
 
 
+class PlaceBehaviourTests(unittest.TestCase):
+    """What places do comes from their tags too (location_behaviour): a place may draw the player in
+    on arrival, and may be visited only so often."""
+
+    def _state(self, rules, gate_tags=(), yard_tags=(), tower=True):
+        world = _world()
+        world.locations["Gate"].tags |= set(gate_tags)
+        world.locations["Yard"].tags |= set(yard_tags)
+        world.locations["Gate"].actions.append(
+            Action("Read the notices", [Outcome("Wanted: a thief.")], source="location", owner="Gate", repeat="always"))
+        if tower:
+            world.add_location(Location("Tower", ["tower"]))
+            world.locations["Gate"].connect(world.locations["Tower"])
+        for patcher in (patch.dict(config._config, {"location_behaviour": {"default": {}, "rules": rules}}),
+                        patch.dict(config._config.setdefault("conversations", {}), {"enabled": True})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return GameState(world, _genome(), start="Gate", rng=random.Random(1))
+
+    @staticmethod
+    def _go(state, place):
+        ranked = state.ranked_available_actions()
+        state.step(next(i for i, a in enumerate(ranked) if a.source == "navigation" and a.owner == place))
+
+    def test_a_place_draws_the_player_in(self):
+        state = self._state([{"tags": ["lively"], "draws_in": "first_visit"}], gate_tags=["lively"])
+        options = state.player_options(limit=8)
+        self.assertEqual(state.drawn_in(), "Gate")
+        self.assertEqual([o.source for o in options], ["location", "location", "leave"])  # its own activities first
+        self.assertTrue(any("draws you in" in line for line in state.history))
+        state.take_option(options[-1])                                      # look around: no turn
+        self.assertEqual((state.drawn_in(), state.actions_taken), (None, 0))
+        self.assertTrue(any(o.source == "navigation" for o in state.player_options(limit=8)))
+        self._go(state, "Yard")
+        self._go(state, "Gate")
+        state.player_options()
+        self.assertIsNone(state.drawn_in())                                # only on the first visit
+
+        state = self._state([{"tags": ["lively"], "draws_in": "every_visit"}], gate_tags=["lively"])
+        state.take_option(state.player_options()[-1])
+        self._go(state, "Yard")
+        self._go(state, "Gate")
+        state.player_options()
+        self.assertEqual(state.drawn_in(), "Gate")                         # again
+
+    def test_how_often_a_place_may_be_visited(self):
+        state = self._state([{"tags": ["fleeting"], "visits": "once"}], yard_tags=["fleeting"])
+        self._go(state, "Yard")
+        self._go(state, "Gate")
+        self.assertNotIn("Yard", [a.owner for a in state.ranked_available_actions() if a.source == "navigation"])
+        self.assertIn("Tower", [a.owner for a in state.ranked_available_actions() if a.source == "navigation"])
+        state = self._state([{"tags": ["fleeting"], "visits": "once"}], yard_tags=["fleeting"], tower=False)
+        self._go(state, "Yard")
+        self._go(state, "Gate")  # the Yard is the only way on: it stays open, the story goes on
+        self.assertIn("Yard", [a.owner for a in state.ranked_available_actions() if a.source == "navigation"])
+
+
 class QuestionAndGuideTests(unittest.TestCase):
     """Choices that make sense: a question is asked once, and a guide leads toward the quest."""
 

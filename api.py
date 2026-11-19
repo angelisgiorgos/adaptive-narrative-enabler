@@ -291,7 +291,7 @@ if origins:
         allow_origins=origins,
         allow_credentials=False,
         allow_methods=["GET", "PUT", "PATCH", "POST", "DELETE"],
-        allow_headers=["Content-Type", "Authorization", "X-ANE-Client"],
+        allow_headers=["Content-Type", "Authorization", "X-ANE-Client", "X-ANE-User"],
     )
 
 
@@ -318,6 +318,27 @@ def _origin(x_ane_client: str | None = Header(default=None)) -> str:
     """Where a request comes from, for the records: the studio says so with the
     ``X-ANE-Client: studio`` header; anything else is the API."""
     return "studio" if (x_ane_client or "").strip().lower() == "studio" else "api"
+
+
+USER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
+def _run_user(x_ane_client: str | None = Header(default=None), x_ane_user: str | None = Header(default=None)) -> str:
+    """Whose run it is, for the records (runs.user_id). The studio's runs are the user ``test``
+    (records.DEFAULT_USER). An API client gives the id of its user in the ``X-ANE-User`` header,
+    as the backend that calls the API knows them: an opaque id (a UUID, an account number), never a
+    name or an e-mail address. A run without one is refused (400)."""
+    if (x_ane_client or "").strip().lower() == "studio":
+        return records.DEFAULT_USER
+    user = (x_ane_user or "").strip()
+    if not user:
+        raise HTTPException(status_code=400, detail=(
+            "X-ANE-User is required to start a run: the id of the user it is for, given by the backend that calls "
+            "the API (an opaque id such as a UUID; never a name or an e-mail address)."))
+    if not USER_ID.match(user) or "@" in user:
+        raise HTTPException(status_code=400, detail=(
+            "X-ANE-User must be an opaque id: 1-128 letters, digits and . _ : - (never a name or an e-mail address)."))
+    return user
 
 
 def _settings() -> Settings:
@@ -850,14 +871,14 @@ def put_rules(body: StoryRules):
 
 
 @api.post("/v1/simulations", response_model=SimulationResponse, tags=["Evolution and play"])
-def simulate(body: SimulationRequest, origin: str = Depends(_origin)):
+def simulate(body: SimulationRequest, origin: str = Depends(_origin), user_id: str = Depends(_run_user)):
     try:
         game = sessions.run_simulation(
             body.candidate_count, body.generations, body.simulation_steps, body.deterministic,
             profile=body.profile, episodes=body.episodes, warm_start=body.warm_start,
             stats_choice="defined" if body.stats is not None else body.stats_mode,
             stats_points=yaml.safe_dump(body.stats) if body.stats is not None else None,
-            progress=None, origin=origin, mission=body.mission,
+            progress=None, origin=origin, mission=body.mission, user_id=user_id,
         )
         return _game_response(game)
     except HTTPException:
@@ -1118,8 +1139,10 @@ def records_info():
 
 
 @api.get("/v1/records/runs", tags=["Records"])
-def list_recorded_runs(limit: int = 50, offset: int = 0):
-    return {"runs": _records(records.list_runs, limit, offset)}
+def list_recorded_runs(limit: int = 50, offset: int = 0, user_id: str | None = None):
+    """The recorded runs, newest first, each with the user it is for (``user_id``: the studio's and
+    earlier runs are ``test``); ``user_id`` lists one user's runs only."""
+    return {"runs": _records(records.list_runs, limit, offset, user_id)}
 
 
 @api.get("/v1/records/runs/{run_id}", tags=["Records"])
@@ -1200,11 +1223,13 @@ def play_recorded_engine(engine_id: str, body: EnginePlayRequest | None = None, 
 
 
 @api.post("/v1/records/engines/{engine_id}/continue", response_model=SimulationResponse, tags=["Records"])
-def continue_recorded_engine(engine_id: str, body: EngineContinueRequest, origin: str = Depends(_origin)):
+def continue_recorded_engine(engine_id: str, body: EngineContinueRequest, origin: str = Depends(_origin),
+                             user_id: str = Depends(_run_user)):
     """Continue the engine's training exactly where it stopped; records the run and a new engine."""
     _known_engine(engine_id)
     try:
-        return _game_response(sessions.continue_engine(engine_id, body.generations, origin=origin, **_player(body)))
+        return _game_response(sessions.continue_engine(engine_id, body.generations, origin=origin, user_id=user_id,
+                                                       **_player(body)))
     except HTTPException:
         raise
     except Exception as exc:
@@ -1212,13 +1237,14 @@ def continue_recorded_engine(engine_id: str, body: EngineContinueRequest, origin
 
 
 @api.post("/v1/records/engines/{engine_id}/retrain", response_model=SimulationResponse, tags=["Records"])
-def retrain_recorded_engine(engine_id: str, body: EngineRetrainRequest, origin: str = Depends(_origin)):
+def retrain_recorded_engine(engine_id: str, body: EngineRetrainRequest, origin: str = Depends(_origin),
+                            user_id: str = Depends(_run_user)):
     """A new run that starts from the engine's storyteller and memory, on its world."""
     _known_engine(engine_id)
     try:
         return _game_response(sessions.retrain_engine(
             engine_id, body.candidate_count, body.generations, body.simulation_steps, body.episodes,
-            body.deterministic, origin=origin, **_player(body)))
+            body.deterministic, origin=origin, user_id=user_id, **_player(body)))
     except HTTPException:
         raise
     except Exception as exc:
@@ -1489,7 +1515,7 @@ def _job_or_404(job_id):
 
 
 @api.post("/v1/jobs/simulations", status_code=202, tags=["Jobs"])
-def submit_simulation(body: SimulationRequest, origin: str = Depends(_origin)):
+def submit_simulation(body: SimulationRequest, origin: str = Depends(_origin), user_id: str = Depends(_run_user)):
     """Run an evolution in the background (as POST /v1/simulations); poll GET /v1/jobs/{id}
     for its progress per generation and, when finished, the playable game."""
     def work(progress):
@@ -1498,30 +1524,32 @@ def submit_simulation(body: SimulationRequest, origin: str = Depends(_origin)):
             profile=body.profile, episodes=body.episodes, warm_start=body.warm_start,
             stats_choice="defined" if body.stats is not None else body.stats_mode,
             stats_points=yaml.safe_dump(body.stats) if body.stats is not None else None,
-            progress=progress, origin=origin, mission=body.mission,
+            progress=progress, origin=origin, mission=body.mission, user_id=user_id,
         )
         return _game_response(game).model_dump()
     return sessions.submit_job("simulation", work, f"{body.generations} generation(s) of {body.candidate_count} storytellers")
 
 
 @api.post("/v1/jobs/engines/{engine_id}/continue", status_code=202, tags=["Jobs"])
-def submit_continue(engine_id: str, body: EngineContinueRequest, origin: str = Depends(_origin)):
+def submit_continue(engine_id: str, body: EngineContinueRequest, origin: str = Depends(_origin),
+                    user_id: str = Depends(_run_user)):
     """Continue a recorded engine's training in the background (as POST /v1/records/engines/{id}/continue)."""
     _known_engine(engine_id)
     def work(progress):
         return _game_response(sessions.continue_engine(engine_id, body.generations, origin=origin, progress=progress,
-                                                       **_player(body))).model_dump()
+                                                       user_id=user_id, **_player(body))).model_dump()
     return sessions.submit_job("continue", work, f"{body.generations} more generation(s) of engine {engine_id}")
 
 
 @api.post("/v1/jobs/engines/{engine_id}/retrain", status_code=202, tags=["Jobs"])
-def submit_retrain(engine_id: str, body: EngineRetrainRequest, origin: str = Depends(_origin)):
+def submit_retrain(engine_id: str, body: EngineRetrainRequest, origin: str = Depends(_origin),
+                   user_id: str = Depends(_run_user)):
     """Retrain from a recorded engine in the background (as POST /v1/records/engines/{id}/retrain)."""
     _known_engine(engine_id)
     def work(progress):
         return _game_response(sessions.retrain_engine(
             engine_id, body.candidate_count, body.generations, body.simulation_steps, body.episodes,
-            body.deterministic, origin=origin, progress=progress, **_player(body))).model_dump()
+            body.deterministic, origin=origin, progress=progress, user_id=user_id, **_player(body))).model_dump()
     return sessions.submit_job("retrain", work, f"{body.generations} generation(s) from engine {engine_id}")
 
 

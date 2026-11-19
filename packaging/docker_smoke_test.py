@@ -19,7 +19,9 @@ import zipfile
 
 def request(method, url, body=None, timeout=60):
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method, headers={"content-type": "application/json"})
+    # A backend calling the API says whose runs it starts (X-ANE-User: an opaque id).
+    req = urllib.request.Request(url, data=data, method=method,
+                                 headers={"content-type": "application/json", "X-ANE-User": "docker-smoke-test"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             text = response.read().decode()
@@ -89,6 +91,9 @@ def main():
     }, timeout=900)
     check("a short evolution starts a game", status == 200, text)
     game = json.loads(text)
+    status, text = request("GET", f"{api}/v1/records/runs?user_id=docker-smoke-test")
+    check("the run is the caller's user's", status == 200 and (
+        not json.loads(text)["runs"] or json.loads(text)["runs"][0]["user_id"] == "docker-smoke-test"), text)
     check("the game offers choices", bool(game["actions"]) and not game["ended"], text)
 
     status, text = request("POST", f"{api}/v1/sessions/{game['session_id']}/actions", {"action": game["actions"][0]})

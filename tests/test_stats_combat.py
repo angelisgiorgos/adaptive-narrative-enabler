@@ -224,7 +224,7 @@ class StatsEditingTests(unittest.TestCase):
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
-        self.client = TestClient(api.api)
+        self.client = TestClient(api.api, headers={"X-ANE-User": "api-tests"})  # a backend calling the API, for its user
 
     def test_stats_api(self):
         self.assertIn("persuasion", self.client.get("/v1/stats").json()["character_stats"]["stats"])

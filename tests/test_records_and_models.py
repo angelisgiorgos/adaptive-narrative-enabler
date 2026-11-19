@@ -149,7 +149,7 @@ class _Records(_Folder):
 class ApiRecordingTests(_Records):
     def setUp(self):
         super().setUp()
-        self.client = TestClient(api.api)
+        self.client = TestClient(api.api, headers={"X-ANE-User": "api-tests"})  # a backend calling the API, for its user
 
     def _simulate(self):
         response = self.client.post("/v1/simulations", json={"candidate_count": 2, "generations": 2,
@@ -279,6 +279,50 @@ class StudioAndTerminalRecordingTests(_Records):
         continued = [r for r in records.list_runs() if r["kind"] == "continue"]
         self.assertEqual((continued[0]["origin"], continued[0]["parent_engine_id"]), ("terminal", model.id))
         self.assertEqual(yaml.safe_load((self.dir / "world.yaml").read_text()), model.config)
+
+
+class RunUserTests(_Records):
+    """Every run has a user (runs.user_id): the studio's and earlier runs are `test`; an API client
+    gives its user's id (X-ANE-User), an opaque id from the backend that calls the API."""
+
+    SMALL = {"candidate_count": 2, "generations": 1, "simulation_steps": 4, "deterministic": True}
+
+    def test_whose_run_it_is(self):
+        client = TestClient(api.api)
+        refused = client.post("/v1/simulations", json=self.SMALL)
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("X-ANE-User", refused.json()["detail"])
+        for bad in ("Jane Doe", "jane@example.org", "-x", "x" * 129):  # a name or an address is no id
+            with self.subTest(user=bad):
+                self.assertEqual(client.post("/v1/simulations", json=self.SMALL, headers={"X-ANE-User": bad}).status_code, 400)
+        mine = client.post("/v1/simulations", json=self.SMALL,
+                           headers={"X-ANE-User": "8f14e45f-ceea-467f-a8f5-b1c3e1c2d6aa"}).json()
+        studio = client.post("/v1/simulations", json=self.SMALL, headers={"X-ANE-Client": "studio"}).json()
+        terminal = sessions.run_simulation(2, 1, 4, True)
+        users = {run["id"]: run["user_id"] for run in client.get("/v1/records/runs").json()["runs"]}
+        self.assertEqual(users[mine["run_id"]], "8f14e45f-ceea-467f-a8f5-b1c3e1c2d6aa")
+        self.assertEqual((users[studio["run_id"]], users[terminal["run_id"]]), ("test", "test"))
+        listed = client.get("/v1/records/runs", params={"user_id": "8f14e45f-ceea-467f-a8f5-b1c3e1c2d6aa"}).json()["runs"]
+        self.assertEqual([run["id"] for run in listed], [mine["run_id"]])
+        self.assertEqual(client.get(f"/v1/records/runs/{mine['run_id']}").json()["user_id"],
+                         "8f14e45f-ceea-467f-a8f5-b1c3e1c2d6aa")
+        job = client.post("/v1/jobs/simulations", json=self.SMALL)
+        self.assertEqual(job.status_code, 400)                               # the background jobs too
+
+    def test_an_older_database_gets_users(self):
+        path = records.database_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(path) as connection:  # as version 1 made it: runs without a user
+            connection.executescript(records.SCHEMA.replace(",\n    user_id TEXT NOT NULL DEFAULT 'test'\n);", "\n);", 1))
+            connection.execute("INSERT INTO runs (id, created_at, origin, kind, status) VALUES "
+                               "('old', '2026-01-01T00:00:00', 'api', 'evolution', 'finished')")
+        self.assertNotIn("user_id", [row[1] for row in self._db("PRAGMA table_info(runs)")])
+        runs = records.list_runs()
+        self.assertEqual([(run["id"], run["user_id"]) for run in runs], [("old", "test")])
+        self.assertIn("user_id", [row[1] for row in self._db("PRAGMA table_info(runs)")])  # it was given users
+        self.assertTrue(list(path.parent.glob(f"{path.name}.before-user-id-*")))           # after a backup
+        self.assertEqual(records.list_runs(user_id="test")[0]["id"], "old")
+        self.assertEqual(records.list_runs(user_id="someone-else"), [])
 
 
 class RecordingSwitchTests(_Folder):

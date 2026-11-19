@@ -44,7 +44,10 @@ from utils.config_loader import config
 
 LOG = logging.getLogger("ane.records")
 DEFAULT_DIR = "/data/angelisg/ane"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2   # 2: runs.user_id
+# The user of runs made in the studio or the terminal, and of every run recorded before runs had a
+# user. A run started through the API has the id the calling backend gives (X-ANE-User).
+DEFAULT_USER = "test"
 _LOCK = threading.RLock()
 _DISABLED_REASON = {}
 
@@ -58,7 +61,8 @@ CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY, created_at TEXT NOT NULL, finished_at TEXT, origin TEXT NOT NULL, kind TEXT NOT NULL,
     status TEXT NOT NULL, world_id TEXT REFERENCES worlds(id), parent_engine_id TEXT, seed INTEGER,
     settings_json TEXT, parameters_json TEXT, best_score REAL, best_engine_id TEXT, generations_run INTEGER,
-    early_stopped INTEGER, warm_started INTEGER, learning_json TEXT, error TEXT
+    early_stopped INTEGER, warm_started INTEGER, learning_json TEXT, error TEXT,
+    user_id TEXT NOT NULL DEFAULT 'test'
 );
 CREATE TABLE IF NOT EXISTS generations (
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, generation INTEGER NOT NULL,
@@ -197,6 +201,7 @@ def connect():
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA journal_mode = WAL")
         connection.executescript(SCHEMA)
+        _migrate(connection, path)
         connection.execute("INSERT OR IGNORE INTO schema_info VALUES ('version', ?)", (str(SCHEMA_VERSION),))
         yield connection
         connection.commit()
@@ -205,6 +210,30 @@ def connect():
         raise
     finally:
         connection.close()
+
+
+def _columns(connection, table):
+    return {row[1] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _migrate(connection, path):
+    """Bring a database made by an earlier version up to this schema, once: runs get ``user_id``
+    (the runs already there: DEFAULT_USER). The database is backed up first, next to it."""
+    if "user_id" in _columns(connection, "runs"):
+        connection.execute("CREATE INDEX IF NOT EXISTS runs_by_user ON runs(user_id)")
+        return
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
+    backup = sqlite3.connect(Path(path).with_name(f"{Path(path).name}.before-user-id-{stamp}"))
+    try:
+        connection.commit()
+        connection.backup(backup)
+    finally:
+        backup.close()
+    connection.execute(f"ALTER TABLE runs ADD COLUMN user_id TEXT NOT NULL DEFAULT '{DEFAULT_USER}'")
+    connection.execute("CREATE INDEX IF NOT EXISTS runs_by_user ON runs(user_id)")
+    connection.execute("UPDATE schema_info SET value = ? WHERE key = 'version'", (str(SCHEMA_VERSION),))
+    LOG.info("Records: runs now have a user (%s for the %d runs already there); backup kept next to the database.",
+             DEFAULT_USER, connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0])
 
 
 def _safe(function):
@@ -278,15 +307,18 @@ def record_world(cfg=None):
 
 
 @_safe
-def start_run(origin, kind="evolution", settings=None, parameters=None, seed=None, parent_engine_id=None, run_id=None):
-    """A run that is starting, with every setting; returns its id."""
+def start_run(origin, kind="evolution", settings=None, parameters=None, seed=None, parent_engine_id=None, run_id=None,
+              user_id=None):
+    """A run that is starting, with every setting and the user who made it (``user_id``; None:
+    DEFAULT_USER, the studio's and the terminal's); returns its id."""
     run_id = run_id or uuid.uuid4().hex
     with connect() as connection:
         world_id = _world(connection, config.as_dict())
         connection.execute(
             "INSERT INTO runs (id, created_at, origin, kind, status, world_id, parent_engine_id, seed, settings_json, "
-            "parameters_json) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)",
-            (run_id, _now(), origin, kind, world_id, parent_engine_id, seed, _json(settings), _json(parameters)),
+            "parameters_json, user_id) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)",
+            (run_id, _now(), origin, kind, world_id, parent_engine_id, seed, _json(settings), _json(parameters),
+             user_id or DEFAULT_USER),
         )
     return run_id
 
@@ -572,13 +604,27 @@ def _get(table, record_id, drop=()):
     return _row(row, drop)
 
 
-def list_runs(limit=50, offset=0):
-    return _list("SELECT * FROM runs ORDER BY created_at DESC, id LIMIT ? OFFSET ?", (limit, offset),
+def list_runs(limit=50, offset=0, user_id=None):
+    """The runs, newest first; ``user_id``: only that user's. A database not yet given users (read
+    only: it cannot be changed here) has DEFAULT_USER's runs only."""
+    _require()
+    with connect() as connection:
+        has_users = "user_id" in _columns(connection, "runs")
+    if user_id is not None and not has_users:
+        if user_id != DEFAULT_USER:
+            return []
+        user_id = None
+    where, args = ("WHERE user_id = ? ", (user_id,)) if user_id is not None else ("", ())
+    runs = _list(f"SELECT * FROM runs {where}ORDER BY created_at DESC, id LIMIT ? OFFSET ?", (*args, limit, offset),
                  drop=("learning_json",))
+    for run in runs:
+        run.setdefault("user_id", DEFAULT_USER)
+    return runs
 
 
 def get_run(run_id):
     run = _get("runs", run_id)
+    run.setdefault("user_id", DEFAULT_USER)  # a database not yet given users
     run["generations"] = _list("SELECT * FROM generations WHERE run_id = ? ORDER BY generation", (run_id,))
     run["engines"] = list_engines(run_id=run_id)
     run["stories"] = list_stories(run_id=run_id)
