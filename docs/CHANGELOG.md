@@ -7,6 +7,37 @@ that introduces them.
 
 ## [Unreleased]
 
+### Training settings: saved engine defaults, and a run's own overrides
+
+#### Changed
+- One model for a run's settings: the **saved engine defaults** (`evolution.*`, `reproducibility.*`,
+  edited in *⚙ Advanced → Simulation*, labelled *Default …* there) with what **the run sets for
+  itself** in *🧠 Train*, the place a run is set up. Each Train setting shows its saved default and is
+  used as it is unless *Set … for this run* is ticked; reproducibility and warm start are *Saved
+  default* or chosen for the run, and the seed can be set for a run.
+- Before a run starts, *This run, resolved* shows what it will execute (population, generations,
+  stories per storyteller, story length, seed, warm start, the work), each with where it comes
+  from; after it, the report says whether it ran exactly as summarised. Retraining a recorded
+  engine shows the same, with that engine's saved defaults.
+- The API: a run's `candidate_count`, `generations`, `simulation_steps`, `episodes`, `deterministic`,
+  `seed` and `warm_start` are optional, the saved defaults when left out (a request leaving out the
+  first three used to get 8, 5 and 16). `GET /v1/simulations/work`'s values are optional too.
+
+#### Added
+- `POST /v1/simulations/resolve`: what a run (or, with `engine_id`, a retraining) would execute,
+  resolved by the backend's own rules (`backend.sessions.resolve_training`, which the runs use); every
+  run's response carries `training` (`overrides`, `sources`, `resolved`, `executed`). A run can set
+  its own `seed`.
+
+#### Removed
+- The app parameters `default_candidates`, `default_generations` and `default_simulation_steps`
+  (a second set of run defaults): a saved file that has them still loads, without them.
+
+#### Fixed
+- A retraining marked deterministic did not seed the random generators as a new run does, and
+  without a saved seed it silently ran random; it now follows the same rules (and is refused
+  without a seed).
+
 ### Training: requested versus effective story length
 
 #### Changed

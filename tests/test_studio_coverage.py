@@ -52,6 +52,7 @@ CLIENT_ONLY = {
     ("GET", "/v1/documents"): "/v1/reference lists the documents",
     ("GET", "/v1/runs"): "the studio keeps its run; earlier runs: /v1/records/runs",
     ("POST", "/v1/simulations"): "/v1/jobs/simulations (with progress)",
+    ("GET", "/v1/simulations/work"): "/v1/simulations/resolve (its `work`, with every other resolved setting)",
     ("POST", "/v1/records/engines/{engine_id}/continue"): "/v1/jobs/engines/{engine_id}/continue",
     ("POST", "/v1/records/engines/{engine_id}/retrain"): "/v1/jobs/engines/{engine_id}/retrain",
     ("GET", "/v1/sessions/{session_id}"): "every action returns the game's state",

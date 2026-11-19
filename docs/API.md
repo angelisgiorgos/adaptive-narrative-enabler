@@ -95,6 +95,22 @@ paths (where the records, saves and models are): only a file's name, when it mat
 
 ### Runs: limits, work, and waiting
 
+0. **Defaults and overrides.** A run's settings are the saved engine defaults (`evolution.pop_size`,
+   `generations`, `episodes_per_genome`, `max_steps`, `warm_start`, `full_length_stories`;
+   `reproducibility.deterministic` and `seed`; `narrative_end.max_actions`) with what the request sets
+   for itself: `candidate_count`, `generations`, `episodes`, `simulation_steps`, `deterministic`, `seed`,
+   `warm_start`, each optional (left out or `null`: the default). `POST /v1/simulations/resolve` with
+   the same body answers, before anything runs, with what the run would execute: `defaults`,
+   `overrides`, `sources` (each value: `override` or `default`), `effective` (`population`,
+   `generations`, `stories_per_storyteller`, `requested_steps`, `story_turns`, `full_length_stories`,
+   `story_length`, `deterministic`, `seed` (`null`: random), `warm_start`, `warm_start_mode`: memory,
+   engine or off), `work` (as `GET /v1/simulations/work`), `notes` (values held to the app's limits,
+   a seed a random run does not use), `errors` (a deterministic run without a seed), `ready` and
+   `remembered`; with `engine_id`, a retraining of that recorded engine (its saved defaults, a warm
+   start from it). `POST /v1/simulations`, the job, and a retraining run exactly `effective`, and
+   their response's `training` gives `overrides`, `sources`, `resolved` and `executed` (read back
+   from the evolution that ran). A request that left out `candidate_count`, `generations` or
+   `simulation_steps` used to get 8, 5 and 16; it now gets the saved defaults.
 1. **Maximums.** One run takes up to 400 storytellers
    (`candidate_count`), 1000 `generations`, 400 `simulation_steps`, and 10
    `episodes`; above that is `422`.
