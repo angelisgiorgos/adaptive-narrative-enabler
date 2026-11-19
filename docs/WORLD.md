@@ -623,6 +623,69 @@ the event's actions:
 An unknown event name is rejected when saving from the studio or the API. At
 run time it is ignored with a note in the transcript.
 
+### Conversations
+
+The people present are approached one at a time (`conversations` in `hyperparameters.yaml`,
+on by default). On the scene, each person is one choice, **Approach the Gate Guard**. Taking
+it opens a conversation: the choices are then that person's (talk with them, ask, bribe,
+fight, give an item...) and **Leave the conversation**.
+
+- **No turn passes** when approaching someone or leaving a conversation. A person just left
+  is not offered again until something happens. After `max_free_steps` of these choices in a
+  row, every choice is on the scene again, so a story always moves on.
+- **The conversation goes on** after choices that settle nothing: questions and small talk.
+  A **decisive** choice ends it: an event or a fight (`triggers_event`), a payment
+  (`required_coins`), an item given, taken or used, one of an exclusive choice, an outcome
+  tagged `decisive_tags` (`combat`, `threat`, `guards`, `escape`), a move, or the person gone.
+  It also ends when they have nothing left to offer.
+- **Someone may start it**, by their tags (`npc_behaviour`, below): they come up to the player
+  (*The Captain of the Watch comes up to you, wanting a word.*) and the conversation is open;
+  the player may leave it. Hostile NPCs (`encounter_event`) still start their event.
+- **The storyteller sees through it.** An approach is worth the best of what the person
+  offers, so the quest's next step and the director's pacing still lead to the right
+  person. The storyteller's own list (`ranked_available_actions`) always has every choice.
+- **The option names and lines** are messages: `approach_npc`, `leave_conversation`,
+  `approached`, `conversation_left` and `npc_approaches`.
+- **Every client takes them the same way**: the studio's ▶ Play, the API's sessions, the
+  standalone ANE AI (`GameState.take_option`) and the simulated players. The views say who
+  the player is talking with (`talking_to`).
+
+```yaml
+conversations:
+  enabled: true                 # false: every person's choices on the scene, as before
+  decisive_tags: [combat, threat, guards, escape]
+  approach_limit: 3             # at most this many "Approach" choices shown at once
+  max_free_steps: 6
+```
+
+### What people do, by their tags
+
+Who comes up to the player, and how often someone is seen, are decided by tags, not character
+by character: a rule in `npc_behaviour` (`hyperparameters.yaml`) says what everyone with one of
+its tags does. Give an NPC the tag (in its `associated_tags`) and it behaves that way; change the
+rule and everyone with the tag changes. For each behaviour, the first rule that sets it and shares
+a tag with the NPC decides; without one, `default`.
+
+| Behaviour | Values |
+| --- | --- |
+| `starts_conversation` | `never`; `first_meeting`: they come up to the player the first time they meet; `every_visit`: whenever the player comes by |
+| `appearances` | `always`: whenever they fit the scene; `once`: in one visit of a story; a number: in at most that many visits. Someone the quest needs now (a target of it, or someone whose choices or events advance its step) is always shown |
+
+```yaml
+npc_behaviour:
+  default: {starts_conversation: never, appearances: always}
+  rules:
+  - {tags: [prisoner], starts_conversation: first_meeting}     # the Smuggler calls a new prisoner over
+  - {tags: [quest_giver], starts_conversation: first_meeting}  # the Captain of the Watch
+  - {tags: [hawker], starts_conversation: first_meeting}       # the Merchant
+  - {tags: [challenger], starts_conversation: every_visit}     # the Pit Champion, on every visit
+  - {tags: [wanderer], appearances: 2}                         # the Runaway Apprentice: two visits at most
+  - {tags: [apparition], appearances: once}                    # the Pale Conductor: once in a story
+```
+
+An unknown behaviour or value, a rule without `tags`, or a number of visits below 1 stops the
+world build with a clear message.
+
 ### Player health and power
 
 `HealthPlayer` ([`core_engine/health.py`](../core_engine/health.py)) owns

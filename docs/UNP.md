@@ -191,7 +191,7 @@ All paths are relative to the ready line's `url`. Bodies and answers are JSON ob
 | `GET /games/<id>/state` | | The session's parameters (`ane.session_state/1`) and its `session` (cast, NPC roles and homes) |
 | `PATCH /games/<id>/player` | [Player fields](#the-player-patch-gamesidplayer) | The view plus `"applied": [...]` |
 | `POST /games/<id>/sync` | One [event](#what-happened-in-the-unp-post-gamesidsync) or `{"events": [...]}` | The view plus `"synced": [...]` |
-| `POST /games/<id>/choose` | `{"action": "Talk to the Merchant"}` or `{"action": 0}` | The view plus `"turn"`: this turn's story text |
+| `POST /games/<id>/choose` | `{"action": "Approach the Merchant"}` or `{"action": 0}` | The view plus `"turn"`: this turn's story text. Approaching someone and leaving a conversation take no turn (`turn_number` stays); in a conversation the choices are that person's and "Leave the conversation", and the view's `talking_to` names them ([docs/WORLD.md](WORLD.md#conversations)) |
 | `POST /games/<id>/save` | `{}` | The save game (`ane.savegame/1`); the session goes on |
 | `POST /games/<id>/cancel` | `{}` | `{"game_id", "status", "savegame"}`; the session is released |
 | `POST /games/<id>/end` | `{}` | The view: the session ended where it stands; its progression is saved and reported |

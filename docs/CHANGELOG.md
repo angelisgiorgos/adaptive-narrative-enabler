@@ -7,6 +7,39 @@ that introduces them.
 
 ## [Unreleased]
 
+### Conversations: approach someone, talk, leave
+
+#### Added
+- The people present are approached one at a time (`conversations`, on by default; the engine
+  decides it, so the studio, the API, the standalone ANE AI and the simulated players all play
+  it the same way). On the scene each person is one choice, *Approach the Gate Guard*; in a
+  conversation the choices are theirs (talk, ask, bribe, fight, give...) and *Leave the
+  conversation*. Approaching and leaving take no turn. Questions and small talk keep the
+  conversation going; a decisive choice ends it (an event or a fight, a payment, an item given,
+  taken or used, one of an exclusive choice, a threat, a move, the person gone).
+- **What people do comes from their tags** (`npc_behaviour`), not from each character: rules
+  map tags to behaviours. `starts_conversation` (never, `first_meeting`, `every_visit`): they come
+  up to the player, the conversation open; `appearances` (always, `once`, or a number of visits):
+  how often they are seen in a story (someone the quest needs now is always shown). Shipped rules:
+  `prisoner` (the Smuggler calls a new prisoner over), `quest_giver` (the Captain of the Watch)
+  and `hawker` (the Merchant) on the first meeting, `challenger` (the Pit Champion) on every visit;
+  `wanderer` (the Runaway Apprentice) in two visits at most, `apparition` (the Pale Conductor)
+  once. Hostile NPCs still start their event.
+- `GameState.take_option(option)` takes any choice a player is offered; views say who the
+  player is talking with (`talking_to`), and the studio's status bar shows it.
+
+#### Changed
+- Simulated players play conversations too: explorers approach new people, questers prefer a
+  choice the quest log names. Simulated play counts turns, not choices, and reuses a turn's
+  ranking after a choice that took no turn (the same stories, 11% faster).
+- Measured (30 stories per quest, simulated players): about one choice in four is an approach or
+  a leave. With people coming up to the player by their tags, quests that go through people are
+  won about as often as with every choice on the scene: rid the market of the thief 17 (21 with
+  every choice on the scene), a face for the Palace 21 (21), the smuggler's tunnels 19 (21),
+  expose the fence 29 (27), champion of the back room 8 (6); without the tag rules, simulated
+  players won 15, 16, 13, 24 and 4. No choice was offered again after it was used; a story plays
+  at about 290 turns a second, as before.
+
 ### Choices that make sense, quests in steps, fights
 
 #### Changed
