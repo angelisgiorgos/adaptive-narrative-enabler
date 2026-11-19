@@ -570,7 +570,8 @@ def build_world(genome):
     if stat_errors:
         raise ValueError("; ".join(stat_errors))
     start_errors = (starts.validate_settings(starts.settings()) + rules.validate_settings(rules.settings())
-                    + rules.validate_npc_behaviour(config.get("npc_behaviour")))
+                    + rules.validate_behaviour("npc", config.get("npc_behaviour"))
+                    + rules.validate_behaviour("location", config.get("location_behaviour")))
     for name, data in (config_wd.get("locations") or {}).items():
         start_errors += starts.location_errors(data, f"Location '{name}'")
     if start_errors:

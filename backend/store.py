@@ -375,6 +375,8 @@ def _validate_complete_config(candidate: object, reference: object, path: str = 
         errors.extend(starts.validate_settings(starts.settings({"start_selection": candidate})))
     if path == "story_rules" and isinstance(candidate, dict):
         errors.extend(rules.validate_settings(rules.settings({"story_rules": candidate})))
+    if path in ("npc_behaviour", "location_behaviour"):  # rules the writer adds: checked as rules, not by shape
+        return rules.validate_behaviour("npc" if path == "npc_behaviour" else "location", candidate)
     if path == "evolution.score_aggregate" and candidate not in AGGREGATES:
         errors.append(f"`evolution.score_aggregate` must be one of {', '.join(AGGREGATES)}.")
     if path == "messages":
@@ -422,8 +424,6 @@ def _validate_complete_config(candidate: object, reference: object, path: str = 
                 errors.append(f"`{path}[{index}].unique` must be true or false.")
             elif "encounter_repeat" in entry and not isinstance(entry["encounter_repeat"], bool):
                 errors.append(f"`{path}[{index}].encounter_repeat` must be true or false.")
-            elif "starts_conversation" in entry and not isinstance(entry["starts_conversation"], bool):
-                errors.append(f"`{path}[{index}].starts_conversation` must be true or false.")
             elif entry.get("encounter_event") is not None and not isinstance(entry["encounter_event"], str):
                 errors.append(f"`{path}[{index}].encounter_event` must be an event name.")
             elif entry.get("role") is not None and not isinstance(entry["role"], str):
@@ -783,6 +783,9 @@ LOGIC_SECTIONS = {
     "progression": "A player's save game: every goal achieved once (achieved goals leave the pool), and the session reports kept.",
     "session_report": "After each session, its report (the player's stats, inventory, the goal achieved or the mission failed) goes to the UNP.",
     "session_scope": "A session's cast: what its goal needs stays, the most valuable share of the rest joins, the rest stays out.",
+    "conversations": "The people present are approached one at a time: their choices behind \"Approach\", leaving the conversation, which choices end it, and how many free steps in a row.",
+    "npc_behaviour": "What people do, by their tags: who comes up to the player (never, the first meeting, every visit) and in how many visits they are seen (always, once, a number).",
+    "location_behaviour": "What places do, by their tags: which draw the player in on arrival (their own activities first) and how many visits a story may have there (always, once, a number).",
 }
 
 

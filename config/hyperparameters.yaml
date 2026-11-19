@@ -234,13 +234,41 @@ conversations:
   # <them>"; in a conversation, their choices (talk, ask, bribe, fight, ...) and "Leave the
   # conversation". Approaching and leaving take no turn. A decisive choice ends the conversation
   # (an event or a fight, a payment, an item given, taken or used, one of an exclusive choice, a
-  # move, or an outcome tagged decisive_tags); questions and small talk go on. NPCs with
-  # `starts_conversation: true` come up to the player the first time they meet; hostile NPCs
-  # (encounter_event) still start their event. false: every person's choices are on the scene.
+  # move, or an outcome tagged decisive_tags); questions and small talk go on. Who comes up to the
+  # player by themselves is npc_behaviour's (by tags); hostile NPCs (encounter_event) still start
+  # their event. false: every person's choices are on the scene.
   enabled: true
   decisive_tags: [combat, threat, guards, escape]
   approach_limit: 3            # at most this many "Approach" choices among the options shown
   max_free_steps: 6            # approaches and leavings in a row, then everything is on the scene
+npc_behaviour:
+  # What people do, decided by their tags (associated_tags), not one by one: for each behaviour,
+  # the first rule with one of an NPC's tags that sets it decides; otherwise `default`.
+  #   starts_conversation: never | first_meeting (they come up to the player the first time they
+  #                        meet) | every_visit (whenever the player comes by)
+  #   appearances:         always (whenever they fit the scene) | once (in one visit of a story) |
+  #                        a number of visits; someone the quest needs now is always shown
+  default: {starts_conversation: never, appearances: always}
+  rules:
+  - {tags: [prisoner], starts_conversation: first_meeting}     # a prisoner calls a newcomer over to the bars
+  - {tags: [quest_giver], starts_conversation: first_meeting}  # someone with work for the traveler
+  - {tags: [hawker], starts_conversation: first_meeting}       # a seller who calls out to a new face
+  - {tags: [challenger], starts_conversation: every_visit}     # a fighter who sizes up everyone who comes in
+  - {tags: [wanderer], appearances: 2}                         # met in two visits at most, then gone their way
+  - {tags: [apparition], appearances: once}                    # seen once in a story
+location_behaviour:
+  # What places do, decided by their tags, not one by one (as npc_behaviour for people): for each
+  # behaviour, the first rule with one of a place's tags that sets it decides; otherwise `default`.
+  #   draws_in: never | first_visit (on arrival its own activities are offered first, with "Look
+  #             around" for the rest; no turn passes) | every_visit
+  #   visits:   always | once | a number of visits a story may have there; after that it is no
+  #             destination, unless it is on the way to the quest's next step or the only way on
+  default: {draws_in: never, visits: always}
+  rules:
+  - {tags: [lively], draws_in: first_visit}       # a place full of life pulls a newcomer in
+  - {tags: [spectacle], draws_in: every_visit}    # something is always going on
+  - {tags: [secluded], visits: 2}                 # a place one finds again once at most
+  - {tags: [fleeting], visits: once}              # a place one finds once in a story
 authored_events:
   enabled: true
   fallback_action: Step away from the situation

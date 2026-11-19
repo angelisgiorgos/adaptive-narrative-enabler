@@ -730,7 +730,7 @@ class GameState(StoryBeats, SessionScope):
             "toward_quest": distances.get(name, float("inf")) < here,
         } for name in sorted(self.current.connected)
             if name in self.world.locations and self.is_enabled(self.world.locations[name])
-            and self._adjacent(self.current.name, name) and not self.sent_only(name)]
+            and self._adjacent(self.current.name, name) and not self.sent_only(name) and not self._visits_used(name)]
 
     def _is_guard_failure(self, action, outcome):
         action_name = (action.name if action else "").lower()
@@ -1948,6 +1948,17 @@ class GameState(StoryBeats, SessionScope):
             return False
         return not self._quest_needs(char)
 
+    def _visits_used(self, name):
+        """Whether the place ``name`` was visited as often as its tags allow (location_behaviour.visits:
+        once, or a number of visits). The place where the quest's next step happens stays open."""
+        location = self.world.locations.get(name)
+        if location is None or name == self.current.name:
+            return False
+        limit = rules.appearance_limit(rules.location_behaviour(location.tags, "visits"))
+        if limit is None or self.location_counts.get(name, 0) < limit:
+            return False
+        return not (self.mission and not self.won and name in self._goal_sites())
+
     def _quest_needs(self, char):
         """Whether the quest needs ``char`` now: a target of it, or someone whose choices (or the
         events they start) advance its current step."""
@@ -2902,6 +2913,9 @@ class GameState(StoryBeats, SessionScope):
             if name in self.world.locations and self.is_enabled(self.world.locations[name])
             and self._adjacent(self.current.name, name) and not self.sent_only(name)
         )
+        # A place visited as often as its tags allow is no destination any more (location_behaviour.visits),
+        # unless every way on leads there.
+        navigation_targets = [name for name in navigation_targets if not self._visits_used(name)] or navigation_targets
         for loc_name in navigation_targets:
             target_loc = self.world.locations.get(loc_name)
             name = self.narrate("travel_new", stable=loc_name, location=loc_name)
@@ -3040,6 +3054,12 @@ class GameState(StoryBeats, SessionScope):
             members = groups[talking]
             instead = rest[0][0] if rest else members[-1][0] - 1.0
             return members + [(instead, self._conversation_option("leave", talking))], True
+        drawn = self._drawn_in(rest)
+        if drawn is not None:
+            members = [(score, a) for score, a in rest if a.source == "location" and a.owner == drawn]
+            others = [(score, a) for score, a in pairs if not (a.source == "location" and a.owner == drawn)]
+            instead = others[0][0] if others else members[-1][0] - 1.0
+            return members + [(instead, self._conversation_option("look", drawn))], True
         left = self.__dict__.get("_left")
         offered = list(rest)
         for person, members in groups.items():
@@ -3048,6 +3068,31 @@ class GameState(StoryBeats, SessionScope):
             offered.append((members[0][0], self._conversation_option("approach", person, [a for _, a in members])))
         offered.sort(key=lambda pair: pair[0], reverse=True)
         return offered, False
+
+    def drawn_in(self):
+        """The place whose own activities the player is offered first, or None."""
+        return self.__dict__.get("focus_place")
+
+    def _drawn_in(self, rest):
+        """The place that draws the player in now (location_behaviour.draws_in, by its tags: on the
+        first visit or on every visit): its own activities first, then "Look around". None when
+        it does not, or it has nothing to offer now."""
+        place = self.current.name
+        members = [a for _, a in rest if a.source == "location" and a.owner == place]
+        focus = self.__dict__.get("focus_place")
+        if focus is not None and (focus != place or not members):
+            self.focus_place = focus = None  # elsewhere now, or nothing more to do there
+        if focus is not None:
+            return focus
+        when = rules.location_behaviour(self.current.tags, "draws_in")
+        key = place if when == "first_visit" else "{}#{}".format(*self._visit_id())
+        drawn = self.__dict__.setdefault("drawn_in_places", set())
+        if when not in ("first_visit", "every_visit") or key in drawn or not members:
+            return None
+        drawn.add(key)
+        self.focus_place = place
+        self._say("place_draws_in", location=place)
+        return place
 
     def _greeting(self, groups):
         """Someone present who starts the conversation (npc_behaviour.starts_conversation, by
@@ -3066,6 +3111,9 @@ class GameState(StoryBeats, SessionScope):
         return None
 
     def _conversation_option(self, kind, person, members=()):
+        if kind == "look":  # a place that drew the player in: back to everything there is
+            return Action(self.narrate("look_around", stable=person, location=person), [], source="leave", owner=person,
+                          repeat="always")
         called = self._called(person)
         if kind == "approach":
             option = Action(self.narrate("approach_npc", stable=person, npc=called), [], character_name=person,
@@ -3082,6 +3130,10 @@ class GameState(StoryBeats, SessionScope):
         storyteller's ranked actions of this turn, when already at hand. Returns step()'s result."""
         if option.source in self._CONVERSATION:
             self._free_steps = self.__dict__.get("_free_steps", 0) + 1
+            if option.source == "leave" and option.character_name is None:  # a place: look around
+                self.focus_place = None
+                self._say("looked_around", location=option.owner)
+                return True
             person, called = option.character_name, self._called(option.character_name)
             if option.source == "approach":
                 self.talking_to = person
@@ -3100,24 +3152,26 @@ class GameState(StoryBeats, SessionScope):
             index = names.index(option.name)
         return self.step(index, ranked=ranked)
 
-    def _after_conversation_turn(self, talking, place, chosen):
+    def _after_conversation_turn(self, talking, place, chosen, focus=None):
         """After a turn: a conversation goes on while the player keeps talking with the same person
         about things that settle nothing (questions, small talk). A decisive choice ends it: an
         event or a fight, a payment, an item given, taken or used, one of an exclusive choice, an
         outcome tagged conversations.decisive_tags, a move, or the person gone."""
         self._free_steps = 0
-        if talking is None:
+        if talking is None and focus is None:
             return
         cfg = self._conversations() or {}
         decisive = {str(tag).lower() for tag in cfg.get("decisive_tags", ["combat", "threat", "guards", "escape"])}
         tags = {str(tag).lower() for tag in ((self.__dict__.get("turn_log") or [{}])[-1].get("tags") or [])} \
             if self._turn is None else {str(tag).lower() for tag in self._turn.get("tags") or []}
-        if (self.ended or self.active_event is not None or self.current.name != place or chosen is None
-                or chosen.character_name != talking or chosen.source not in ("npc", "conversation")
-                or chosen.triggers_event or chosen.required_coins or chosen.required_object or chosen.required_tag
-                or chosen.consumes_object or chosen.collects_object or chosen.exclusive_group
-                or tags & decisive or talking in self.removed_npcs):
+        decided = (self.ended or self.active_event is not None or self.current.name != place or chosen is None
+                   or chosen.triggers_event or chosen.required_coins or chosen.required_object or chosen.required_tag
+                   or chosen.consumes_object or chosen.collects_object or chosen.exclusive_group or tags & decisive)
+        if talking is not None and (decided or chosen.character_name != talking
+                                    or chosen.source not in ("npc", "conversation") or talking in self.removed_npcs):
             self.talking_to = None
+        if focus is not None and (decided or chosen.source != "location" or chosen.owner != focus):
+            self.focus_place = None
 
     @staticmethod
     def _option_kind(a):
@@ -3664,13 +3718,14 @@ class GameState(StoryBeats, SessionScope):
         history_start = len(self.history)
         self._turn = None
         talking, place = self.__dict__.get("talking_to"), self.current.name
-        if talking is not None or self.__dict__.get("_free_steps"):
+        focus = self.__dict__.get("focus_place")
+        if talking is not None or focus is not None or self.__dict__.get("_free_steps"):
             ranked = list(ranked) if ranked is not None else self.ranked_available_actions()
         chosen = ranked[action_index] if ranked is not None and action_index is not None \
             and 0 <= action_index < len(ranked) else None
         result = self._step(action_index, ranked)
-        if talking is not None or self.__dict__.get("_free_steps"):
-            self._after_conversation_turn(talking, place, chosen)
+        if talking is not None or focus is not None or self.__dict__.get("_free_steps"):
+            self._after_conversation_turn(talking, place, chosen, focus)
         if self._turn is not None:
             turn, self._turn = self._turn, None
             self.__dict__.setdefault("turn_log", []).append({  # games saved before turn_log existed
@@ -4161,6 +4216,8 @@ class GameState(StoryBeats, SessionScope):
             return False
         if target_name in self.world.locations and not self.is_enabled(self.world.locations[target_name]):
             return False  # switched off by a persistent variable
+        if cause in ("auto", "lead", "tags", "fast") and self._visits_used(target_name):
+            return False  # visited as often as its tags allow: only a choice or a written move goes there
         if not one_way and target_name != self.current.name and target_name in self.world.locations \
                 and not (self._adjacent(self.current.name, target_name) and not self.sent_only(target_name)):
             # The map holds: a far place is reached through the places between, one at a
@@ -4411,6 +4468,7 @@ class GameState(StoryBeats, SessionScope):
                     l for l in char.known_locations
                     if l in self.world.locations and l not in (self.current.name, origin_location)
                     and self.is_enabled(self.world.locations[l]) and self._way_toward(l) is not None
+                    and not self._visits_used(l)
                 ]
                 # Someone leads you next door; a far place they know is reached through the places between.
                 candidates = [l for l in candidates if self._adjacent(self.current.name, l)] or candidates

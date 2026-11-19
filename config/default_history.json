@@ -371,6 +371,21 @@
 "consequences.overdue": [
 "4e07408562bedb8b"
 ],
+"conversations": [
+"263f181cae97215c"
+],
+"conversations.approach_limit": [
+"4e07408562bedb8b"
+],
+"conversations.decisive_tags": [
+"4b20065fb78f30f0"
+],
+"conversations.enabled": [
+"b5bea41b6c623f7c"
+],
+"conversations.max_free_steps": [
+"e7f6c011776e8db7"
+],
 "director": [
 "05c80e3767755051",
 "13131e030a730146",
@@ -1251,6 +1266,21 @@
 "llm_judge.temperature": [
 "221764976efe0413"
 ],
+"location_behaviour": [
+"8f989528318e902f"
+],
+"location_behaviour.default": [
+"c095a2ccd51f9f46"
+],
+"location_behaviour.default.draws_in": [
+"48c4ee8f1739566a"
+],
+"location_behaviour.default.visits": [
+"17ce2e5ae2b098e1"
+],
+"location_behaviour.rules": [
+"c3a70de61ca281e7"
+],
 "location_constraints": [
 "5a4e1cb9d7283abc",
 "78552c0dcb3ed1f5",
@@ -1337,6 +1367,21 @@
 ],
 "navigation.player_directed": [
 "794b9442dad2887a"
+],
+"npc_behaviour": [
+"684ef653dcb93490"
+],
+"npc_behaviour.default": [
+"7a3857ab9783d627"
+],
+"npc_behaviour.default.appearances": [
+"17ce2e5ae2b098e1"
+],
+"npc_behaviour.default.starts_conversation": [
+"48c4ee8f1739566a"
+],
+"npc_behaviour.rules": [
+"1b340bc090384f96"
 ],
 "npc_goals": [
 "48ef7de9fcd1e68c"
@@ -2426,6 +2471,7 @@
 "af1deaccf524e34f",
 "bba51e1ae21ecb3b",
 "c10d9e760968e427",
+"c49259819d734e0c",
 "ccd6d0526924a5de",
 "e30bf460d1c75bc0",
 "f8eb026acf9ec6ee"
@@ -2438,7 +2484,8 @@
 ],
 "world_definition.locations[Bone Orchard]": [
 "4d190aa3407d53d3",
-"502c113e81a9234d"
+"502c113e81a9234d",
+"651710316486fe9c"
 ],
 "world_definition.locations[Drowned Archive]": [
 "1dc40e272473ea2d",
@@ -2452,6 +2499,7 @@
 "world_definition.locations[Festival of Masks]": [
 "8cb89dbc7c5c4a2a",
 "bcb2d41deae66501",
+"d395e1b7ba9e85fd",
 "f45c55a7906839e2"
 ],
 "world_definition.locations[Ghostline Station]": [
@@ -2476,7 +2524,8 @@
 "f5b9e39867c84549"
 ],
 "world_definition.locations[Secret Garden]": [
-"7e837d21a4ae5d46"
+"7e837d21a4ae5d46",
+"ef5d3424925b8092"
 ],
 "world_definition.locations[Sewers]": [
 "189f1b2a71396e88"
@@ -2486,6 +2535,7 @@
 ],
 "world_definition.locations[Tavern]": [
 "3ce9aca18083b9e0",
+"3db992548c94b2f0",
 "41d65b2cb5abc367",
 "5f3fe21949fcd122"
 ],
@@ -2549,8 +2599,10 @@
 },
 "messages.yaml": {
 "messages": [
+"0131c71ad636a0c2",
 "11def9b95befe701",
 "1cace454197aa0a5",
+"2531e86f0ae9fcf3",
 "4c66493ed5069120",
 "59a414f8ea6c7b8d",
 "625c41ffd1ed8cbe",
@@ -2574,6 +2626,12 @@
 ],
 "messages.another_way_witness": [
 "dc9ee4d99f749711"
+],
+"messages.approach_npc": [
+"1660770559e9a972"
+],
+"messages.approached": [
+"f597027824cc5fe7"
 ],
 "messages.arrival": [
 "17cc9d7f4a8d8afb"
@@ -2615,6 +2673,9 @@
 ],
 "messages.continue_here": [
 "7af3c5f5ff0da353"
+],
+"messages.conversation_left": [
+"dc940a2c5deb17ea"
 ],
 "messages.encounter": [
 "7757ac15b36894cc"
@@ -2710,6 +2771,9 @@
 "messages.lead_via": [
 "7bc4ce79690a2878"
 ],
+"messages.leave_conversation": [
+"ca12a594930f43a5"
+],
 "messages.location_current": [
 "87ab99fd271d8f56"
 ],
@@ -2718,6 +2782,12 @@
 ],
 "messages.location_stayed": [
 "ad50b65129d4531d"
+],
+"messages.look_around": [
+"9194258578488104"
+],
+"messages.looked_around": [
+"dd65de066a700ee4"
 ],
 "messages.manhunt": [
 "a9c70848e1f089f1"
@@ -2733,6 +2803,9 @@
 ],
 "messages.mission_start_brief": [
 "160b60545dcb5083"
+],
+"messages.npc_approaches": [
+"3954a55348827b55"
 ],
 "messages.npc_goal_done": [
 "734b607fb16acf2a"
@@ -2757,6 +2830,9 @@
 ],
 "messages.paid": [
 "92d18f2ce5d18823"
+],
+"messages.place_draws_in": [
+"db0306c352275fd1"
 ],
 "messages.refund": [
 "c6cb856cfb2b48fc"
@@ -2914,10 +2990,11 @@
 "2725cde4d48c9b2b",
 "3497f983bee3aeae",
 "5613d5b7e6ddc81b",
+"6379c2402ec00049",
 "86e13b3588608636",
 "89acdbbfbb73e41c",
-"f299a981b927ba8c",
-"f379f9fc394deb56"
+"c1890b9deff17fd4",
+"f299a981b927ba8c"
 ],
 "world_definition.characters[Aurora]": [
 "2a1438c622c94eea",
@@ -2931,7 +3008,8 @@
 "e89be4853a5604c7"
 ],
 "world_definition.characters[Captain of the Watch]": [
-"9971a4261486a977"
+"060a178ac0d85d24",
+"8a0578a4110a51fb"
 ],
 "world_definition.characters[Dock Worker]": [
 "ae743d11e8c35fa4",
@@ -2959,8 +3037,8 @@
 "f1ddbb6dd5350195"
 ],
 "world_definition.characters[Guard]": [
+"53ce504eb8ea1782",
 "89af019a4df26a87",
-"961673d44f22e31b",
 "a23a610f39f95ca7",
 "eab180acdb3fe722"
 ],
@@ -2974,15 +3052,18 @@
 ],
 "world_definition.characters[Merchant]": [
 "092afe0117f438ed",
+"6ba3af9f33ac6699",
 "b062f45eb2949b1f",
 "b6946d3526bbfa96",
 "f01ff8090366ca38"
 ],
 "world_definition.characters[Pale Conductor]": [
+"b02e88389e9fc3ee",
 "f2ff8a1c43e11de1"
 ],
 "world_definition.characters[Pit Champion]": [
-"a4194cd776ca3895"
+"297680b47f8eb0a7",
+"e9b69b3badbfe4bd"
 ],
 "world_definition.characters[Priest]": [
 "00a9819f9f15222a",
@@ -2991,10 +3072,12 @@
 "b48240203175c863"
 ],
 "world_definition.characters[Runaway Apprentice]": [
+"0c3411124ad42a37",
 "12ef51470a183311",
 "834773f365d179ac"
 ],
 "world_definition.characters[Smuggler]": [
+"05413f09cba33c5a",
 "7f50ee87c3f778f9"
 ],
 "world_definition.characters[Storm Cartographer]": [

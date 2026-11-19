@@ -288,13 +288,14 @@ world_definition:
         reveal_location: Sewers
   - name: Merchant
     unique: false
-    associated_tags:
+    associated_tags:   # hawker: calls out to a new face (npc_behaviour)
     - commercial
     - market
     - buy
     - sell
     - guidance
     - information
+    - hawker
     known_locations: [Market, Market of the Ancients, Festival of Masks]
     known_objects: [Ancient Map, Vintage Wine, Gold Coins]
     descriptions:
@@ -390,7 +391,7 @@ world_definition:
     actions: []  # the confrontation lives in events.yaml (memory_theft)
   - name: Pale Conductor
     unique: true
-    associated_tags: [spectral, travel, industrial, underground, social]
+    associated_tags: [spectral, travel, industrial, underground, social, apparition]   # apparition: seen once
     known_locations: [Ghostline Station, Palace, Harbor]
     known_objects: [Vintage Wine, Gold Coins]
     goals: [Keep the impossible timetable, Find one living passenger]
@@ -435,7 +436,7 @@ world_definition:
         reveal_location: Secret Garden
   - name: Runaway Apprentice
     unique: true
-    associated_tags: [urban, science, social, discovery, threat]
+    associated_tags: [urban, science, social, discovery, threat, wanderer]   # wanderer: met in two visits at most
     known_locations: [Storm Observatory, Sewers, Market]
     known_objects: [Ancient Map, Rusty Sword]
     goals: [Undo a disastrous experiment, Avoid the cartographer]
@@ -475,9 +476,8 @@ world_definition:
   # ---- the thief's hunt, the Dungeon's prisoner, the Sewers' fence, the Tavern's pit ----------
   - name: Captain of the Watch
     unique: true
-    starts_conversation: true   # comes up to the player the first time they meet
     article: the
-    associated_tags: [market, trade, guard, law, protect]
+    associated_tags: [market, trade, guard, law, protect, quest_giver]   # quest_giver: comes up to you (npc_behaviour)
     known_locations: [Market, Palace]
     goals:
     - goal: Rid the market of its thief
@@ -530,10 +530,9 @@ world_definition:
     actions: []  # the confrontation lives in events.yaml (lookout_ambush)
   - name: Smuggler
     unique: true
-    starts_conversation: true   # a new prisoner next door: he calls you over to the bars
     article: the
     # A prisoner in the Dungeon: freed (a bribe, a lock, a fight), he leads the way toward your quest.
-    associated_tags: [prisoner, prison, smuggling, tunnels, underground]
+    associated_tags: [prisoner, prison, smuggling, tunnels, underground]   # prisoner: calls you over (npc_behaviour)
     known_locations: [Dungeon, Sewers, Vault, Market]
     known_objects: [Fence's Ledger]
     goals:
@@ -609,9 +608,8 @@ world_definition:
         tags: [threat, confrontation]
   - name: Pit Champion
     unique: true
-    starts_conversation: true   # comes up to the player the first time they meet
     article: the
-    associated_tags: [noisy, brawl, fight, champion, information]
+    associated_tags: [noisy, brawl, fight, champion, information, challenger]   # challenger: sizes you up on every visit
     known_locations: [Tavern]
     goals: [Find a worthy opponent, Keep the title]
     descriptions:

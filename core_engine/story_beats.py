@@ -316,7 +316,8 @@ class StoryBeats:
         goal_sites = self._goal_sites()
         candidates = []
         for name, count in self.location_counts.items():
-            if not count or name == self.current.name or name in adjacent or self.sent_only(name):
+            if not count or name == self.current.name or name in adjacent or self.sent_only(name) \
+                    or self._visits_used(name):
                 continue
             if name not in self.world.locations or not self.is_enabled(self.world.locations[name]):
                 continue

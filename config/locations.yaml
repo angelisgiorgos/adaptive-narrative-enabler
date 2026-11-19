@@ -345,6 +345,7 @@ world_definition:
       - noisy
       - information
       - district_docks
+      - lively   # location_behaviour: draws a newcomer in on the first visit
       interact_prompts:
       - Enter the tavern
       - Join the revelry
@@ -447,6 +448,7 @@ world_definition:
       - serene
       - hidden
       - beautiful
+      - secluded   # location_behaviour: two visits in a story at most
       interact_prompts:
       - Enter the garden
       - Step into the oasis
@@ -618,7 +620,7 @@ world_definition:
           tags: [success, maritime]
           coin_change: 12
     Bone Orchard:
-      tags: [nature, eerie, underground, ancient, payoff_clue]
+      tags: [nature, eerie, underground, ancient, payoff_clue, fleeting]   # fleeting: location_behaviour: found once in a story
       interact_prompts:
       - Walk between the ivory trees
       - Follow the roots beneath the city
@@ -682,7 +684,7 @@ world_definition:
       enabled_if: {reputation: {gte: -2}}
       start_eligible: true   # only while the enabled_if above admits the traveler
       start_weight: 0.5
-      tags: [urban, social, celebration, deception, district_docks]
+      tags: [urban, social, celebration, deception, district_docks, spectacle]   # spectacle: location_behaviour: draws you in on every visit
       interact_prompts:
       - Join the midnight masquerade
       - Follow the procession of candle masks

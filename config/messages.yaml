@@ -70,6 +70,9 @@ messages:
   approached: "You approach {npc}."  # {npc}
   conversation_left: "You leave {npc} be."  # {npc}
   npc_approaches: "{npc_cap} comes up to you, wanting a word."  # {npc}, {npc_cap}: someone who starts the conversation
+  look_around: "Look around"  # {location}: the option that leaves a place's own activities (location_behaviour)
+  place_draws_in: "The {location} draws you in."  # {location}: a place that offers its own activities first
+  looked_around: "You look around the {location}."  # {location}
   talk_default: "{npc} shares a few thoughts with you."  # {npc}
   talk_goal: " They speak about their goal: {goal}."  # {goal}, {npc}
   reveal_npc: "[DISCOVERY] You noticed {npc} in the scene."  # {npc}

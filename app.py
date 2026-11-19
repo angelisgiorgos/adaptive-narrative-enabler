@@ -1473,6 +1473,58 @@ def save_term_weights_ui(text):
     return to_yaml(result["weights"]), result["message"]
 
 
+# ---- what people and places do, by their tags (/v1/behaviours, /v1/logic/npc_behaviour, ...) -------
+
+# The two behaviours of each kind of entry: (the API's group, the behaviour, its label in the editor).
+BEHAVIOUR_FIELDS = {
+    "NPCs": (("npcs", "starts_conversation", "Comes up to the player"),
+             ("npcs", "appearances", "How often they are seen")),
+    "Locations": (("locations", "draws_in", "Draws the player in"),
+                  ("locations", "visits", "How many visits a story may have there")),
+}
+BEHAVIOUR_WORDS = {"never": "never", "always": "always", "once": "once", "first_meeting": "the first time they meet",
+                   "every_visit": "on every visit", "first_visit": "on the first visit"}
+
+
+def _behaviour_words(value):
+    return f"{value} visits" if isinstance(value, int) else BEHAVIOUR_WORDS.get(value, str(value))
+
+
+def _behaviour_spec(kind_value, slot):
+    specs = BEHAVIOUR_FIELDS.get(kind_value)
+    if not specs:
+        return None, None
+    group, key, label = specs[slot]
+    return (API.get("/v1/behaviours").get(group) or {}).get(key) or {}, label
+
+
+def behaviour_fields_ui(kind_value, tags_value):
+    """The behaviour choices of an NPC or a place: every tag a rule gives the behaviour, and the one in
+    effect among the entry's tags (the first in the rules' order)."""
+    updates = []
+    have = {str(tag).lower() for tag in tags_value or []}
+    for slot in (0, 1):
+        spec, label = _behaviour_spec(kind_value, slot)
+        if spec is None:
+            updates.append(gr.update(visible=False))
+            continue
+        choices = [(f"— none: {_behaviour_words(spec.get('default'))} (the default)", "")] + [
+            (f"{option['tag']} · {_behaviour_words(option['value'])}", option["tag"]) for option in spec.get("tags", [])]
+        current = next((option["tag"] for option in spec.get("tags", []) if option["tag"].lower() in have), "")
+        updates.append(gr.update(visible=True, label=label, choices=choices, value=current))
+    return tuple(updates)
+
+
+def apply_behaviour_ui(kind_value, slot, chosen, tags_value):
+    """Choosing a behaviour sets its tag on the entry: the other tags of that behaviour leave its tags."""
+    spec, _ = _behaviour_spec(kind_value, slot)
+    if spec is None:
+        return gr.update()
+    others = {option["tag"].lower() for option in spec.get("tags", [])}
+    tags = [tag for tag in tags_value or [] if str(tag).lower() not in others] + ([chosen] if chosen else [])
+    return gr.update(value=tags)
+
+
 # ---- tab 5 · engine logic and app parameters (/v1/logic, /v1/app-settings) ---------------------
 
 @ui
@@ -1535,6 +1587,11 @@ def build_app():
                     label="Tags",
                     info="Type a new tag and press Enter to add it.",
                 )
+                with gr.Row():  # what an NPC or a place does, given by its tags (npc_behaviour, location_behaviour)
+                    behaviour_a = gr.Dropdown([], label="Behaviour", visible=False, interactive=True,
+                                              info="Sets the tag that gives it (Save entry to keep it).")
+                    behaviour_b = gr.Dropdown([], label="Behaviour", visible=False, interactive=True,
+                                              info="Sets the tag that gives it (Save entry to keep it).")
                 descriptions = gr.Textbox(
                     label="Descriptions", value="\n".join(initial["descriptions"]), lines=5,
                     info="One description per line.",
@@ -1651,6 +1708,23 @@ def build_app():
                         reload_policy_button = gr.Button("Reload from disk")
                     policy_status = gr.Markdown()
 
+                with gr.Accordion("Behaviour by tags (people and places)", open=False):
+                    gr.Markdown(
+                        "What people and places do comes from their **tags**: a rule gives everyone with one of its "
+                        "tags a behaviour, and the choices above set those tags. **People**: `starts_conversation` "
+                        "(never, first_meeting, every_visit) and `appearances` (always, once, a number of visits). "
+                        "**Places**: `draws_in` (never, first_visit, every_visit: on arrival their own activities "
+                        "first) and `visits` (always, once, a number). The first rule that sets a behaviour and "
+                        "shares a tag decides; someone or somewhere the quest needs now is always there. Add a rule "
+                        "with a new tag and it is a new choice above."
+                    )
+                    with gr.Row():
+                        npc_rules = gr.Code(language="yaml", label="People (npc_behaviour)", lines=12)
+                        place_rules = gr.Code(language="yaml", label="Places (location_behaviour)", lines=12)
+                    with gr.Row():
+                        save_npc_rules = gr.Button("Save the people's rules")
+                        save_place_rules = gr.Button("Save the places' rules")
+                    rules_status = gr.Markdown()
                 with gr.Accordion("Missions", open=False):
                     gr.Markdown(
                         "Each story draws one mission (weighted by `weight`) whose `enabled_if` holds. Goal keys: "
@@ -1733,6 +1807,20 @@ def build_app():
                     load_entity_yaml_ui, [kind, entity], entity_yaml_editor,
                 )
                 delete_entry.click(delete_entity_ui, [kind, entity], [entity, *entry_fields, editor_status])
+                # What an NPC or a place does follows its tags: the choices show the tag in effect, and
+                # choosing one sets it (an entry loaded, a tag typed: the choices follow).
+                behaviours = [behaviour_a, behaviour_b]
+                kind.change(behaviour_fields_ui, [kind, tags], behaviours)
+                tags.change(behaviour_fields_ui, [kind, tags], behaviours)
+                demo.load(behaviour_fields_ui, [kind, tags], behaviours)
+                behaviour_a.input(lambda k, c, t: apply_behaviour_ui(k, 0, c, t), [kind, behaviour_a, tags], tags)
+                behaviour_b.input(lambda k, c, t: apply_behaviour_ui(k, 1, c, t), [kind, behaviour_b, tags], tags)
+                demo.load(lambda: (load_logic_section("npc_behaviour"), load_logic_section("location_behaviour")),
+                          None, [npc_rules, place_rules])
+                save_npc_rules.click(lambda text: save_logic_section("npc_behaviour", text), npc_rules, rules_status).then(
+                    behaviour_fields_ui, [kind, tags], behaviours)
+                save_place_rules.click(lambda text: save_logic_section("location_behaviour", text), place_rules,
+                                       rules_status).then(behaviour_fields_ui, [kind, tags], behaviours)
 
             with gr.Tab("2 · Simulation settings"):
                 gr.Markdown(

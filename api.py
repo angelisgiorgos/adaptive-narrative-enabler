@@ -689,6 +689,27 @@ def put_logic_section(section: str, body: LogicSection):
         _fail(exc)
 
 
+@api.get("/v1/behaviours", tags=["Engine logic"])
+def get_behaviours():
+    """What people and places do, by their tags (`npc_behaviour`, `location_behaviour`): for each
+    behaviour its values, its default and every tag a rule gives it ({tag, value}), as {npcs: {...},
+    locations: {...}}. An NPC or a place behaves as the first such tag it has says (the studio's
+    choices set the tag); the rules are edited with `PUT /v1/logic/npc_behaviour` and
+    `PUT /v1/logic/location_behaviour`."""
+    from core_engine import rules
+    from utils.config_loader import config
+
+    found = {}
+    for kind, plural in (("npc", "npcs"), ("location", "locations")):
+        cfg = config.get(rules.SECTIONS[kind]) or {}
+        options = rules.behaviour_options(kind, cfg)
+        found[plural] = {key: {"values": list(values) + (["a number of visits"] if key in rules.COUNTED else []),
+                               "default": (cfg.get("default") or {}).get(key, rules.BEHAVIOUR_DEFAULTS[key]),
+                               "tags": options[key]}
+                         for key, values in rules.BEHAVIOURS[kind].items()}
+    return found
+
+
 @api.post("/v1/exports", tags=["Engine export"])
 def export_offline_engine(body: ExportRequest):
     """Export a trained engine (code, world, storyteller, tag vectors, learning memory) as a ZIP
