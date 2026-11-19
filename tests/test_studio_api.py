@@ -1034,7 +1034,9 @@ class TrainingSettingsTests(_Sandbox):
         self.assertEqual((settings["pop_size"], settings["generations"], settings["episodes_per_genome"],
                           settings["max_steps"], settings["warm_start"], settings["full_length_stories"], seed),
                          (2, 1, 1, 3, False, False, 7))
-        self.assertIn("✅ **Ran exactly as summarised before it started:**", report)
+        done, card = outputs[-5:-3]  # the completed engine, and its card
+        self.assertIn("✅ **Ran exactly as summarised before it started:**", done["check"])
+        self.assertIn("✅ **Ran exactly as summarised before it started:**", card)
         run = records.get_run(outputs[5])  # the run as recorded
         self.assertEqual(run["seed"], 7)
         self.assertEqual((run["settings"]["pop_size"], run["settings"]["generations"],
@@ -1064,10 +1066,161 @@ class TrainingSettingsTests(_Sandbox):
         text, retrain_shown = app.retrain_form_ui(engine_id, 1, *controls)
         self.assertIn("**from the recorded engine**", text)
         with patch.object(NarrativeEvolution, "run", spy):
-            report, *_ = app.retrain_recorded_ui(engine_id, 1, *controls, retrain_shown, progress=lambda *a, **k: None)
-        self.assertIn("✅ **Ran exactly as summarised before it started:**", report)
+            retrained = app.retrain_recorded_ui(engine_id, 1, *controls, retrain_shown, progress=lambda *a, **k: None)
+        self.assertEqual(retrained[-5]["kind"], "retrain")
+        self.assertIn("✅ **Ran exactly as summarised before it started:**", retrained[-4])
         settings, seed = ran[-1]
         self.assertEqual((settings["pop_size"], settings["generations"], settings["max_steps"], seed), (2, 1, 3, 7))
+
+
+class TrainResultTests(_Sandbox):
+    """🧠 Train only trains: no game is started, and nothing is written to a player's profile, unless an
+    API client asks for the game (the default, for compatibility). Its completed engine is carried by
+    its exact id to ▶ Play, ⚖ Evaluate and 📦 Export, never replaced by the newest."""
+
+    SMALL = {"candidate_count": 2, "generations": 1, "episodes": 1, "simulation_steps": 3, "deterministic": False,
+             "warm_start": False}
+
+    def setUp(self):
+        super().setUp()
+        world = store.config.as_dict()
+        world["evolution"].update({"full_length_stories": False, "warm_start": False})
+        store.config.use_override(world)
+        self.addCleanup(lambda: (setattr(store.config, "_override", None), type(store.config).reload(store.config)))
+
+    @staticmethod
+    def _quiet(*args, **kwargs):
+        return None
+
+    def _train(self):
+        import app
+
+        controls = _controls(population=2, generations=1, episodes=1, steps=3, reproducibility="off", warm_start="off")
+        return app.run_simulation_ui(*controls, None, progress=self._quiet)
+
+    def test_training_alone_starts_no_game_and_api_clients_still_get_one(self):
+        import app
+
+        before = set(sessions.SESSIONS)
+        answer = self.client.post("/v1/simulations", json={**self.SMALL, "start_game": False, "profile": "train-only"})
+        self.assertEqual(answer.status_code, 200, answer.text)
+        body = answer.json()
+        self.assertEqual((body["session_id"], body["game_started"], body["scene"], body["actions"]), (None, False, "", []))
+        self.assertTrue(body["engine_id"] and body["run_id"] and body["engine_download_url"] and body["learning"])
+        self.assertNotIn("Player profile", body["report"])
+        self.assertEqual(set(sessions.SESSIONS), before)                                 # no session
+        self.assertEqual(persistent.VariableStore().recent_starts("train-only"), [])     # the profile untouched
+        self.assertEqual([s["kind"] for s in records.list_stories(run_id=body["run_id"])], ["preview"])  # no play story
+
+        # An API client that does not say (start_game left out) still gets the game, as before.
+        game = self.client.post("/v1/simulations", json={**self.SMALL, "profile": "train-only"}).json()
+        self.assertTrue(game["game_started"])
+        self.assertIn(game["session_id"], sessions.SESSIONS)
+        self.assertTrue(game["scene"] and game["actions"])
+        self.assertEqual(len(persistent.VariableStore().recent_starts("train-only")), 1)
+        before = set(sessions.SESSIONS)
+
+        # The studio: a run, a continued and a retrained engine; none starts a game.
+        outputs = self._train()
+        done = outputs[-5]  # (completed engine, card, play, evaluate, export)
+        self.assertEqual((done["kind"], done["engine_id"]), ("run", records.get_run(done["run_id"])["best_engine_id"]))
+        continued = app.continue_recorded_ui(done["engine_id"], 1, progress=self._quiet)
+        retrained = app.retrain_recorded_ui(done["engine_id"], 1, *_controls(population=2, episodes=1, steps=3,
+                                                                             reproducibility="off"),
+                                            progress=self._quiet)
+        self.assertEqual([continued[-5]["kind"], retrained[-5]["kind"]], ["continue", "retrain"])
+        self.assertEqual(set(sessions.SESSIONS), before)
+        for result in (outputs, continued, retrained):
+            with self.subTest(kind=result[-5]["kind"]):
+                engine_id = result[-5]["engine_id"]
+                self.assertIn(f"Completed engine `{engine_id}`", result[-4])
+                self.assertIn("No game has been started", result[-4])
+                self.assertTrue(all(_prop(button, "interactive") for button in result[-3:]))
+                self.assertFalse([s for s in records.list_stories(engine_id=engine_id) if s["kind"] == "play"])
+
+    def test_each_follow_up_action_carries_the_exact_completed_engine(self):
+        import gradio as gr
+
+        import app
+        from backend import evaluation
+
+        first = self._train()
+        done, card, *buttons = first[-5:]
+        self.assertTrue(all(_prop(button, "interactive") for button in buttons))
+        newest = self._train()[-5]["engine_id"]           # a later run: the first is no longer the newest
+        self.assertNotEqual(newest, done["engine_id"])
+        self.assertEqual(app.finished_run_choices()[0][1], newest)
+        engine_id = done["engine_id"]
+
+        # ▶ Play this result: Play opens with this engine as its trained AI; New game plays exactly it.
+        before = set(sessions.SESSIONS)
+        opened = app.play_result_ui(done)
+        picker, setup, note = opened[-3:]
+        self.assertEqual(_prop(opened[0], "selected"), "play")
+        self.assertEqual(_prop(picker, "value"), engine_id)
+        self.assertTrue(_prop(setup, "open"))
+        self.assertIn(engine_id, note)
+        self.assertEqual(set(sessions.SESSIONS), before)  # choosing it starts nothing
+        token, *_ = app.play_new_game_ui(_prop(picker, "value"), "result-test", "", "story default")
+        (story,) = records.list_stories(session_id=token)
+        self.assertEqual(story["engine_id"], engine_id)
+
+        # ⚖ Evaluate this result: both storyteller pickers hold this engine, and that is what is submitted.
+        opened = app.evaluate_result_ui(done)
+        bench, calib, note = opened[-3:]
+        self.assertEqual(_prop(opened[0], "selected"), "evaluate")
+        self.assertEqual((_prop(bench, "value"), _prop(calib, "value")), (engine_id, engine_id))
+        submitted = []
+
+        def stop(path, body=None, **kwargs):  # what would be submitted, before any story is judged
+            submitted.append((path, body))
+            raise RuntimeError("stopped before judging")
+
+        with patch.object(app.API, "post", side_effect=stop):
+            with self.assertRaises(RuntimeError):
+                app.judge_benchmark_ui(10, 0, _prop(bench, "value"), False, "", 4, progress=self._quiet)
+            with self.assertRaises(RuntimeError):
+                app.calibrate_fitness_ui(30, 0, _prop(calib, "value"), False, progress=self._quiet)
+        self.assertEqual([(path, body["engine_id"]) for path, body in submitted],
+                         [("/v1/jobs/judge-benchmark", engine_id), ("/v1/jobs/calibrate-fitness", engine_id)])
+        recorded = records.load_engine(engine_id)
+        self.assertEqual(evaluation._source(engine_id)[2], dict(recorded.genome_traits))  # the judge plays this one
+        # A finished run kept without the records (recording off) can be evaluated too; an unknown engine cannot.
+        with patch.object(records, "enabled", return_value=False):
+            unrecorded = self.client.post("/v1/simulations", json={**self.SMALL, "start_game": False}).json()
+        kept_id = unrecorded["engine_id"]
+        with patch.object(records, "load_engine", side_effect=LookupError("not recorded")), \
+                patch.object(records, "get_engine", side_effect=LookupError("not recorded")):
+            from backend import export
+            from core_engine.model import EngineModel
+
+            kept = EngineModel.load(export._kept_engine(kept_id)["model_path"])  # the copy kept with the saves
+            self.assertEqual(kept.id, kept_id)
+            self.assertEqual(evaluation._source(kept_id)[2], dict(kept.genome_traits))
+            api._evaluable_engine(kept_id)
+            self.assertEqual(_prop(app.evaluate_result_ui({"engine_id": kept_id})[-3], "value"), kept_id)
+        with self.assertRaises(api.HTTPException) as unknown:
+            api._evaluable_engine("0" * 32)
+        self.assertEqual(unknown.exception.status_code, 404)
+
+        # 📦 Export this result: the one finished run chosen is this engine; the export is made from it.
+        opened = app.export_result_ui(done, "python")
+        source, generation, engines, note, export_button = opened[-5:]
+        self.assertEqual(_prop(opened[0], "selected"), "export")
+        self.assertEqual((_prop(source, "value"), _prop(engines, "value")), (app.FINISHED_RUNS, [engine_id]))
+        self.assertTrue(_prop(export_button, "interactive"))
+        files, status = app.export_engine_ui(_prop(source, "value"), None, None, None, False, "", "python",
+                                             _prop(engines, "value"))
+        self.assertEqual(len(files), 1)
+        self.assertIn(f"engine `{engine_id[:8]}`", status)
+        self.assertNotIn(newest[:8], status)
+        self.assertEqual(_prop(app.export_result_ui(done, "linux-x64")[-5], "visible"), False)  # ANE AI: runs only
+
+        # Without a completed engine, or with one no longer offered, nothing is chosen in its place.
+        for action in (app.play_result_ui, app.evaluate_result_ui, lambda d: app.export_result_ui(d, "python")):
+            for missing in (None, {**done, "engine_id": "0" * 32}):
+                with self.subTest(action=action, missing=bool(missing)), self.assertRaises(gr.Error):
+                    action(missing)
 
 
 class StudioServiceTests(_Sandbox):
@@ -1599,8 +1752,19 @@ class StudioLayoutTests(_Sandbox):
         self.assertLessEqual({"📝 Entries", "Fields", "Actions & outcomes", "Scheduling", "More details", "✨ Suggest",
                               "🎯 Missions", "📜 Story rules", "🗺 Map", "✨ Grow the world", "🔍 Checks"},
                              sections["world"])
-        self.assertEqual(sections["train"], {"Train", "Records"})
-        self.assertEqual(sections["advanced"], {"Simulation", "Weights", "Engine logic", "App & jobs"})
+        self.assertEqual(sections["train"], {"Run", "Records"})
+        self.assertEqual(sections["advanced"], {"Simulation", "Weights", "Engine logic", "App & jobs", "🔌 Integration"})
+        # The integration diagnostics are in ⚙ Advanced → 🔌 Integration only: not in Play, Export or Train.
+        diagnostics = {"Set the player", "Tell the session", "Show the session's parameters (ane.session_state/1)",
+                       "Send its latest report to the UNP again", "Download the world as a UNP receives it (JSON)"}
+        buttons = {key: {b.value for b in self._inside(tab, gr.Button)} for key, tab in by_id.items()}
+        self.assertLessEqual(diagnostics, buttons["advanced"])
+        for elsewhere in ("world", "train", "play", "evaluate", "export"):
+            self.assertFalse(diagnostics & buttons[elsewhere], elsewhere)
+        # Train: run configuration, progress and the completed engine, learning results; no game.
+        self.assertLessEqual({"🧠 Evolve storytellers", "▶ Play this result", "⚖ Evaluate this result",
+                              "📦 Export this result"}, buttons["train"])
+        self.assertFalse({"▶ Play the newest", "📦 Export it"} & buttons["train"])
         export_buttons = [b.value for b in self._inside(by_id["export"], gr.Button)]
         self.assertIn("Export", export_buttons)
         # Export's generation picker is filled by a training: one component, rendered in 📦 Export.
@@ -1643,12 +1807,18 @@ class StudioLayoutTests(_Sandbox):
             request = type("Request", (), {"query_params": {"section": asked} if asked else {}})()
             self.assertEqual(_prop(app.open_requested(request)[0], "selected"), opened)
         self.assertEqual(_prop(app.navigate("nowhere")[0], "selected"), "world")
-        # Links inside a destination: Train's "Play the newest" and "Export it".
+        # Links inside a destination: Train's actions on its completed engine (disabled until one exists).
         train = next(tab for tab in main.children if tab.id == "train")
-        links = {b.value: b for b in self._inside(train, gr.Button)}
-        for label, key in (("▶ Play the newest", "play"), ("📦 Export it", "export")):
-            (fn,) = wired(links[label], "click")
-            self.assertEqual(_prop(fn.fn()[0], "selected"), key)
+        links = {b.elem_id: b for b in self._inside(train, gr.Button)}
+        for elem_id, destination in (("train-play-result", "play"), ("train-evaluate-result", "evaluate"),
+                                     ("train-export-result", "export")):
+            with self.subTest(action=elem_id):
+                self.assertFalse(links[elem_id].interactive)
+                (fn,) = wired(links[elem_id], "click")
+                self.assertIn(main._id, [o._id for o in fn.outputs])  # it opens its destination
+                self.assertEqual(fn.inputs[0].__class__.__name__, "State")  # given the completed engine
+                with self.assertRaises(gr.Error):  # before any training: nothing to carry
+                    fn.fn(*[None] * len(fn.inputs))
 
     def test_narrow_screens_get_the_menu_and_no_destination_hides_behind_an_overflow_button(self):
         import app

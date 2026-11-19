@@ -241,6 +241,12 @@ button[role="tab"] {font-size: .88rem !important; padding: .3rem .75rem !importa
 .steps-unused input[type="range"] {opacity: .55}
 .run-work p {font-size: .9rem; margin: .15rem 0}
 .status {border-left: 4px solid #8b5cf6; padding-left: 1rem}
+/* 🧠 Train's completed engine: its card, then the actions that carry its id to Play, Evaluate and Export. */
+.result-card {padding: .3rem .9rem; border-radius: 12px; border: 1px solid var(--border-color-primary);
+              border-left: 5px solid #10b981; background: var(--background-fill-secondary); min-height: 3.2rem}
+.result-card p {font-size: .92rem; margin: .2rem 0}
+.result-card h3 {font-size: 1.02rem; margin: .15rem 0 .25rem 0; word-break: break-all}
+.result-actions button {white-space: nowrap}
 .play-hud {padding: .3rem .8rem; border-radius: 10px; border: 1px solid var(--border-color-primary);
            background: var(--background-fill-secondary)}
 .play-hud p {font-size: .92rem; margin: .1rem 0}
@@ -762,14 +768,124 @@ def map_markdown(known):
 def _training_outputs(result):
     """What 🧠 Train shows of a finished training (an evolution, a continued or retrained
     engine): the report, its files, the learning curve, what the storyteller learned, the run and its
-    generations (for the export). The game it starts is played in ▶ Play."""
+    generations (for the export). A training from the studio starts no game: its completed engine
+    is played, evaluated or exported with Train's follow-up actions."""
     curve, traits = _learning_outputs(result.get("learning"))
     generations = [str(stats["generation"]) for stats in (result.get("learning") or {}).get("history", [])]
-    report = (result.get("report") or "") + "\n\n**Play it in ▶ Play** (it is the newest trained AI there), or " \
-        "export it in 📦 Export."
-    return (report, API.download(result["config_download_url"]), API.download(result["engine_download_url"]),
-            curve, traits, result.get("run_id"),
+    return (result.get("report") or "", API.download(result["config_download_url"]),
+            API.download(result["engine_download_url"]), curve, traits, result.get("run_id"),
             gr.Dropdown(choices=generations, value=generations[-1] if generations else None))
+
+
+# ---- 🧠 Train: the completed engine, and where it goes next (▶ Play, ⚖ Evaluate, 📦 Export) -------
+
+# A training asked for from the studio only trains: the game is started in ▶ Play when the user asks.
+TRAIN_ONLY = {"start_game": False}
+TRAINING_KINDS = {"run": "New run", "continue": "Training continued", "retrain": "Retrained"}
+NO_RESULT = ("No training has finished in this session yet. Configure a run above and press **🧠 Evolve "
+             "storytellers** (or continue or retrain a recorded engine in *Records*): its completed engine appears "
+             "here, ready to play, evaluate or export.")
+
+
+def completed_engine(result, kind, check=""):
+    """The completed engine of a finished training, as Train keeps it for its follow-up actions:
+    its exact id (what ▶ Play, ⚖ Evaluate and 📦 Export are given), its run, how it scored, and
+    whether the run executed what its summary showed (``check``)."""
+    learning = result.get("learning") or {}
+    return {"engine_id": result.get("engine_id"), "run_id": result.get("run_id"), "kind": kind,
+            "score": learning.get("best_score"), "generations": learning.get("generations_run"), "check": check}
+
+
+def completed_view_ui(done):
+    """Train's result card and its three actions (enabled once a training has completed)."""
+    ready = bool(done and done.get("engine_id"))
+    if not ready:
+        text = NO_RESULT
+    else:
+        score = f"{done['score']:.2f}" if isinstance(done.get("score"), (int, float)) else "not benchmarked"
+        text = (f"### ✅ Completed engine `{done['engine_id']}`\n"
+                f"{TRAINING_KINDS.get(done['kind'], done['kind'])} · run `{done['run_id']}` · best fitness on the "
+                f"benchmark **{score}** (the training objective) · **{done.get('generations') or 0}** generation(s)"
+                + (f"\n\n{done['check']}" if done.get("check") else "")
+                + "\n\nPlay, evaluate or export **this** engine: each button opens its destination with this exact "
+                "engine chosen. No game has been started.")
+    return (text, *[gr.Button(interactive=ready) for _ in range(3)])
+
+
+def _training_done(result, kind, check=""):
+    """What a finished training adds to Train's outputs: the completed engine, its card and actions."""
+    done = completed_engine(result, kind, check)
+    return (done, *completed_view_ui(done))
+
+
+def _result_engine(done):
+    if not done or not done.get("engine_id"):
+        raise gr.Error("No training has finished in this session yet: run one in 🧠 Train first.")
+    return done["engine_id"]
+
+
+def _offered(engine_id, choices, where):
+    """The completed engine must be among a destination's choices; it is never replaced by another."""
+    if engine_id not in [value for _, value in choices]:
+        raise gr.Error(f"Engine {engine_id} is no longer offered in {where} (finished runs are kept up to a limit, or "
+                       "the API restarted without its records). Nothing was chosen in its place.")
+
+
+@ui
+def play_result_ui(done):
+    """▶ Play this result: Play opens with the completed engine chosen as its trained AI; the game
+    starts when the user presses New game (with the player, quest and character chosen there).
+    Returns the navigation, the trained-AI picker, the setup panel (opened) and Play's status."""
+    engine_id = _result_engine(done)
+    choices = finished_run_choices()
+    _offered(engine_id, choices, "▶ Play")
+    return (*navigate("play"), gr.Dropdown(choices=choices, value=engine_id), gr.Accordion(open=True),
+            f"**Trained AI:** the engine just trained, `{engine_id}`. Choose the player, quest and character, then "
+            "press **▶ New game**.")
+
+
+def evaluation_engine_choices():
+    """(label, engine id) of the storytellers the judge can play: the current settings with random
+    storytellers, the finished runs (newest first, kept with or without the records), then the
+    other recorded engines (a generation's champion, ...)."""
+    finished = finished_run_choices()
+    listed = {value for _, value in finished}
+    return ([("Current settings, random storytellers", "")] + finished
+            + [(label, value) for label, value in recorded_engines() if value not in listed])
+
+
+@ui
+def evaluate_result_ui(done):
+    """⚖ Evaluate this result: Evaluate opens with the completed engine as the storyteller of both
+    the judge benchmark and the fitness calibration (nothing is judged until the user starts it)."""
+    engine_id = _result_engine(done)
+    choices = evaluation_engine_choices()
+    _offered(engine_id, choices, "⚖ Evaluate")
+    return (*navigate("evaluate"), gr.Dropdown(choices=choices, value=engine_id),
+            gr.Dropdown(choices=choices, value=engine_id),
+            f"**Storyteller:** the engine just trained, `{engine_id}`. Press **Play and judge** (or *Play, judge "
+            "and fit*) to evaluate it.")
+
+
+@ui
+def export_result_ui(done, platform):
+    """📦 Export this result: Export opens with the completed engine as the one finished run chosen
+    (for any platform). Returns the navigation and the export form."""
+    engine_id = _result_engine(done)
+    choices = finished_run_choices()
+    _offered(engine_id, choices, "📦 Export")
+    return (*navigate("export"), gr.Radio(value=FINISHED_RUNS, visible=platform not in ANE_AI_PLATFORMS),
+            gr.Dropdown(visible=False),
+            gr.Dropdown(choices=choices, value=[engine_id], multiselect=True, visible=True),
+            gr.Markdown(f"**Chosen:** the engine just trained, `{engine_id}`, with its own world, storyteller, "
+                        "training state and tag vectors."), gr.Button(interactive=True))
+
+
+def integration_session_text(token):
+    """Which game the UNP diagnostics (⚙ Advanced → 🔌 Integration) act on: the one open in ▶ Play."""
+    if not token:
+        return "**No game is open in ▶ Play.** Start one there; these diagnostics act on it."
+    return f"Acting on the game open in **▶ Play**: session `{token}`."
 
 
 def _job_progress(progress, label="Generation"):
@@ -802,14 +918,15 @@ def run_simulation_ui(use_population, population, use_generations, generations, 
     """Evolve storytellers (a background job) with the saved engine defaults and what the form sets
     for this run (RUN_CONTROLS; ``shown``: the resolution its summary showed): the report (with how
     the run compares with that summary), files, learning curve and traits, the learning memory, the
-    run (for the export). The trained AI is played in ▶ Play."""
+    run (for the export), and the completed engine with its card and follow-up actions. No game is
+    started: the engine is played in ▶ Play when the user asks (Play this result)."""
     controls = (use_population, population, use_generations, generations, use_episodes, episodes, use_steps, steps,
                 reproducibility, use_seed, seed, warm_start)
-    job = API.post("/v1/jobs/simulations", _run_overrides(*controls))
+    job = API.post("/v1/jobs/simulations", {**_run_overrides(*controls), **TRAIN_ONLY})
     result = API.wait(job, _job_progress(progress))
     report, *outputs = _training_outputs(result)
-    report = executed_markdown(result.get("training"), shown) + "\n\n" + report
-    return (report, *outputs[:4], learning_memory_text(), *outputs[4:])
+    check = executed_markdown(result.get("training"), shown)
+    return (report, *outputs[:4], learning_memory_text(), *outputs[4:], *_training_done(result, "run", check))
 
 
 STEPS_LABEL = "Steps per simulation"
@@ -1730,8 +1847,9 @@ def continue_recorded_ui(engine_id, more_generations, progress=gr.Progress()):
     """Train a recorded engine further, exactly where it stopped (a background job)."""
     if not engine_id:
         raise gr.Error("Choose a recorded engine first.")
-    job = API.post(_path("/v1/jobs/engines", engine_id, "continue"), {"generations": int(more_generations)})
-    return _training_outputs(API.wait(job, _job_progress(progress)))
+    job = API.post(_path("/v1/jobs/engines", engine_id, "continue"), {"generations": int(more_generations), **TRAIN_ONLY})
+    result = API.wait(job, _job_progress(progress))
+    return (*_training_outputs(result), *_training_done(result, "continue"))
 
 
 def _retrain_overrides(more_generations, *controls):
@@ -1766,10 +1884,11 @@ def retrain_recorded_ui(engine_id, more_generations, use_population, population,
                 reproducibility, use_seed, seed, warm_start)
     if not engine_id:
         raise gr.Error("Choose a recorded engine first.")
-    job = API.post(_path("/v1/jobs/engines", engine_id, "retrain"), _retrain_overrides(more_generations, *controls))
+    job = API.post(_path("/v1/jobs/engines", engine_id, "retrain"),
+                   {**_retrain_overrides(more_generations, *controls), **TRAIN_ONLY})
     result = API.wait(job, _job_progress(progress))
-    report, *outputs = _training_outputs(result)
-    return (executed_markdown(result.get("training"), shown) + "\n\n" + report, *outputs)
+    return (*_training_outputs(result),
+            *_training_done(result, "retrain", executed_markdown(result.get("training"), shown)))
 
 
 @ui
@@ -3229,13 +3348,15 @@ def build_app():
                     entity_names, kind, [entity, *entry_fields]).then(studio_status_ui, None, studio_status)
 
             with gr.Tab("🧠 Train", id="train", elem_id="dest-train") as train_tab:
-                with gr.Tabs():
-                    with gr.Tab("Train"):
+                with gr.Tabs(selected="train-run") as train_sections:
+                    with gr.Tab("Run", id="train-run"):
                         gr.Markdown("Evolve AI storytellers on this world: a tournament of storytellers, each "
-                                    "scored on the stories it tells. The best becomes a **trained AI**: play it in "
-                                    "**▶ Play**, export it in **📦 Export**.  \n**A run uses the saved engine defaults "
+                                    "scored on the stories it tells. The best becomes the **completed engine**. "
+                                    "Training only trains (no game is started): play, evaluate or export the "
+                                    "engine with the buttons under it.  \n**A run uses the saved engine defaults "
                                     "(⚙ Advanced → Simulation) except what you set here for this run.** The summary "
                                     "below is what it will run with, as the API resolves it.", elem_classes="lead")
+                        gr.Markdown("#### 1 · Configure the run")
                         first_plan = API.post("/v1/simulations/resolve", {})
                         saved, first = first_plan["defaults"], first_plan["effective"]
                         steps_look = _steps_look(first_plan["work"])
@@ -3282,11 +3403,19 @@ def build_app():
                                     run_warm, run_summary, run_plan]
                         for control in run_controls:  # what the user sets (the form's own look is an output)
                             control.input(run_form_ui, run_controls, run_form, show_progress="hidden")
-                        with gr.Row():
-                            run_button = gr.Button("🧠 Evolve storytellers", variant="primary", scale=3)
-                            play_it = gr.Button("▶ Play the newest", scale=1)
-                            export_it = gr.Button("📦 Export it", scale=1)
-                        simulation_report = gr.Markdown(elem_classes="status")
+                        run_button = gr.Button("🧠 Evolve storytellers", variant="primary", elem_id="train-run-button")
+                        # Its progress (generation by generation) shows here while it runs, then the engine it made.
+                        gr.Markdown("#### 2 · Progress and the completed engine")
+                        result_card = gr.Markdown(NO_RESULT, elem_classes="result-card", elem_id="train-result")
+                        train_result = gr.State(None)  # the completed engine: its exact id, for the actions below
+                        with gr.Row(elem_classes="result-actions"):
+                            play_result = gr.Button("▶ Play this result", interactive=False, elem_id="train-play-result")
+                            evaluate_result = gr.Button("⚖ Evaluate this result", interactive=False,
+                                                        elem_id="train-evaluate-result")
+                            export_result = gr.Button("📦 Export this result", interactive=False,
+                                                      elem_id="train-export-result")
+                        result_buttons = [play_result, evaluate_result, export_result]
+                        gr.Markdown("#### 3 · Learning results")
                         with gr.Row():
                             learning_plot = gr.LinePlot(
                                 x="generation", y="score", color="series", label="Learning curve",
@@ -3296,6 +3425,7 @@ def build_app():
                                 headers=["trait", "meaning", "evolved", "population", "tendency"],
                                 label="What the evolved storyteller learned", interactive=False, wrap=True,
                             )
+                        simulation_report = gr.Markdown(elem_classes="status")
                         with gr.Accordion("The run's files: its story configuration and engine model", open=False):
                             with gr.Row():
                                 generated_config = gr.File(label="Story configuration", interactive=False)
@@ -3309,7 +3439,7 @@ def build_app():
                             forget_button.click(forget_learning_ui, None, memory_status)
                         run_state = gr.State(None)
 
-                    with gr.Tab("Records"):
+                    with gr.Tab("Records", id="train-records"):
                         records_status = gr.Markdown(records_status_text())
                         with gr.Row(equal_height=True):
                             record_engine = gr.Dropdown(recorded_engines(), label="Recorded engine", scale=4,
@@ -3323,7 +3453,8 @@ def build_app():
                             retrain_record = gr.Button("Retrain from it", scale=1)
                         gr.Markdown("*Continue* trains it further exactly where it stopped (its own settings); "
                                     "*Retrain* starts a new evolution seeded with its storyteller, with its saved "
-                                    "defaults and what the Train form sets for a run:")
+                                    "defaults and what *Run* sets for a run. Either opens *Run* with its completed "
+                                    "engine when it finishes.")
                         retrain_summary = gr.Markdown("Choose a recorded engine to see what retraining it would run "
                                                       "with.", elem_classes="run-summary")
                         retrain_plan = gr.State(None)
@@ -3363,19 +3494,24 @@ def build_app():
                             import_status = gr.Markdown()
 
                 train_outputs = [simulation_report, generated_config, generated_engine, learning_plot, learned_traits]
+                # Every training ends with its completed engine (the state the follow-up actions carry), shown
+                # on the card, whose progress bar follows the generations while it runs.
+                result_outputs = [train_result, result_card, *result_buttons]
                 engine_events = [run_button.click(
                     run_simulation_ui, [*run_controls, run_plan],
-                    [*train_outputs, memory_status, run_state, export_generation],
+                    [*train_outputs, memory_status, run_state, export_generation, *result_outputs],
                     concurrency_limit=1,
                     concurrency_id="narrative_evolution",
                 )]
-                record_outputs = [*train_outputs, run_state, export_generation]
+                record_outputs = [*train_outputs, run_state, export_generation, *result_outputs]
                 engine_events.append(continue_record.click(
                     continue_recorded_ui, [record_engine, more_generations],
                     record_outputs, concurrency_limit=1, concurrency_id="narrative_evolution"))
                 engine_events.append(retrain_record.click(
                     retrain_recorded_ui, [record_engine, more_generations, *run_controls, retrain_plan],
                     record_outputs, concurrency_limit=1, concurrency_id="narrative_evolution"))
+                for event in engine_events[1:]:  # continued or retrained: Run shows its completed engine
+                    event.success(lambda: gr.Tabs(selected="train-run"), None, train_sections, show_progress="hidden")
                 retrain_inputs = [record_engine, more_generations, *run_controls]
                 record_engine.change(retrain_form_ui, retrain_inputs, [retrain_summary, retrain_plan],
                                      show_progress="hidden")
@@ -3459,14 +3595,13 @@ def build_app():
                         gr.Markdown("Every session saves the player's progression: its report (goal achieved or "
                                     "mission failed, stats, inventory) and, when achieved, its goal, which then leaves "
                                     "the goal pool (each goal once per save game). The report goes to the UNP "
-                                    "(`session_report` in the engine logic). *Reset profile* (🌍 World → 📜 Story rules "
-                                    "→ Persistent variables) starts a new save game.")
+                                    "(`session_report` in the engine logic; to send it again: ⚙ Advanced → 🔌 "
+                                    "Integration). *Reset profile* (🌍 World → 📜 Story rules → Persistent variables) "
+                                    "starts a new save game.")
                         with gr.Row():
                             refresh_quests = gr.Button("Refresh the quests", size="sm")
                             save_game_refresh = gr.Button("Show the save game", size="sm")
-                            resend_report_button = gr.Button("Send the latest report to the UNP again", size="sm")
                         save_game_text = gr.Markdown()
-                        save_game_status = gr.Markdown()
                         save_game_table = gr.Dataframe(label="Sessions", interactive=False, wrap=True)
                 play_status = gr.Markdown()
                 with gr.Row():
@@ -3497,26 +3632,6 @@ def build_app():
                     game_judge_status = gr.Markdown()
                     judge_game_button = gr.Button("Judge the game played so far")
                     game_judgement = gr.Markdown()
-                with gr.Accordion("🔌 This session as a UNP sees it: the player, events, parameters", open=False):
-                    gr.Markdown(
-                        "What the exported ANE AI does for a UNP, tried on this game: **set the player**, tell it "
-                        "**what happened** in the UNP's game, read its **parameters** (`ane.session_state/1`). "
-                        "*Save game* above downloads its `ane.savegame/1`; *Continue a save game* goes on from one "
-                        "(the ANE AI's too), exactly or rebuilt from its parameters."
-                    )
-                    with gr.Row():
-                        player_json = gr.Code(value='{"coins": 20}', language="json", lines=4,
-                                              label="Set the player (stat_points, stat_changes, inventory, add_items, "
-                                                    "remove_items, coins, health, max_health, variables)")
-                        with gr.Column():
-                            sync_kind = gr.Dropdown(list(SYNC_EVENTS), value="item_gained",
-                                                    label="What happened in the UNP's game")
-                            sync_value = gr.Textbox(label="Its action, item, NPC, location or amount")
-                            with gr.Row():
-                                player_button = gr.Button("Set the player")
-                                sync_button = gr.Button("Tell the session")
-                    parameters_button = gr.Button("Show the session's parameters (ane.session_state/1)")
-                    parameters_view = gr.Code(language="json", label="Session parameters", interactive=False)
 
                 play_screen = [play_ending, play_hud, play_scene, play_turn, *play_buttons, play_quest_log, play_you,
                                play_people, play_actions, play_journey]
@@ -3554,14 +3669,8 @@ def build_app():
                 play_save.click(download_savegame_ui, play_token, [play_save_file, play_status]).success(
                     lambda: gr.File(visible=True), None, play_save_file)
                 save_game_refresh.click(progression_ui, play_who, [save_game_text, save_game_table])
-                resend_report_button.click(resend_report_ui, play_who, save_game_status)
                 demo.load(judge_status_ui, None, game_judge_status)
                 judge_game_button.click(judge_session_ui, play_token, game_judgement)
-                player_button.click(update_player_ui, [play_token, player_json], [*play_screen, play_story],
-                                    concurrency_limit=1)
-                sync_button.click(sync_session_ui, [play_token, sync_kind, sync_value], [*play_screen, play_story],
-                                  concurrency_limit=1)
-                parameters_button.click(session_parameters_ui, play_token, parameters_view)
 
             with gr.Tab("⚖ Evaluate", id="evaluate", elem_id="dest-evaluate") as evaluate_tab:
                 gr.Markdown(
@@ -3569,6 +3678,7 @@ def build_app():
                     "Stories are played in a separate process, so the games in progress keep their settings. "
                     "The judge also runs in the loop of evolution when `evolution.judge_weight` > 0 (Engine logic)."
                 )
+                evaluate_note = gr.Markdown()  # the storyteller chosen by 🧠 Train's "Evaluate this result"
                 with gr.Row():
                     judge_status = gr.Markdown()
                     judge_status_button = gr.Button("Check the judge again", size="sm", scale=0)
@@ -3579,8 +3689,9 @@ def build_app():
                         bench_stories = gr.Slider(1, 60, value=10, step=1, label="Stories")
                         bench_seed = gr.Number(value=0, precision=0, label="First seed")
                         bench_workers = gr.Slider(1, 8, value=4, step=1, label="Judgements at once")
-                    bench_engine = gr.Dropdown([("Current settings, random storytellers", "")] + recorded_engines(),
-                                               value="", label="Storyteller")
+                    evaluation_engines = evaluation_engine_choices()
+                    bench_engine = gr.Dropdown(evaluation_engines, value="", label="Storyteller",
+                                               info="Finished runs (newest first), then other recorded engines.")
                     bench_pairwise = gr.Checkbox(
                         label="Compare with version B (pairwise A/B on the same seeds, each pair judged in both orders)")
                     bench_variants = gr.Code(value="# version B: dotted.path: value\nclimax.enabled: false\n",
@@ -3600,8 +3711,7 @@ def build_app():
                     with gr.Row():
                         calib_stories = gr.Slider(10, 60, value=30, step=1, label="Stories")
                         calib_seed = gr.Number(value=0, precision=0, label="First seed")
-                        calib_engine = gr.Dropdown([("Current settings, random storytellers", "")] + recorded_engines(),
-                                                   value="", label="Storyteller")
+                        calib_engine = gr.Dropdown(evaluation_engines, value="", label="Storyteller")
                         calib_apply = gr.Checkbox(label="Save the suggested weights at once")
                     calib_button = gr.Button("Play, judge and fit", variant="primary")
                     calib_summary = gr.Markdown()
@@ -3648,18 +3758,8 @@ def build_app():
                 export_file = gr.File(label="Downloads (ZIP, or .unitypackage for Unity)", interactive=False,
                                       file_count="multiple")
                 export_status = gr.Markdown()
-                with gr.Accordion("Where the ANE AI runs, and the world it sends", open=False):
-                    gr.Markdown("The standalone runtimes this API has (built by CI for each system, from the same "
-                                "engine code), and the world as the ANE AI sends it to a UNP (`GET /world`). "
-                                "How a UNP uses the ANE AI: `docs/UNP.md`.")
-                    export_platforms = gr.Dataframe(export_platforms_table(), interactive=False, wrap=True)
-                    with gr.Row():
-                        refresh_platforms = gr.Button("Refresh")
-                        catalogue_button = gr.Button("Download the world as a UNP receives it (JSON)")
-                    catalogue_file = gr.File(label="World catalogue (ane.world/1)", interactive=False)
-                    catalogue_status = gr.Markdown()
-                    refresh_platforms.click(export_platforms_table, None, export_platforms)
-                    catalogue_button.click(world_catalogue_ui, None, [catalogue_file, catalogue_status])
+                gr.Markdown("Which systems this API has runtimes for, and the world as a UNP receives it: "
+                            "⚙ Advanced → 🔌 Integration.", elem_classes="lead")
                 export_form = [export_source, export_generation, export_engine, export_engine_note, export_button]
                 for control in (export_platform, export_source):
                     control.change(export_form_ui, [export_platform, export_source, export_engine], export_form)
@@ -3812,6 +3912,65 @@ def build_app():
                             refresh_jobs = gr.Button("Refresh")
                             jobs_table = gr.Dataframe(label="Jobs", interactive=False, wrap=True)
                             refresh_jobs.click(jobs_table_ui, None, jobs_table)
+                    with gr.Tab("🔌 Integration", id="advanced-integration"):
+                        gr.Markdown("Diagnostics for a UNP (the game platform that launches and drives the exported "
+                                    "ANE AI): its protocol tried on the game in ▶ Play, session reports sent again, "
+                                    "the runtimes this API exports and the world it sends. How a UNP uses the ANE AI: "
+                                    "`docs/UNP.md`.", elem_classes="lead")
+                        with gr.Accordion("The game in ▶ Play as a UNP sees it: the player, events, parameters",
+                                          open=True):
+                            integration_session = gr.Markdown(integration_session_text(None))
+                            gr.Markdown(
+                                "What the exported ANE AI does for a UNP, tried on that game: **set the player**, tell "
+                                "it **what happened** in the UNP's game, read its **parameters** "
+                                "(`ane.session_state/1`). ▶ Play's *Save game* downloads its `ane.savegame/1`; "
+                                "*Continue a save game* goes on from one (the ANE AI's too), exactly or rebuilt from "
+                                "its parameters."
+                            )
+                            with gr.Row():
+                                player_json = gr.Code(value='{"coins": 20}', language="json", lines=4,
+                                                      label="Set the player (stat_points, stat_changes, inventory, "
+                                                            "add_items, remove_items, coins, health, max_health, "
+                                                            "variables)")
+                                with gr.Column():
+                                    sync_kind = gr.Dropdown(list(SYNC_EVENTS), value="item_gained",
+                                                            label="What happened in the UNP's game")
+                                    sync_value = gr.Textbox(label="Its action, item, NPC, location or amount")
+                                    with gr.Row():
+                                        player_button = gr.Button("Set the player")
+                                        sync_button = gr.Button("Tell the session")
+                            parameters_button = gr.Button("Show the session's parameters (ane.session_state/1)")
+                            parameters_view = gr.Code(language="json", label="Session parameters", interactive=False)
+                        with gr.Accordion("Session reports sent to the UNP", open=False):
+                            gr.Markdown("A session's report goes to the UNP when it ends (`session_report` in the "
+                                        "engine logic); ▶ Play's save game shows whether it was sent.")
+                            with gr.Row(equal_height=True):
+                                report_profile = gr.Dropdown(profiles["profiles"], value=profiles["default"],
+                                                             allow_custom_value=True, label="Player profile (save game)",
+                                                             scale=3)
+                                resend_report_button = gr.Button("Send its latest report to the UNP again", scale=2)
+                            save_game_status = gr.Markdown()
+                        with gr.Accordion("Where the ANE AI runs, and the world it sends", open=False):
+                            gr.Markdown("The standalone runtimes this API has (built by CI for each system, from the "
+                                        "same engine code), and the world as the ANE AI sends it to a UNP "
+                                        "(`GET /world`).")
+                            export_platforms = gr.Dataframe(export_platforms_table(), interactive=False, wrap=True)
+                            with gr.Row():
+                                refresh_platforms = gr.Button("Refresh")
+                                catalogue_button = gr.Button("Download the world as a UNP receives it (JSON)")
+                            catalogue_file = gr.File(label="World catalogue (ane.world/1)", interactive=False)
+                            catalogue_status = gr.Markdown()
+                        # The diagnostics act on the game in ▶ Play; what they change is shown there and here.
+                        player_button.click(update_player_ui, [play_token, player_json], [*play_screen, play_story],
+                                            concurrency_limit=1).success(session_parameters_ui, play_token,
+                                                                         parameters_view)
+                        sync_button.click(sync_session_ui, [play_token, sync_kind, sync_value],
+                                          [*play_screen, play_story], concurrency_limit=1).success(
+                            session_parameters_ui, play_token, parameters_view)
+                        parameters_button.click(session_parameters_ui, play_token, parameters_view)
+                        resend_report_button.click(resend_report_ui, report_profile, save_game_status)
+                        refresh_platforms.click(export_platforms_table, None, export_platforms)
+                        catalogue_button.click(world_catalogue_ui, None, [catalogue_file, catalogue_status])
 
 
         # Across destinations: a finished run or a loaded engine is the newest to export.
@@ -3830,12 +3989,21 @@ def build_app():
                             "export": export_tab, "advanced": advanced_tab}
         for key, tab in destination_tabs.items():  # a tab chosen another way: the banner and the menu follow
             tab.select(lambda key=key: mark_destination(key), None, [*nav_buttons, nav_menu], show_progress="hidden")
-        play_it.click(lambda: navigate("play"), None, nav_outputs, show_progress="hidden")
+        # 🧠 Train's completed engine, carried by its exact id to ▶ Play, ⚖ Evaluate and 📦 Export: each opens
+        # with that engine chosen, and nothing starts (no game, no judgement, no export) until the user asks.
+        play_result.click(play_result_ui, train_result, [*nav_outputs, play_run, play_setup, play_status],
+                          show_progress="hidden")
+        evaluate_result.click(evaluate_result_ui, train_result, [*nav_outputs, bench_engine, calib_engine, evaluate_note],
+                              show_progress="hidden")
+        export_result.click(export_result_ui, [train_result, export_platform], [*nav_outputs, *export_form],
+                            show_progress="hidden")
+        # ⚙ Advanced → 🔌 Integration names the game it acts on: the one open in ▶ Play.
+        for event in [*started, loaded, nav_events["advanced"], menu_event]:
+            event.then(integration_session_text, play_token, integration_session, show_progress="hidden")
         # Train's summary follows the saved defaults (e.g. changed in ⚙ Advanced): on load, and on the way to Train.
         demo.load(run_form_ui, run_controls, run_form, show_progress="hidden")
         for event in (train_button_event, menu_event):
             event.then(run_form_ui, run_controls, run_form, show_progress="hidden")
-        export_it.click(lambda: navigate("export"), None, nav_outputs, show_progress="hidden")
         demo.load(open_requested, None, nav_outputs, show_progress="hidden")
 
     demo.launch_settings = limits

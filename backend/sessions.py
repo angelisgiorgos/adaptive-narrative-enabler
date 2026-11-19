@@ -567,8 +567,9 @@ def _scene(state: GameState) -> tuple[str, list[str]]:
 
 def run_simulation(candidate_count=None, generations=None, simulation_steps=None, deterministic=None,
                    profile=None, stats_choice=None, stats_points=None, episodes=None, warm_start=None,
-                   progress=None, origin="studio", mission=None, user_id=None, seed=None):
-    """Evolve storytellers with the shared evolutionary AI and start a game with the best.
+                   progress=None, origin="studio", mission=None, user_id=None, seed=None, start_game=True):
+    """Evolve storytellers with the shared evolutionary AI and start a game with the best
+    (``start_game`` False: train only, no game: nothing is written to the player's profile).
 
     The run's settings are the saved engine defaults with what it sets itself (None: the default),
     resolved by resolve_training and executed exactly. ``progress(generation, total,
@@ -613,7 +614,7 @@ def run_simulation(candidate_count=None, generations=None, simulation_steps=None
         records.finish_run(run_id, None, error=exc)
         raise
     game = _finish_training(evolution, result, run_id, origin, profile, points, mode, candidate_count, episodes,
-                            simulation_steps, title="Evolution complete.", mission=mission)
+                            simulation_steps, title="Evolution complete.", mission=mission, start_game=start_game)
     game["training"] = _training_record(plan, evolution)
     return game
 
@@ -642,9 +643,11 @@ def _train(evolution, progress=None, resume=None):
 
 
 def _finish_training(evolution, result, run_id, origin, profile, points, mode, candidate_count, episodes,
-                     simulation_steps, title, parent_id=None, source=None, mission=None):
+                     simulation_steps, title, parent_id=None, source=None, mission=None, start_game=True):
     """Record a finished run (its generations, champions, best engine with its model
-    file, and its preview story) and start a game with the best storyteller."""
+    file, and its preview story) and, unless ``start_game`` is False, start a game with the best
+    storyteller. Without a game nothing is played: no session, no start or mission in the
+    player's profile, no play story in the records."""
     learning = result.summary()
     genome, score, simulated = result.best_genome, result.best_score, result.best_state
     model = EngineModel.from_training(evolution, result, source=source or f"{origin} run {run_id}", parent_id=parent_id)
@@ -652,9 +655,12 @@ def _finish_training(evolution, result, run_id, origin, profile, points, mode, c
     records.record_story(simulated, origin, "preview", run_id=run_id, engine_id=model.id,
                          parameters={"benchmark": True})
 
-    token, player = _start_game(genome, profile, points, mode, origin=origin, run_id=run_id, engine_id=model.id,
-                                mission=mission)
-    scene, actions = _scene(player)
+    token = player = scene = None
+    actions = []
+    if start_game:
+        token, player = _start_game(genome, profile, points, mode, origin=origin, run_id=run_id, engine_id=model.id,
+                                    mission=mission)
+        scene, actions = _scene(player)
     history = result.history
     report = (
         f"{title} Best fitness on the benchmark: **{score:.2f}** (the training objective, not a measure of "
@@ -669,8 +675,9 @@ def _finish_training(evolution, result, run_id, origin, profile, points, mode, c
         + f"  \nBenchmark per generation: {' → '.join(f'{h.validation:.0f}' for h in history)}  \n"
         f"Preview path: {' → '.join(simulated.path)}  \n"
         f"Preview mission: {simulated.mission_status}  \n"
-        f"Player profile: **{profile}** (playthroughs finished: {player.variables.get('playthroughs', 0)})  \n"
-        f"Engine: `{model.id}`" + (" (recorded)" if records.enabled() else "")
+        + (f"Player profile: **{profile}** (playthroughs finished: {player.variables.get('playthroughs', 0)})  \n"
+           if player is not None else "")
+        + f"Engine: `{model.id}`" + (" (recorded)" if records.enabled() else "")
     )
     config_path, bundle_path = _export_run_artifacts(model, candidate_count, result.generations_run, simulation_steps)
     _remember_engine(model, bundle_path, run_id)
@@ -682,6 +689,7 @@ def _finish_training(evolution, result, run_id, origin, profile, points, mode, c
     return {
         "token": token, "run_id": run_id, "report": report, "scene": scene, "actions": actions, "last_turn": "",
         "config_path": config_path, "engine_path": bundle_path, "learning": learning, "engine_id": model.id,
+        "game_started": token is not None,
     }
 
 
@@ -857,9 +865,10 @@ def _training_guard(pop_size, generations, episodes, steps):
 
 
 def continue_engine(engine_id, generations=1, profile=None, stats_choice=None, stats_points=None, origin="studio",
-                    progress=None, mission=None, user_id=None):
+                    progress=None, mission=None, user_id=None, start_game=True):
     """Continue a recorded engine's training exactly where it stopped, for
-    ``generations`` more generations; records the run and starts a game with the result."""
+    ``generations`` more generations; records the run and (unless ``start_game`` is False)
+    starts a game with the result."""
     profile = _profile(profile)
     points, mode = _player_stats(stats_choice, stats_points)
     model = _recorded_model(engine_id)
@@ -889,14 +898,16 @@ def continue_engine(engine_id, generations=1, profile=None, stats_choice=None, s
     return _finish_training(evolution, result, run_id, origin, profile, points, mode, settings["pop_size"],
                             settings["episodes_per_genome"], settings["max_steps"],
                             title=f"Training continued for {generations} generation(s) from engine `{engine_id}`.",
-                            parent_id=engine_id, source=f"continued from {engine_id}", mission=mission)
+                            parent_id=engine_id, source=f"continued from {engine_id}", mission=mission,
+                            start_game=start_game)
 
 
 def retrain_engine(engine_id, candidate_count=None, generations=None, simulation_steps=None, episodes=None,
                    deterministic=None, profile=None, stats_choice=None, stats_points=None, origin="studio",
-                   progress=None, mission=None, user_id=None, seed=None):
+                   progress=None, mission=None, user_id=None, seed=None, start_game=True):
     """A new run whose first population starts from a recorded engine's storyteller
-    and memory, on that engine's world; records it and starts a game with the result. Its
+    and memory, on that engine's world; records it and (unless ``start_game`` is False) starts
+    a game with the result. Its
     settings are that engine's saved defaults with what the run sets itself (resolve_training)."""
     profile = _profile(profile)
     points, mode = _player_stats(stats_choice, stats_points)
@@ -930,7 +941,7 @@ def retrain_engine(engine_id, candidate_count=None, generations=None, simulation
         raise
     game = _finish_training(evolution, result, run_id, origin, profile, points, mode, candidate_count, episodes,
                             simulation_steps, title=f"Retrained from engine `{engine_id}`.", parent_id=engine_id,
-                            source=f"retrained from {engine_id}", mission=mission)
+                            source=f"retrained from {engine_id}", mission=mission, start_game=start_game)
     game["training"] = _training_record(plan, evolution)
     return game
 

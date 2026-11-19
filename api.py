@@ -166,7 +166,13 @@ class TrainingOverrides(BaseModel):
     seed: int | None = Field(default=None, description="The seed of a deterministic run (default reproducibility.seed).")
 
 
-class SimulationRequest(TrainingOverrides):
+class TrainingGame(BaseModel):
+    start_game: bool = Field(default=True, description="Start a game with the best storyteller when the training "
+                             "finishes (the response's session). false: train only; no session is created and nothing "
+                             "is written to the player's profile (the response's session_id is null).")
+
+
+class SimulationRequest(TrainingOverrides, TrainingGame):
     profile: str | None = Field(default=None, description="Player profile for persistent variables.")
     stats_mode: Literal["defined", "random", "balanced"] | None = Field(
         default=None, description="How the player's stats are allocated (default: character_stats.mode).",
@@ -270,6 +276,13 @@ class PlayState(BaseModel):
 
 
 class SimulationResponse(PlayState):
+    session_id: str | None = Field(default=None, description="The game started with the result; null when a "
+                                   "training was asked for with start_game false.")
+    scene: str = ""
+    actions: list[str] = Field(default_factory=list)
+    ended: bool = False
+    game_started: bool = Field(default=True, description="False for a training asked for with start_game false: "
+                               "the play fields are then empty.")
     report: str
     run_id: str | None = Field(default=None, description="Use with POST /v1/exports to export this run or one of its generations.")
     learning: dict[str, Any] | None = Field(
@@ -905,7 +918,7 @@ def simulate(body: SimulationRequest, origin: str = Depends(_origin), user_id: s
             profile=body.profile, episodes=body.episodes, warm_start=body.warm_start, seed=body.seed,
             stats_choice="defined" if body.stats is not None else body.stats_mode,
             stats_points=yaml.safe_dump(body.stats) if body.stats is not None else None,
-            progress=None, origin=origin, mission=body.mission, user_id=user_id,
+            progress=None, origin=origin, mission=body.mission, user_id=user_id, start_game=body.start_game,
         )
         return _game_response(game)
     except HTTPException:
@@ -915,9 +928,12 @@ def simulate(body: SimulationRequest, origin: str = Depends(_origin), user_id: s
 
 
 def _game_response(game) -> "SimulationResponse":
-    state = _play_state(game["token"], game["last_turn"])
+    if game.get("token") is None:  # a training without a game (start_game false)
+        state = {"session_id": None, "game_started": False}
+    else:
+        state = _play_state(game["token"], game["last_turn"]).model_dump()
     return SimulationResponse(
-        **state.model_dump(), report=game["report"], learning=game["learning"], run_id=game.get("run_id"),
+        **state, report=game["report"], learning=game["learning"], run_id=game.get("run_id"),
         engine_id=game.get("engine_id"), training=game.get("training"),
         config_download_url=_register_artifact(game["config_path"]),
         engine_download_url=_register_artifact(game["engine_path"]),
@@ -1195,12 +1211,12 @@ class EnginePlayRequest(BaseModel):
                                 "/v1/missions/playable); left out, the story draws one.")
 
 
-class EngineContinueRequest(EnginePlayRequest):
+class EngineContinueRequest(EnginePlayRequest, TrainingGame):
     generations: int = Field(default=1, ge=1, le=store.RUN_LIMITS["generation_limit"],
                              description="Further generations, continuing exactly where training stopped.")
 
 
-class EngineRetrainRequest(EnginePlayRequest, TrainingOverrides):
+class EngineRetrainRequest(EnginePlayRequest, TrainingOverrides, TrainingGame):
     """A retraining sets what it wants for itself; the rest is the recorded engine's saved defaults."""
 
 
@@ -1222,6 +1238,13 @@ def _records(function, *args, **kwargs):
 def _known_engine(engine_id):
     """404 for an engine that is not in the records (before any work starts)."""
     _records(records.get_engine, engine_id)
+
+
+def _evaluable_engine(engine_id):
+    """404 for an engine the judge cannot play: neither recorded nor a finished run kept without the
+    records (GET /v1/exports/engines lists those)."""
+    if export._kept_engine(engine_id) is None:
+        _known_engine(engine_id)
 
 
 @api.get("/v1/records", tags=["Records"])
@@ -1335,7 +1358,7 @@ def continue_recorded_engine(engine_id: str, body: EngineContinueRequest, origin
     _known_engine(engine_id)
     try:
         return _game_response(sessions.continue_engine(engine_id, body.generations, origin=origin, user_id=user_id,
-                                                       **_player(body)))
+                                                       start_game=body.start_game, **_player(body)))
     except HTTPException:
         raise
     except Exception as exc:
@@ -1350,7 +1373,8 @@ def retrain_recorded_engine(engine_id: str, body: EngineRetrainRequest, origin: 
     try:
         return _game_response(sessions.retrain_engine(
             engine_id, body.candidate_count, body.generations, body.simulation_steps, body.episodes,
-            body.deterministic, origin=origin, user_id=user_id, seed=body.seed, **_player(body)))
+            body.deterministic, origin=origin, user_id=user_id, seed=body.seed, start_game=body.start_game,
+            **_player(body)))
     except HTTPException:
         raise
     except Exception as exc:
@@ -1838,7 +1862,7 @@ def submit_simulation(body: SimulationRequest, origin: str = Depends(_origin), u
             profile=body.profile, episodes=body.episodes, warm_start=body.warm_start, seed=body.seed,
             stats_choice="defined" if body.stats is not None else body.stats_mode,
             stats_points=yaml.safe_dump(body.stats) if body.stats is not None else None,
-            progress=progress, origin=origin, mission=body.mission, user_id=user_id,
+            progress=progress, origin=origin, mission=body.mission, user_id=user_id, start_game=body.start_game,
         )
         return _game_response(game).model_dump()
     run = sessions.resolve_training(_overrides(body))["effective"]
@@ -1853,7 +1877,8 @@ def submit_continue(engine_id: str, body: EngineContinueRequest, origin: str = D
     _known_engine(engine_id)
     def work(progress):
         return _game_response(sessions.continue_engine(engine_id, body.generations, origin=origin, progress=progress,
-                                                       user_id=user_id, **_player(body))).model_dump()
+                                                       user_id=user_id, start_game=body.start_game,
+                                                       **_player(body))).model_dump()
     return sessions.submit_job("continue", work, f"{body.generations} more generation(s) of engine {engine_id}")
 
 
@@ -1866,7 +1891,7 @@ def submit_retrain(engine_id: str, body: EngineRetrainRequest, origin: str = Dep
         return _game_response(sessions.retrain_engine(
             engine_id, body.candidate_count, body.generations, body.simulation_steps, body.episodes,
             body.deterministic, origin=origin, progress=progress, user_id=user_id, seed=body.seed,
-            **_player(body))).model_dump()
+            start_game=body.start_game, **_player(body))).model_dump()
     return sessions.submit_job("retrain", work, f"{body.generations or 'the default'} generation(s) from engine "
                                                 f"{engine_id}")
 
@@ -1947,7 +1972,7 @@ def submit_judge_benchmark(body: JudgeBenchmarkRequest):
     if body.pairwise and not body.variants:
         raise HTTPException(status_code=400, detail="A pairwise benchmark needs the settings of version B (`variants`).")
     if body.engine_id:
-        _known_engine(body.engine_id)
+        _evaluable_engine(body.engine_id)
 
     def work(progress):
         return evaluation.benchmark(body.stories, body.seed, body.engine_id, body.variants or None, body.pairwise,
@@ -1963,7 +1988,7 @@ def submit_calibration(body: CalibrationRequest):
     terms, spearman, cv_spearman (how well it predicts stories it was not fitted on), alpha, n,
     yaml, applied}); `apply` saves them as fitness.term_weights."""
     if body.engine_id:
-        _known_engine(body.engine_id)
+        _evaluable_engine(body.engine_id)
 
     def work(progress):
         return evaluation.calibrate(body.stories, body.seed, body.engine_id, body.alpha, body.apply, body.workers,

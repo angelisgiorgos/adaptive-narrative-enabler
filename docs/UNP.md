@@ -527,8 +527,9 @@ drives a real ANE AI through the C# client (`Tests~/Protocol`).
 ## Trying it in the studio
 
 The studio and the REST API offer the same session operations on their own games, so an
-integration can be tried before an export: *▶ Play* (*Save game*, *Continue a save game*, and *This session as a UNP sees it*: the
-parameters, set the player, what happened), and
+integration can be tried before an export: *▶ Play* (*Save game*, *Continue a save game*), *⚙ Advanced →
+🔌 Integration* (the game in ▶ Play as a UNP sees it: the parameters, set the player, what happened;
+a session report sent again; the runtimes and the world catalogue), and
 `GET /v1/sessions/{id}/state`, `PATCH /v1/sessions/{id}/player`, `POST /v1/sessions/{id}/sync`,
 `GET /v1/sessions/{id}/savegame`, `POST /v1/sessions/load` and `GET /v1/world/catalogue`
 ([API.md](API.md)). Save games go both ways between the studio and the ANE AI.

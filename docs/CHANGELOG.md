@@ -7,6 +7,32 @@ that introduces them.
 
 ## [Unreleased]
 
+### Train: a run, its progress, its completed engine; the game in ▶ Play
+
+#### Changed
+- *🧠 Train → Run* is organised as the work goes: *1 · Configure the run*, *2 · Progress and the
+  completed engine* (the progress bar follows the generations on the result card, which then names
+  the engine made, its run, best fitness and generations, and whether the run executed what its
+  summary showed), *3 · Learning results* (curve, learned traits, report, files, learning memory).
+  A continued or retrained engine opens *Run* with its result.
+- A training from the studio no longer starts a game. It used to start one after every run,
+  continuation and retraining, which nobody played: a play session (taking a slot of
+  `max_web_sessions`), a start and a mission written to the player's profile (so later games
+  avoided that start), and an empty play story in the records.
+- The integration diagnostics moved to *⚙ Advanced → 🔌 Integration*: the game in ▶ Play as a UNP
+  sees it (set the player, tell it what happened, its parameters), sending a session report to the
+  UNP again, the runtimes available and the world catalogue (formerly in ▶ Play and 📦 Export).
+
+#### Added
+- After a training, **▶ Play this result**, **⚖ Evaluate this result** and **📦 Export this
+  result** open those destinations with the exact completed engine chosen (its id, never the newest
+  in its place); nothing is played, judged or exported until the user starts it.
+- The API: `start_game` (default `true`, as before) on `POST /v1/simulations`, `/v1/jobs/simulations`
+  and the records' `continue` and `retrain` (and their jobs); with `false` the training only trains,
+  and the response has `game_started: false` and `session_id: null`.
+- ⚖ Evaluate's storytellers include the finished runs, and the judge jobs accept a finished run kept
+  without the records (`engine_id`), which used to be refused with `404`.
+
 ### Training settings: saved engine defaults, and a run's own overrides
 
 #### Changed

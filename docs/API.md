@@ -137,7 +137,16 @@ paths (where the records, saves and models are): only a file's name, when it mat
    `allowed` (exactly when the run would start) and `over_by`.
 4. **Reproducible.** `deterministic: true` uses the seed of the settings; the
    same configuration and seed give the same evolution.
-5. **Waiting.** `POST /v1/simulations` and the records' `play`, `continue` and
+5. **A game after training, or not.** `POST /v1/simulations`, its job, and the records' `continue`
+   and `retrain` (and their jobs) start a game with the best storyteller, as before, unless the
+   request sets `start_game: false`: then the training only trains. No session is created and
+   nothing is written to the player's profile (no start, no mission, no play story); the response
+   has `game_started: false`, `session_id: null` and empty play fields, with the run, its engine
+   (`engine_id`), its files, `learning` and `training` as usual. The studio's 🧠 Train asks this way;
+   the engine is then played with `POST /v1/engines/{engine_id}/play`, judged with `engine_id` in
+   the judge jobs (a finished run kept without the records too) and exported with
+   `POST /v1/exports {"source": "engine", "engine_id": …}`.
+6. **Waiting.** `POST /v1/simulations` and the records' `play`, `continue` and
    `retrain` answer when the work is done, which can take minutes, so give
    the client a long timeout. The job endpoints answer at once (`202`) and
    report progress per generation. Jobs run one at a time in the order they

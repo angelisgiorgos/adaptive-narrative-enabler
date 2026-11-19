@@ -82,7 +82,8 @@ def _with_variants(config_data, variants):
 
 
 def _source(engine_id):
-    """(configuration, tag vectors, storyteller traits) of the current settings or a recorded engine."""
+    """(configuration, tag vectors, storyteller traits) of the current settings, a recorded engine,
+    or a finished run kept without the records."""
     from core_engine.model import world_tags
     from utils.tag_similarity import export_tag_vectors
 
@@ -91,8 +92,14 @@ def _source(engine_id):
 
         try:
             model = records.load_engine(engine_id)
-        except Exception as exc:  # noqa: BLE001 - an unknown engine
-            raise EvaluationError(f"Unknown engine `{engine_id}`.") from exc
+        except Exception as exc:  # noqa: BLE001 - not recorded: a finished run kept without the records?
+            from backend.export import _kept_engine
+            from core_engine.model import EngineModel
+
+            kept = _kept_engine(engine_id)
+            if kept is None:
+                raise EvaluationError(f"Unknown engine `{engine_id}`.") from exc
+            model = EngineModel.load(kept["model_path"])
         return copy.deepcopy(model.config), dict(model.tag_vectors or {}), dict(model.genome_traits)
     active = config.as_dict()
     return active, export_tag_vectors(world_tags(active)), None
