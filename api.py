@@ -995,12 +995,38 @@ def _session_call(session_id, work):
         _fail(exc)
 
 
-@api.get("/v1/simulations/work", tags=["Evolution and play"])
+class WorkOverride(BaseModel):
+    setting: str = Field(description="The setting that decides a story's length instead of the steps: "
+                                     "evolution.full_length_stories or narrative_end.max_actions.")
+    reason: str
+
+
+class SimulationWork(BaseModel):
+    work: int = Field(description="Simulated turns at most: storytellers x generations x stories per storyteller x "
+                                  "effective_max_turns (many stories end sooner).")
+    limit: int = Field(description="The app parameter max_simulation_work.")
+    allowed: bool = Field(description="work <= limit: a run asking for more is refused (400).")
+    over_by: int = Field(description="How far work is above the limit (0 when allowed).")
+    requested_steps: int = Field(description="The steps per story asked for (simulation_steps).")
+    effective_max_turns: int = Field(description="The most turns a story can take in this run.")
+    story_turns: int = Field(description="The same as effective_max_turns (kept for older clients).")
+    full_length_stories: bool = Field(description="evolution.full_length_stories: every story is played to its end.")
+    story_length: int = Field(description="Turns after which a story ends by itself (narrative_end.max_actions, at "
+                                          "least 100).")
+    steps_decide: bool = Field(description="Whether the requested steps set effective_max_turns.")
+    override: WorkOverride | None = Field(default=None, description="Why the steps do not set it, when they do not.")
+    factors: dict[str, int] = Field(description="The multiplication: storytellers, generations, "
+                                                "stories_per_storyteller, turns_per_story.")
+
+
+@api.get("/v1/simulations/work", response_model=SimulationWork, tags=["Evolution and play"])
 def simulation_work(candidate_count: int = 8, generations: int = 5, simulation_steps: int = 16, episodes: int = 3):
-    """What a run would ask for before it starts: ``work`` (simulated turns at most:
-    storytellers x generations x stories per storyteller x turns per story, whole stories counted
-    at ``narrative_end.max_actions``), the ``limit`` (app parameter ``max_simulation_work``),
-    ``allowed`` and ``story_turns``."""
+    """What a run would ask for before it starts, as the run itself counts it: the steps asked for
+    against the turns a story can really take (with full-length stories every story is played to its
+    end whatever the steps; otherwise the steps, though no story outlasts its end) and why they
+    differ, and the ``work`` (storytellers x generations x stories per storyteller x turns per story)
+    against the ``limit`` (app parameter ``max_simulation_work``). A run is refused exactly when
+    ``allowed`` is false."""
     if min(candidate_count, generations, simulation_steps, episodes) < 1:
         raise HTTPException(status_code=422, detail="Every value must be at least 1.")
     return sessions.training_work(candidate_count, generations, episodes, simulation_steps)

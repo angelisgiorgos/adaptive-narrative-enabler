@@ -7,6 +7,26 @@ that introduces them.
 
 ## [Unreleased]
 
+### Training: requested versus effective story length
+
+#### Changed
+- *🧠 Train* explains how long a story is before a run starts: **Full-length stories enabled: up to
+  N turns** (the configured `narrative_end.max_actions`) or **Bounded stories: up to N turns**; when
+  the steps asked for do not set it, why (full-length stories, or steps beyond the story's end),
+  and the **Steps per simulation** slider is marked (*not used: full-length stories* or *capped at
+  N*, outlined). The work is shown as its multiplication: storytellers × generations × stories each
+  × turns = work, of the limit.
+- `GET /v1/simulations/work` returns `requested_steps`, `effective_max_turns`, `full_length_stories`,
+  `story_length`, `steps_decide`, `override` (`{setting, reason}`), `factors` and `over_by`
+  (`story_turns` stays). The studio only shows it; a run is refused on the same numbers, and the
+  refusal says why a story counts as many turns as it does.
+
+#### Fixed
+- Steps beyond a story's end were counted in the work though never played (e.g. 400 steps for
+  100-turn stories counted 400 turns a story), so runs within the limit could be refused. The
+  story's length now has one definition (`core_engine.game_state.story_length`), used by the game,
+  training and the work count.
+
 ### The studio's navigation: destinations, a workflow banner, a menu on narrow screens
 
 #### Changed

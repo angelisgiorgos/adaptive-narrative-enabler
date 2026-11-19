@@ -47,7 +47,7 @@ from typing import Optional
 from utils.config_loader import config
 
 from . import players
-from .game_state import GameState
+from .game_state import GameState, story_length
 from .genome import TRAIT_BOUNDS, Genome, trait_bounds
 
 LOGGER = logging.getLogger(__name__)
@@ -126,6 +126,17 @@ def evolution_settings(overrides=None):
 
 
 # ---- evaluation -------------------------------------------------------------------
+
+def story_turns(steps, full_length):
+    """The most turns a training story can take, and whether the ``steps`` asked for decide it:
+    (turns, steps_decide). With full-length stories every story is played to its end
+    (story_length()), whatever the steps; otherwise ``steps``, though no story outlasts its end."""
+    end = story_length()
+    steps = max(1, int(steps))
+    if full_length:
+        return end, False
+    return min(steps, end), steps <= end
+
 
 def play_episode(build_world, genome, seed, max_steps, situation=None, player=None):
     """One story told by ``genome`` with the story seed ``seed``; ``situation`` (start, mission)
@@ -368,10 +379,11 @@ class NarrativeEvolution:
         self._judge_unreadable = False   # an unreadable judgement was already logged
 
     def _max_steps(self):
-        """Steps per evaluated story: the whole story with full_length_stories."""
+        """Steps per evaluated story: the whole story with full_length_stories (story_turns says
+        how many a story can then take)."""
         steps = max(1, int(self.settings["max_steps"]))
         if self.settings["full_length_stories"]:
-            steps = max(steps, max(100, int(config.get("narrative_end.max_actions", 100))))
+            steps = max(steps, story_length())
         return steps
 
     def _situations(self):

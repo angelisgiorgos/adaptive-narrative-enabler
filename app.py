@@ -236,6 +236,10 @@ CSS = """
 button[role="tab"] {font-size: .88rem !important; padding: .3rem .75rem !important; min-height: 0 !important}
 .tab-wrapper .overflow-menu > button::after {content: "More"; margin-left: .3rem; font-size: .85rem}
 .lead p {font-size: .9rem; opacity: .85; margin: .1rem 0}
+/* Train: the steps slider when it does not set a story's length (full-length or capped stories). */
+.steps-unused {border: 1px dashed #8b5cf6 !important; border-radius: 10px; background: var(--background-fill-secondary)}
+.steps-unused input[type="range"] {opacity: .55}
+.run-work p {font-size: .9rem; margin: .15rem 0}
 .status {border-left: 4px solid #8b5cf6; padding-left: 1rem}
 .play-hud {padding: .3rem .8rem; border-radius: 10px; border: 1px solid var(--border-color-primary);
            background: var(--background-fill-secondary)}
@@ -806,20 +810,52 @@ def run_simulation_ui(candidate_count, generations, simulation_steps, determinis
     return (*outputs[:5], learning_memory_text(), *outputs[5:])
 
 
+STEPS_LABEL = "Steps per simulation"
+
+
+def _steps_look(asked):
+    """The steps slider as the API's answer has it: marked when the steps do not set a story's length."""
+    if asked is None or asked["steps_decide"]:
+        return {"label": STEPS_LABEL, "info": "The most turns each story is played.", "elem_classes": ["steps"]}
+    if asked["full_length_stories"]:
+        return {"label": f"{STEPS_LABEL} · not used: full-length stories",
+                "info": f"Every story is played to its end: up to {asked['effective_max_turns']} turns.",
+                "elem_classes": ["steps", "steps-unused"]}
+    return {"label": f"{STEPS_LABEL} · capped at {asked['effective_max_turns']}",
+            "info": f"Stories end by themselves after {asked['story_length']} turns; steps above it are not played.",
+            "elem_classes": ["steps", "steps-unused"]}
+
+
 def run_work_ui(candidate_count, generations, simulation_steps, episodes):
-    """How much simulation a run asks for, against the limit, before it starts."""
+    """How long a story can be and how much simulation a run asks for, before it starts, as the API
+    counts it (GET /v1/simulations/work: the API decides, the studio only shows its answer): the
+    steps asked for against the turns a story can really take and why they differ, and the
+    multiplication against the limit. Returns (the explanation, the steps slider's look)."""
     try:
         asked = API.get("/v1/simulations/work", candidate_count=int(candidate_count or 1),
                         generations=int(generations or 1), simulation_steps=int(simulation_steps or 1),
                         episodes=int(episodes or 1))
     except (APIError, TypeError, ValueError):
-        return ""
-    line = (f"This run: up to **{asked['work']:,}** simulated turns ({asked['story_turns']} per story) of the "
-            f"**{asked['limit']:,}** allowed.")
+        return "", gr.update(**_steps_look(None))
+    turns, steps = asked["effective_max_turns"], asked["requested_steps"]
+    if asked["full_length_stories"]:
+        length = f"**Full-length stories enabled: up to {turns} turns** per story."
+    elif asked["steps_decide"]:
+        length = (f"**Bounded stories: up to {turns} turns** per story, the {steps} steps asked for (a story ends by "
+                  f"itself after {asked['story_length']}).")
+    else:
+        length = f"**Bounded stories: up to {turns} turns** per story."
+    lines = [f"📏 {length}"]
+    if asked["override"]:
+        lines.append(f"ℹ️ *{STEPS_LABEL} ({steps}) does not set it.* {asked['override']['reason']}")
+    f = asked["factors"]
+    lines.append(f"🧮 **Work:** {f['storytellers']:,} storytellers × {f['generations']:,} generations × "
+                 f"{f['stories_per_storyteller']:,} stories each × {f['turns_per_story']:,} turns = "
+                 f"**{asked['work']:,}** simulated turns at most, of the **{asked['limit']:,}** allowed.")
     if not asked["allowed"]:
-        line = ("⚠ " + line + " It will be refused: use fewer storytellers, generations or stories, or raise "
-                "`max_simulation_work` in *⚙ Advanced → App & jobs*.")
-    return line
+        lines.append(f"⚠ **It will be refused:** {asked['over_by']:,} turns over the limit. Use fewer storytellers, "
+                     "generations or stories, or raise `max_simulation_work` in *⚙ Advanced → App & jobs*.")
+    return "  \n".join(lines), gr.update(**_steps_look(asked))
 
 
 # ---- the session as a UNP sees it (as the exported ANE AI does): save games, player, events ---------
@@ -3064,25 +3100,28 @@ def build_app():
                         gr.Markdown("Evolve AI storytellers on this world: a tournament of storytellers, each "
                                     "scored on the stories it tells. The best becomes a **trained AI**: play it in "
                                     "**▶ Play**, export it in **📦 Export**.")
+                        first_work, first_steps = run_work_ui(limits["default_candidates"],
+                                                              limits["default_generations"],
+                                                              limits["default_simulation_steps"],
+                                                              min(10, int(defaults["episodes_per_genome"])))
+                        steps_look = {key: value for key, value in first_steps.items() if not key.startswith("__")}
                         with gr.Row():
                             candidates = gr.Slider(1, limits["candidate_limit"], value=limits["default_candidates"],
                                                    step=1, label="Candidate genomes")
                             generations = gr.Slider(1, limits["generation_limit"], value=limits["default_generations"],
                                                     step=1, label="Evolution generations")
                             sim_steps = gr.Slider(1, limits["simulation_step_limit"],
-                                                  value=limits["default_simulation_steps"], step=1,
-                                                  label="Steps per simulation")
+                                                  value=limits["default_simulation_steps"], step=1, **steps_look)
                             episodes = gr.Slider(
                                 1, 10, value=min(10, int(defaults["episodes_per_genome"])), step=1,
                                 label="Stories per storyteller",
                                 info="More stories per genome: fairer scores, slower learning.",
                             )
-                        run_work = gr.Markdown(run_work_ui(limits["default_candidates"], limits["default_generations"],
-                                                           limits["default_simulation_steps"],
-                                                           min(10, int(defaults["episodes_per_genome"]))))
-                        for slider in (candidates, generations, sim_steps, episodes):
-                            slider.change(run_work_ui, [candidates, generations, sim_steps, episodes], run_work,
-                                          show_progress="hidden")
+                        # Story length and work, as the API counts them (a run is refused on the same numbers).
+                        run_work = gr.Markdown(first_work, elem_classes="run-work")
+                        work_inputs = [candidates, generations, sim_steps, episodes]
+                        for slider in work_inputs:  # what the user sets (the slider's own look is an output)
+                            slider.input(run_work_ui, work_inputs, [run_work, sim_steps], show_progress="hidden")
                         with gr.Row():
                             warm_start = gr.Checkbox(
                                 value=bool(defaults["warm_start"]), label="Continue learning from earlier runs",
@@ -3609,14 +3648,19 @@ def build_app():
         # Navigation: the banner, the menu, the address (?section=<id>) and the links inside a destination all
         # select the destination's tab; nothing is re-rendered, so every form, game and run keeps its state.
         nav_outputs = [main_tabs, *nav_buttons, nav_menu]
-        for key, button in zip(DESTINATION_IDS, nav_buttons):
-            button.click(lambda key=key: navigate(key), None, nav_outputs, show_progress="hidden")
-        nav_menu.input(navigate, nav_menu, nav_outputs, show_progress="hidden")
+        nav_events = {key: button.click(lambda key=key: navigate(key), None, nav_outputs, show_progress="hidden")
+                      for key, button in zip(DESTINATION_IDS, nav_buttons)}
+        train_button_event = nav_events["train"]
+        menu_event = nav_menu.input(navigate, nav_menu, nav_outputs, show_progress="hidden")
         destination_tabs = {"world": world_tab, "train": train_tab, "play": play_tab, "evaluate": evaluate_tab,
                             "export": export_tab, "advanced": advanced_tab}
         for key, tab in destination_tabs.items():  # a tab chosen another way: the banner and the menu follow
             tab.select(lambda key=key: mark_destination(key), None, [*nav_buttons, nav_menu], show_progress="hidden")
         play_it.click(lambda: navigate("play"), None, nav_outputs, show_progress="hidden")
+        # Train's story length and work follow the settings (e.g. full-length stories changed in ⚙ Advanced).
+        demo.load(run_work_ui, work_inputs, [run_work, sim_steps], show_progress="hidden")
+        for event in (train_button_event, menu_event):
+            event.then(run_work_ui, work_inputs, [run_work, sim_steps], show_progress="hidden")
         export_it.click(lambda: navigate("export"), None, nav_outputs, show_progress="hidden")
         demo.load(open_requested, None, nav_outputs, show_progress="hidden")
 

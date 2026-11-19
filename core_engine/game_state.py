@@ -44,6 +44,16 @@ def _condition_reads(value):
 # GAME STATE
 # ============================
 
+# A story never lasts fewer turns than this: narrative_end.max_actions below it is raised to it.
+MIN_STORY_LENGTH = 100
+
+
+def story_length():
+    """How many turns a story lasts before it ends by itself (narrative_end.max_actions, at least
+    MIN_STORY_LENGTH); fast-travel turns come on top (travel.max_free_turns)."""
+    return max(MIN_STORY_LENGTH, int(config.get("narrative_end.max_actions", MIN_STORY_LENGTH)))
+
+
 class GameState(StoryBeats, SessionScope):
     def __init__(self, world, genome, start=None, verbose=False, interactive=False, rng=None, mission=None,
                  variables=None, store=None, profile=None, stats=None, stats_mode=None, recent_starts=None):
@@ -1566,7 +1576,7 @@ class GameState(StoryBeats, SessionScope):
     def _max_actions(self):
         """The action limit, plus the turns spent in fast travel (travel.max_free_turns at most)."""
         free = min(int(self.__dict__.get("free_turns", 0)), int((config.get("travel") or {}).get("max_free_turns", 10)))
-        return max(100, int(config.get("narrative_end.max_actions", 100))) + free
+        return story_length() + free
 
     def escalation(self):
         """0 until director.escalation_start (share of the action limit), then rising to 1

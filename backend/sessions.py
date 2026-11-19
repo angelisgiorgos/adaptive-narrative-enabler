@@ -20,9 +20,10 @@ from pathlib import Path
 import yaml
 import main as engine
 from core_engine import GameState, Genome, Mission
+from core_engine.game_state import story_length
 from core_engine import variables as persistent
 from core_engine.variables import VariableStore
-from core_engine.evolution import LearningMemory, NarrativeEvolution, evolution_settings
+from core_engine.evolution import LearningMemory, NarrativeEvolution, evolution_settings, story_turns
 from core_engine.model import EngineModel
 from utils.config_loader import config
 
@@ -677,26 +678,48 @@ def _finish_training(evolution, result, run_id, origin, profile, points, mode, c
 
 
 def training_work(candidates, generations, episodes, steps):
-    """What a run asks for: {work, limit, allowed, story_turns}. ``work`` is the simulated turns at
-    most (storytellers x generations x stories per storyteller x turns per story); with whole
-    stories (evolution.full_length_stories) a story counts at narrative_end.max_actions, though
-    many end sooner. ``limit`` is the app parameter max_simulation_work."""
-    story_turns = int(steps)
-    if evolution_settings().get("full_length_stories"):
-        story_turns = max(story_turns, max(100, int(config.get("narrative_end.max_actions", 100))))
-    work = int(candidates) * int(generations) * int(episodes) * story_turns
+    """What a run asks for, before it starts: the steps asked for and the turns a story can really
+    take (core_engine.evolution.story_turns: with full-length stories every story is played to its
+    end, narrative_end.max_actions, whatever the steps; otherwise the steps, though no story outlasts
+    its end), why they differ, and the work: storytellers x generations x stories per storyteller x
+    turns per story, at most (many stories end sooner), against the app parameter
+    max_simulation_work."""
+    candidates, generations, episodes, steps = (int(candidates), int(generations), int(episodes), int(steps))
+    full_length = bool(evolution_settings().get("full_length_stories"))
+    turns, steps_decide = story_turns(steps, full_length)
+    length = story_length()
+    configured = config.get("narrative_end.max_actions", length)
+    override = None
+    if full_length:
+        override = {"setting": "evolution.full_length_stories",
+                    "reason": f"Full-length stories are on (evolution.full_length_stories): every story is played to "
+                              f"its end, {turns} turns (narrative_end.max_actions), so the {steps} steps asked for "
+                              "do not set how long a story is."}
+    elif not steps_decide:
+        override = {"setting": "narrative_end.max_actions",
+                    "reason": f"A story ends by itself after {length} turns (narrative_end.max_actions), so no story "
+                              f"takes the {steps} steps asked for: {turns} at most."}
+    if override and configured != length:
+        override["reason"] += f" (narrative_end.max_actions is {configured}; a story lasts at least {length} turns.)"
+    work = candidates * generations * episodes * turns
     return {"work": work, "limit": MAX_SIMULATION_WORK, "allowed": work <= MAX_SIMULATION_WORK,
-            "story_turns": story_turns}
+            "over_by": max(0, work - MAX_SIMULATION_WORK),
+            "requested_steps": steps, "effective_max_turns": turns, "story_turns": turns,
+            "full_length_stories": full_length, "story_length": length, "steps_decide": steps_decide,
+            "override": override,
+            "factors": {"storytellers": candidates, "generations": generations,
+                        "stories_per_storyteller": episodes, "turns_per_story": turns}}
 
 
 def _training_guard(pop_size, generations, episodes, steps):
     asked = training_work(pop_size, generations, episodes, steps)
     if not asked["allowed"]:
+        why = f" {asked['override']['reason']}" if asked["override"] else ""
         raise AuthoringError(
             f"This run requests up to {asked['work']:,} simulated turns ({pop_size} storytellers x {generations} "
-            f"generations x {episodes} stories x {asked['story_turns']} turns), above the limit of "
-            f"{asked['limit']:,}. Use fewer storytellers, generations or stories per storyteller, or raise "
-            "`max_simulation_work` (⚙ Advanced → App & jobs → App parameters).")
+            f"generations x {episodes} stories x {asked['effective_max_turns']} turns), {asked['over_by']:,} above "
+            f"the limit of {asked['limit']:,}.{why} Use fewer storytellers, generations or stories per "
+            "storyteller, or raise `max_simulation_work` (⚙ Advanced → App & jobs → App parameters).")
 
 
 def continue_engine(engine_id, generations=1, profile=None, stats_choice=None, stats_points=None, origin="studio",

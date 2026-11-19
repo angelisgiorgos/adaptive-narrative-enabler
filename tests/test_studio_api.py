@@ -810,22 +810,120 @@ class ConfigFolderTests(_Sandbox):
         self.assertNotEqual(path.read_bytes(), before)
 
     def test_the_work_a_run_asks_for_is_shown_before_it_starts(self):
-        import app
-
-        small = self.client.get("/v1/simulations/work", params={"candidate_count": 2, "generations": 1,
-                                                                "simulation_steps": 3, "episodes": 1}).json()
-        self.assertTrue(small["allowed"])
-        self.assertEqual(small["work"], 2 * 1 * 1 * small["story_turns"])
-        big = self.client.get("/v1/simulations/work", params={"candidate_count": 400, "generations": 1000,
-                                                              "simulation_steps": 400, "episodes": 10}).json()
-        self.assertFalse(big["allowed"])
-        self.assertIn("⚠", app.run_work_ui(400, 1000, 400, 10))
-        self.assertNotIn("⚠", app.run_work_ui(2, 1, 3, 1))
         refused = self.client.post("/v1/simulations", json={"candidate_count": 400, "generations": 1000,
                                                             "simulation_steps": 400, "episodes": 10})
         self.assertEqual(refused.status_code, 400)
         self.assertIn("max_simulation_work", refused.json()["detail"])
         self.assertEqual(self.client.get("/v1/simulations/work", params={"episodes": 0}).status_code, 422)
+
+
+class TrainingWorkTests(_Sandbox):
+    """How long a training story is and how much a run asks for, as the API counts it (the studio
+    only shows it, and a run is refused on the same numbers): the steps asked for against the turns
+    a story really takes, why they differ, and the multiplication against the work limit."""
+
+    def _settings(self, full_length, max_actions):
+        world = store.config.as_dict()
+        world["evolution"]["full_length_stories"] = full_length
+        world["narrative_end"]["max_actions"] = max_actions
+        store.config.use_override(world)
+        # The sandbox makes reload() do nothing: put the real configuration back afterwards.
+        self.addCleanup(lambda: (setattr(store.config, "_override", None), type(store.config).reload(store.config)))
+
+    def _work(self, candidates, generations, steps, episodes):
+        response = self.client.get("/v1/simulations/work", params={
+            "candidate_count": candidates, "generations": generations, "simulation_steps": steps, "episodes": episodes})
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def _steps_the_run_plays(self, steps):
+        """The steps the evolution itself gives a story (what training does, not what the API says)."""
+        from core_engine.evolution import NarrativeEvolution
+
+        return NarrativeEvolution(None, None, settings={"max_steps": steps})._max_steps()
+
+    def test_full_length_stories_use_the_configured_length_whatever_the_steps(self):
+        import app
+
+        self._settings(True, 120)
+        for steps in (16, 400):
+            with self.subTest(steps=steps):
+                asked = self._work(2, 3, steps, 4)
+                self.assertEqual((asked["requested_steps"], asked["effective_max_turns"], asked["story_length"]),
+                                 (steps, 120, 120))
+                self.assertTrue(asked["full_length_stories"])
+                self.assertFalse(asked["steps_decide"])
+                self.assertEqual(asked["override"]["setting"], "evolution.full_length_stories")
+                self.assertIn(f"the {steps} steps asked for", asked["override"]["reason"])
+                self.assertEqual(asked["factors"], {"storytellers": 2, "generations": 3, "stories_per_storyteller": 4,
+                                                    "turns_per_story": 120})
+                self.assertEqual(asked["work"], 2 * 3 * 4 * 120)
+                self.assertEqual(asked["story_turns"], 120)                    # older clients
+                self.assertGreaterEqual(self._steps_the_run_plays(steps), 120)  # training plays every story to its end
+        text, steps_look = app.run_work_ui(2, 3, 16, 4)
+        self.assertIn("Full-length stories enabled: up to 120 turns", text)  # the configured value
+        self.assertIn("Steps per simulation (16) does not set it.", text)
+        self.assertIn("2 storytellers × 3 generations × 4 stories each × 120 turns = **2,880**", text)
+        self.assertNotIn("⚠", text)
+        self.assertIn("not used: full-length stories", steps_look["label"])
+        self.assertIn("steps-unused", steps_look["elem_classes"])
+
+    def test_bounded_stories_follow_the_steps_up_to_the_story_s_end(self):
+        import app
+
+        self._settings(False, 100)
+        asked = self._work(2, 3, 16, 4)
+        self.assertEqual((asked["effective_max_turns"], asked["steps_decide"], asked["override"]), (16, True, None))
+        self.assertFalse(asked["full_length_stories"])
+        self.assertEqual(asked["work"], 2 * 3 * 4 * 16)
+        self.assertEqual(self._steps_the_run_plays(16), 16)
+        text, steps_look = app.run_work_ui(2, 3, 16, 4)
+        self.assertIn("Bounded stories: up to 16 turns", text)
+        self.assertNotIn("Full-length", text)
+        self.assertNotIn("does not set it", text)
+        self.assertIn("× 16 turns = **384**", text)
+        self.assertEqual(steps_look["label"], "Steps per simulation")
+        self.assertNotIn("steps-unused", steps_look["elem_classes"])
+
+        # More steps than a story lasts: the story's end decides, and the work counts it, not the steps.
+        capped = self._work(2, 3, 400, 4)
+        self.assertEqual((capped["effective_max_turns"], capped["steps_decide"]), (100, False))
+        self.assertEqual(capped["override"]["setting"], "narrative_end.max_actions")
+        self.assertEqual(capped["work"], 2 * 3 * 4 * 100)
+        text, steps_look = app.run_work_ui(2, 3, 400, 4)
+        self.assertIn("Steps per simulation (400) does not set it.", text)
+        self.assertIn("capped at 100", steps_look["label"])
+
+        # A configured length below the minimum: the story lasts the minimum, and the reason says so.
+        self._settings(False, 80)
+        low = self._work(1, 1, 400, 1)
+        self.assertEqual((low["story_length"], low["effective_max_turns"]), (100, 100))
+        self.assertIn("narrative_end.max_actions is 80", low["override"]["reason"])
+
+    def test_the_work_limit_boundary(self):
+        import app
+
+        self._settings(True, 120)
+        at_limit = 2 * 1 * 1 * 120
+        with patch.object(sessions, "MAX_SIMULATION_WORK", at_limit):
+            asked = self._work(2, 1, 16, 1)
+            self.assertEqual((asked["work"], asked["limit"], asked["allowed"], asked["over_by"]),
+                             (at_limit, at_limit, True, 0))
+            sessions._training_guard(2, 1, 1, 16)  # exactly at the limit: the run may start
+            self.assertNotIn("⚠", app.run_work_ui(2, 1, 16, 1)[0])
+        with patch.object(sessions, "MAX_SIMULATION_WORK", at_limit - 1):
+            asked = self._work(2, 1, 16, 1)
+            self.assertEqual((asked["allowed"], asked["over_by"]), (False, 1))
+            text = app.run_work_ui(2, 1, 16, 1)[0]
+            self.assertIn("⚠ **It will be refused:** 1 turns over the limit", text)
+            # The run is refused on the same numbers, before anything is played.
+            refused = self.client.post("/v1/simulations", json={"candidate_count": 2, "generations": 1,
+                                                                "simulation_steps": 16, "episodes": 1})
+            self.assertEqual(refused.status_code, 400)
+            detail = refused.json()["detail"]
+            self.assertIn("2 storytellers x 1 generations x 1 stories x 120 turns", detail)
+            self.assertIn("1 above the limit of 239", detail)
+            self.assertIn("evolution.full_length_stories", detail)  # why a story counts 120 turns, not 16
 
 
 class StudioServiceTests(_Sandbox):

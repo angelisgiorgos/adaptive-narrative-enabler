@@ -102,13 +102,23 @@ paths (where the records, saves and models are): only a file's name, when it mat
    `candidate_limit`, `generation_limit`, and `simulation_step_limit`
    (by default the maximums). A request above a lowered limit runs at the
    limit; it is not refused.
-3. **Work.** Storytellers × generations × story length × stories per
-   storyteller must stay within `max_simulation_work` (1,000,000 simulated
-   turns by default, an app parameter). With `evolution.full_length_stories`, a story counts as
-   `narrative_end.max_actions` turns (at least 100), an upper bound since many end sooner. A
-   run above this is refused with `400` before anything runs, and
-   `GET /v1/simulations/work?candidate_count=&generations=&simulation_steps=&episodes=` says
-   beforehand what a run would ask for (`work`, `limit`, `allowed`, `story_turns`).
+3. **Story length and work.** A story lasts `narrative_end.max_actions` turns at most (at least
+   100; fast-travel turns, `travel.max_free_turns`, come on top). With
+   `evolution.full_length_stories` (on by default) every training story is played to that end and
+   the `simulation_steps` asked for do not change it; without it a story is played for
+   `simulation_steps` turns, though none outlasts its end. Storytellers × generations × stories per
+   storyteller × the turns a story can take must stay within `max_simulation_work` (1,000,000
+   simulated turns by default, an app parameter), an upper bound since many stories end sooner. A
+   run above it is refused with `400` before anything runs (the refusal shows the multiplication
+   and why a story counts as many turns as it does).
+   `GET /v1/simulations/work?candidate_count=&generations=&simulation_steps=&episodes=` answers
+   beforehand with the same numbers, so a client never computes them itself:
+   `requested_steps`, `effective_max_turns` (the most turns a story can take; `story_turns` is the
+   same, for older clients), `full_length_stories`, `story_length`, `steps_decide` (whether the
+   steps set `effective_max_turns`), `override` (`{setting, reason}` when they do not: the setting
+   that does, `evolution.full_length_stories` or `narrative_end.max_actions`, and why), `factors`
+   (`storytellers`, `generations`, `stories_per_storyteller`, `turns_per_story`), `work`, `limit`,
+   `allowed` (exactly when the run would start) and `over_by`.
 4. **Reproducible.** `deterministic: true` uses the seed of the settings; the
    same configuration and seed give the same evolution.
 5. **Waiting.** `POST /v1/simulations` and the records' `play`, `continue` and
