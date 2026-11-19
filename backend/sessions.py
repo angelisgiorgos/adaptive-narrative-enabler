@@ -46,7 +46,8 @@ ENGINES: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
 
 def play_state(state: GameState) -> dict:
     """Structured snapshot of a game, for clients that render their own UI."""
-    description, _, objects = state._describe_visible_scene()
+    # A game not started yet (no scene set: the first step sets it) has nothing in view.
+    description, _, objects = state._describe_visible_scene() if hasattr(state, "location_objects") else ("", [], [])
     return {
         "location": state.current.name,
         "scene_name": state.scene_name,
