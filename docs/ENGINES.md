@@ -8,8 +8,7 @@ Python version), engine model files, the records database and the run archives.
 After a generation or a complete training, you can export the whole engine
 as a ZIP that **runs offline** and **integrates in a game**:
 
-- **Studio:** **4 · Train the AI → Export the engine (offline, for a
-  game)**. Choose *This run's best*, *A generation of this run* (any
+- **Studio:** **🧠 Train & export → Export**. Choose *This run's best*, *A generation of this run* (any
   generation's champion), *Best remembered storyteller*, or *This game's
   storyteller*, and whether to include the learning memory.
 - **API:** `POST /v1/exports` with
@@ -189,7 +188,8 @@ stay where they are.
   `POST /v1/config/upload` accepts), `/v1/records/engines[/{id}]`,
   `/v1/records/engines/{id}/model`, and `/v1/records/stories[/{id}]` (with
   every turn; filter by run, engine, kind, origin, or session). In the studio:
-  **Train the AI → Records**. In the terminal:
+  **🧠 Train & export → Records** (which also imports the server's
+  import folder). In the terminal:
   `python main.py --list-engines`. In Python: `backend.records`.
 - **Docker.** `compose.yaml` mounts `${ANE_RECORDS_HOST_DIR:-/data/angelisg/ane}`
   at the same path. The container runs as uid 10001, so grant it write access

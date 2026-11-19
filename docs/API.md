@@ -174,7 +174,15 @@ paths (where the records, saves and models are): only a file's name, when it mat
   the world a finished run was trained on, with its storyteller (`latest`: the newest; the
   finished runs are `GET /v1/exports/engines`, kept also without the records); its world and
   tuning become the active ones, as when an engine is loaded; `409` before any run has
-  finished. `GET /v1/sessions/{id}/transcript` is the story so far.
+  finished. `GET /v1/sessions/{id}/transcript` is the story so far, and
+  `GET /v1/sessions/{id}/journal` the game turn by turn as a player follows it: each turn's choice
+  (`action`, `with` whom, `where`), its check (`stat`, `roll`, `needed`, `passed`), what came of it
+  (`told`, `succeeded`), what it changed (`health_change`, `coin_change`, `items_gained`,
+  `items_lost`, `moved_to`, `new_places`, `met`, `event`) and the quest (`quest_done`: the steps it
+  completed, `quest_now`, `quest_complete`). Every play state says the last one (`turn_summary`)
+  and who the player is talking with (`talking_to`), and where the player is, for a client's own
+  place card: `scene_name` (the place, or an event at it), `description` (as the player sees it
+  now) and `items_here` (`[{name, text}]`, the items to be seen).
 - A session as a UNP sees it, as the exported ANE AI does ([UNP.md](UNP.md)), so an
   integration can be tried here: `GET /v1/sessions/{id}/state` (its parameters,
   `ane.session_state/1`), `PATCH /v1/sessions/{id}/player` (set `stat_points`,
@@ -348,8 +356,22 @@ one); `tests/test_studio_coverage.py` checks it.
   whole save is. `GET|PUT /v1/entities/{kind}/{name}/details`: what the entry form does not
   show: an NPC's `known_locations`, `known_objects`, `article` (`the`, `a`, `an`, `none`: a
   proper name; empty: automatic) and `dialogue` (`[{text, enabled_if}]`); a place's
-  `distant_descriptions`, `entered_descriptions`, `interact_prompts` and `exit_locked` (an empty
-  value removes the field; unknown places or items are `400`).
+  `distant_descriptions`, `entered_descriptions`, `interact_prompts`, `exit_locked` and
+  `interaction_points` (points of interest: `[{id, label, prompt, linked_action, linked_outcome,
+  linked_location, linked_npc, linked_item, notes}]`, each with a label or a prompt) (an empty
+  value removes the field; unknown places, people or items are `400`).
+- `POST /v1/suggestions` `{kind, name, field}`: the language model's suggestions for a text field
+  of an entry (`descriptions`, `goals`, `tags`, `distant_descriptions`, `entered_descriptions`,
+  `interact_prompts`, `dialogue`), given the entry and the world's names: `{suggestions}`. Nothing
+  is saved. `503` (with why and how to start it) without the language model, `404` for an unknown
+  entry.
+- `GET /v1/world/size`: the world against the augmentation targets (`augmentation.min_*`):
+  `{have, want, enough}` for locations, items, NPCs and outcomes. `POST /v1/jobs/world-proposal`:
+  the language model proposes new places, people and items in the background (the job's result:
+  `{locations, objects, characters}`, only new ones); nothing is written. `POST
+  /v1/world/additions` `{locations, objects, characters}` adds them (e.g. the ones of a proposal
+  kept, edited or not): each must be new and pass the checks of a saved entry, and the whole world
+  is checked with them in place; otherwise `400` and nothing is written.
 - `GET|PUT|DELETE /v1/missions/{key}`: one mission (`PUT` adds or replaces it; `rename` gives it a
   new key), checked with every other one. `GET /v1/map`: `{routes: {place: [borders]} or null,
   places}`; `PUT /v1/map/{place}` `{borders}` sets a place's borders, both ways; `PUT /v1/map`
@@ -423,8 +445,11 @@ one); `tests/test_studio_coverage.py` checks it.
 **Records and saved engines**
 - Earlier files (engine models, exports, older bundles, story configurations)
   are brought into the records with `python main.py --import-artifacts
-  [FOLDER]` (see [ENGINES.md](ENGINES.md#records-database)); they then appear here with the
-  origin `import`, their rebuilt runs and a preview story.
+  [FOLDER]` (see [ENGINES.md](ENGINES.md#records-database)), or through the API from the server's
+  import folder (`ANE_ARTIFACT_DIR`, else `artifacts/`; a client cannot name another folder):
+  `GET /v1/records/import` (`{folder, files}`) and `POST /v1/jobs/records-import` `{move (else
+  copy), preview}`, a background job whose result is the import's report (`400` when the folder is
+  empty). They then appear here with the origin `import`, their rebuilt runs and a preview story.
 - `GET /v1/records`: the records folder and whether recording is on.
 - `GET /v1/records/runs` (`?user_id=`: one user's) and `GET /v1/records/runs/{id}`: runs with
   every setting, every generation, their engines, stories, and files, and whose run each is

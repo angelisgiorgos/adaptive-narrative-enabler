@@ -42,7 +42,7 @@ The ANE AI is made from a **complete engine**: the engine model a finished train
 the API (also a continued or retrained one). It can be downloaded once one exists, from the studio
 or the API:
 
-- **Studio:** *4 · Train the AI → Export the engine*: choose *Runs on* (a system or Unity),
+- **Studio:** *🧠 Train & export → Export*: choose *Runs on* (a system or Unity),
   then the complete engine (newest first). Until a training has finished or an engine is loaded,
   the export says so and stays off.
 - **API:** `GET /v1/exports/engines` lists the complete engines; `POST /v1/exports` with a
@@ -208,8 +208,10 @@ What the player sees now (`GET /games/<id>` and most answers about a game):
 choices, in order), `choices` (each with its skill-check hint), `health`, `max_health`, `coins`,
 `power`, `inventory`, `stats`, `last_check`, `mission`, `mission_description`, `mission_status`,
 `quest`, `people`, `people_met`, `ways_on`, `stakes`, `cast`, `unique_actions`, `map`, `event`,
-`variables`, `session_report`, `ended`, `won`, `end_reason`, `turn_number`; after a choice,
-`turn` (the story text of that turn).
+`variables`, `session_report`, `ended`, `won`, `end_reason`, `turn_number`, `talking_to` (the person
+the player is talking with), `turn_summary` (the last turn as a player follows it: the choice, its
+check, what came of it, what it changed, the quest steps it completed; see `GET
+/v1/sessions/{id}/journal` in [API.md](API.md)); after a choice, `turn` (the story text of that turn).
 
 ## ANE → UNP: parameters
 
@@ -525,8 +527,8 @@ drives a real ANE AI through the C# client (`Tests~/Protocol`).
 ## Trying it in the studio
 
 The studio and the REST API offer the same session operations on their own games, so an
-integration can be tried before an export: *4 · Train the AI → This session as a UNP sees it*
-(save and continue, the parameters, set the player, what happened), and
+integration can be tried before an export: *▶ Play* (*Save game*, *Continue a save game*, and *This session as a UNP sees it*: the
+parameters, set the player, what happened), and
 `GET /v1/sessions/{id}/state`, `PATCH /v1/sessions/{id}/player`, `POST /v1/sessions/{id}/sync`,
 `GET /v1/sessions/{id}/savegame`, `POST /v1/sessions/load` and `GET /v1/world/catalogue`
 ([API.md](API.md)). Save games go both ways between the studio and the ANE AI.

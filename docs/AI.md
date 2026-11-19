@@ -103,7 +103,7 @@ storytellers, so the tool keeps improving from run to run. In the studio,
 **Continue learning from earlier runs** switches this on or off, and **Forget
 what the AI learned** resets it. The API offers `GET|DELETE /v1/learning`.
 
-**What the AI learned is shown.** The studio's play tab draws the learning
+**What the AI learned is shown.** The studio's *🧠 Train & export → Train* draws the learning
 curve: the benchmark champion, the best, and the average per generation. It
 also lists the evolved storyteller's traits next to the population average
 and bounds, with a plain meaning and whether the trait is high, moderate, or
@@ -230,11 +230,11 @@ that its stories are better.
 Narrative quality is assessed apart from it:
 
 - **The judge** ([LLM.md](LLM.md)): Gemma 4 reads stories as a player would and rates engagement
-  and eight criteria; *6 · Evaluate with the judge* compares storytellers on the same seeds
+  and eight criteria; *⚖ Evaluate* compares storytellers on the same seeds
   (pairwise, both orders, with a confidence interval) and measures how well fitness agrees with the
   judge. Fitting the fitness to the judge (`calibrate-fitness`) only aligns the objective better;
   it does not make fitness a measure of quality.
-- **People playing**: the studio's play tab, the ANE AI in a game, and session reports
+- **People playing**: the studio's ▶ Play, the ANE AI in a game, and session reports
   (`core_engine/progression.py`) are where quality shows.
 - **Judge in the loop** (`evolution.judge_weight`): the judge's engagement can be added to the
   best storytellers' scores during training, at the cost of reproducibility.

@@ -7,6 +7,65 @@ that introduces them.
 
 ## [Unreleased]
 
+### The studio: five tabs, a game screen that fits a window
+
+#### Changed
+- Five tabs, with sub-tabs instead of long pages of folded panels: **🌍 World** (*Entries*: fields,
+  actions & outcomes, scheduling, more details, suggestions, every field as YAML; *Missions*, *Map*,
+  *Behaviour by tags*, *Grow the world*, *Checks*), **⚙ Settings** (simulation, story, weights,
+  engine logic, app & jobs; what were tabs 2, 3 and 5), **🧠 Train & export** (*Train*, *Records*,
+  *Export*), **▶ Play** and **⚖ Evaluate**. Smaller tab labels and header.
+- **Train & export only trains and exports**: its game area is gone. Training shows the report, the
+  learning curve, the traits and the run's files; *▶ Play the newest* opens ▶ Play. Playing a
+  recorded engine or an engine file, the player profile, the quest, the character (now also *my
+  own points*), the save game, the judge of a playthrough and the UNP session tools moved to ▶ Play.
+- ▶ Play fits a window: a compact **place card** (where, who is here, what can be seen), **What
+  happened** below it, smaller choice buttons, and **🧍 You** (power, inventory, stats, remembered
+  values, the alert, the last check) beside the quest card; the people and the map, the journey
+  and the story fold away. The *New game* panel folds once a game is on; a save game is continued
+  with one button.
+
+#### Added
+- Everything the terminal editor and the engine's tools do is in the API and the studio:
+  language-model **suggestions** for an entry's texts (`POST /v1/suggestions`); **growing the
+  world** with new places, people and items the language model proposes, reviewed and added only
+  when ticked and checked (`GET /v1/world/size`, `POST /v1/jobs/world-proposal`, `POST
+  /v1/world/additions`; the augmenter's proposal no longer writes anything by itself:
+  `WorldAugmenter.propose`); a place's **points of interest** (`interaction_points`) in its details;
+  **importing** earlier engines and games from the server's import folder (`GET
+  /v1/records/import`, `POST /v1/jobs/records-import`).
+- Play states carry `scene_name`, `description` and `items_here`.
+
+#### Fixed
+- Editor suggestions used `vllm.model_name` only; they now use the judge's model settings
+  (`ANE_JUDGE_MODEL` too).
+
+### ▶ Play reads as a game
+
+#### Changed
+- **What happened** comes first after each choice, at a glance: the turn and your choice (with
+  whom, where), the check (rolled, needed, passed or failed), what came of it, what it changed
+  (❤ health, 🪙 coins, 🎒 items gained or gone, 📍 where you went, and whether it is a new place,
+  👤 who you met, ⚡ an event) and the quest's progress (a step done and the next, or the quest
+  complete); then the rest of the turn's story, small. Approaching someone or leaving says just that.
+- The **quest card**: a progress bar (`▰▰▱ 2 of 3 steps`), each step done with the turn it was
+  done, the current one with what it is about, what to do now (an event by its title), and when the
+  quest was completed.
+- **Your journey** (new): every choice so far as a table (the turn, where, the choice and with
+  whom, the result and its check, the changes, the quest steps), the last 15.
+- **The story so far** reads as a story: each place a heading, each choice in bold after a rule,
+  events, discoveries, secrets and the quest marked; the engine's bookkeeping lines are left out.
+
+#### Added
+- `GameState.journal()`: the story turn by turn as a player follows it; `GET
+  /v1/sessions/{id}/journal`; every play state's `turn_summary` (the last turn), also in the ANE
+  AI's view. Play states now also carry `talking_to` (it was left out of the API's play state).
+
+#### Fixed
+- Training started from a script read from standard input (`python -`) failed, its evaluation
+  processes unable to start; a pool that breaks now plays the stories in the process (the same
+  scores).
+
 ### The world editor: forms instead of YAML
 
 #### Changed

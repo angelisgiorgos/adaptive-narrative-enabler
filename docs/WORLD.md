@@ -2,7 +2,7 @@
 
 The world is YAML under `config/`: places, NPCs, items, events, missions, stats, variables,
 messages and the tuning. This guide covers every authoring feature; the studio's
-*1 · Create the world* and *2 · Simulation settings* tabs edit the same files
+*🌍 World* and *⚙ Settings* tabs edit the same files
 ([STUDIO.md](STUDIO.md)).
 
 ## Configuration Files
@@ -504,7 +504,7 @@ unique:
   explicitly.
 
 **Where to set it:**
-- **Studio:** tab **1 · Create the world** → content type **NPCs** → the
+- **Studio:** **🌍 World → 📝 Entries** → content type **NPCs** → *Fields* → the
   **Unique NPC** checkbox.
 - **REST API:** the `unique` field on `GET|PUT /v1/entities/NPCs/{name}`.
   Omitting it on `PUT` keeps the stored value.
@@ -665,8 +665,8 @@ often a place may be visited are decided by tags, not entry by entry: a rule in 
 or `location_behaviour` (`hyperparameters.yaml`) says what everyone (or everywhere) with one of
 its tags does. Give an NPC or a place the tag and it behaves that way; change the rule and
 everything with the tag changes. For each behaviour, the first rule that sets it and shares a tag
-decides; without one, `default`. In the studio, *1 · Create the world* shows each behaviour as a
-choice of these tags for the entry (choosing one sets its tag), and *Behaviour by tags* edits the
+decides; without one, `default`. In the studio, *🌍 World → 📝 Entries → Fields* shows each behaviour as a
+choice of these tags for the entry (choosing one sets its tag), and *🌍 World → 🏷 Behaviour by tags* edits the
 rules.
 
 **People** (`npc_behaviour`, tags in `associated_tags`):
@@ -1298,8 +1298,8 @@ rewards stealth and talk more than fighting, because most fights first need
 a weapon.
 
 **Where to set it:**
-- **Studio:** *Simulation settings → Character stats* (definitions);
-  *Train the AI → Character stats of the player* (story default, random,
+- **Studio:** *⚙ Settings → Story → Character stats* (definitions);
+  *▶ Play → Character* and *My own stat points* (story default, random,
   balanced, or your own points, with **Randomize**/**Balance** and a live
   points check); *Create the world* → item **Stat bonus while held**; and
   `skill_check`, `on_check`, and `change_stats` in the actions editor.

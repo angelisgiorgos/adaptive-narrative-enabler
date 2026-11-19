@@ -45,7 +45,7 @@ local Hugging Face cache (offline), so the model must be in that cache.
 
 **Is it there?** `GET /v1/judge/status` says whether the judge can be used: `{available, mode,
 model, server, reason, how}` (a server is asked which models it serves). The studio shows it in
-*6 · Evaluate with the judge* and next to *Judge this playthrough*: a ready judge, or why not
+*⚖ Evaluate*, next to *▶ Play → Judge this playthrough* and in *🌍 World → ✨ Grow the world*: a ready judge, or why not
 (no server answering at the address, a server with another model, a refused key, vLLM not
 installed) and how to start one.
 
