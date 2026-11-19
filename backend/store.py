@@ -196,9 +196,6 @@ APP_DEFAULTS = {
     "candidate_limit": RUN_LIMITS["candidate_limit"],
     "generation_limit": RUN_LIMITS["generation_limit"],
     "simulation_step_limit": RUN_LIMITS["simulation_step_limit"],
-    "default_candidates": 8,
-    "default_generations": 5,
-    "default_simulation_steps": 16,
     "crossover_probability": 0.75,
     "queue_concurrency": 2,
     "queue_max_size": 24,
@@ -208,7 +205,14 @@ APP_DEFAULTS = {
 }
 
 
+# App parameters that are gone: a run's defaults are the saved engine defaults (evolution.*, ⚙ Advanced
+# → Simulation) and 🧠 Train sets a run's own values. A saved file may still have them: they are left out.
+RETIRED_APP_SETTINGS = ("default_candidates", "default_generations", "default_simulation_steps")
+
+
 def validate_app_settings(values):
+    if isinstance(values, dict):
+        values = {key: value for key, value in values.items() if key not in RETIRED_APP_SETTINGS}
     if not isinstance(values, dict) or set(values) != set(APP_DEFAULTS):
         raise ValueError("App settings must contain exactly the supported parameter names.")
     for key, default in APP_DEFAULTS.items():
@@ -228,14 +232,6 @@ def validate_app_settings(values):
     for limit, maximum in RUN_LIMITS.items():
         if values[limit] > maximum:
             raise ValueError(f"{limit} must not exceed {maximum}, the largest run the API accepts.")
-    for default, limit in (("default_candidates", "candidate_limit"),
-                           ("default_generations", "generation_limit"),
-                           ("default_simulation_steps", "simulation_step_limit")):
-        if values[default] > values[limit]:
-            raise ValueError(f"{default} must not exceed {limit}.")
-    work = values["default_candidates"] * values["default_generations"] * values["default_simulation_steps"]
-    if work > values["max_simulation_work"]:
-        raise ValueError("Default simulation exceeds max_simulation_work.")
     return values
 
 
@@ -247,7 +243,7 @@ def load_app_settings():
 
 def save_app_settings(values):
     """Validate and save the app parameters; they apply when the studio and the API restart."""
-    validate_app_settings(values)
+    values = validate_app_settings(values)
     with APP_SETTINGS_LOCK:
         _write_yaml(APP_SETTINGS_PATH, values)
 

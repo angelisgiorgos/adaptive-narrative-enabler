@@ -797,65 +797,176 @@ def forget_learning_ui():
 
 
 @ui
-def run_simulation_ui(candidate_count, generations, simulation_steps, deterministic, episodes, warm_start,
-                      progress=gr.Progress()):
-    """Evolve storytellers (a background job): the report, files, learning curve and traits, the
-    learning memory, the run (for the export). The trained AI is played in ▶ Play."""
-    job = API.post("/v1/jobs/simulations", {
-        "candidate_count": int(candidate_count), "generations": int(generations),
-        "simulation_steps": int(simulation_steps), "deterministic": bool(deterministic),
-        "episodes": int(episodes) if episodes else None, "warm_start": bool(warm_start),
-    })
-    outputs = _training_outputs(API.wait(job, _job_progress(progress)))
-    return (*outputs[:5], learning_memory_text(), *outputs[5:])
+def run_simulation_ui(use_population, population, use_generations, generations, use_episodes, episodes, use_steps,
+                      steps, reproducibility, use_seed, seed, warm_start, shown=None, progress=gr.Progress()):
+    """Evolve storytellers (a background job) with the saved engine defaults and what the form sets
+    for this run (RUN_CONTROLS; ``shown``: the resolution its summary showed): the report (with how
+    the run compares with that summary), files, learning curve and traits, the learning memory, the
+    run (for the export). The trained AI is played in ▶ Play."""
+    controls = (use_population, population, use_generations, generations, use_episodes, episodes, use_steps, steps,
+                reproducibility, use_seed, seed, warm_start)
+    job = API.post("/v1/jobs/simulations", _run_overrides(*controls))
+    result = API.wait(job, _job_progress(progress))
+    report, *outputs = _training_outputs(result)
+    report = executed_markdown(result.get("training"), shown) + "\n\n" + report
+    return (report, *outputs[:4], learning_memory_text(), *outputs[4:])
 
 
 STEPS_LABEL = "Steps per simulation"
+# A run's controls in 🧠 Train, in this order (run_controls in build_app): a value is used only when set for the run.
+RUN_CONTROLS = ("use_population", "population", "use_generations", "generations", "use_episodes", "episodes",
+                "use_steps", "steps", "reproducibility", "use_seed", "seed", "warm_start")
+# What the summary shown, the resolution and the run itself are compared on.
+RUN_COMPARED = ("population", "generations", "stories_per_storyteller", "requested_steps", "story_turns",
+                "full_length_stories", "deterministic", "seed", "warm_start", "warm_start_mode")
 
 
-def _steps_look(asked):
+def _run_overrides(use_population, population, use_generations, generations, use_episodes, episodes, use_steps,
+                   steps, reproducibility, use_seed, seed, warm_start):
+    """What a run sets for itself (the body of POST /v1/simulations and /resolve): only what is
+    ticked or chosen; everything else is the saved engine default."""
+    body = {}
+    for use, field, value in ((use_population, "candidate_count", population), (use_generations, "generations", generations),
+                              (use_episodes, "episodes", episodes), (use_steps, "simulation_steps", steps),
+                              (use_seed, "seed", seed)):
+        if use and value not in (None, ""):
+            body[field] = int(value)
+    if reproducibility in ("on", "off"):
+        body["deterministic"] = reproducibility == "on"
+    if warm_start in ("on", "off"):
+        body["warm_start"] = warm_start == "on"
+    return body
+
+
+def _steps_look(work):
     """The steps slider as the API's answer has it: marked when the steps do not set a story's length."""
-    if asked is None or asked["steps_decide"]:
+    if work is None or work["steps_decide"]:
         return {"label": STEPS_LABEL, "info": "The most turns each story is played.", "elem_classes": ["steps"]}
-    if asked["full_length_stories"]:
+    if work["full_length_stories"]:
         return {"label": f"{STEPS_LABEL} · not used: full-length stories",
-                "info": f"Every story is played to its end: up to {asked['effective_max_turns']} turns.",
+                "info": f"Every story is played to its end: up to {work['effective_max_turns']} turns.",
                 "elem_classes": ["steps", "steps-unused"]}
-    return {"label": f"{STEPS_LABEL} · capped at {asked['effective_max_turns']}",
-            "info": f"Stories end by themselves after {asked['story_length']} turns; steps above it are not played.",
+    return {"label": f"{STEPS_LABEL} · capped at {work['effective_max_turns']}",
+            "info": f"Stories end by themselves after {work['story_length']} turns; steps above it are not played.",
             "elem_classes": ["steps", "steps-unused"]}
 
 
-def run_work_ui(candidate_count, generations, simulation_steps, episodes):
-    """How long a story can be and how much simulation a run asks for, before it starts, as the API
-    counts it (GET /v1/simulations/work: the API decides, the studio only shows its answer): the
-    steps asked for against the turns a story can really take and why they differ, and the
-    multiplication against the limit. Returns (the explanation, the steps slider's look)."""
-    try:
-        asked = API.get("/v1/simulations/work", candidate_count=int(candidate_count or 1),
-                        generations=int(generations or 1), simulation_steps=int(simulation_steps or 1),
-                        episodes=int(episodes or 1))
-    except (APIError, TypeError, ValueError):
-        return "", gr.update(**_steps_look(None))
-    turns, steps = asked["effective_max_turns"], asked["requested_steps"]
-    if asked["full_length_stories"]:
-        length = f"**Full-length stories enabled: up to {turns} turns** per story."
-    elif asked["steps_decide"]:
-        length = (f"**Bounded stories: up to {turns} turns** per story, the {steps} steps asked for (a story ends by "
-                  f"itself after {asked['story_length']}).")
+def _reproducibility_choices(defaults):
+    return [(f"Saved default ({'deterministic' if defaults['deterministic'] else 'random'})", "default"),
+            ("Deterministic", "on"), ("Random", "off")]
+
+
+def _warm_start_choices(defaults):
+    return [(f"Saved default ({'on' if defaults['warm_start'] else 'off'})", "default"),
+            ("Continue from earlier runs", "on"), ("Start fresh", "off")]
+
+
+def resolved_markdown(plan, title="This run, resolved"):
+    """What a run will execute, as POST /v1/simulations/resolve answers: each value and where it comes
+    from (set for this run, or the saved default), how long a story is and why, the work as its
+    multiplication against the limit, and why the run would be refused."""
+    e, d, src, w = plan["effective"], plan["defaults"], plan["sources"], plan["work"]
+
+    def origin(name, default):
+        source = src.get(name, "default")
+        if source == "override":
+            return f"set for this run (saved default {default})"
+        return "saved default" if source == "default" else f"from {source}"
+
+    if e["full_length_stories"]:
+        length = f"**Full-length stories enabled: up to {e['story_turns']} turns**"
+        length_from = f"evolution.full_length_stories (steps {e['requested_steps']}: not used)"
+    elif w["steps_decide"]:
+        length = f"**Bounded stories: up to {e['story_turns']} turns**"
+        length_from = f"the steps, {origin('requested_steps', d['simulation_steps'])}"
     else:
-        length = f"**Bounded stories: up to {turns} turns** per story."
-    lines = [f"📏 {length}"]
-    if asked["override"]:
-        lines.append(f"ℹ️ *{STEPS_LABEL} ({steps}) does not set it.* {asked['override']['reason']}")
-    f = asked["factors"]
+        length = f"**Bounded stories: up to {e['story_turns']} turns**"
+        length_from = f"the story's end (steps {e['requested_steps']}: not all played)"
+    if e["deterministic"]:
+        seed = f"**{e['seed']}** (deterministic)" if e["seed"] is not None else "**none** (deterministic, no seed)"
+    else:
+        seed = "**random** (not deterministic)"
+    seed_from = " · ".join(dict.fromkeys(
+        origin(name, default) for name, default in (("deterministic", "deterministic" if d["deterministic"] else "random"),
+                                                    ("seed", d["seed"]))))
+    warm = {"memory": f"**on**: from {plan.get('remembered') or 0} remembered storyteller(s)",
+            "engine": "**from the recorded engine**", "off": "**off**: random storytellers"}[e["warm_start_mode"]]
+    rows = [("Population", f"**{e['population']:,}** storytellers", origin("population", d["candidate_count"])),
+            ("Generations", f"**{e['generations']:,}**", origin("generations", d["generations"])),
+            ("Stories per storyteller", f"**{e['stories_per_storyteller']}**",
+             origin("stories_per_storyteller", d["episodes"])),
+            ("Story length", length, length_from), ("Seed", seed, seed_from),
+            ("Warm start", warm, origin("warm_start", "on" if d["warm_start"] else "off"))]
+    table = "\n".join([f"#### {title}", "| Setting | This run | From |", "|---|---|---|"]
+                      + [f"| {name} | {value} | {source} |" for name, value, source in rows])
+    lines = [table]
+    if w["override"]:
+        lines.append(f"ℹ️ *{STEPS_LABEL} ({e['requested_steps']}) does not set the story length.* "
+                     f"{w['override']['reason']}")
+    f = w["factors"]
     lines.append(f"🧮 **Work:** {f['storytellers']:,} storytellers × {f['generations']:,} generations × "
                  f"{f['stories_per_storyteller']:,} stories each × {f['turns_per_story']:,} turns = "
-                 f"**{asked['work']:,}** simulated turns at most, of the **{asked['limit']:,}** allowed.")
-    if not asked["allowed"]:
-        lines.append(f"⚠ **It will be refused:** {asked['over_by']:,} turns over the limit. Use fewer storytellers, "
-                     "generations or stories, or raise `max_simulation_work` in *⚙ Advanced → App & jobs*.")
-    return "  \n".join(lines), gr.update(**_steps_look(asked))
+                 f"**{w['work']:,}** simulated turns at most, of the **{w['limit']:,}** allowed.")
+    lines += [f"ℹ️ {note}" for note in plan.get("notes") or []]
+    if not w["allowed"]:
+        lines.append(f"⚠ **It will be refused:** {w['over_by']:,} turns over the limit. Set a smaller population, "
+                     "fewer generations or stories for this run, lower the saved defaults (⚙ Advanced → Simulation), "
+                     "or raise `max_simulation_work` (⚙ Advanced → App & jobs).")
+    lines += [f"⚠ **It will be refused:** {error}" for error in plan.get("errors") or []]
+    return "\n\n".join(lines)
+
+
+def run_form_ui(*controls):
+    """The Train form after a change: what the run resolves to (POST /v1/simulations/resolve), each
+    control showing its saved default (and, unless set for this run, the value it will use), the steps
+    slider marked when it does not set the story length, and the summary. Returns updates for
+    (population, generations, episodes, steps, seed, reproducibility, warm start, summary, plan)."""
+    values = dict(zip(RUN_CONTROLS, controls))
+    try:
+        plan = API.post("/v1/simulations/resolve", _run_overrides(*controls))
+    except (APIError, TypeError, ValueError) as exc:
+        return (*[gr.update()] * 7, f"⚠ The run's settings could not be resolved: {exc}", None)
+    e, d = plan["effective"], plan["defaults"]
+
+    def slider(use, effective, default):
+        update = {"interactive": bool(values[use]),
+                  "info": f"Saved default: {default}" + (" · set for this run" if values[use] else " · used unless set here")}
+        if not values[use]:
+            update["value"] = effective
+        return update
+
+    steps = {**slider("use_steps", e["requested_steps"], d["simulation_steps"]), **_steps_look(plan["work"])}
+    steps["info"] = f"{steps['info']} Saved default: {d['simulation_steps']}."
+    seed = {"interactive": bool(values["use_seed"]), "info": f"Saved default: {d['seed']}"}
+    if not values["use_seed"]:
+        seed["value"] = d["seed"]
+    return (gr.update(**slider("use_population", e["population"], d["candidate_count"])),
+            gr.update(**slider("use_generations", e["generations"], d["generations"])),
+            gr.update(**slider("use_episodes", e["stories_per_storyteller"], d["episodes"])),
+            gr.update(**steps), gr.update(**seed), gr.update(choices=_reproducibility_choices(d)),
+            gr.update(choices=_warm_start_choices(d)), resolved_markdown(plan), plan)
+
+
+def executed_markdown(training, shown=None):
+    """After a run: whether it ran with what the summary showed before it started (``shown``, a
+    resolution), checked against what it was resolved to and what its evolution ran with."""
+    if not training:
+        return ""
+    executed, resolved = training["executed"], training["resolved"]
+    differs = [key for key in RUN_COMPARED if resolved.get(key) != executed.get(key)]
+    if shown:
+        differs += [key for key in RUN_COMPARED
+                    if shown["effective"].get(key) != executed.get(key) and key not in differs]
+    seed = f"seed {executed['seed']}" if executed["seed"] is not None else "random"
+    ran = (f"{executed['population']:,} storytellers × {executed['generations']:,} generations × "
+           f"{executed['stories_per_storyteller']} stories × up to {executed['story_turns']} turns, {seed}, "
+           f"warm start {executed['warm_start_mode']}")
+    if not differs:
+        return f"✅ **Ran exactly as summarised before it started:** {ran}."
+    changes = "; ".join(f"{key}: shown {(shown or {'effective': resolved})['effective'].get(key)}, ran {executed.get(key)}"
+                        for key in differs)
+    return (f"⚠ **The run differs from the summary shown before it started** ({changes}): the saved defaults "
+            f"changed in between. It ran with: {ran}.")
 
 
 # ---- the session as a UNP sees it (as the exported ANE AI does): save games, player, events ---------
@@ -1623,18 +1734,42 @@ def continue_recorded_ui(engine_id, more_generations, progress=gr.Progress()):
     return _training_outputs(API.wait(job, _job_progress(progress)))
 
 
+def _retrain_overrides(more_generations, *controls):
+    """A retraining's own settings: the Train form's (a warm start is always from the engine) and
+    the further generations."""
+    body = _run_overrides(*controls)
+    body.pop("warm_start", None)
+    body["generations"] = int(more_generations)
+    return body
+
+
+def retrain_form_ui(engine_id, more_generations, *controls):
+    """What retraining the chosen engine would execute: its saved defaults with the Train form's
+    settings and the further generations (POST /v1/simulations/resolve with engine_id)."""
+    if not engine_id:
+        return "Choose a recorded engine to see what retraining it would run with.", None
+    try:
+        plan = API.post("/v1/simulations/resolve", {**_retrain_overrides(more_generations, *controls),
+                                                    "engine_id": engine_id})
+    except APIError as exc:
+        return f"⚠ The retraining's settings could not be resolved: {exc}", None
+    return resolved_markdown(plan, "Retraining it, resolved (its saved defaults + the Train form)"), plan
+
+
 @ui
-def retrain_recorded_ui(engine_id, candidate_count, more_generations, simulation_steps, episodes, deterministic,
-                        progress=gr.Progress()):
-    """A new evolution seeded with a recorded engine's storyteller (a background job)."""
+def retrain_recorded_ui(engine_id, more_generations, use_population, population, use_generations, generations,
+                        use_episodes, episodes, use_steps, steps, reproducibility, use_seed, seed, warm_start,
+                        shown=None, progress=gr.Progress()):
+    """A new evolution seeded with a recorded engine's storyteller (a background job), with that
+    engine's saved defaults and what the Train form sets (``shown``: the resolution shown)."""
+    controls = (use_population, population, use_generations, generations, use_episodes, episodes, use_steps, steps,
+                reproducibility, use_seed, seed, warm_start)
     if not engine_id:
         raise gr.Error("Choose a recorded engine first.")
-    job = API.post(_path("/v1/jobs/engines", engine_id, "retrain"), {
-        "candidate_count": int(candidate_count), "generations": int(more_generations),
-        "simulation_steps": int(simulation_steps), "episodes": int(episodes) if episodes else None,
-        "deterministic": bool(deterministic),
-    })
-    return _training_outputs(API.wait(job, _job_progress(progress)))
+    job = API.post(_path("/v1/jobs/engines", engine_id, "retrain"), _retrain_overrides(more_generations, *controls))
+    result = API.wait(job, _job_progress(progress))
+    report, *outputs = _training_outputs(result)
+    return (executed_markdown(result.get("training"), shown) + "\n\n" + report, *outputs)
 
 
 @ui
@@ -2482,7 +2617,6 @@ def build_app():
     limits, app_defaults = app_settings["settings"], app_settings["defaults"]
     APP_PARAMETER_KEYS = list(limits)
     settings = API.get("/v1/settings")
-    defaults = REFERENCE["defaults"]
     profiles = API.get("/v1/variables/profiles")
     character_stats = API.get("/v1/stats")["character_stats"]
     names = _entity_names("Locations")
@@ -3099,38 +3233,55 @@ def build_app():
                     with gr.Tab("Train"):
                         gr.Markdown("Evolve AI storytellers on this world: a tournament of storytellers, each "
                                     "scored on the stories it tells. The best becomes a **trained AI**: play it in "
-                                    "**▶ Play**, export it in **📦 Export**.")
-                        first_work, first_steps = run_work_ui(limits["default_candidates"],
-                                                              limits["default_generations"],
-                                                              limits["default_simulation_steps"],
-                                                              min(10, int(defaults["episodes_per_genome"])))
-                        steps_look = {key: value for key, value in first_steps.items() if not key.startswith("__")}
-                        with gr.Row():
-                            candidates = gr.Slider(1, limits["candidate_limit"], value=limits["default_candidates"],
-                                                   step=1, label="Candidate genomes")
-                            generations = gr.Slider(1, limits["generation_limit"], value=limits["default_generations"],
-                                                    step=1, label="Evolution generations")
-                            sim_steps = gr.Slider(1, limits["simulation_step_limit"],
-                                                  value=limits["default_simulation_steps"], step=1, **steps_look)
-                            episodes = gr.Slider(
-                                1, 10, value=min(10, int(defaults["episodes_per_genome"])), step=1,
-                                label="Stories per storyteller",
-                                info="More stories per genome: fairer scores, slower learning.",
-                            )
-                        # Story length and work, as the API counts them (a run is refused on the same numbers).
-                        run_work = gr.Markdown(first_work, elem_classes="run-work")
-                        work_inputs = [candidates, generations, sim_steps, episodes]
-                        for slider in work_inputs:  # what the user sets (the slider's own look is an output)
-                            slider.input(run_work_ui, work_inputs, [run_work, sim_steps], show_progress="hidden")
-                        with gr.Row():
-                            warm_start = gr.Checkbox(
-                                value=bool(defaults["warm_start"]), label="Continue learning from earlier runs",
-                                info="Seed the population with the best storytellers the AI remembers.",
-                            )
-                            deterministic_run = gr.Checkbox(
-                                value=settings["deterministic"], label="Run deterministically",
-                                info="Uses the reproducibility seed saved in ⚙ Advanced → Simulation.",
-                            )
+                                    "**▶ Play**, export it in **📦 Export**.  \n**A run uses the saved engine defaults "
+                                    "(⚙ Advanced → Simulation) except what you set here for this run.** The summary "
+                                    "below is what it will run with, as the API resolves it.", elem_classes="lead")
+                        first_plan = API.post("/v1/simulations/resolve", {})
+                        saved, first = first_plan["defaults"], first_plan["effective"]
+                        steps_look = _steps_look(first_plan["work"])
+                        with gr.Row(equal_height=True):
+                            with gr.Column(min_width=200):
+                                use_population = gr.Checkbox(False, label="Set the population for this run")
+                                population = gr.Slider(1, limits["candidate_limit"], value=first["population"],
+                                                       step=1, label="Population (storytellers)", interactive=False,
+                                                       info=f"Saved default: {saved['candidate_count']} · used "
+                                                            "unless set here")
+                            with gr.Column(min_width=200):
+                                use_generations = gr.Checkbox(False, label="Set the generations for this run")
+                                generations = gr.Slider(1, limits["generation_limit"], value=first["generations"],
+                                                        step=1, label="Generations", interactive=False,
+                                                        info=f"Saved default: {saved['generations']} · used "
+                                                             "unless set here")
+                            with gr.Column(min_width=200):
+                                use_episodes = gr.Checkbox(False, label="Set the stories for this run")
+                                episodes = gr.Slider(1, 10, value=first["stories_per_storyteller"], step=1,
+                                                     label="Stories per storyteller", interactive=False,
+                                                     info=f"Saved default: {saved['episodes']} · used unless set "
+                                                          "here")
+                            with gr.Column(min_width=200):
+                                use_steps = gr.Checkbox(False, label="Set the steps for this run")
+                                sim_steps = gr.Slider(1, limits["simulation_step_limit"], value=first["requested_steps"],
+                                                      step=1, interactive=False,
+                                                      **{**steps_look, "info": f"{steps_look['info']} Saved default: "
+                                                                               f"{saved['simulation_steps']}."})
+                        with gr.Row(equal_height=True):
+                            run_reproducibility = gr.Radio(_reproducibility_choices(saved), value="default",
+                                                           label="Reproducibility")
+                            with gr.Column(min_width=200):
+                                use_seed = gr.Checkbox(False, label="Set the seed for this run")
+                                run_seed = gr.Number(saved["seed"], precision=0, label="Seed", interactive=False,
+                                                     info=f"Saved default: {saved['seed']}")
+                            run_warm = gr.Radio(_warm_start_choices(saved), value="default", label="Warm start",
+                                                info="Seed the population with the best storytellers the AI remembers.")
+                        # What the run will execute, resolved by the API (a run is refused on the same numbers).
+                        run_summary = gr.Markdown(resolved_markdown(first_plan), elem_classes="run-summary")
+                        run_plan = gr.State(first_plan)
+                        run_controls = [use_population, population, use_generations, generations, use_episodes,
+                                        episodes, use_steps, sim_steps, run_reproducibility, use_seed, run_seed, run_warm]
+                        run_form = [population, generations, episodes, sim_steps, run_seed, run_reproducibility,
+                                    run_warm, run_summary, run_plan]
+                        for control in run_controls:  # what the user sets (the form's own look is an output)
+                            control.input(run_form_ui, run_controls, run_form, show_progress="hidden")
                         with gr.Row():
                             run_button = gr.Button("🧠 Evolve storytellers", variant="primary", scale=3)
                             play_it = gr.Button("▶ Play the newest", scale=1)
@@ -3170,8 +3321,12 @@ def build_app():
                                                          label="Further generations", scale=2)
                             continue_record = gr.Button("Continue its training", scale=1)
                             retrain_record = gr.Button("Retrain from it", scale=1)
-                        gr.Markdown("*Continue* trains it further exactly where it stopped; *Retrain* starts a new "
-                                    "evolution (with the Train tab's sizes) seeded with its storyteller.")
+                        gr.Markdown("*Continue* trains it further exactly where it stopped (its own settings); "
+                                    "*Retrain* starts a new evolution seeded with its storyteller, with its saved "
+                                    "defaults and what the Train form sets for a run:")
+                        retrain_summary = gr.Markdown("Choose a recorded engine to see what retraining it would run "
+                                                      "with.", elem_classes="run-summary")
+                        retrain_plan = gr.State(None)
                         with gr.Row():
                             download_record = gr.Button("Download its model file and world")
                         with gr.Row():
@@ -3209,8 +3364,7 @@ def build_app():
 
                 train_outputs = [simulation_report, generated_config, generated_engine, learning_plot, learned_traits]
                 engine_events = [run_button.click(
-                    run_simulation_ui,
-                    [candidates, generations, sim_steps, deterministic_run, episodes, warm_start],
+                    run_simulation_ui, [*run_controls, run_plan],
                     [*train_outputs, memory_status, run_state, export_generation],
                     concurrency_limit=1,
                     concurrency_id="narrative_evolution",
@@ -3220,9 +3374,16 @@ def build_app():
                     continue_recorded_ui, [record_engine, more_generations],
                     record_outputs, concurrency_limit=1, concurrency_id="narrative_evolution"))
                 engine_events.append(retrain_record.click(
-                    retrain_recorded_ui,
-                    [record_engine, candidates, more_generations, sim_steps, episodes, deterministic_run],
+                    retrain_recorded_ui, [record_engine, more_generations, *run_controls, retrain_plan],
                     record_outputs, concurrency_limit=1, concurrency_id="narrative_evolution"))
+                retrain_inputs = [record_engine, more_generations, *run_controls]
+                record_engine.change(retrain_form_ui, retrain_inputs, [retrain_summary, retrain_plan],
+                                     show_progress="hidden")
+                more_generations.input(retrain_form_ui, retrain_inputs, [retrain_summary, retrain_plan],
+                                       show_progress="hidden")
+                for control in run_controls:  # the Train form's settings apply to a retraining too
+                    control.input(retrain_form_ui, retrain_inputs, [retrain_summary, retrain_plan],
+                                  show_progress="hidden")
                 record_lists = [record_engine, record_story, runs_table, records_status]
                 for event in engine_events:  # a finished run is recorded
                     event.success(refresh_records_ui, None, record_lists)
@@ -3524,11 +3685,29 @@ def build_app():
                             with gr.Column():
                                 activate_config = gr.Button("Validate & use uploaded config", variant="primary")
                                 restore_config = gr.Button("Use built-in config")
+                        gr.Markdown("#### Training defaults\nWhat a run uses for whatever it does not set itself: "
+                                    "**🧠 Train** sets a run's own values and shows what it will run with before it "
+                                    "starts. The terminal (`python main.py`) and API clients use them too. Warm start "
+                                    "and full-length stories are `evolution.warm_start` and "
+                                    "`evolution.full_length_stories` (Engine logic).", elem_classes="lead")
                         with gr.Row():
-                            pop_size = gr.Number(settings["pop_size"], label="Evolution population", precision=0, minimum=1)
-                            generations = gr.Number(settings["generations"], label="Generations", precision=0, minimum=1)
-                            episodes = gr.Number(settings["episodes_per_genome"], label="Episodes / genome", precision=0, minimum=1)
-                            max_steps = gr.Number(settings["max_steps"], label="Maximum simulation steps", precision=0, minimum=1)
+                            pop_size = gr.Number(settings["pop_size"], label="Default population (storytellers)",
+                                                 precision=0, minimum=1, info="evolution.pop_size")
+                            generations = gr.Number(settings["generations"], label="Default generations", precision=0,
+                                                    minimum=1, info="evolution.generations")
+                            episodes = gr.Number(settings["episodes_per_genome"], label="Default stories per storyteller",
+                                                 precision=0, minimum=1, info="evolution.episodes_per_genome")
+                            max_steps = gr.Number(settings["max_steps"], label="Default steps per simulation",
+                                                  precision=0, minimum=1, info="evolution.max_steps")
+                        with gr.Row():
+                            deterministic = gr.Checkbox(
+                                value=settings["deterministic"], label="Deterministic runs by default",
+                                info="A deterministic run repeats the same evolution with the same configuration and "
+                                     "seed (reproducibility.deterministic).",
+                            )
+                            seed = gr.Number(settings["seed"], label="Default seed", precision=0,
+                                             info="reproducibility.seed")
+                        gr.Markdown("#### Game", elem_classes="lead")
                         with gr.Row():
                             health = gr.Number(settings["initial_health"], label="Starting health", precision=0, minimum=1)
                             max_health = gr.Number(
@@ -3537,15 +3716,10 @@ def build_app():
                             )
                             coins = gr.Number(settings["initial_coins"], label="Starting coins", precision=0, minimum=0)
                             max_actions = gr.Number(
-                                settings["max_actions"], label="Game action limit", precision=0, minimum=100,
-                                info="The action-limit cutoff cannot be set below 100; other ending conditions still apply.",
+                                settings["max_actions"], label="Story length (game action limit)", precision=0,
+                                minimum=100, info="Turns before a story ends (narrative_end.max_actions, at least 100); "
+                                "full-length training stories are this long.",
                             )
-                        with gr.Row():
-                            deterministic = gr.Checkbox(
-                                value=settings["deterministic"], label="Deterministic reproducibility",
-                                info="Repeat the same evolution when the configuration and seed are unchanged.",
-                            )
-                            seed = gr.Number(settings["seed"], label="Reproducibility seed", precision=0)
                         save_config = gr.Button("Save settings", variant="primary")
                         config_status = gr.Markdown()
                         setting_components = [pop_size, generations, episodes, max_steps, health, coins, max_actions,
@@ -3657,10 +3831,10 @@ def build_app():
         for key, tab in destination_tabs.items():  # a tab chosen another way: the banner and the menu follow
             tab.select(lambda key=key: mark_destination(key), None, [*nav_buttons, nav_menu], show_progress="hidden")
         play_it.click(lambda: navigate("play"), None, nav_outputs, show_progress="hidden")
-        # Train's story length and work follow the settings (e.g. full-length stories changed in ⚙ Advanced).
-        demo.load(run_work_ui, work_inputs, [run_work, sim_steps], show_progress="hidden")
+        # Train's summary follows the saved defaults (e.g. changed in ⚙ Advanced): on load, and on the way to Train.
+        demo.load(run_form_ui, run_controls, run_form, show_progress="hidden")
         for event in (train_button_event, menu_event):
-            event.then(run_work_ui, work_inputs, [run_work, sim_steps], show_progress="hidden")
+            event.then(run_form_ui, run_controls, run_form, show_progress="hidden")
         export_it.click(lambda: navigate("export"), None, nav_outputs, show_progress="hidden")
         demo.load(open_requested, None, nav_outputs, show_progress="hidden")
 

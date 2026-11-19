@@ -20,7 +20,7 @@ from pathlib import Path
 import yaml
 import main as engine
 from core_engine import GameState, Genome, Mission
-from core_engine.game_state import story_length
+from core_engine.game_state import MIN_STORY_LENGTH, story_length
 from core_engine import variables as persistent
 from core_engine.variables import VariableStore
 from core_engine.evolution import LearningMemory, NarrativeEvolution, evolution_settings, story_turns
@@ -565,46 +565,45 @@ def _scene(state: GameState) -> tuple[str, list[str]]:
         details.append(f"### Game over\n{state.end_reason}")
     return "\n\n".join(details), [action.name for action in actions]
 
-def run_simulation(candidate_count: int, generations: int, simulation_steps: int, deterministic: bool,
+def run_simulation(candidate_count=None, generations=None, simulation_steps=None, deterministic=None,
                    profile=None, stats_choice=None, stats_points=None, episodes=None, warm_start=None,
-                   progress=None, origin="studio", mission=None, user_id=None):
+                   progress=None, origin="studio", mission=None, user_id=None, seed=None):
     """Evolve storytellers with the shared evolutionary AI and start a game with the best.
 
-    ``progress(generation, total, GenerationStats)`` reports each generation.
-    Returns the game (token, scene, actions), the report, the exported bundle and
-    the learning summary (history per generation, what the AI learned).
+    The run's settings are the saved engine defaults with what it sets itself (None: the default),
+    resolved by resolve_training and executed exactly. ``progress(generation, total,
+    GenerationStats)`` reports each generation. Returns the game (token, scene, actions), the
+    report, the exported bundle, the learning summary (history per generation, what the AI
+    learned) and ``training`` (the overrides, where each value came from, the resolved settings
+    and those the evolution ran with).
     """
     profile = _profile(profile)
     points, mode = _player_stats(stats_choice, stats_points)
     config.reload()
     engine.refresh_runtime_settings()
-    candidate_count = max(1, min(int(candidate_count), APP_SETTINGS["candidate_limit"]))
-    generations = max(1, min(int(generations), APP_SETTINGS["generation_limit"]))
-    simulation_steps = max(1, min(int(simulation_steps), APP_SETTINGS["simulation_step_limit"]))
-    episodes = max(1, min(int(episodes or config.get("evolution.episodes_per_genome", 3)), 10))
-    _training_guard(candidate_count, generations, episodes, simulation_steps)
-    seed = None
-    if deterministic:
-        seed = config.get("reproducibility.seed")
-        if seed is None:
-            raise AuthoringError("Set a reproducibility seed before running deterministically.")
-        engine.apply_random_seed(force=True)
-        seed = int(seed)
-
-    warm_start = config.get("evolution.warm_start", True) if warm_start is None else bool(warm_start)
+    plan = resolve_training({"candidate_count": candidate_count, "generations": generations,
+                             "simulation_steps": simulation_steps, "episodes": episodes, "deterministic": deterministic,
+                             "seed": seed, "warm_start": warm_start})
+    _refuse_unless_ready(plan)
+    run = plan["effective"]
+    if run["seed"] is not None:
+        engine.apply_random_seed(force=True, seed=run["seed"])
     evolution = NarrativeEvolution(
         engine.build_world, engine.fitness,
         settings={
-            "pop_size": candidate_count, "generations": generations, "max_steps": simulation_steps,
-            "episodes_per_genome": episodes, "crossover_rate": APP_SETTINGS["crossover_probability"],
-            "warm_start": warm_start,
+            "pop_size": run["population"], "generations": run["generations"], "max_steps": run["requested_steps"],
+            "episodes_per_genome": run["stories_per_storyteller"],
+            "crossover_rate": APP_SETTINGS["crossover_probability"], "warm_start": run["warm_start"],
         },
-        seed=seed,
+        seed=run["seed"],
         memory=LearningMemory(),
     )
-    parameters = {"candidate_count": candidate_count, "generations": generations, "simulation_steps": simulation_steps,
-                  "episodes": episodes, "deterministic": bool(deterministic), "warm_start": warm_start,
+    candidate_count, episodes, simulation_steps = run["population"], run["stories_per_storyteller"], run["requested_steps"]
+    parameters = {"candidate_count": candidate_count, "generations": run["generations"],
+                  "simulation_steps": simulation_steps, "episodes": episodes, "deterministic": run["deterministic"],
+                  "warm_start": run["warm_start"], "seed": run["seed"], "overrides": plan["overrides"],
                   "profile": profile, "stat_points": points, "stats_mode": mode}
+    seed = run["seed"]
     run_id = uuid.uuid4().hex
     records.start_run(origin, settings=evolution.settings, parameters=parameters, seed=seed, run_id=run_id,
                       user_id=user_id)
@@ -613,8 +612,17 @@ def run_simulation(candidate_count: int, generations: int, simulation_steps: int
     except Exception as exc:
         records.finish_run(run_id, None, error=exc)
         raise
-    return _finish_training(evolution, result, run_id, origin, profile, points, mode, candidate_count, episodes,
+    game = _finish_training(evolution, result, run_id, origin, profile, points, mode, candidate_count, episodes,
                             simulation_steps, title="Evolution complete.", mission=mission)
+    game["training"] = _training_record(plan, evolution)
+    return game
+
+
+def _training_record(plan, evolution):
+    """What a run returns of its settings: its overrides, where each value came from, the values it
+    was resolved to, and those its evolution ran with (read back from it)."""
+    return {"overrides": plan["overrides"], "sources": plan["sources"], "resolved": plan["effective"],
+            "executed": executed_training(evolution)}
 
 
 def _train(evolution, progress=None, resume=None):
@@ -677,7 +685,127 @@ def _finish_training(evolution, result, run_id, origin, profile, points, mode, c
     }
 
 
-def training_work(candidates, generations, episodes, steps):
+# ---- training settings: the saved engine defaults, and one run's own overrides ---------------------
+
+# What a run may set for itself; anything it leaves out (None) is the saved engine default.
+TRAINING_OVERRIDES = ("candidate_count", "generations", "episodes", "simulation_steps", "deterministic", "seed",
+                      "warm_start")
+MAX_STORIES_PER_STORYTELLER = 10
+# A resolved field -> the override that sets it.
+RESOLVED_FROM = {"population": "candidate_count", "generations": "generations", "stories_per_storyteller": "episodes",
+                 "requested_steps": "simulation_steps", "deterministic": "deterministic", "seed": "seed",
+                 "warm_start": "warm_start"}
+
+
+def _setting_getter(source):
+    """config.get, or the same over a configuration ``source`` (a dict)."""
+    if source is None:
+        return config.get
+
+    def get(key, default=None):
+        node = source
+        for part in key.split("."):
+            if not isinstance(node, dict) or part not in node:
+                return default
+            node = node[part]
+        return node
+    return get
+
+
+def training_defaults(source=None) -> dict:
+    """The saved engine defaults a run uses for whatever it does not set itself (⚙ Advanced →
+    Simulation and the engine logic: evolution.*, reproducibility.*, narrative_end.max_actions),
+    from the active configuration or ``source`` (a configuration, e.g. a recorded engine's)."""
+    get = _setting_getter(source)
+    evolution = evolution_settings(base=get("evolution") or {})
+    seed = get("reproducibility.seed")
+    configured = get("narrative_end.max_actions", MIN_STORY_LENGTH)
+    return {"candidate_count": int(evolution["pop_size"]), "generations": int(evolution["generations"]),
+            "episodes": int(evolution["episodes_per_genome"]), "simulation_steps": int(evolution["max_steps"]),
+            "deterministic": bool(get("reproducibility.deterministic", True)),
+            "seed": None if seed is None else int(seed), "warm_start": bool(evolution["warm_start"]),
+            "full_length_stories": bool(evolution["full_length_stories"]),
+            "story_length": max(MIN_STORY_LENGTH, int(configured)), "story_length_setting": configured}
+
+
+def resolve_training(overrides=None, source=None, warm_start_from=None) -> dict:
+    """One run's training settings, as it will run: the saved engine defaults (training_defaults,
+    from the active configuration or ``source``) with the run's own ``overrides``
+    (TRAINING_OVERRIDES; None or left out: the default), held to the app's limits, with the seed of
+    a deterministic run, how long a story is, and the work against max_simulation_work.
+    ``warm_start_from``: an engine id when the run starts from a recorded engine (retraining) rather
+    than from the learning memory. A run executes exactly ``effective``; the studio shows it first.
+    Returns {defaults, overrides, sources, effective, work, notes, errors, ready, remembered}."""
+    given = {key: value for key, value in (overrides or {}).items() if key in TRAINING_OVERRIDES and value is not None}
+    defaults = training_defaults(source)
+    asked = {**{key: defaults[key] for key in TRAINING_OVERRIDES}, **given}
+    notes, errors = [], []
+
+    def held(field, label, limit, why):
+        value = max(1, int(asked[field]))
+        if value > limit:
+            notes.append(f"{label}: {value} asked, held to {limit} ({why}).")
+            return limit
+        return value
+
+    population = held("candidate_count", "Population", APP_SETTINGS["candidate_limit"], "app parameter candidate_limit")
+    generations = held("generations", "Generations", APP_SETTINGS["generation_limit"], "app parameter generation_limit")
+    steps = held("simulation_steps", "Steps per simulation", APP_SETTINGS["simulation_step_limit"],
+                 "app parameter simulation_step_limit")
+    episodes = held("episodes", "Stories per storyteller", MAX_STORIES_PER_STORYTELLER, "the most a storyteller plays")
+    deterministic, seed = bool(asked["deterministic"]), None
+    if deterministic:
+        if asked["seed"] is None:
+            errors.append("A deterministic run needs a seed: set one for this run, save a default seed "
+                          "(⚙ Advanced → Simulation), or make the run random.")
+        else:
+            seed = int(asked["seed"])
+    elif "seed" in given:
+        notes.append(f"Seed {given['seed']} is not used: this run is random, not deterministic.")
+    remembered = None
+    if warm_start_from:
+        warm_start, warm_mode = True, "engine"
+    else:
+        warm_start = bool(asked["warm_start"])
+        warm_mode = "memory" if warm_start else "off"
+        if warm_start:
+            remembered = len(LearningMemory().load())
+    work = training_work(population, generations, episodes, steps, full_length=defaults["full_length_stories"],
+                         length=defaults["story_length"], configured=defaults["story_length_setting"])
+    effective = {"population": population, "generations": generations, "stories_per_storyteller": episodes,
+                 "requested_steps": steps, "story_turns": work["effective_max_turns"],
+                 "full_length_stories": work["full_length_stories"], "story_length": work["story_length"],
+                 "deterministic": deterministic, "seed": seed, "warm_start": warm_start, "warm_start_mode": warm_mode}
+    sources = {name: ("override" if field in given else "default") for name, field in RESOLVED_FROM.items()}
+    if warm_start_from:
+        sources["warm_start"] = f"engine {warm_start_from}"
+    return {"defaults": defaults, "overrides": given, "sources": sources, "effective": effective, "work": work,
+            "notes": notes, "errors": errors, "ready": not errors and work["allowed"], "remembered": remembered}
+
+
+def _refuse_unless_ready(plan):
+    """Refuse a run its resolution says cannot start (no seed for a deterministic run, too much work)."""
+    if plan["errors"]:
+        raise AuthoringError(" ".join(plan["errors"]))
+    if not plan["work"]["allowed"]:
+        raise AuthoringError(_work_refusal(plan["work"]))
+
+
+def executed_training(evolution) -> dict:
+    """The configuration an evolution ran with, read back from it (the same fields as
+    resolve_training's ``effective``, to compare)."""
+    settings = evolution.settings
+    turns, _ = story_turns(settings["max_steps"], settings["full_length_stories"])
+    engine_memory = type(evolution.memory).__name__ == "ModelMemory"
+    return {"population": int(settings["pop_size"]), "generations": int(settings["generations"]),
+            "stories_per_storyteller": int(settings["episodes_per_genome"]), "requested_steps": int(settings["max_steps"]),
+            "story_turns": turns, "full_length_stories": bool(settings["full_length_stories"]),
+            "story_length": story_length(), "deterministic": evolution.seed is not None, "seed": evolution.seed,
+            "warm_start": bool(settings["warm_start"]),
+            "warm_start_mode": "engine" if engine_memory else ("memory" if settings["warm_start"] else "off")}
+
+
+def training_work(candidates, generations, episodes, steps, full_length=None, length=None, configured=None):
     """What a run asks for, before it starts: the steps asked for and the turns a story can really
     take (core_engine.evolution.story_turns: with full-length stories every story is played to its
     end, narrative_end.max_actions, whatever the steps; otherwise the steps, though no story outlasts
@@ -685,10 +813,10 @@ def training_work(candidates, generations, episodes, steps):
     turns per story, at most (many stories end sooner), against the app parameter
     max_simulation_work."""
     candidates, generations, episodes, steps = (int(candidates), int(generations), int(episodes), int(steps))
-    full_length = bool(evolution_settings().get("full_length_stories"))
-    turns, steps_decide = story_turns(steps, full_length)
-    length = story_length()
-    configured = config.get("narrative_end.max_actions", length)
+    full_length = bool(evolution_settings().get("full_length_stories")) if full_length is None else bool(full_length)
+    length = story_length() if length is None else int(length)
+    configured = config.get("narrative_end.max_actions", length) if configured is None else configured
+    turns, steps_decide = story_turns(steps, full_length, end=length)
     override = None
     if full_length:
         override = {"setting": "evolution.full_length_stories",
@@ -711,15 +839,21 @@ def training_work(candidates, generations, episodes, steps):
                         "stories_per_storyteller": episodes, "turns_per_story": turns}}
 
 
+def _work_refusal(asked):
+    """Why a run asking for ``asked`` (training_work) is refused: the multiplication, the reason for
+    its story length, and what to change."""
+    f = asked["factors"]
+    why = f" {asked['override']['reason']}" if asked["override"] else ""
+    return (f"This run requests up to {asked['work']:,} simulated turns ({f['storytellers']} storytellers x "
+            f"{f['generations']} generations x {f['stories_per_storyteller']} stories x {f['turns_per_story']} turns), "
+            f"{asked['over_by']:,} above the limit of {asked['limit']:,}.{why} Use fewer storytellers, generations "
+            "or stories per storyteller, or raise `max_simulation_work` (⚙ Advanced → App & jobs → App parameters).")
+
+
 def _training_guard(pop_size, generations, episodes, steps):
     asked = training_work(pop_size, generations, episodes, steps)
     if not asked["allowed"]:
-        why = f" {asked['override']['reason']}" if asked["override"] else ""
-        raise AuthoringError(
-            f"This run requests up to {asked['work']:,} simulated turns ({pop_size} storytellers x {generations} "
-            f"generations x {episodes} stories x {asked['effective_max_turns']} turns), {asked['over_by']:,} above "
-            f"the limit of {asked['limit']:,}.{why} Use fewer storytellers, generations or stories per "
-            "storyteller, or raise `max_simulation_work` (⚙ Advanced → App & jobs → App parameters).")
+        raise AuthoringError(_work_refusal(asked))
 
 
 def continue_engine(engine_id, generations=1, profile=None, stats_choice=None, stats_points=None, origin="studio",
@@ -758,22 +892,26 @@ def continue_engine(engine_id, generations=1, profile=None, stats_choice=None, s
                             parent_id=engine_id, source=f"continued from {engine_id}", mission=mission)
 
 
-def retrain_engine(engine_id, candidate_count=8, generations=5, simulation_steps=16, episodes=None, deterministic=True,
-                   profile=None, stats_choice=None, stats_points=None, origin="studio", progress=None, mission=None,
-                   user_id=None):
+def retrain_engine(engine_id, candidate_count=None, generations=None, simulation_steps=None, episodes=None,
+                   deterministic=None, profile=None, stats_choice=None, stats_points=None, origin="studio",
+                   progress=None, mission=None, user_id=None, seed=None):
     """A new run whose first population starts from a recorded engine's storyteller
-    and memory, on that engine's world; records it and starts a game with the result."""
+    and memory, on that engine's world; records it and starts a game with the result. Its
+    settings are that engine's saved defaults with what the run sets itself (resolve_training)."""
     profile = _profile(profile)
     points, mode = _player_stats(stats_choice, stats_points)
     model = _recorded_model(engine_id)
     model.activate()
     engine.refresh_runtime_settings()
-    candidate_count = max(1, min(int(candidate_count), APP_SETTINGS["candidate_limit"]))
-    generations = max(1, min(int(generations), APP_SETTINGS["generation_limit"]))
-    simulation_steps = max(1, min(int(simulation_steps), APP_SETTINGS["simulation_step_limit"]))
-    episodes = max(1, min(int(episodes or config.get("evolution.episodes_per_genome", 3)), 10))
-    _training_guard(candidate_count, generations, episodes, simulation_steps)
-    seed = int(config.get("reproducibility.seed")) if deterministic and config.get("reproducibility.seed") is not None else None
+    plan = resolve_training({"candidate_count": candidate_count, "generations": generations,
+                             "simulation_steps": simulation_steps, "episodes": episodes, "deterministic": deterministic,
+                             "seed": seed}, warm_start_from=engine_id)
+    _refuse_unless_ready(plan)
+    run = plan["effective"]
+    candidate_count, generations, simulation_steps = run["population"], run["generations"], run["requested_steps"]
+    episodes, seed = run["stories_per_storyteller"], run["seed"]
+    if seed is not None:
+        engine.apply_random_seed(force=True, seed=seed)
     settings = {"pop_size": candidate_count, "generations": generations, "max_steps": simulation_steps,
                 "episodes_per_genome": episodes, "crossover_rate": APP_SETTINGS["crossover_probability"]}
     run_id = uuid.uuid4().hex
@@ -790,9 +928,11 @@ def retrain_engine(engine_id, candidate_count=8, generations=5, simulation_steps
     except Exception as exc:
         records.finish_run(run_id, None, error=exc)
         raise
-    return _finish_training(evolution, result, run_id, origin, profile, points, mode, candidate_count, episodes,
+    game = _finish_training(evolution, result, run_id, origin, profile, points, mode, candidate_count, episodes,
                             simulation_steps, title=f"Retrained from engine `{engine_id}`.", parent_id=engine_id,
                             source=f"retrained from {engine_id}", mission=mission)
+    game["training"] = _training_record(plan, evolution)
+    return game
 
 
 # ---- the records database, for the studio ------------------------------------------------

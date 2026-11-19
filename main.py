@@ -104,10 +104,12 @@ def refresh_runtime_settings():
     PARALLEL_BACKEND = config.get("evolution.parallel_backend", "processes")
 
 
-def apply_random_seed(force=False):
-    if not force and not config.get("reproducibility.deterministic", True):
+def apply_random_seed(force=False, seed=None):
+    """Seed every random generator: with ``seed``, or the configured reproducibility seed."""
+    if seed is None and not force and not config.get("reproducibility.deterministic", True):
         return None
-    seed = config.get("reproducibility.seed", config.get("simulation.seed"))
+    if seed is None:
+        seed = config.get("reproducibility.seed", config.get("simulation.seed"))
     if seed is None:
         return None
 

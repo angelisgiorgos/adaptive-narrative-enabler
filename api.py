@@ -149,20 +149,31 @@ class Settings(BaseModel):
     seed: int | None = 42
 
 
-class SimulationRequest(BaseModel):
-    candidate_count: int = Field(default=8, ge=1, le=store.RUN_LIMITS["candidate_limit"])
-    generations: int = Field(default=5, ge=1, le=store.RUN_LIMITS["generation_limit"])
-    simulation_steps: int = Field(default=16, ge=1, le=store.RUN_LIMITS["simulation_step_limit"],
-                                  description="Steps per evaluated story; with "
-                                  "evolution.full_length_stories every story is played to its end.")
-    deterministic: bool = True
+class TrainingOverrides(BaseModel):
+    """What one run sets for itself; anything left out (or null) is the saved engine default
+    (evolution.*, reproducibility.*: ⚙ Advanced → Simulation). POST /v1/simulations/resolve shows
+    what a run with these would use."""
+    candidate_count: int | None = Field(default=None, ge=1, le=store.RUN_LIMITS["candidate_limit"],
+                                        description="Population: storytellers per generation (default evolution.pop_size).")
+    generations: int | None = Field(default=None, ge=1, le=store.RUN_LIMITS["generation_limit"],
+                                    description="Default evolution.generations.")
+    simulation_steps: int | None = Field(default=None, ge=1, le=store.RUN_LIMITS["simulation_step_limit"],
+                                         description="Steps per evaluated story (default evolution.max_steps); with "
+                                         "evolution.full_length_stories every story is played to its end.")
+    episodes: int | None = Field(default=None, ge=1, le=10, description="Stories each storyteller plays per generation "
+                                 "(default evolution.episodes_per_genome).")
+    deterministic: bool | None = Field(default=None, description="Default reproducibility.deterministic.")
+    seed: int | None = Field(default=None, description="The seed of a deterministic run (default reproducibility.seed).")
+
+
+class SimulationRequest(TrainingOverrides):
     profile: str | None = Field(default=None, description="Player profile for persistent variables.")
     stats_mode: Literal["defined", "random", "balanced"] | None = Field(
         default=None, description="How the player's stats are allocated (default: character_stats.mode).",
     )
     stats: dict[str, int] | None = Field(default=None, description="The player's own stat points (overrides stats_mode).")
-    episodes: int | None = Field(default=None, ge=1, le=10, description="Stories each storyteller plays per generation.")
-    warm_start: bool | None = Field(default=None, description="Continue learning from the storytellers remembered from earlier runs.")
+    warm_start: bool | None = Field(default=None, description="Continue learning from the storytellers remembered from "
+                                    "earlier runs (default evolution.warm_start).")
     mission: str | None = Field(default=None, description="The mission to play (its key or title, see GET "
                                 "/v1/missions/playable); left out, the story draws one.")
 
@@ -271,6 +282,11 @@ class SimulationResponse(PlayState):
     config_download_url: str
     engine_download_url: str = Field(description="The engine model file: world, storyteller, training state, memory "
                                      "and tag vectors. Load it with POST /v1/engines/load.")
+    training: dict[str, Any] | None = Field(
+        default=None, description="A training's settings: `overrides` (what the request set), `sources` (each value: "
+        "override or default), `resolved` (as POST /v1/simulations/resolve gives them) and `executed` (read back "
+        "from the evolution that ran): population, generations, stories_per_storyteller, requested_steps, "
+        "story_turns, full_length_stories, story_length, deterministic, seed, warm_start, warm_start_mode.")
 
 
 ARTIFACTS: dict[str, Path] = {}
@@ -886,7 +902,7 @@ def simulate(body: SimulationRequest, origin: str = Depends(_origin), user_id: s
     try:
         game = sessions.run_simulation(
             body.candidate_count, body.generations, body.simulation_steps, body.deterministic,
-            profile=body.profile, episodes=body.episodes, warm_start=body.warm_start,
+            profile=body.profile, episodes=body.episodes, warm_start=body.warm_start, seed=body.seed,
             stats_choice="defined" if body.stats is not None else body.stats_mode,
             stats_points=yaml.safe_dump(body.stats) if body.stats is not None else None,
             progress=None, origin=origin, mission=body.mission, user_id=user_id,
@@ -902,7 +918,7 @@ def _game_response(game) -> "SimulationResponse":
     state = _play_state(game["token"], game["last_turn"])
     return SimulationResponse(
         **state.model_dump(), report=game["report"], learning=game["learning"], run_id=game.get("run_id"),
-        engine_id=game.get("engine_id"),
+        engine_id=game.get("engine_id"), training=game.get("training"),
         config_download_url=_register_artifact(game["config_path"]),
         engine_download_url=_register_artifact(game["engine_path"]),
     )
@@ -1020,16 +1036,65 @@ class SimulationWork(BaseModel):
 
 
 @api.get("/v1/simulations/work", response_model=SimulationWork, tags=["Evolution and play"])
-def simulation_work(candidate_count: int = 8, generations: int = 5, simulation_steps: int = 16, episodes: int = 3):
-    """What a run would ask for before it starts, as the run itself counts it: the steps asked for
-    against the turns a story can really take (with full-length stories every story is played to its
-    end whatever the steps; otherwise the steps, though no story outlasts its end) and why they
-    differ, and the ``work`` (storytellers x generations x stories per storyteller x turns per story)
-    against the ``limit`` (app parameter ``max_simulation_work``). A run is refused exactly when
-    ``allowed`` is false."""
-    if min(candidate_count, generations, simulation_steps, episodes) < 1:
+def simulation_work(candidate_count: int | None = None, generations: int | None = None,
+                    simulation_steps: int | None = None, episodes: int | None = None):
+    """What a run would ask for before it starts, as the run itself counts it (each value left out:
+    the saved engine default): the steps asked for against the turns a story can really take (with
+    full-length stories every story is played to its end whatever the steps; otherwise the steps,
+    though no story outlasts its end) and why they differ, and the ``work`` (storytellers x
+    generations x stories per storyteller x turns per story) against the ``limit`` (app parameter
+    ``max_simulation_work``). The work part of POST /v1/simulations/resolve."""
+    given = [value for value in (candidate_count, generations, simulation_steps, episodes) if value is not None]
+    if given and min(given) < 1:
         raise HTTPException(status_code=422, detail="Every value must be at least 1.")
-    return sessions.training_work(candidate_count, generations, episodes, simulation_steps)
+    return sessions.resolve_training({"candidate_count": candidate_count, "generations": generations,
+                                      "simulation_steps": simulation_steps, "episodes": episodes})["work"]
+
+
+class TrainingResolveRequest(TrainingOverrides):
+    warm_start: bool | None = Field(default=None, description="Default evolution.warm_start.")
+    engine_id: str | None = Field(default=None, description="Resolve a retraining of this recorded engine: its saved "
+                                  "defaults, and a warm start from it.")
+
+
+class ResolvedTraining(BaseModel):
+    defaults: dict[str, Any] = Field(description="The saved engine defaults: candidate_count, generations, episodes, "
+                                     "simulation_steps, deterministic, seed, warm_start, full_length_stories, "
+                                     "story_length (and story_length_setting, narrative_end.max_actions as saved).")
+    overrides: dict[str, Any] = Field(description="What the request sets for this run.")
+    sources: dict[str, str] = Field(description="Each effective value: override, default (or the engine it starts from).")
+    effective: dict[str, Any] = Field(description="What the run executes: population, generations, "
+                                      "stories_per_storyteller, requested_steps, story_turns, full_length_stories, "
+                                      "story_length, deterministic, seed (null: random), warm_start, warm_start_mode "
+                                      "(memory, engine or off).")
+    work: SimulationWork
+    notes: list[str] = Field(description="Values held to the app's limits, a seed a random run does not use.")
+    errors: list[str] = Field(description="Why the run would be refused besides its work (a deterministic run "
+                              "without a seed); too much work: work.allowed is false.")
+    ready: bool = Field(description="The run would start: no errors and its work allowed.")
+    remembered: int | None = Field(default=None, description="Storytellers in the learning memory a warm start "
+                                   "begins from (now).")
+
+
+def _overrides(body) -> dict:
+    return {field: getattr(body, field, None) for field in sessions.TRAINING_OVERRIDES}
+
+
+@api.post("/v1/simulations/resolve", response_model=ResolvedTraining, tags=["Evolution and play"])
+def resolve_simulation(body: TrainingResolveRequest):
+    """What a run with these settings would execute, before it starts: the saved engine defaults
+    (⚙ Advanced → Simulation) with what the request sets for itself, held to the app's limits, with
+    the seed, how long a story is, the warm start and the work. POST /v1/simulations (or the job, or
+    a retraining with ``engine_id``) with the same body runs exactly ``effective``; its response's
+    ``training`` says what was resolved and what the evolution ran with."""
+    source = None
+    if body.engine_id:
+        _known_engine(body.engine_id)
+        source = sessions._recorded_model(body.engine_id).config
+    try:
+        return sessions.resolve_training(_overrides(body), source=source, warm_start_from=body.engine_id)
+    except Exception as exc:
+        _fail(exc)
 
 
 @api.get("/v1/sessions/{session_id}/state", tags=["Evolution and play"])
@@ -1135,12 +1200,8 @@ class EngineContinueRequest(EnginePlayRequest):
                              description="Further generations, continuing exactly where training stopped.")
 
 
-class EngineRetrainRequest(EnginePlayRequest):
-    candidate_count: int = Field(default=8, ge=1, le=store.RUN_LIMITS["candidate_limit"])
-    generations: int = Field(default=5, ge=1, le=store.RUN_LIMITS["generation_limit"])
-    simulation_steps: int = Field(default=16, ge=1, le=store.RUN_LIMITS["simulation_step_limit"])
-    episodes: int | None = Field(default=None, ge=1, le=10)
-    deterministic: bool = True
+class EngineRetrainRequest(EnginePlayRequest, TrainingOverrides):
+    """A retraining sets what it wants for itself; the rest is the recorded engine's saved defaults."""
 
 
 def _player(body):
@@ -1289,7 +1350,7 @@ def retrain_recorded_engine(engine_id: str, body: EngineRetrainRequest, origin: 
     try:
         return _game_response(sessions.retrain_engine(
             engine_id, body.candidate_count, body.generations, body.simulation_steps, body.episodes,
-            body.deterministic, origin=origin, user_id=user_id, **_player(body)))
+            body.deterministic, origin=origin, user_id=user_id, seed=body.seed, **_player(body)))
     except HTTPException:
         raise
     except Exception as exc:
@@ -1398,14 +1459,17 @@ def get_app_settings():
 @api.put("/v1/app-settings", tags=["Studio"])
 def put_app_settings(body: AppSettingsBody):
     """Validate and save app parameters; they apply when the studio and the API restart."""
-    unknown = sorted(set(body.settings) - set(store.APP_DEFAULTS))
+    retired = sorted(set(body.settings) & set(store.RETIRED_APP_SETTINGS))
+    unknown = sorted(set(body.settings) - set(store.APP_DEFAULTS) - set(retired))
     if unknown:
         raise HTTPException(status_code=400, detail="Unknown app parameters: " + ", ".join(unknown))
     try:
         store.save_app_settings({**store.load_app_settings(), **body.settings})
     except (ValueError, OSError) as exc:
         _fail(exc)
-    return {"message": "App parameters saved. Restart the studio and the API to apply them.",
+    note = (f" Ignored {', '.join(retired)}: a run's defaults are the saved engine defaults (evolution.*), and "
+            "each run may set its own." if retired else "")
+    return {"message": "App parameters saved. Restart the studio and the API to apply them." + note,
             "settings": store.load_app_settings()}
 
 
@@ -1771,13 +1835,15 @@ def submit_simulation(body: SimulationRequest, origin: str = Depends(_origin), u
     def work(progress):
         game = sessions.run_simulation(
             body.candidate_count, body.generations, body.simulation_steps, body.deterministic,
-            profile=body.profile, episodes=body.episodes, warm_start=body.warm_start,
+            profile=body.profile, episodes=body.episodes, warm_start=body.warm_start, seed=body.seed,
             stats_choice="defined" if body.stats is not None else body.stats_mode,
             stats_points=yaml.safe_dump(body.stats) if body.stats is not None else None,
             progress=progress, origin=origin, mission=body.mission, user_id=user_id,
         )
         return _game_response(game).model_dump()
-    return sessions.submit_job("simulation", work, f"{body.generations} generation(s) of {body.candidate_count} storytellers")
+    run = sessions.resolve_training(_overrides(body))["effective"]
+    return sessions.submit_job("simulation", work,
+                               f"{run['generations']} generation(s) of {run['population']} storytellers")
 
 
 @api.post("/v1/jobs/engines/{engine_id}/continue", status_code=202, tags=["Jobs"])
@@ -1799,8 +1865,10 @@ def submit_retrain(engine_id: str, body: EngineRetrainRequest, origin: str = Dep
     def work(progress):
         return _game_response(sessions.retrain_engine(
             engine_id, body.candidate_count, body.generations, body.simulation_steps, body.episodes,
-            body.deterministic, origin=origin, progress=progress, user_id=user_id, **_player(body))).model_dump()
-    return sessions.submit_job("retrain", work, f"{body.generations} generation(s) from engine {engine_id}")
+            body.deterministic, origin=origin, progress=progress, user_id=user_id, seed=body.seed,
+            **_player(body))).model_dump()
+    return sessions.submit_job("retrain", work, f"{body.generations or 'the default'} generation(s) from engine "
+                                                f"{engine_id}")
 
 
 class StoryRef(BaseModel):

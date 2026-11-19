@@ -817,6 +817,23 @@ class ConfigFolderTests(_Sandbox):
         self.assertEqual(self.client.get("/v1/simulations/work", params={"episodes": 0}).status_code, 422)
 
 
+def _controls(population=None, generations=None, episodes=None, steps=None, reproducibility="default", seed=None,
+              warm_start="default"):
+    """The Train form's controls (app.RUN_CONTROLS): a value given is set for the run, None: the saved default."""
+    controls = []
+    for value, fallback in ((population, 8), (generations, 5), (episodes, 3), (steps, 16)):
+        controls += [value is not None, value if value is not None else fallback]
+    return (*controls, reproducibility, seed is not None, seed if seed is not None else 42, warm_start)
+
+
+def _form(controls):
+    """app.run_form_ui's answer: (summary text, the steps slider's update, the resolution)."""
+    import app
+
+    outputs = app.run_form_ui(*controls)
+    return outputs[7], outputs[3], outputs[8]
+
+
 class TrainingWorkTests(_Sandbox):
     """How long a training story is and how much a run asks for, as the API counts it (the studio
     only shows it, and a run is refused on the same numbers): the steps asked for against the turns
@@ -860,9 +877,9 @@ class TrainingWorkTests(_Sandbox):
                 self.assertEqual(asked["work"], 2 * 3 * 4 * 120)
                 self.assertEqual(asked["story_turns"], 120)                    # older clients
                 self.assertGreaterEqual(self._steps_the_run_plays(steps), 120)  # training plays every story to its end
-        text, steps_look = app.run_work_ui(2, 3, 16, 4)
+        text, steps_look, _ = _form(_controls(population=2, generations=3, episodes=4, steps=16))
         self.assertIn("Full-length stories enabled: up to 120 turns", text)  # the configured value
-        self.assertIn("Steps per simulation (16) does not set it.", text)
+        self.assertIn("Steps per simulation (16) does not set the story length.", text)
         self.assertIn("2 storytellers × 3 generations × 4 stories each × 120 turns = **2,880**", text)
         self.assertNotIn("⚠", text)
         self.assertIn("not used: full-length stories", steps_look["label"])
@@ -877,10 +894,10 @@ class TrainingWorkTests(_Sandbox):
         self.assertFalse(asked["full_length_stories"])
         self.assertEqual(asked["work"], 2 * 3 * 4 * 16)
         self.assertEqual(self._steps_the_run_plays(16), 16)
-        text, steps_look = app.run_work_ui(2, 3, 16, 4)
+        text, steps_look, _ = _form(_controls(population=2, generations=3, episodes=4, steps=16))
         self.assertIn("Bounded stories: up to 16 turns", text)
         self.assertNotIn("Full-length", text)
-        self.assertNotIn("does not set it", text)
+        self.assertNotIn("does not set the story length", text)
         self.assertIn("× 16 turns = **384**", text)
         self.assertEqual(steps_look["label"], "Steps per simulation")
         self.assertNotIn("steps-unused", steps_look["elem_classes"])
@@ -890,8 +907,8 @@ class TrainingWorkTests(_Sandbox):
         self.assertEqual((capped["effective_max_turns"], capped["steps_decide"]), (100, False))
         self.assertEqual(capped["override"]["setting"], "narrative_end.max_actions")
         self.assertEqual(capped["work"], 2 * 3 * 4 * 100)
-        text, steps_look = app.run_work_ui(2, 3, 400, 4)
-        self.assertIn("Steps per simulation (400) does not set it.", text)
+        text, steps_look, _ = _form(_controls(population=2, generations=3, episodes=4, steps=400))
+        self.assertIn("Steps per simulation (400) does not set the story length.", text)
         self.assertIn("capped at 100", steps_look["label"])
 
         # A configured length below the minimum: the story lasts the minimum, and the reason says so.
@@ -910,11 +927,13 @@ class TrainingWorkTests(_Sandbox):
             self.assertEqual((asked["work"], asked["limit"], asked["allowed"], asked["over_by"]),
                              (at_limit, at_limit, True, 0))
             sessions._training_guard(2, 1, 1, 16)  # exactly at the limit: the run may start
-            self.assertNotIn("⚠", app.run_work_ui(2, 1, 16, 1)[0])
+            self.assertTrue(sessions.resolve_training({"candidate_count": 2, "generations": 1, "episodes": 1,
+                                                       "simulation_steps": 16})["ready"])
+            self.assertNotIn("⚠", _form(_controls(population=2, generations=1, episodes=1, steps=16))[0])
         with patch.object(sessions, "MAX_SIMULATION_WORK", at_limit - 1):
             asked = self._work(2, 1, 16, 1)
             self.assertEqual((asked["allowed"], asked["over_by"]), (False, 1))
-            text = app.run_work_ui(2, 1, 16, 1)[0]
+            text = _form(_controls(population=2, generations=1, episodes=1, steps=16))[0]
             self.assertIn("⚠ **It will be refused:** 1 turns over the limit", text)
             # The run is refused on the same numbers, before anything is played.
             refused = self.client.post("/v1/simulations", json={"candidate_count": 2, "generations": 1,
@@ -924,6 +943,131 @@ class TrainingWorkTests(_Sandbox):
             self.assertIn("2 storytellers x 1 generations x 1 stories x 120 turns", detail)
             self.assertIn("1 above the limit of 239", detail)
             self.assertIn("evolution.full_length_stories", detail)  # why a story counts 120 turns, not 16
+
+
+class TrainingSettingsTests(_Sandbox):
+    """One model for a run's settings: the saved engine defaults (evolution.*, reproducibility.*: ⚙ Advanced)
+    with what the run sets for itself (🧠 Train), resolved by the API (POST /v1/simulations/resolve). The
+    summary the studio shows before a run is what it submits, what the run resolves to and what its
+    evolution executes."""
+
+    SAVED = {"pop_size": 12, "generations": 7, "episodes_per_genome": 2, "max_steps": 30, "warm_start": False,
+             "full_length_stories": False}
+
+    def setUp(self):
+        super().setUp()
+        world = store.config.as_dict()
+        world["evolution"].update(self.SAVED)
+        world["reproducibility"] = {"deterministic": True, "seed": 99}
+        world["narrative_end"]["max_actions"] = 100
+        store.config.use_override(world)
+        self.addCleanup(lambda: (setattr(store.config, "_override", None), type(store.config).reload(store.config)))
+
+    def _resolve(self, body):
+        answer = self.client.post("/v1/simulations/resolve", json=body)
+        self.assertEqual(answer.status_code, 200, answer.text)
+        return answer.json()
+
+    def test_the_saved_defaults_and_a_run_s_overrides(self):
+        plan = self._resolve({})
+        self.assertEqual(plan["effective"], {
+            "population": 12, "generations": 7, "stories_per_storyteller": 2, "requested_steps": 30, "story_turns": 30,
+            "full_length_stories": False, "story_length": 100, "deterministic": True, "seed": 99, "warm_start": False,
+            "warm_start_mode": "off"})
+        self.assertEqual(set(plan["sources"].values()), {"default"})
+        self.assertEqual(plan["overrides"], {})
+        self.assertEqual(self.client.get("/v1/simulations/work").json(), plan["work"])  # the work, with no values set
+
+        plan = self._resolve({"candidate_count": 3, "deterministic": False, "seed": 5, "warm_start": True})
+        e = plan["effective"]
+        self.assertEqual((e["population"], e["generations"], e["seed"], e["warm_start_mode"]), (3, 7, None, "memory"))
+        self.assertEqual(plan["sources"]["population"], "override")
+        self.assertEqual(plan["sources"]["generations"], "default")
+        self.assertIn("Seed 5 is not used", " ".join(plan["notes"]))
+
+        with patch.dict(sessions.APP_SETTINGS, {"candidate_limit": 5}):  # an app limit lower than asked
+            held = self._resolve({"candidate_count": 10})
+        self.assertEqual(held["effective"]["population"], 5)
+        self.assertIn("held to 5 (app parameter candidate_limit)", " ".join(held["notes"]))
+
+    def test_a_deterministic_run_without_a_seed_is_refused_before_it_starts(self):
+        world = store.config.as_dict()
+        world["reproducibility"] = {"deterministic": True, "seed": None}
+        store.config.use_override(world)
+        plan = self._resolve({"candidate_count": 1, "generations": 1})
+        self.assertFalse(plan["ready"])
+        self.assertIn("needs a seed", plan["errors"][0])
+        refused = self.client.post("/v1/simulations", json={"candidate_count": 1, "generations": 1})
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("needs a seed", refused.json()["detail"])
+        self.assertTrue(self._resolve({"seed": 3})["ready"])  # a seed set for the run is enough
+        self.assertTrue(self._resolve({"deterministic": False})["ready"])
+
+    def test_what_is_shown_is_what_is_submitted_resolved_and_executed(self):
+        import app
+        from core_engine.evolution import NarrativeEvolution
+
+        controls = _controls(population=2, generations=1, episodes=1, steps=3, reproducibility="on", seed=7,
+                             warm_start="off")
+        text, _, shown = _form(controls)
+        for line in ("| Population | **2** storytellers | set for this run (saved default 12) |",
+                     "| Generations | **1** | set for this run (saved default 7) |",
+                     "| Stories per storyteller | **1** | set for this run (saved default 2) |",
+                     "Bounded stories: up to 3 turns", "**7** (deterministic)", "**off**: random storytellers",
+                     "2 storytellers × 1 generations × 1 stories each × 3 turns = **6**"):
+            self.assertIn(line, text)
+        body = app._run_overrides(*controls)
+        self.assertEqual(body, {"candidate_count": 2, "generations": 1, "episodes": 1, "simulation_steps": 3,
+                                "seed": 7, "deterministic": True, "warm_start": False})
+        self.assertEqual(self._resolve(body)["effective"], shown["effective"])  # the summary is the API's answer
+
+        ran = []
+        original = NarrativeEvolution.run
+
+        def spy(evolution, *args, **kwargs):  # what the evolution really runs with
+            ran.append((dict(evolution.settings), evolution.seed))
+            return original(evolution, *args, **kwargs)
+
+        with patch.object(NarrativeEvolution, "run", spy):
+            report, *outputs = app.run_simulation_ui(*controls, shown, progress=lambda *a, **k: None)
+        settings, seed = ran[-1]
+        self.assertEqual((settings["pop_size"], settings["generations"], settings["episodes_per_genome"],
+                          settings["max_steps"], settings["warm_start"], settings["full_length_stories"], seed),
+                         (2, 1, 1, 3, False, False, 7))
+        self.assertIn("✅ **Ran exactly as summarised before it started:**", report)
+        run = records.get_run(outputs[5])  # the run as recorded
+        self.assertEqual(run["seed"], 7)
+        self.assertEqual((run["settings"]["pop_size"], run["settings"]["generations"],
+                          run["settings"]["episodes_per_genome"], run["settings"]["max_steps"]), (2, 1, 1, 3))
+        self.assertEqual(run["parameters"]["overrides"], body)
+
+        # The API's answer says the same: what was resolved, and what the evolution ran with.
+        with patch.object(NarrativeEvolution, "run", spy):
+            game = self.client.post("/v1/simulations", json=body)
+        self.assertEqual(game.status_code, 200, game.text)
+        training = game.json()["training"]
+        self.assertEqual(training["resolved"], shown["effective"])
+        self.assertEqual({key: training["executed"][key] for key in app.RUN_COMPARED},
+                         {key: shown["effective"][key] for key in app.RUN_COMPARED})
+        self.assertEqual(training["overrides"], body)
+
+        # A summary the run did not follow (the saved defaults changed in between) is said so.
+        stale = {**shown, "effective": {**shown["effective"], "population": 12}}
+        self.assertIn("population: shown 12, ran 2", app.executed_markdown(training, stale))
+
+        # Retraining the recorded engine: its saved defaults, the form's settings, a warm start from it.
+        engine_id = game.json()["engine_id"]
+        retrain = {**app._retrain_overrides(1, *controls), "engine_id": engine_id}
+        plan = self._resolve(retrain)
+        self.assertEqual(plan["effective"]["warm_start_mode"], "engine")
+        self.assertEqual(plan["sources"]["warm_start"], f"engine {engine_id}")
+        text, retrain_shown = app.retrain_form_ui(engine_id, 1, *controls)
+        self.assertIn("**from the recorded engine**", text)
+        with patch.object(NarrativeEvolution, "run", spy):
+            report, *_ = app.retrain_recorded_ui(engine_id, 1, *controls, retrain_shown, progress=lambda *a, **k: None)
+        self.assertIn("✅ **Ran exactly as summarised before it started:**", report)
+        settings, seed = ran[-1]
+        self.assertEqual((settings["pop_size"], settings["generations"], settings["max_steps"], seed), (2, 1, 3, 7))
 
 
 class StudioServiceTests(_Sandbox):
@@ -1083,17 +1227,32 @@ class AppSettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(store, "APP_SETTINGS_PATH", Path(directory) / "ui.yml"):
                 settings = store.load_app_settings()
-                settings["default_candidates"] = 4
+                settings["candidate_limit"] = 40
                 store.save_app_settings(settings)
                 self.assertEqual(store.load_app_settings(), settings)
                 for key, value in (("server_port", 70000), ("max_web_sessions", 0),
-                                   ("crossover_probability", float("nan")),
-                                   ("default_candidates", 401), ("candidate_limit", 401),
+                                   ("crossover_probability", float("nan")), ("candidate_limit", 401),
                                    ("generation_limit", 1001), ("simulation_step_limit", 401),
                                    ("queue_max_size", True)):
                     with self.subTest(key=key), self.assertRaises(ValueError):
                         store.save_app_settings({**settings, key: value})
                 self.assertEqual(store.load_app_settings(), settings)
+
+    def test_a_saved_file_with_the_retired_run_defaults_still_loads(self):
+        """default_candidates, default_generations and default_simulation_steps are gone (a run's defaults
+        are the saved engine defaults): a file that still has them loads, and saving drops them."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ui.yml"
+            path.write_text(yaml.safe_dump({**store.APP_DEFAULTS, "default_candidates": 8, "default_generations": 5,
+                                            "default_simulation_steps": 16}))
+            with patch.object(store, "APP_SETTINGS_PATH", path):
+                loaded = store.load_app_settings()
+                self.assertEqual(loaded, store.APP_DEFAULTS)
+                store.save_app_settings({**loaded, "default_candidates": 4})
+                self.assertNotIn("default_candidates", yaml.safe_load(path.read_text()))
+                answer = TestClient(api.api).put("/v1/app-settings", json={"settings": {"default_generations": 3}})
+                self.assertEqual(answer.status_code, 200, answer.text)
+                self.assertIn("Ignored default_generations", answer.json()["message"])
 
 
 class StudioIsAnAPIClientTests(_Sandbox):

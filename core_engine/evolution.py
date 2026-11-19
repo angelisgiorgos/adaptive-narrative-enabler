@@ -117,21 +117,24 @@ DEFAULTS = {
 AGGREGATES = ("mean", "mean_minus_std")
 
 
-def evolution_settings(overrides=None):
-    """Evolution settings: DEFAULTS < config ``evolution`` < ``overrides``."""
+def evolution_settings(overrides=None, base=None):
+    """Evolution settings: DEFAULTS < config ``evolution`` (or ``base``, e.g. a recorded engine's) <
+    ``overrides``."""
     settings = dict(DEFAULTS)
-    settings.update({k: v for k, v in (config.get("evolution") or {}).items() if k in DEFAULTS})
+    saved = (config.get("evolution") or {}) if base is None else (base or {})
+    settings.update({k: v for k, v in saved.items() if k in DEFAULTS})
     settings.update({k: v for k, v in (overrides or {}).items() if v is not None})
     return settings
 
 
 # ---- evaluation -------------------------------------------------------------------
 
-def story_turns(steps, full_length):
+def story_turns(steps, full_length, end=None):
     """The most turns a training story can take, and whether the ``steps`` asked for decide it:
     (turns, steps_decide). With full-length stories every story is played to its end
-    (story_length()), whatever the steps; otherwise ``steps``, though no story outlasts its end."""
-    end = story_length()
+    (story_length(), or ``end``), whatever the steps; otherwise ``steps``, though no story outlasts
+    its end."""
+    end = story_length() if end is None else int(end)
     steps = max(1, int(steps))
     if full_length:
         return end, False
