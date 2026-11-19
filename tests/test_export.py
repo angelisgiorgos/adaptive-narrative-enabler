@@ -47,6 +47,12 @@ class _Exports(unittest.TestCase):
         cls.dir = Path(cls.tmp.name)
         cls.env = patch.dict(os.environ, {"ANE_SAVE_DIR": str(cls.dir / "saves")})
         cls.env.start()
+        # Short stories and a one-story benchmark for the runs these tests export (simulation_steps does
+        # not shorten full-length stories): what is exported does not depend on a story's length.
+        world = engine.config.as_dict()
+        world["evolution"].update({"full_length_stories": False, "cover_situations": False, "validation_episodes": 2})
+        engine.config.use_override(world)
+        cls.addClassCleanup(engine.config.clear_override)
         cls.game = sessions.run_simulation(5, 3, 5, True, episodes=1)
 
     @classmethod

@@ -241,6 +241,12 @@ button[role="tab"] {font-size: .88rem !important; padding: .3rem .75rem !importa
 .steps-unused input[type="range"] {opacity: .55}
 .run-work p {font-size: .9rem; margin: .15rem 0}
 .status {border-left: 4px solid #8b5cf6; padding-left: 1rem}
+/* 🌍 World → 📝 Entries: the draft's indicator, and the question asked before unsaved changes are left. */
+.draft-status {font-size: .85rem; color: var(--body-text-color-subdued); padding: .1rem .2rem}
+.draft-status.dirty {color: #b45309; font-weight: 600}
+.draft-prompt {border: 2px solid #f59e0b !important; border-radius: 12px; padding: .2rem .6rem;
+               background: var(--background-fill-secondary)}
+.draft-prompt h3 {font-size: 1rem; margin: .2rem 0}
 /* 🧠 Train's completed engine: its card, then the actions that carry its id to Play, Evaluate and Export. */
 .result-card {padding: .3rem .9rem; border-radius: 12px; border: 1px solid var(--border-color-primary);
               border-left: 5px solid #10b981; background: var(--background-fill-secondary); min-height: 3.2rem}
@@ -297,15 +303,18 @@ def _highlight(destination):
 
 
 def navigate(destination):
-    """Go to a destination: its tab is selected (the others keep their state), the banner highlights it
-    and the menu names it. An unknown destination goes to the World."""
+    """Go to a destination: its tab is selected (the others keep their state), the banner highlights it,
+    the menu names it, and it is remembered as the one open (the outputs ``nav_outputs`` in build_app).
+    An unknown destination goes to the World."""
     destination = destination if destination in DESTINATION_IDS else "world"
-    return (gr.Tabs(selected=destination), *_highlight(destination))
+    return (gr.Tabs(selected=destination), *_highlight(destination), destination)
 
 
 def mark_destination(destination):
-    """The banner and the menu follow a destination whose tab was selected another way."""
-    return _highlight(destination if destination in DESTINATION_IDS else "world")
+    """The banner and the menu follow a destination whose tab was selected another way (and it is
+    remembered as the one open)."""
+    destination = destination if destination in DESTINATION_IDS else "world"
+    return (*_highlight(destination), destination)
 
 
 def open_requested(request: gr.Request = None):
@@ -2410,6 +2419,481 @@ def add_suggestions_ui(field, ticked, descriptions, goals, tags, distant, entere
             f"Added {len(ticked)} to the form: check it and press {where} to keep them.")
 
 
+# ---- 🌍 World → 📝 Entries: the draft (what is being edited, against what was last loaded or saved) --
+#
+# An entry's draft is in parts, each saved by its own button. Its baseline is what the forms held right
+# after the last load or successful save, read back from the browser (so a load never looks like an
+# edit); the draft has unsaved changes where it differs. Changing the entry, the content type or the
+# action, starting a new one, or leaving the editor with unsaved changes undoes the choice and offers
+# Save, Discard or Stay; a failed save changes nothing.
+
+DRAFT_PARTS = {"fields": "Fields", "action": "Actions & outcomes", "scheduling": "Scheduling",
+               "details": "More details", "entry_yaml": "Every field (YAML)", "actions_yaml": "Actions as YAML",
+               "policy_yaml": "Scheduling as YAML"}
+ENTRY_FIELD_COUNT, OUTCOME_FIELD_COUNT = 14, 17
+# The draft's components (draft_inputs in build_app), part by part in this order.
+DRAFT_SIZES = {"fields": ENTRY_FIELD_COUNT, "action": 1 + len(ACTION_FIELD_NAMES) + OUTCOME_FIELD_COUNT,
+               "scheduling": 8, "details": 9, "entry_yaml": 1, "actions_yaml": 1, "policy_yaml": 1}
+# What the entry editor's loads and saves update (entry_outputs in build_app), segment by segment.
+ENTRY_SEGMENTS = {"selection": 2, "fields": ENTRY_FIELD_COUNT, "entry_yaml": 1, "actions_yaml": 1, "policy_yaml": 1,
+                  "action": 3 + len(ACTION_FIELD_NAMES) + OUTCOME_FIELD_COUNT, "scheduling": 11, "details": 12,
+                  "loaded": 1}
+ENTRY_OUTPUTS = sum(ENTRY_SEGMENTS.values())
+# What a save makes out of date: reloaded from the store, unless it has unsaved changes of its own.
+STALE_AFTER = {"fields": ("entry_yaml",), "action": ("actions_yaml", "entry_yaml"),
+               "scheduling": ("policy_yaml", "entry_yaml"), "details": ("entry_yaml",),
+               "entry_yaml": ("fields", "action", "scheduling", "details", "actions_yaml", "policy_yaml"),
+               "actions_yaml": ("action", "entry_yaml"), "policy_yaml": ("scheduling", "entry_yaml")}
+# Two parts editing the same data: with both changed, neither is saved over the other.
+DRAFT_CONFLICTS = tuple(("entry_yaml", part) for part in DRAFT_PARTS if part != "entry_yaml") + (
+    ("actions_yaml", "action"), ("policy_yaml", "scheduling"))
+# The order the parts of a draft are saved in (a rename last; a new entry's fields first).
+DRAFT_SAVE_ORDER = ("action", "scheduling", "details", "actions_yaml", "policy_yaml", "entry_yaml", "fields")
+WORLD_SECTIONS = {"entries": "📝 Entries", "missions": "🎯 Missions", "story-rules": "📜 Story rules", "map": "🗺 Map",
+                  "behaviour": "🏷 Behaviour by tags", "grow": "✨ Grow the world", "checks": "🔍 Checks"}
+
+
+def _plain(value):
+    """A form value as drafts compare it: text without trailing spaces, whole numbers as integers,
+    tables as their non-empty rows of text, nothing as ''."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if value != value:  # NaN: an empty cell
+            return ""
+        return int(value) if float(value).is_integer() else round(float(value), 9)
+    if isinstance(value, str):
+        return "\n".join(line.rstrip() for line in value.strip().splitlines())
+    if isinstance(value, pd.DataFrame):
+        rows = (tuple(_plain(cell) if not isinstance(cell, str) else cell.strip() for cell in row)
+                for row in value.astype(object).values.tolist())
+        return tuple(row for row in rows if any(cell != "" for cell in row))
+    if isinstance(value, dict):
+        if set(value) >= {"headers", "data"}:  # a table as the browser sends it
+            return _plain(pd.DataFrame(value["data"] or [], columns=value["headers"] or None))
+        return tuple(sorted((str(key), _plain(item)) for key, item in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_plain(item) for item in value)
+    return str(value)
+
+
+def _split_draft(values):
+    parts, at = {}, 0
+    for part, size in DRAFT_SIZES.items():
+        parts[part] = tuple(values[at:at + size])
+        at += size
+    if at != len(values):
+        raise ValueError(f"A draft has {sum(DRAFT_SIZES.values())} values, not {len(values)}.")
+    return parts
+
+
+def _action_draft(state, values):
+    """The action being edited as it would be saved: its fields, every outcome (those switched away from
+    are kept in the state) and the one in the form; switching outcomes is not an edit."""
+    state = state or {}
+    try:
+        action = _action_from(state.get("action"), values[:len(ACTION_FIELD_NAMES)])
+        outcomes = list(action.get("outcomes") or [])
+        at = state.get("outcome")
+        if at is not None and at < len(outcomes):
+            outcomes[at] = _outcome_from(outcomes[at], values[len(ACTION_FIELD_NAMES):])
+        action["outcomes"] = outcomes
+        return ("action", state.get("index"), _plain(action))
+    except (gr.Error, ValueError, TypeError):  # a value that cannot be read yet: compared as typed
+        return ("typed", state.get("index"), _plain(list(values)))
+
+
+def draft_parts(*values):
+    """The draft (draft_inputs' values), part by part, as it compares."""
+    split = _split_draft(values)
+    return {"fields": _plain(split["fields"]), "action": _action_draft(split["action"][0], split["action"][1:]),
+            "scheduling": _plain(split["scheduling"]), "details": _plain(split["details"]),
+            **{part: _plain(split[part][0]) for part in ("entry_yaml", "actions_yaml", "policy_yaml")}}
+
+
+def unsaved_parts(base, *values, scope=None):
+    """The parts of the draft that differ from what was last loaded or saved (``base``); a part never
+    loaded yet has nothing unsaved."""
+    now = draft_parts(*values)
+    return [part for part in DRAFT_PARTS
+            if (scope is None or part in scope) and part in (base or {}) and now[part] != base[part]]
+
+
+def _entry_label(loaded):
+    loaded = loaded or {}
+    return (f"**{loaded['entity']}** ({loaded.get('kind')})" if loaded.get("entity")
+            else f"the new {str(loaded.get('kind') or 'entry').rstrip('s')} entry")
+
+
+def draft_status_markup(dirty, loaded):
+    """The editor's draft indicator (data-dirty: the page asks before it is closed or reloaded)."""
+    import html
+
+    if dirty:
+        what = ", ".join(DRAFT_PARTS[part] for part in dirty)
+        return (f'<div class="draft-status dirty" data-dirty="1">● Unsaved changes in '
+                f'{html.escape((loaded or {}).get("entity") or "the new entry")}: {html.escape(what)}</div>')
+    return '<div class="draft-status" data-dirty="0">✓ No unsaved changes</div>'
+
+
+def draft_status_ui(base, loaded, *values):
+    """The indicator after an edit: the draft compared with what was last loaded or saved."""
+    return draft_status_markup(unsaved_parts(base, *values), loaded)
+
+
+def capture_draft_ui(parts, base, loaded, *values):
+    """After a load or a save: the parts it loaded or saved (``parts``) become the baseline, as the
+    browser now holds them. Returns (baseline, indicator, no parts left to capture)."""
+    base = dict(base or {})
+    if parts:
+        now = draft_parts(*values)
+        base.update({part: now[part] for part in parts})
+    return base, draft_status_markup(unsaved_parts(base, *values), loaded), []
+
+
+def _entry_update(**segments):
+    """An update of the entry editor (entry_outputs, ENTRY_SEGMENTS): a segment not given is untouched."""
+    out = []
+    for name, size in ENTRY_SEGMENTS.items():
+        value = segments.get(name)
+        if value is None:
+            out += [gr.skip()] * size
+        else:
+            if len(value) != size:
+                raise ValueError(f"The {name} segment has {size} outputs, not {len(value)}.")
+            out += list(value)
+    return tuple(out)
+
+
+def _part_load(part, kind, name, index=None):
+    """A part of the entry editor as stored (``index``: the action to show; none: the list, a blank form)."""
+    if part == "fields":
+        return _entry_values(kind, _entity(kind, name))
+    if part == "entry_yaml":
+        return (load_entity_yaml_ui(kind, name),)
+    if part == "actions_yaml":
+        return (load_entity_actions_yaml(kind, name),)
+    if part == "policy_yaml":
+        return (load_entity_policy_yaml(kind, name),)
+    if part == "action":
+        if index is None or not name:
+            return action_list_ui(kind, name)
+        return (gr.Dropdown(choices=_action_choices(kind, name), value=index), *load_action_form_ui(kind, name, index))
+    if part == "scheduling":
+        return policy_form_ui(kind, name)
+    if part == "details":
+        return details_form_ui(kind, name)
+    raise ValueError(part)
+
+
+def _entry_load(kind, name, names=None):
+    """Everything the entry editor shows for an entry (or a new one: ``name`` None), as stored."""
+    names = _entity_names(kind) if names is None else names
+    return _entry_update(selection=(gr.update(value=kind), gr.Dropdown(choices=names, value=name)),
+                         loaded=({"kind": kind, "entity": name},),
+                         **{part: _part_load(part, kind, name) for part in DRAFT_PARTS})
+
+
+@ui
+def load_selection_ui(kind, name):
+    """The entry chosen, loaded (the studio opening): the editor, and every part to capture."""
+    return (*_entry_load(kind, name), list(DRAFT_PARTS))
+
+
+# The guarded choices: what they output (draft_outputs in build_app) is the entry editor, the
+# navigation (navigate), the World's sections, the pending choice, the prompt and its message, and the
+# parts to capture once the browser shows them.
+
+def _draft_update(entry=None, nav=None, section=None, pending=gr.skip, prompt=None, message=None, capture=()):
+    return (*(entry or _entry_update()), *(nav or (gr.skip(),) * (len(DESTINATIONS) + 3)),
+            gr.skip() if section is None else gr.Tabs(selected=section),
+            gr.skip() if pending is gr.skip else pending,
+            gr.skip() if prompt is None else gr.update(visible=prompt),
+            gr.skip() if message is None else message, list(capture))
+
+
+def _going(target):
+    kind = target["type"]
+    if kind == "entry":
+        return f"opening {target.get('entity') or 'the content type'} ({target['kind']})"
+    if kind == "new_entry":
+        return "starting a new entry"
+    if kind == "action":
+        return "starting a new action" if target.get("new") else "opening another action"
+    if kind == "destination":
+        return f"leaving the editor for {dict(DESTINATIONS)[target['id']]}"
+    return f"leaving the editor for 🌍 World → {WORLD_SECTIONS[target['id']]}"
+
+
+def _ask(target, loaded, dirty, values, note=""):
+    """The choice undone, and Save, Discard or Stay offered."""
+    loaded = loaded or {}
+    segments = {}
+    if target["type"] == "entry":
+        segments["selection"] = (gr.update(value=loaded.get("kind")), gr.Dropdown(value=loaded.get("entity")))
+    elif target["type"] == "action":
+        state = _split_draft(values)["action"][0] or {}
+        segments["action"] = (gr.Dropdown(value=state.get("index")),
+                              *[gr.skip()] * (ENTRY_SEGMENTS["action"] - 1))
+    what = ", ".join(DRAFT_PARTS[part] for part in dirty)
+    message = (f"### ● Unsaved changes\n{_entry_label(loaded)} has unsaved changes in **{what}**. Save them before "
+               f"{_going(target)}? **Discard** drops them; **Stay** keeps editing." + (f"\n\n{note}" if note else ""))
+    return _draft_update(entry=_entry_update(**segments),
+                         nav=navigate("world") if target["type"] == "destination" else None,
+                         section="entries" if target["type"] in ("destination", "section") else None,
+                         pending=target, prompt=True, message=message)
+
+
+def _perform(target, loaded, values, reload_current=False, refresh=()):
+    """Carry out the choice: open the entry, the new entry or the action, or leave the editor (with
+    ``reload_current``: the entry is reloaded as stored first, its draft gone); ``refresh``: parts made
+    out of date by a save, reloaded too."""
+    loaded = loaded or {}
+    kind, name = loaded.get("kind"), loaded.get("entity")
+    done = {"pending": None, "prompt": False, "message": ""}
+    if target["type"] == "entry":
+        return _draft_update(entry=_entry_load(target["kind"], target.get("entity")), capture=DRAFT_PARTS, **done)
+    if target["type"] == "new_entry":
+        return _draft_update(entry=_entry_load(kind, None), capture=DRAFT_PARTS, **done)
+    if target["type"] == "action":
+        if target.get("new"):
+            action = (gr.skip(), *new_action_ui(kind, name))
+        else:
+            action = (gr.Dropdown(choices=_action_choices(kind, name), value=target.get("index")),
+                      *load_action_form_ui(kind, name, target.get("index")))
+        reloads = {part: _part_load(part, kind, name) for part in refresh}
+        return _draft_update(entry=_entry_update(action=action, **reloads), capture=["action", *refresh], **done)
+    entry = _entry_load(kind, name) if reload_current else None
+    return _draft_update(entry=entry, nav=navigate(target["id"]) if target["type"] == "destination" else None,
+                         section=target["id"] if target["type"] == "section" else None,
+                         capture=DRAFT_PARTS if reload_current else (), **done)
+
+
+def _choose(target, loaded, base, values, scope=None):
+    dirty = unsaved_parts(base, *values, scope=scope)
+    return _ask(target, loaded, dirty, values) if dirty else _perform(target, loaded, values)
+
+
+@ui
+def entry_choice_ui(kind, name, loaded, base, *values):
+    """The user chose another entry or content type (that content type's first entry)."""
+    loaded = loaded or {}
+    if kind != loaded.get("kind"):
+        names = _entity_names(kind)
+        name = names[0] if names else None
+    if (kind, name) == (loaded.get("kind"), loaded.get("entity")):
+        return _draft_update()
+    return _choose({"type": "entry", "kind": kind, "entity": name}, loaded, base, values)
+
+
+@ui
+def new_entry_choice_ui(loaded, base, *values):
+    """*New entry*: a blank form for the content type."""
+    return _choose({"type": "new_entry"}, loaded, base, values)
+
+
+@ui
+def action_choice_ui(index, loaded, base, *values):
+    """Another of the entry's actions picked: only the action form's draft is at stake."""
+    state = _split_draft(values)["action"][0] or {}
+    if index is not None and index == state.get("index"):
+        return _draft_update()
+    return _choose({"type": "action", "index": index}, loaded, base, values, scope=("action",))
+
+
+@ui
+def new_action_choice_ui(loaded, base, *values):
+    """*New action*: a new action's form (saved with *Save action*)."""
+    if not (loaded or {}).get("entity"):
+        raise gr.Error("Select an entry first.")
+    return _choose({"type": "action", "new": True}, loaded, base, values, scope=("action",))
+
+
+def section_choice_ui(section, loaded, base, *values):
+    """Another section of 🌍 World opened: with unsaved changes the editor stays open and asks."""
+    dirty = unsaved_parts(base, *values)
+    return _ask({"type": "section", "id": section}, loaded, dirty, values) if dirty else _draft_update()
+
+
+def nav_choice_ui(destination, now, loaded, base, *values):
+    """The banner or the menu: leaving 🌍 World (``now``) with unsaved changes asks first; anything
+    else goes at once (navigate)."""
+    destination = destination if destination in DESTINATION_IDS else "world"
+    dirty = unsaved_parts(base, *values) if now == "world" and destination != "world" else []
+    if dirty:
+        return _ask({"type": "destination", "id": destination}, loaded, dirty, values)
+    return _draft_update(nav=navigate(destination))
+
+
+class DraftNotSaved(Exception):
+    """A draft that could not be saved (whole): what was saved before, and why the rest was not."""
+
+    def __init__(self, message, saved=(), loaded=None):
+        super().__init__(message)
+        self.message, self.saved, self.loaded = message, list(saved), loaded
+
+
+def _save_part(part, kind, name, split):
+    """Save one part of the draft with its own save (the API checks it). Returns (the entry's name
+    afterwards, the message); a failure raises gr.Error."""
+    if part == "fields":
+        dropdown, message = save_entity_ui(kind, name, *split["fields"])
+        return _prop_value(dropdown), message
+    if part == "action":
+        return name, save_action_form_ui(split["action"][0], *split["action"][1:])[-2]
+    if part == "scheduling":
+        return name, save_policy_form_ui(kind, name, *split["scheduling"])[0]
+    if part == "details":
+        return name, save_details_ui(kind, name, *split["details"])[0]
+    saver = {"entry_yaml": save_entity_yaml_ui, "actions_yaml": save_entity_actions_ui,
+             "policy_yaml": save_entity_policy_ui}[part]
+    return name, saver(kind, name, split[part][0])[1]
+
+
+def _prop_value(component):
+    return component["value"] if isinstance(component, dict) else getattr(component, "value", None)
+
+
+def _error_text(exc):
+    return str(getattr(exc, "message", None) or exc)
+
+
+def _save_draft(dirty, loaded, values):
+    """Save every part with unsaved changes, each with its own save; nothing when two of them edit the
+    same data. Returns (the entry as it is now, the parts saved); a failure raises DraftNotSaved."""
+    loaded = dict(loaded or {})
+    conflict = next(((a, b) for a, b in DRAFT_CONFLICTS if a in dirty and b in dirty), None)
+    if conflict:
+        raise DraftNotSaved(f"⚠ **Nothing was saved:** {DRAFT_PARTS[conflict[0]]} and {DRAFT_PARTS[conflict[1]]} both "
+                            "change the same data. Choose **Stay** and save the one to keep with its own button, or "
+                            "**Discard** both.", (), loaded)
+    kind, name = loaded.get("kind"), loaded.get("entity")
+    order = sorted(dirty, key=DRAFT_SAVE_ORDER.index)
+    if name is None and "fields" in order:  # a new entry exists once its fields are saved
+        order.remove("fields")
+        order.insert(0, "fields")
+    split, saved = _split_draft(values), []
+    for part in order:
+        try:
+            name, _ = _save_part(part, kind, name, split)
+        except gr.Error as exc:
+            done = f" ({', '.join(DRAFT_PARTS[p] for p in saved)} saved before it)" if saved else ""
+            raise DraftNotSaved(f"⚠ **{DRAFT_PARTS[part]} could not be saved**{done}: {_error_text(exc)}  \n"
+                                "Nothing was discarded: correct it and **Save** again, **Stay**, or **Discard**.",
+                                saved, {"kind": kind, "entity": name}) from exc
+        saved.append(part)
+    return {"kind": kind, "entity": name}, saved
+
+
+@ui
+def resolve_draft_ui(choice, pending, loaded, base, *values):
+    """The prompt's answer: **save** the unsaved changes and go on (a failed save changes nothing:
+    the draft, the entry and the prompt stay, with why), **discard** them and go on, or **stay**."""
+    if not pending or choice == "stay":
+        return _draft_update(pending=None, prompt=False, message="")
+    if choice == "discard":
+        return _perform(pending, loaded, values, reload_current=True)
+    scope = ("action",) if pending["type"] == "action" else None
+    dirty = unsaved_parts(base, *values, scope=scope)
+    try:
+        loaded_now, saved = _save_draft(dirty, loaded, values)
+    except DraftNotSaved as failure:
+        renamed = failure.loaded and failure.loaded.get("entity") != (loaded or {}).get("entity")
+        entry = None
+        if renamed:  # a new entry was created (its fields saved) before another part failed: it is chosen
+            kind, created = failure.loaded.get("kind"), failure.loaded.get("entity")
+            entry = _entry_update(selection=(gr.skip(), gr.Dropdown(choices=_entity_names(kind), value=created)),
+                                  loaded=(failure.loaded,))
+        return _draft_update(entry=entry, pending=pending, prompt=True, message=failure.message, capture=failure.saved)
+    if pending["type"] == "action":
+        others = set(unsaved_parts(base, *values)) - {"action"}
+        refresh = [part for part in STALE_AFTER["action"] if part not in others]
+        return _perform(pending, loaded_now, values, refresh=refresh)
+    return _perform(pending, loaded_now, values, reload_current=True)
+
+
+@ui
+def save_part_ui(part, loaded, base, *values):
+    """A form's own save button: that part is saved (a failure changes nothing), then reloaded as
+    stored, with what the save made out of date unless it has unsaved changes of its own. A new or
+    renamed entry is reloaded under its name. Returns (the entry editor, the message, the parts to capture)."""
+    loaded = dict(loaded or {})
+    kind, name = loaded.get("kind"), loaded.get("entity")
+    split = _split_draft(values)
+    new_name, message = _save_part(part, kind, name, split)
+    others = set(unsaved_parts(base, *values)) - {part}
+    segments = {}
+    if part == "fields" and new_name != name:  # created or renamed: what is not being edited follows it
+        reload = [p for p in DRAFT_PARTS if p not in others]
+        loaded = {"kind": kind, "entity": new_name}
+        segments["selection"] = (gr.skip(), gr.Dropdown(choices=_entity_names(kind), value=new_name))
+        segments["loaded"] = (loaded,)
+        if "action" in others:  # its action form saves under the new name
+            state = {**(split["action"][0] or {}), "name": new_name}
+            segments["action"] = (gr.skip(), state, *[gr.skip()] * (ENTRY_SEGMENTS["action"] - 2))
+        kept = sorted(others, key=list(DRAFT_PARTS).index)
+    else:
+        reload = [part, *(p for p in STALE_AFTER[part] if p not in others)]
+        kept = [p for p in STALE_AFTER[part] if p in others]
+    index = (split["action"][0] or {}).get("index") if part == "action" else None
+    for p in reload:
+        segments[p] = _part_load(p, kind, new_name, index=index if p == "action" else None)
+    if kept:
+        message += ("\n\n⚠ Not reloaded, to keep their unsaved changes (they may no longer match what is stored): "
+                    + ", ".join(DRAFT_PARTS[p] for p in kept) + ".")
+    return (*_entry_update(**segments), message, reload)
+
+
+@ui
+def reload_part_ui(part, loaded, base, *values):
+    """*Reload from disk* / *Discard changes*: that part as stored (the action being edited stays chosen)."""
+    loaded = loaded or {}
+    state = _split_draft(values)["action"][0] or {}
+    index = state.get("index") if part == "action" and state.get("index") is not None and \
+        state.get("index") < len(_action_choices(loaded.get("kind"), loaded.get("entity"))) else None
+    return (*_entry_update(**{part: _part_load(part, loaded.get("kind"), loaded.get("entity"), index=index)}), [part])
+
+
+@ui
+def delete_action_part_ui(loaded, base, *values):
+    """*Delete action*: the action form back to the list, and what the deletion made out of date."""
+    split = _split_draft(values)
+    loaded = loaded or {}
+    message = delete_action_ui(split["action"][0])[-2]
+    others = set(unsaved_parts(base, *values)) - {"action"}
+    reload = ["action", *(p for p in STALE_AFTER["action"] if p not in others)]
+    segments = {p: _part_load(p, loaded.get("kind"), loaded.get("entity")) for p in reload}
+    return (*_entry_update(**segments), message, reload)
+
+
+@ui
+def delete_entry_part_ui(loaded, base, *values):
+    """*Delete entry*: deleted (its draft with it), and the content type's first entry opened."""
+    loaded = loaded or {}
+    kind, name = loaded.get("kind"), loaded.get("entity")
+    if not name:
+        raise gr.Error("Choose an entry to delete.")
+    result = API.delete(_path(f"/v1/entities/{kind}", name))
+    names = result["entities"]
+    return (*_entry_load(kind, names[0] if names else None, names=names), result["message"], list(DRAFT_PARTS))
+
+
+@ui
+def refresh_entry_names_ui(kind, name):
+    """The entries' names after the world grew: the entry being edited stays chosen (nothing reloaded)."""
+    return gr.Dropdown(choices=_entity_names(kind), value=name)
+
+
+# Before the page is closed or reloaded with unsaved changes, the browser asks (launch(head=...)).
+DRAFT_HEAD = """<script>
+window.addEventListener("beforeunload", (event) => {
+  if (document.querySelector('#draft-status [data-dirty="1"]')) { event.preventDefault(); event.returnValue = ""; }
+});
+</script>"""
+
+
 def world_size_ui():
     """How big the world is against the augmentation targets."""
     size = API.get("/v1/world/size")
@@ -2759,6 +3243,7 @@ def build_app():
         # On a narrow screen the banner gives way to this menu (every destination, by name).
         nav_menu = gr.Radio([(label, key) for key, label in DESTINATIONS], value="world",
                             label="☰ Menu: go to a section", elem_id="ane-menu", elem_classes="nav-menu")
+        dest_now = gr.State("world")  # the destination open (leaving 🌍 World with unsaved changes asks first)
         studio_status = gr.Markdown(elem_classes="status")
         demo.load(studio_status_ui, None, studio_status)
 
@@ -2768,13 +3253,26 @@ def build_app():
                                         render=False)
 
         with gr.Tabs(elem_id="ane-nav", elem_classes="main-tabs") as main_tabs:
+            nav_outputs = [main_tabs, *nav_buttons, nav_menu, dest_now]  # what navigate() returns
             with gr.Tab("🌍 World", id="world", elem_id="dest-world") as world_tab:
-                with gr.Tabs():
-                    with gr.Tab("📝 Entries"):
+                with gr.Tabs(selected="entries") as world_sections:
+                    with gr.Tab(WORLD_SECTIONS["entries"], id="entries"):
                         with gr.Row():
                             kind = gr.Radio(REFERENCE["entity_kinds"], value="Locations", label="Content type")
                             entity = gr.Dropdown(label="Entry", choices=names, value=selected_name)
                             add_entry = gr.Button("New entry")
+                        # The draft: compared with what was last loaded or saved (draft_base, part by part).
+                        draft_status = gr.HTML(draft_status_markup([], None), elem_id="draft-status")
+                        draft_base = gr.State({})
+                        draft_loaded = gr.State({"kind": "Locations", "entity": selected_name})  # what the forms show
+                        draft_pending = gr.State(None)  # where the user was going when asked
+                        draft_capture = gr.State([])    # the parts just loaded or saved, to become the baseline
+                        with gr.Group(visible=False, elem_id="draft-prompt", elem_classes="draft-prompt") as draft_prompt:
+                            draft_message = gr.Markdown()
+                            with gr.Row():
+                                draft_save = gr.Button("💾 Save", variant="primary", elem_id="draft-save")
+                                draft_discard = gr.Button("Discard", variant="stop", elem_id="draft-discard")
+                                draft_stay = gr.Button("Stay", elem_id="draft-stay")
                         places_now, people_now, items_now = _names_of("Locations"), _names_of("NPCs"), _names_of("Items")
                         events_now, stats_now = _names_of("Events"), _stat_names()
                         with gr.Tabs():
@@ -3015,7 +3513,7 @@ def build_app():
                                     reload_entity_yaml_button = gr.Button("Reload from disk")
                                 entity_yaml_status = gr.Markdown()
 
-                    with gr.Tab("🎯 Missions"):
+                    with gr.Tab(WORLD_SECTIONS["missions"], id="missions") as section_missions:
                         gr.Markdown("Each story draws one mission (by weight) among those it may have. A mission is a "
                                     "quest in **steps**, done in order; the last completes it. A step's **Goal** is one "
                                     "or more of `location: Palace`, `item: Heavy Shield`, `action: Crack the main safe`, "
@@ -3050,7 +3548,7 @@ def build_app():
                         save_missions_button.click(save_missions_yaml, missions_editor, [missions_editor, missions_status])
                         reload_missions_button.click(load_missions_yaml, None, missions_editor)
 
-                    with gr.Tab("📜 Story rules"):
+                    with gr.Tab(WORLD_SECTIONS["story-rules"], id="story-rules") as section_story_rules:
                         with gr.Accordion("Story rules", open=True):
                             rules = dict(zip(REFERENCE["rule_fields"], load_rules_ui()))
                             rule_choices = REFERENCE["rule_choices"]
@@ -3158,7 +3656,7 @@ def build_app():
                             stats_status = gr.Markdown()
                             save_stats_button.click(save_stats_yaml, stats_editor, [stats_editor, stats_status])
                             reload_stats_button.click(load_stats_yaml, None, stats_editor)
-                    with gr.Tab("🗺 Map"):
+                    with gr.Tab(WORLD_SECTIONS["map"], id="map") as section_map:
                         gr.Markdown("Pick a place and tick the places it borders: a route holds both ways, and a far "
                                     "place is reached through the places between. The map below shows every route.")
                         with gr.Row():
@@ -3179,7 +3677,7 @@ def build_app():
                                                   [map_editor, map_status])
                             reload_map_button.click(lambda: load_document("map"), None, map_editor)
 
-                    with gr.Tab("🏷 Behaviour by tags"):
+                    with gr.Tab(WORLD_SECTIONS["behaviour"], id="behaviour") as section_behaviour:
                         gr.Markdown(
                             "What people and places do comes from their **tags**: each row gives everyone (or "
                             "everywhere) with one of its tags a behaviour, and the choices above set those tags. Leave a "
@@ -3213,7 +3711,7 @@ def build_app():
                                 save_place_rules = gr.Button("Save the places' rules", variant="primary")
                         rules_status = gr.Markdown()
 
-                    with gr.Tab("✨ Grow the world"):
+                    with gr.Tab(WORLD_SECTIONS["grow"], id="grow") as section_grow:
                         gr.Markdown("The language model proposes new **places, people and items** that fit this world (its places "
                                     "and tags). Nothing is written until you add them: each must be new, and the whole world is "
                                     "checked with them in place. The targets are `augmentation.min_*` (⚙ Advanced → Engine logic).")
@@ -3227,7 +3725,7 @@ def build_app():
                         add_proposal = gr.Button("Add the ticked ones to the world", variant="primary")
                         grow_status = gr.Markdown()
 
-                    with gr.Tab("🔍 Checks"):
+                    with gr.Tab(WORLD_SECTIONS["checks"], id="checks") as section_checks:
                         gr.Markdown(
                             "Actions that can fail (a skill check, or failure outcomes) where failing changes nothing but "
                             "health or coins and no complication event fits: the failures worth writing a consequence for."
@@ -3251,34 +3749,65 @@ def build_app():
                                  det_locked, det_points]
                 mission_fields = [mis_key, mis_title, mis_description, mis_weight, mis_enabled, mis_rewards, mis_stages]
 
-                def entry_forms(kind_value, entity_value):
-                    """Every form of the entry: its actions, scheduling and details."""
-                    return (*action_list_ui(kind_value, entity_value),
-                            *policy_form_ui(kind_value, entity_value),
-                            *details_form_ui(kind_value, entity_value))
-
-                entry_form_outputs = [act_pick, *action_form, event_policy, item_policy, policy_note, *policy_fields,
-                                      npc_details, place_details, details_note, *detail_fields]
-                kind.change(entity_names, kind, [entity, *entry_fields]).then(
-                    load_entity_actions_yaml, [kind, entity], actions_editor,
-                ).then(load_entity_policy_yaml, [kind, entity], policy_editor).then(
-                    entry_forms, [kind, entity], entry_form_outputs,
-                )
-                entity.change(entry_forms, [kind, entity], entry_form_outputs)
-                demo.load(entry_forms, [kind, entity], entry_form_outputs)
-                # One action: pick it, edit its fields and its outcomes, save it (or add, delete).
-                act_pick.input(load_action_form_ui, [kind, entity, act_pick], action_form)
-                act_new.click(new_action_ui, [kind, entity], action_form)
-                act_discard.click(load_action_form_ui, [kind, entity, act_pick], action_form)
-                out_pick.input(pick_outcome_ui, [action_state, out_pick, *outcome_fields], [action_state, *outcome_fields])
-                out_new.click(new_outcome_ui, [action_state, *outcome_fields], [action_state, out_pick, *outcome_fields])
-                out_delete.click(delete_outcome_ui, action_state, [action_state, out_pick, *outcome_fields])
-                act_save.click(save_action_form_ui, [action_state, *action_fields, *outcome_fields],
-                               [act_pick, *action_form, actions_status, actions_editor])
-                act_delete.click(delete_action_ui, action_state, [act_pick, *action_form, actions_status, actions_editor])
-                # Scheduling, details.
-                save_policy_form.click(save_policy_form_ui, [kind, entity, *policy_fields], [policy_status, policy_editor])
-                save_details.click(save_details_ui, [kind, entity, *detail_fields], [details_status, entity_yaml_editor])
+                # ---- 📝 Entries: one draft, its loads and its saves. No load follows a dropdown's change: the
+                # user's choices are guarded (with unsaved changes: undone, then Save, Discard or Stay), and a
+                # load or a save is followed by the capture of what the browser then holds as the baseline.
+                draft_inputs = [*entry_fields, action_state, *action_fields, *outcome_fields, *policy_fields,
+                                *detail_fields, entity_yaml_editor, actions_editor, policy_editor]
+                entry_outputs = [kind, entity, *entry_fields, entity_yaml_editor, actions_editor, policy_editor,
+                                 act_pick, *action_form, event_policy, item_policy, policy_note, *policy_fields,
+                                 npc_details, place_details, details_note, *detail_fields, draft_loaded]
+                if len(draft_inputs) != sum(DRAFT_SIZES.values()) or len(entry_outputs) != ENTRY_OUTPUTS:
+                    raise RuntimeError("The entry editor's components do not match DRAFT_SIZES / ENTRY_SEGMENTS.")
+                draft_outputs = [*entry_outputs, *nav_outputs, world_sections, draft_pending, draft_prompt,
+                                 draft_message, draft_capture]
+                guard_inputs = [draft_loaded, draft_base, *draft_inputs]
+                capture = {"fn": capture_draft_ui, "inputs": [draft_capture, draft_base, draft_loaded, *draft_inputs],
+                           "outputs": [draft_base, draft_status, draft_capture], "show_progress": "hidden"}
+                status = {"fn": draft_status_ui, "inputs": [draft_base, draft_loaded, *draft_inputs],
+                          "outputs": draft_status, "show_progress": "hidden"}
+                demo.load(load_selection_ui, [kind, entity], [*entry_outputs, draft_capture]).success(**capture)
+                # The user's choices: carried out at once, or, with unsaved changes, undone and asked about.
+                kind.input(entry_choice_ui, [kind, entity, *guard_inputs], draft_outputs).success(**capture)
+                entity.input(entry_choice_ui, [kind, entity, *guard_inputs], draft_outputs).success(**capture)
+                add_entry.click(new_entry_choice_ui, guard_inputs, draft_outputs).success(**capture)
+                act_pick.input(action_choice_ui, [act_pick, *guard_inputs], draft_outputs).success(**capture)
+                act_new.click(new_action_choice_ui, guard_inputs, draft_outputs).success(**capture)
+                for button, choice in ((draft_save, "save"), (draft_discard, "discard"), (draft_stay, "stay")):
+                    button.click(lambda pending, *rest, choice=choice: resolve_draft_ui(choice, pending, *rest),
+                                 [draft_pending, *guard_inputs], draft_outputs).success(**capture)
+                # Each form's own save: that part (a failure changes nothing), then reloaded as stored.
+                for button, part, said in ((save_entry, "fields", editor_status), (act_save, "action", actions_status),
+                                           (save_policy_form, "scheduling", policy_status),
+                                           (save_details, "details", details_status),
+                                           (save_entity_yaml_button, "entry_yaml", entity_yaml_status),
+                                           (save_actions_button, "actions_yaml", actions_status),
+                                           (save_policy_button, "policy_yaml", policy_status)):
+                    button.click(lambda *rest, part=part: save_part_ui(part, *rest), guard_inputs,
+                                 [*entry_outputs, said, draft_capture]).success(**capture)
+                for button, part in ((act_discard, "action"), (reload_entity_yaml_button, "entry_yaml"),
+                                     (reload_actions_button, "actions_yaml"), (reload_policy_button, "policy_yaml")):
+                    button.click(lambda *rest, part=part: reload_part_ui(part, *rest), guard_inputs,
+                                 [*entry_outputs, draft_capture]).success(**capture)
+                act_delete.click(delete_action_part_ui, guard_inputs,
+                                 [*entry_outputs, actions_status, draft_capture]).success(**capture)
+                delete_entry.click(delete_entry_part_ui, guard_inputs,
+                                   [*entry_outputs, editor_status, draft_capture]).success(**capture)
+                # An action's outcomes are switched, added and removed inside its draft (saved with Save action).
+                out_pick.input(pick_outcome_ui, [action_state, out_pick, *outcome_fields],
+                               [action_state, *outcome_fields]).then(**status)
+                out_new.click(new_outcome_ui, [action_state, *outcome_fields],
+                              [action_state, out_pick, *outcome_fields]).then(**status)
+                out_delete.click(delete_outcome_ui, action_state, [action_state, out_pick, *outcome_fields]).then(**status)
+                # Every edit: the indicator compares the draft with what was last loaded or saved.
+                gr.on([component.input for component in draft_inputs if not isinstance(component, gr.State)],
+                      trigger_mode="always_last", **status)
+                # Leaving the editor for another section of the World asks first, with unsaved changes.
+                for section, tab in (("missions", section_missions), ("story-rules", section_story_rules),
+                                     ("map", section_map), ("behaviour", section_behaviour), ("grow", section_grow),
+                                     ("checks", section_checks)):
+                    tab.select(lambda *rest, section=section: section_choice_ui(section, *rest), guard_inputs,
+                               draft_outputs, show_progress="hidden")
                 # Missions.
                 mis_pick.input(mission_form_ui, mis_pick, [*mission_fields, mission_state])
                 mis_new.click(new_mission_ui, None, [mis_pick, *mission_fields, mission_state])
@@ -3292,36 +3821,16 @@ def build_app():
                 save_borders.click(save_borders_ui, [map_place, map_borders], [map_view, map_status, map_editor])
                 save_map_button.click(map_form_ui, map_place, [map_view, map_place, map_borders])
 
-                entity.change(load_entity_ui, [kind, entity], entry_fields)
-                entity.change(load_entity_yaml_ui, [kind, entity], entity_yaml_editor)
-                save_entity_yaml_button.click(save_entity_yaml_ui, [kind, entity, entity_yaml_editor],
-                                              [entity_yaml_editor, entity_yaml_status]).then(
-                    load_entity_ui, [kind, entity], entry_fields,
-                ).then(load_entity_actions_yaml, [kind, entity], actions_editor).then(
-                    entry_forms, [kind, entity], entry_form_outputs)
-                reload_entity_yaml_button.click(load_entity_yaml_ui, [kind, entity], entity_yaml_editor)
-                entity.change(load_entity_actions_yaml, [kind, entity], actions_editor)
-                entity.change(load_entity_policy_yaml, [kind, entity], policy_editor)
-                save_policy_button.click(save_entity_policy_ui, [kind, entity, policy_editor], [policy_editor, policy_status]).then(
-                    entry_forms, [kind, entity], entry_form_outputs)
-                reload_policy_button.click(load_entity_policy_yaml, [kind, entity], policy_editor)
-                save_actions_button.click(
-                    save_entity_actions_ui, [kind, entity, actions_editor], [actions_editor, actions_status],
-                ).then(entry_forms, [kind, entity], entry_form_outputs)
-                reload_actions_button.click(load_entity_actions_yaml, [kind, entity], actions_editor)
-                add_entry.click(new_entity, None, [entity, *entry_fields])
-                save_entry.click(save_entity_ui, [kind, entity, *entry_fields], [entity, editor_status]).then(
-                    load_entity_yaml_ui, [kind, entity], entity_yaml_editor,
-                )
-                delete_entry.click(delete_entity_ui, [kind, entity], [entity, *entry_fields, editor_status])
                 # What an NPC or a place does follows its tags: the choices show the tag in effect, and
                 # choosing one sets it (an entry loaded, a tag typed: the choices follow).
                 behaviours = [behaviour_a, behaviour_b]
                 kind.change(behaviour_fields_ui, [kind, tags], behaviours)
                 tags.change(behaviour_fields_ui, [kind, tags], behaviours)
                 demo.load(behaviour_fields_ui, [kind, tags], behaviours)
-                behaviour_a.input(lambda k, c, t: apply_behaviour_ui(k, 0, c, t), [kind, behaviour_a, tags], tags)
-                behaviour_b.input(lambda k, c, t: apply_behaviour_ui(k, 1, c, t), [kind, behaviour_b, tags], tags)
+                behaviour_a.input(lambda k, c, t: apply_behaviour_ui(k, 0, c, t), [kind, behaviour_a, tags], tags).then(
+                    **status)
+                behaviour_b.input(lambda k, c, t: apply_behaviour_ui(k, 1, c, t), [kind, behaviour_b, tags], tags).then(
+                    **status)
                 behaviour_tables = [npc_table, npc_default_a, npc_default_b, place_table, place_default_a,
                                     place_default_b]
                 demo.load(behaviour_tables_ui, None, behaviour_tables)
@@ -3339,13 +3848,13 @@ def build_app():
                                       [suggest_field, suggestions, descriptions, goals, tags, det_distant, det_entered,
                                        det_prompts, det_dialogue],
                                       [descriptions, goals, tags, det_distant, det_entered, det_prompts, det_dialogue,
-                                       suggest_status])
+                                       suggest_status]).then(**status)
                 demo.load(world_size_ui, None, world_size)
                 demo.load(judge_status_ui, None, grow_llm_status)
                 propose_button.click(propose_world_ui, None, [proposal_pick, proposal_text, grow_status],
                                      concurrency_limit=1, concurrency_id="language_model")
                 add_proposal.click(add_proposal_ui, [proposal_text, proposal_pick], [grow_status, world_size]).success(
-                    entity_names, kind, [entity, *entry_fields]).then(studio_status_ui, None, studio_status)
+                    refresh_entry_names_ui, [kind, entity], entity).then(studio_status_ui, None, studio_status)
 
             with gr.Tab("🧠 Train", id="train", elem_id="dest-train") as train_tab:
                 with gr.Tabs(selected="train-run") as train_sections:
@@ -3980,15 +4489,18 @@ def build_app():
 
         # Navigation: the banner, the menu, the address (?section=<id>) and the links inside a destination all
         # select the destination's tab; nothing is re-rendered, so every form, game and run keeps its state.
-        nav_outputs = [main_tabs, *nav_buttons, nav_menu]
-        nav_events = {key: button.click(lambda key=key: navigate(key), None, nav_outputs, show_progress="hidden")
+        # Leaving 🌍 World with unsaved changes in the entry editor asks first (Save, Discard or Stay).
+        leave_inputs = [dest_now, *guard_inputs]
+        nav_events = {key: button.click(lambda *rest, key=key: nav_choice_ui(key, *rest), leave_inputs, draft_outputs,
+                                        show_progress="hidden")
                       for key, button in zip(DESTINATION_IDS, nav_buttons)}
         train_button_event = nav_events["train"]
-        menu_event = nav_menu.input(navigate, nav_menu, nav_outputs, show_progress="hidden")
+        menu_event = nav_menu.input(nav_choice_ui, [nav_menu, *leave_inputs], draft_outputs, show_progress="hidden")
         destination_tabs = {"world": world_tab, "train": train_tab, "play": play_tab, "evaluate": evaluate_tab,
                             "export": export_tab, "advanced": advanced_tab}
         for key, tab in destination_tabs.items():  # a tab chosen another way: the banner and the menu follow
-            tab.select(lambda key=key: mark_destination(key), None, [*nav_buttons, nav_menu], show_progress="hidden")
+            tab.select(lambda key=key: mark_destination(key), None, [*nav_buttons, nav_menu, dest_now],
+                       show_progress="hidden")
         # 🧠 Train's completed engine, carried by its exact id to ▶ Play, ⚖ Evaluate and 📦 Export: each opens
         # with that engine chosen, and nothing starts (no game, no judgement, no export) until the user asks.
         play_result.click(play_result_ui, train_result, [*nav_outputs, play_run, play_setup, play_status],
@@ -4023,4 +4535,5 @@ if __name__ == "__main__":
         share=os.getenv("ANE_UI_SHARE", str(launch["share"])).lower() in {"1", "true", "yes"},
         css=CSS,
         theme=THEME,
+        head=DRAFT_HEAD,  # with unsaved changes in the entry editor, the browser asks before leaving the page
     )

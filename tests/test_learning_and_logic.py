@@ -20,7 +20,12 @@ from backend import sessions, store
 from core_engine import Genome
 from core_engine.evolution import LearningMemory, NarrativeEvolution
 
-SMALL = {"pop_size": 12, "generations": 8, "episodes_per_genome": 1, "max_steps": 1, "validation_episodes": 1}
+# Short stories and a one-story benchmark: what these tests check does not depend on a story's length,
+# and the saved defaults (full-length stories, a benchmark covering every start x mission situation)
+# make each run about 20 times slower.
+FAST_STORIES = {"full_length_stories": False, "cover_situations": False}
+SMALL = {"pop_size": 12, "generations": 8, "episodes_per_genome": 1, "max_steps": 1, "validation_episodes": 1,
+         **FAST_STORIES}
 
 
 def goal_seeking_fitness(state):
@@ -144,6 +149,15 @@ class NoPythonInTheUITests(unittest.TestCase):
 
 
 class LearningInPlayTests(_TempSaves):
+    def setUp(self):
+        super().setUp()
+        # Runs started through the API and the studio take everything they do not set from the saved
+        # configuration: keep its stories short (simulation_steps does not shorten full-length stories).
+        world = store.config.as_dict()
+        world["evolution"].update({**FAST_STORIES, "validation_episodes": 1})
+        store.config.use_override(world)
+        self.addCleanup(store.config.clear_override)
+
     def test_games_come_from_evolution_and_report_learning(self):
         client = TestClient(api.api, headers={"X-ANE-User": "api-tests"})  # a backend calling the API, for its user
         body = {"candidate_count": 4, "generations": 3, "simulation_steps": 3, "episodes": 1, "deterministic": False}
