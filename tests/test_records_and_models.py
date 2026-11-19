@@ -164,6 +164,7 @@ class ApiRecordingTests(_Records):
         return response.json()
 
     def test_a_run_is_recorded_with_everything(self):
+        config.clear_override()  # full-length stories: the preview is played to its end and recorded as ended
         game = self._simulate()
         run = self.client.get(f"/v1/records/runs/{game['run_id']}").json()
         self.assertEqual((run["origin"], run["status"], run["kind"]), ("api", "finished", "evolution"))

@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import atexit
 import functools
+import html
 import json
 import logging
 import os
@@ -2529,8 +2530,6 @@ def _entry_label(loaded):
 
 def draft_status_markup(dirty, loaded):
     """The editor's draft indicator (data-dirty: the page asks before it is closed or reloaded)."""
-    import html
-
     if dirty:
         what = ", ".join(DRAFT_PARTS[part] for part in dirty)
         return (f'<div class="draft-status dirty" data-dirty="1">● Unsaved changes in '

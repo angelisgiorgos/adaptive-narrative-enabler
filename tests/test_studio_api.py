@@ -1223,6 +1223,369 @@ class TrainResultTests(_Sandbox):
                     action(missing)
 
 
+def _applied(update, current):
+    """What a component holds after a handler's output, as Gradio applies it: a skip or an update without a
+    value keeps what it held; a component returned as an update, or a plain value, replaces it."""
+    if isinstance(update, dict) and update.get("__type__") == "update":
+        return update.get("value", current)
+    if hasattr(update, "get_config") and hasattr(update, "value"):
+        return update.value
+    return update
+
+
+class _Editor:
+    """🌍 World → 📝 Entries as the browser holds it: the draft's values (app.DRAFT_SIZES order), the
+    selection, the states and the prompt, changed only by the outputs of the studio's own handlers."""
+
+    def __init__(self, app, kind, name):
+        self.app = app
+        self.values = [None] * sum(app.DRAFT_SIZES.values())
+        self.kind = self.entity = self.loaded = self.pending = self.act_pick = None
+        self.base, self.prompt, self.message, self.section, self.nav = {}, False, "", None, None
+        out = app.load_selection_ui(kind, name)
+        self._entry(out[:app.ENTRY_OUTPUTS])
+        self._capture(out[app.ENTRY_OUTPUTS])
+
+    # where each part of the draft sits among the values, and among the editor's outputs
+    def at(self, part, offset=0):
+        start = 0
+        for name, size in self.app.DRAFT_SIZES.items():
+            if name == part:
+                return start + offset
+            start += size
+        raise KeyError(part)
+
+    def _entry(self, out):
+        a = self.app
+        assert len(out) == a.ENTRY_OUTPUTS
+        segments, at = {}, 0
+        for name, size in a.ENTRY_SEGMENTS.items():
+            segments[name], at = out[at:at + size], at + size
+        self.kind = _applied(segments["selection"][0], self.kind)
+        self.entity = _applied(segments["selection"][1], self.entity)
+        self.loaded = _applied(segments["loaded"][0], self.loaded)
+        targets = {"fields": (segments["fields"], range(self.at("fields"), self.at("fields") + 14)),
+                   "entry_yaml": (segments["entry_yaml"], [self.at("entry_yaml")]),
+                   "actions_yaml": (segments["actions_yaml"], [self.at("actions_yaml")]),
+                   "policy_yaml": (segments["policy_yaml"], [self.at("policy_yaml")]),
+                   "scheduling": (segments["scheduling"][3:], range(self.at("scheduling"), self.at("scheduling") + 8)),
+                   "details": (segments["details"][3:], range(self.at("details"), self.at("details") + 9))}
+        action = segments["action"]  # the picker, the state, 14 fields, the outcome picker, 17 outcome fields
+        self.act_pick = _applied(action[0], self.act_pick)
+        targets["action"] = ((action[1], *action[2:16], *action[17:]), range(self.at("action"), self.at("action") + 32))
+        for updates, places in targets.values():
+            for update, place in zip(updates, places):
+                self.values[place] = _applied(update, self.values[place])
+
+    def _capture(self, parts):
+        self.base, self.status, _ = self.app.capture_draft_ui(parts, self.base, self.loaded, *self.values)
+
+    def _draft(self, out):
+        n = self.app.ENTRY_OUTPUTS
+        self._entry(out[:n])
+        self.nav = out[n:n + len(self.app.DESTINATIONS) + 3]
+        rest = out[n + len(self.app.DESTINATIONS) + 3:]
+        section, pending, prompt, message, capture = rest
+        self.section = _applied(section, None) if not isinstance(section, dict) else None
+        self.pending = _applied(pending, self.pending)
+        if isinstance(prompt, dict) and "visible" in prompt:
+            self.prompt = prompt["visible"]
+        self.message = _applied(message, self.message)
+        self._capture(capture)
+        return out
+
+    def _form(self, out, said=True):  # a form's own save, reload or delete: (editor, [message,] parts)
+        self._entry(out[:self.app.ENTRY_OUTPUTS])
+        self._capture(out[-1])
+        return out[self.app.ENTRY_OUTPUTS] if said else None
+
+    @property
+    def guard(self):
+        return (self.loaded, self.base, *self.values)
+
+    @property
+    def unsaved(self):
+        return self.app.unsaved_parts(self.base, *self.values)
+
+    def choose(self, kind, name=None):
+        """The user picks a content type, then (``name``) an entry: each control changes, then its guard runs."""
+        out = None
+        if kind != (self.loaded or {}).get("kind"):
+            self.kind = kind
+            out = self._draft(self.app.entry_choice_ui(kind, self.entity, *self.guard))
+            if self.prompt:
+                return out
+        if name is not None:
+            self.entity = name
+            out = self._draft(self.app.entry_choice_ui(self.kind, name, *self.guard))
+        return out
+
+    def pick_action(self, index):
+        self.act_pick = index
+        return self._draft(self.app.action_choice_ui(index, *self.guard))
+
+    def answer(self, choice):
+        return self._draft(self.app.resolve_draft_ui(choice, self.pending, *self.guard))
+
+    def save(self, part):
+        return self._form(self.app.save_part_ui(part, *self.guard))
+
+    def type(self, part, offset, value):
+        self.values[self.at(part, offset)] = value
+
+    def value(self, part, offset=0):
+        return self.values[self.at(part, offset)]
+
+
+class EntryDraftTests(_Sandbox):
+    """🌍 World → 📝 Entries tracks its draft: each form (fields, the action with its outcomes, scheduling,
+    details, the three YAML editors) against what was last loaded or saved. Changing the entry, the content
+    type or the action, starting a new one, or leaving the editor with unsaved changes undoes the choice and
+    offers Save, Discard or Stay; a failed save keeps the draft and the entry; loads are never edits."""
+
+    def _editor(self, kind="Locations", name="Harbor"):
+        import app
+
+        return app, _Editor(app, kind, name)
+
+    def _stored(self, kind, name):
+        return self.client.get(f"/v1/entities/{kind}/{name}").json()
+
+    def test_loads_are_never_edits(self):
+        app, editor = self._editor()
+        self.assertEqual(editor.unsaved, [])
+        self.assertIn('data-dirty="0"', editor.status)
+        for kind, name in (("Locations", None), ("NPCs", None), ("NPCs", "Smuggler"), ("Events", "tavern_brawl"),
+                           ("Items", "Ancient Map"), ("Locations", "Harbor")):
+            with self.subTest(kind=kind, name=name):
+                editor.choose(kind, name)
+                self.assertEqual((editor.kind, editor.unsaved, editor.prompt), (kind, [], False))
+                if name:
+                    self.assertEqual((editor.entity, editor.loaded["entity"]), (name, name))
+                self.assertEqual(set(editor.base), set(app.DRAFT_PARTS))  # every part has its baseline
+        # Opening an action, switching between its outcomes and starting a new one are not edits either.
+        editor.choose("NPCs", "Gate Guard")
+        editor.pick_action(1)  # an action with two outcomes
+        self.assertTrue(editor.value("action", 1))  # the action's name is shown
+        state = editor.value("action")
+        self.assertGreater(len(state["action"]["outcomes"]), 1)
+        outcome_values = editor.values[editor.at("action", 15):editor.at("action", 32)]
+        state, *shown = app.pick_outcome_ui(state, 1, *outcome_values)
+        editor.values[editor.at("action")] = state
+        editor.values[editor.at("action", 15):editor.at("action", 32)] = shown
+        self.assertEqual(editor.unsaved, [])
+        editor._draft(app.new_action_choice_ui(*editor.guard))
+        self.assertEqual((editor.value("action", 1), editor.unsaved), ("New action", []))
+
+    def test_every_form_s_edits_are_tracked_and_undone_edits_are_not(self):
+        app, editor = self._editor("Events", "tavern_brawl")
+        edits = [("fields", 2, "A brawl breaks out.\nChairs fly."),       # descriptions
+                 ("scheduling", 3, 7),                                     # cooldown
+                 ("entry_yaml", 0, "name: tavern_brawl\ntags: [bar]\n"),
+                 ("actions_yaml", 0, "[]\n"), ("policy_yaml", 0, "trigger: random\n")]
+        for part, offset, value in edits:
+            with self.subTest(part=part):
+                before = editor.value(part, offset)
+                editor.type(part, offset, value)
+                self.assertEqual(editor.unsaved, [part])
+                self.assertIn(app.DRAFT_PARTS[part], app.draft_status_ui(*editor.guard[1::-1], *editor.values))
+                editor.type(part, offset, before)  # typed back: nothing unsaved
+                self.assertEqual(editor.unsaved, [])
+        editor.choose("Locations", "Harbor")
+        before = editor.value("details", 4)
+        editor.type("details", 4, "Masts against the sky.")  # seen from afar
+        self.assertEqual(editor.unsaved, ["details"])
+        editor.type("details", 4, before)
+        editor.choose("NPCs", "Smuggler")
+        import pandas as pd
+        dialogue = editor.value("details", 3)
+        editor.type("details", 3, pd.concat([dialogue, pd.DataFrame([["", "Not here."]], columns=dialogue.columns)]))
+        self.assertEqual(editor.unsaved, ["details"])
+        editor.type("details", 3, dialogue)
+        # The action: its fields, and an outcome edited then switched away from (kept in its draft).
+        editor.choose("NPCs", "Gate Guard")
+        editor.pick_action(1)  # an action with two outcomes
+        editor.type("action", 15, "He shrugs.")  # the first outcome's text
+        state, *shown = app.pick_outcome_ui(editor.value("action"), 1, *editor.values[editor.at("action", 15):
+                                                                                       editor.at("action", 32)])
+        editor.values[editor.at("action")] = state
+        editor.values[editor.at("action", 15):editor.at("action", 32)] = shown
+        self.assertEqual(editor.unsaved, ["action"])
+        editor.type("action", 15, "{not yaml: [")  # unreadable as typed: still an edit
+        self.assertEqual(editor.unsaved, ["action"])
+
+    def test_changing_the_entry_never_discards_unsaved_changes(self):
+        app, editor = self._editor()
+        original = editor.value("fields", 2)
+        editor.type("fields", 2, "A new harbour, rebuilt.")
+        stored = self._stored("Locations", "Harbor")["descriptions"]
+        # Another entry, another content type, a new entry, another destination, another World section:
+        # each is undone and asked about; the draft and the entry stay.
+        attempts = [lambda: editor.choose("Locations", "Market"), lambda: editor.choose("NPCs"),
+                    lambda: editor._draft(app.new_entry_choice_ui(*editor.guard)),
+                    lambda: editor._draft(app.nav_choice_ui("play", "world", *editor.guard)),
+                    lambda: editor._draft(app.nav_choice_ui("advanced", "world", *editor.guard)),
+                    lambda: editor._draft(app.section_choice_ui("map", *editor.guard))]
+        for attempt in attempts:
+            with self.subTest(attempt=attempt):
+                attempt()
+                self.assertEqual((editor.kind, editor.entity, editor.loaded["entity"]), ("Locations", "Harbor", "Harbor"))
+                self.assertEqual(editor.value("fields", 2), "A new harbour, rebuilt.")
+                self.assertTrue(editor.prompt)
+                self.assertIn("Unsaved changes", editor.message)
+                self.assertIn("**Fields**", editor.message)
+                self.assertEqual(editor.unsaved, ["fields"])
+                if editor.pending["type"] in ("destination", "section"):
+                    self.assertEqual(_prop(editor.section, "selected"), "entries")  # back to the editor
+                if editor.pending["type"] == "destination":
+                    self.assertEqual(_prop(editor.nav[0], "selected"), "world")
+                    self.assertEqual(editor.nav[-1], "world")
+        self.assertEqual(self._stored("Locations", "Harbor")["descriptions"], stored)  # nothing written
+        # Leaving from another destination (the editor is not open) goes at once.
+        out = app.nav_choice_ui("train", "play", *editor.guard)
+        self.assertEqual(_prop(out[app.ENTRY_OUTPUTS], "selected"), "train")
+        # Stay: the question goes, the draft and the entry stay.
+        editor.choose("Locations", "Market")
+        editor.answer("stay")
+        self.assertEqual((editor.prompt, editor.pending, editor.entity), (False, None, "Harbor"))
+        self.assertEqual(editor.unsaved, ["fields"])
+        # Discard: the other entry opens; what was typed is gone, the store unchanged.
+        editor.choose("Locations", "Market")
+        editor.answer("discard")
+        self.assertEqual((editor.entity, editor.loaded["entity"], editor.prompt, editor.unsaved), ("Market", "Market",
+                                                                                                    False, []))
+        self.assertEqual(self._stored("Locations", "Harbor")["descriptions"], stored)
+        editor.choose("Locations", "Harbor")
+        self.assertEqual(editor.value("fields", 2), original)
+
+    def test_save_from_the_question_saves_every_changed_form_then_goes_on(self):
+        app, editor = self._editor("Events", "tavern_brawl")
+        editor.type("fields", 2, "Fists and flying stools.")
+        editor.type("scheduling", 3, 6)  # cooldown
+        editor.choose("Items", "Ancient Map")
+        self.assertEqual(editor.unsaved, ["fields", "scheduling"])
+        editor.answer("save")
+        self.assertEqual((editor.kind, editor.entity, editor.prompt, editor.unsaved), ("Items", "Ancient Map", False, []))
+        self.assertEqual(self._stored("Events", "tavern_brawl")["descriptions"], ["Fists and flying stools."])
+        self.assertEqual(self.client.get("/v1/entities/Events/tavern_brawl/policy").json()["policy"]["cooldown"], 6)
+        # Leaving for another destination: saved, then gone there.
+        editor.type("fields", 3, "Find the map's owner.")  # goals
+        editor._draft(app.nav_choice_ui("train", "world", *editor.guard))
+        editor.answer("save")
+        self.assertEqual(_prop(editor.nav[0], "selected"), "train")
+        self.assertEqual(self._stored("Items", "Ancient Map")["goals"], ["Find the map's owner."])
+        self.assertEqual(editor.unsaved, [])
+
+    def test_a_failed_save_keeps_the_draft_and_the_entry(self):
+        app, editor = self._editor("Events", "tavern_brawl")
+        stored = self._stored("Events", "tavern_brawl")
+        condition = editor.value("fields", 7)
+        editor.type("scheduling", 3, 9)                 # cooldown: saves
+        editor.type("fields", 7, "{any: [")              # enabled_if: cannot be read
+        editor.choose("Locations", "Harbor")
+        editor.answer("save")
+        self.assertEqual((editor.kind, editor.entity, editor.loaded["entity"]), ("Events", "tavern_brawl", "tavern_brawl"))
+        self.assertTrue(editor.prompt)
+        self.assertIn("could not be saved", editor.message)
+        self.assertIn("Scheduling saved before it", editor.message)
+        self.assertEqual(editor.value("fields", 7), "{any: [")  # the draft, as typed
+        self.assertEqual(editor.unsaved, ["fields"])            # what was saved is no longer unsaved
+        self.assertEqual(self._stored("Events", "tavern_brawl")["enabled_if"], stored["enabled_if"])
+        self.assertEqual(editor.pending["entity"], "Harbor")   # still asked: correct it and save, or discard
+        # A form's own save that fails changes nothing either (the error is shown; no output is applied).
+        import gradio as gr
+        with self.assertRaises(gr.Error):
+            app.save_part_ui("fields", *editor.guard)
+        # Two forms editing the same data: nothing is saved over the other.
+        editor.type("fields", 7, condition)
+        editor.type("fields", 2, "A brawl, rewritten.")
+        editor.type("entry_yaml", 0, editor.value("entry_yaml") + "\n# edited\n")
+        editor.answer("save")
+        self.assertIn("Nothing was saved", editor.message)
+        self.assertEqual(editor.entity, "tavern_brawl")
+        self.assertEqual(sorted(editor.unsaved), ["entry_yaml", "fields"])
+
+    def test_a_form_s_save_keeps_the_other_forms_drafts(self):
+        app, editor = self._editor("Locations", "Harbor")
+        editor.type("details", 4, "Masts on the horizon.")       # details
+        editor.type("entry_yaml", 0, editor.value("entry_yaml") + "\n# a note being written\n")
+        message = editor.save("details")
+        self.assertIn("Saved the details", message)
+        self.assertIn("Not reloaded", message)                  # the YAML being edited is kept
+        self.assertEqual(editor.unsaved, ["entry_yaml"])
+        self.assertIn("# a note being written", editor.value("entry_yaml"))
+        # A rename reloads what is not being edited under the new name, and keeps what is.
+        editor._form(app.reload_part_ui("entry_yaml", *editor.guard), said=False)  # Reload from disk
+        self.assertEqual(editor.unsaved, [])
+        editor.type("fields", 0, "Old Harbor")
+        editor.type("details", 5, "Gulls scream.")              # on arrival: unsaved, kept
+        editor.save("fields")
+        self.assertEqual((editor.entity, editor.loaded["entity"]), ("Old Harbor", "Old Harbor"))
+        self.assertEqual(editor.unsaved, ["details"])           # kept, as typed, to be saved under the new name
+        self.assertEqual(editor.value("details", 5), "Gulls scream.")
+        editor.choose("NPCs")                                   # the unsaved details: asked first
+        self.assertTrue(editor.prompt)
+        self.assertEqual(editor.kind, "Locations")
+        editor.answer("discard")
+        self.assertEqual((editor.kind, editor.unsaved), ("NPCs", []))
+        # The action: another action asked about with only the action's draft at stake; Discard keeps the rest.
+        editor.choose("NPCs", "Gate Guard")
+        editor.pick_action(0)
+        editor.type("action", 1, "Bribe him")
+        editor.type("fields", 3, "Keep the gate.")              # goals: unsaved too
+        editor.pick_action(1)
+        self.assertEqual((editor.act_pick, editor.pending["type"]), (0, "action"))
+        self.assertIn("**Actions & outcomes**", editor.message)
+        self.assertNotIn("Fields", editor.message.split("**Actions & outcomes**")[0].split("in ")[-1])
+        editor.answer("discard")
+        self.assertEqual(editor.value("action")["index"], 1)
+        self.assertEqual(editor.unsaved, ["fields"])            # the other form's draft is kept
+        self.assertEqual(editor.value("fields", 3), "Keep the gate.")
+
+    def test_structured_goals_survive_the_fields_form(self):
+        app, editor = self._editor("NPCs", "Smuggler")
+        goals = editor.value("fields", 3)
+        self.assertIn("{goal: Get out of this cell, tags: [smuggler_freed], needed: 1, reward: lead}", goals)
+        editor.type("fields", 2, "A wiry man who knows every tunnel.")
+        editor.save("fields")
+        stored = yaml.safe_load((self.dir / "npcs.yaml").read_text())
+        record = next(npc for npc in stored["world_definition"]["characters"] if npc["name"] == "Smuggler")
+        self.assertEqual(record["goals"][0], {"goal": "Get out of this cell", "tags": ["smuggler_freed"], "needed": 1,
+                                              "reward": "lead"})
+        self.assertEqual(record["goals"][1], "Settle the score with the fence")
+        self.assertEqual(editor.unsaved, [])
+
+    def test_the_editor_is_wired_to_its_guards(self):
+        import gradio as gr
+
+        app, demo, = self._editor()[0], None
+        demo = app.build_app()
+        blocks = list(demo.blocks.values())
+        by = {b.elem_id: b for b in blocks if getattr(b, "elem_id", None)}
+        kind = next(b for b in blocks if isinstance(b, gr.Radio) and b.label == "Content type")
+        entity = next(b for b in blocks if isinstance(b, gr.Dropdown) and b.label == "Entry")
+
+        def listeners(component, event):
+            return [fn for fn in demo.fns.values() if (component._id, event) in fn.targets]
+
+        # Nothing loads on a dropdown's change (a load would replace the draft); the user's choice is guarded.
+        self.assertEqual(listeners(entity, "change"), [])
+        self.assertEqual([fn.fn.__name__ for fn in listeners(entity, "input")], ["entry_choice_ui"])
+        self.assertEqual([fn.fn.__name__ for fn in listeners(kind, "input")], ["entry_choice_ui"])
+        self.assertTrue(all(fn.fn.__name__ == "behaviour_fields_ui" for fn in listeners(kind, "change")))
+        prompt = [b.value for b in self._inside(by["draft-prompt"], gr.Button)]
+        self.assertEqual(sorted(prompt), sorted(["💾 Save", "Discard", "Stay"]))
+        self.assertIn("draft-status", by)
+        self.assertIn("beforeunload", app.DRAFT_HEAD)
+        for button in (b for b in blocks if isinstance(b, gr.Button) and (b.elem_id or "").startswith("nav-")):
+            (fn,) = listeners(button, "click")
+            self.assertEqual(len(fn.inputs), 3 + sum(app.DRAFT_SIZES.values()))  # where, the draft, its baseline
+
+    @staticmethod
+    def _inside(block, kind):
+        return StudioLayoutTests._inside(block, kind)
+
+
 class StudioServiceTests(_Sandbox):
     """The endpoints the studio is built on: every studio tab works through the API."""
 
@@ -1788,20 +2151,25 @@ class StudioLayoutTests(_Sandbox):
         def wired(trigger, event):
             return [fn for fn in demo.fns.values() if (trigger._id, event) in fn.targets]
 
+        # A click: where the user is, the entry editor's draft and its baseline (nothing unsaved here).
+        draft = ("world", {"kind": "Locations", "entity": "Harbor"}, {}, *[None] * sum(app.DRAFT_SIZES.values()))
+        at = app.ENTRY_OUTPUTS  # the navigation's outputs follow the entry editor's (untouched)
         for button, key in zip(buttons, app.DESTINATION_IDS):
             with self.subTest(destination=key):
                 (fn,) = wired(button, "click")
                 self.assertIn(main._id, [o._id for o in fn.outputs])  # the tabs follow
-                selected, *highlight, named = fn.fn()
+                out = fn.fn(*draft)
+                selected, *highlight, named, now = out[at:at + len(app.DESTINATIONS) + 3]
                 self.assertEqual(_prop(selected, "selected"), key)
                 self.assertEqual([_prop(b, "variant") for b in highlight],
                                  ["primary" if other == key else "secondary" for other in app.DESTINATION_IDS])
-                self.assertEqual(_prop(named, "value"), key)
+                self.assertEqual((_prop(named, "value"), now), (key, key))
+                # Nothing is rebuilt on the way: every other output is skipped (no draft was unsaved).
+                skipped = [o for i, o in enumerate(out) if not at <= i < at + len(app.DESTINATIONS) + 3]
+                self.assertTrue(all(o == gr.skip() for o in skipped[:-1]))
+                self.assertEqual(skipped[-1], [])  # nothing to capture
                 (via_menu,) = wired(menu, "input")
-                self.assertEqual(_prop(via_menu.fn(key)[0], "selected"), key)
-        # Nothing is rebuilt on the way: navigation only selects a tab and highlights the banner and menu.
-        for fn in wired(menu, "input") + [f for b in buttons for f in wired(b, "click")]:
-            self.assertEqual({o._id for o in fn.outputs}, {main._id, menu._id, *(b._id for b in buttons)})
+                self.assertEqual(_prop(via_menu.fn(key, *draft)[at], "selected"), key)
         # The address names a destination (?section=play); anything else opens the World.
         for asked, opened in (("play", "play"), ("EXPORT", "export"), ("nowhere", "world"), (None, "world")):
             request = type("Request", (), {"query_params": {"section": asked} if asked else {}})()

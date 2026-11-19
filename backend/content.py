@@ -72,7 +72,7 @@ def load_entity(kind: str, name: str):
         record.get("name", name or ""),
         tags,
         "\n".join(descriptions),
-        "\n".join(record.get("goals", [])),
+        "\n".join(_goal_text(goal) for goal in record.get("goals") or []),
         bool(record.get("unique", False)) if npc else None,
         (record.get("encounter_event") or None) if npc else None,
         bool(record.get("encounter_repeat", False)) if npc else None,
@@ -84,6 +84,31 @@ def load_entity(kind: str, name: str):
         (record.get("role") or None) if npc else None,
         (copy.deepcopy(record.get("secret")) or None) if npc else None,
     )
+
+def _goal_text(goal) -> str:
+    """A goal as one line of the editor: its text, or a structured goal ({goal, tags, needed, reward})
+    as one line of YAML, so that it survives being edited and saved."""
+    if isinstance(goal, str):
+        return goal
+    return yaml.safe_dump(goal, default_flow_style=True, sort_keys=False, allow_unicode=True, width=10**9).strip()
+
+
+def _goal_lines(goals) -> list:
+    """The goals typed in the editor, a line each: a line written as a YAML mapping ({goal: ..., tags:
+    [...]}) is a structured goal again; any other line is a goal's text."""
+    found = []
+    for line in _lines(goals):
+        if line.startswith("{"):
+            try:
+                value = yaml.safe_load(line)
+            except yaml.YAMLError:
+                value = None
+            if isinstance(value, dict):
+                found.append(value)
+                continue
+        found.append(line)
+    return found
+
 
 def _apply_start(record: dict, start_eligible, start_weight) -> None:
     """Set a location's start_eligible / start_weight (None keeps the stored value)."""
@@ -188,7 +213,7 @@ def save_entity(kind: str, selected_name: str, name: str, tags, descriptions: st
             record = copy.deepcopy(records.get(selected_name, {}))
             record["tags"] = list(tags or [])
             record["entered_descriptions"] = _lines(descriptions)
-            record["goals"] = _lines(goals)
+            record["goals"] = _goal_lines(goals)
             if kind == "Locations":
                 _apply_start(record, start_eligible, start_weight)
             _apply_enabled_if(record, enabled_if)
@@ -209,7 +234,7 @@ def save_entity(kind: str, selected_name: str, name: str, tags, descriptions: st
                 name=name,
                 associated_tags=list(tags or []),
                 descriptions=_lines(descriptions),
-                goals=_lines(goals),
+                goals=_goal_lines(goals),
             )
             if kind == "NPCs":
                 record["unique"] = bool(record.get("unique", False) if unique is None else unique)
