@@ -15,18 +15,21 @@ stories are recorded with the studio as their origin. Errors arrive as ``APIErro
 with the API's message and are shown as UI errors. Files the API offers for
 download are fetched into a temporary folder, since the file widgets need local paths.
 
-    🌍 World            entries (fields, actions & outcomes, scheduling, details, suggestions, YAML):
-                        /v1/entities/..., /v1/suggestions; missions, the map, behaviour by tags, growing the
-                        world, checks: /v1/missions/..., /v1/map/..., /v1/behaviours/..., /v1/world/...,
-                        /v1/jobs/world-proposal, /v1/lint/failures
-    ⚙ Settings          simulation, story (rules, messages, variables, stats), weights, engine logic, app
-                        and jobs: /v1/config/..., /v1/settings, /v1/rules, /v1/documents/..., /v1/variables/...,
-                        /v1/hyperparameters, /v1/weights, /v1/logic/..., /v1/app-settings, /v1/jobs
-    🧠 Train & export   train (/v1/jobs/simulations, /v1/learning), records (/v1/records/..., continue and
-                        retrain jobs, import), export (/v1/exports/...)
-    ▶ Play              a game with a trained AI, a recorded engine or a file: /v1/engines/..., /v1/sessions/...
-                        (choices, save and continue, the player, events, the judge), /v1/progression
-    ⚖ Evaluate          /v1/jobs/judge-benchmark, /v1/jobs/calibrate-fitness, /v1/fitness/term-weights
+The destinations (DESTINATIONS; chosen with the workflow banner, or the menu on a narrow screen):
+
+    🌍 World      entries (fields, actions & outcomes, scheduling, details, suggestions, YAML):
+                  /v1/entities/..., /v1/suggestions; missions, story rules (rules, messages, variables,
+                  stats), the map, behaviour by tags, growing the world, checks: /v1/missions/...,
+                  /v1/rules, /v1/documents/..., /v1/variables/..., /v1/map/..., /v1/behaviours/...,
+                  /v1/world/..., /v1/jobs/world-proposal, /v1/lint/failures
+    🧠 Train      train (/v1/jobs/simulations, /v1/learning), records (/v1/records/..., continue and
+                  retrain jobs, import)
+    ▶ Play        a game with a trained AI, a recorded engine or a file: /v1/engines/..., /v1/sessions/...
+                  (choices, save and continue, the player, events, the judge), /v1/progression
+    ⚖ Evaluate    /v1/jobs/judge-benchmark, /v1/jobs/calibrate-fitness, /v1/fitness/term-weights
+    📦 Export     /v1/exports/..., /v1/world/catalogue
+    ⚙ Advanced    simulation, weights, engine logic, app and jobs: /v1/config/..., /v1/settings,
+                  /v1/hyperparameters, /v1/weights, /v1/logic/..., /v1/app-settings, /v1/jobs
 
 tests/test_studio_api.py checks that every endpoint of the API is used here, or is named there
 as one other clients use (the studio reaches the same function through another endpoint).
@@ -214,11 +217,25 @@ CSS = """
 .hero {padding: .5rem 1.1rem; border-radius: 14px; background: linear-gradient(120deg,#17233f,#4a244f); color:#fff}
 .hero h1 {margin: 0; color: #fff; font-size: 1.35rem}
 .hero p {margin: 0; opacity: .9; color: #fff; font-size: .9rem}
-.workflow {padding: .2rem .8rem; border-radius: 10px; border: 1px solid var(--border-color-primary);
-           background: var(--background-fill-secondary)}
-.workflow p {font-size: .85rem; margin: .15rem 0}
+/* Navigation. The destinations are chosen with the workflow banner (wide screens) or the menu (narrow
+   screens), so the destinations' own tab bar is not shown: no destination hides behind an overflow button. */
+#ane-nav > .tab-wrapper {display: none !important}
+#ane-banner {gap: .35rem; align-items: center; flex-wrap: wrap; padding: .3rem .6rem; border-radius: 12px;
+             border: 1px solid var(--border-color-primary); background: var(--background-fill-secondary)}
+#ane-banner::before {content: "Workflow"; font-size: .8rem; font-weight: 600; opacity: .7; margin-right: .15rem}
+#ane-banner > button {flex: 0 0 auto !important; width: auto !important; min-width: max-content !important;
+                      white-space: nowrap !important; font-size: .9rem !important; padding: .3rem .8rem !important}
+#ane-banner > button.nav-step:not(.nav-last)::after {content: "→"; margin-left: .55rem; opacity: .55}
+#ane-banner > button.nav-advanced {margin-left: auto !important}
+#ane-menu {display: none !important}
+@media (max-width: 820px) {
+  #ane-banner {display: none !important}
+  #ane-menu {display: block !important}
+}
+/* Sections inside a destination: compact tabs; when they do not fit, Gradio's overflow button says "More". */
 button[role="tab"] {font-size: .88rem !important; padding: .3rem .75rem !important; min-height: 0 !important}
-.main-tabs button[role="tab"] {font-weight: 600}
+.tab-wrapper .overflow-menu > button::after {content: "More"; margin-left: .3rem; font-size: .85rem}
+.lead p {font-size: .9rem; opacity: .85; margin: .1rem 0}
 .status {border-left: 4px solid #8b5cf6; padding-left: 1rem}
 .play-hud {padding: .3rem .8rem; border-radius: 10px; border: 1px solid var(--border-color-primary);
            background: var(--background-fill-secondary)}
@@ -248,12 +265,43 @@ button.choice {justify-content: flex-start !important; text-align: left !importa
                min-height: 0 !important; line-height: 1.3 !important}
 """
 THEME = gr.themes.Soft(primary_hue="violet", secondary_hue="indigo", neutral_hue="slate")
-WORKFLOW = ("**🌍 World**: create it → **⚙ Settings**: tune the story → **🧠 Train & export**: train the AI "
-            "storyteller, export it for a game → **▶ Play** your world → **⚖ Evaluate** with the judge")
+# Where the studio goes: a destination per step of the work, then the technical settings. The ids are
+# stable: the tabs, the banner's buttons (#nav-<id>), the narrow-screen menu and the address
+# (?section=<id>) all use them.
+DESTINATIONS = [("world", "🌍 World"), ("train", "🧠 Train"), ("play", "▶ Play"), ("evaluate", "⚖ Evaluate"),
+                ("export", "📦 Export"), ("advanced", "⚙ Advanced")]
+DESTINATION_IDS = [key for key, _ in DESTINATIONS]
+WORKFLOW_IDS = DESTINATION_IDS[:5]  # the workflow, in order; Advanced stands apart
 EMPTY_ENTITY = {"name": "", "tags": [], "descriptions": [], "goals": [], "unique": False, "encounter_event": None,
                 "encounter_repeat": False, "enabled_if": None, "title": None, "stat_bonus": None,
                 "start_eligible": False, "start_weight": 1.0, "role": None, "secret": None}
 INFERRED_ROLE = "inferred from its tags"
+
+
+# ---- navigation: the destinations, the workflow banner, the narrow-screen menu --------------------------
+
+def _highlight(destination):
+    """The banner's buttons with ``destination`` highlighted, and the menu naming it."""
+    return (*[gr.Button(variant="primary" if key == destination else "secondary") for key in DESTINATION_IDS],
+            gr.Radio(value=destination))
+
+
+def navigate(destination):
+    """Go to a destination: its tab is selected (the others keep their state), the banner highlights it
+    and the menu names it. An unknown destination goes to the World."""
+    destination = destination if destination in DESTINATION_IDS else "world"
+    return (gr.Tabs(selected=destination), *_highlight(destination))
+
+
+def mark_destination(destination):
+    """The banner and the menu follow a destination whose tab was selected another way."""
+    return _highlight(destination if destination in DESTINATION_IDS else "world")
+
+
+def open_requested(request: gr.Request = None):
+    """The destination the address asks for (``?section=play``), else the World."""
+    params = getattr(request, "query_params", None) or {}
+    return navigate(str(params.get("section") or "world").strip().lower())
 
 
 # ---- tab 1 · world editor (/v1/entities, /v1/documents/missions) -----------------------------
@@ -708,13 +756,13 @@ def map_markdown(known):
 
 
 def _training_outputs(result):
-    """What Train & export shows of a finished training (an evolution, a continued or retrained
+    """What 🧠 Train shows of a finished training (an evolution, a continued or retrained
     engine): the report, its files, the learning curve, what the storyteller learned, the run and its
     generations (for the export). The game it starts is played in ▶ Play."""
     curve, traits = _learning_outputs(result.get("learning"))
     generations = [str(stats["generation"]) for stats in (result.get("learning") or {}).get("history", [])]
     report = (result.get("report") or "") + "\n\n**Play it in ▶ Play** (it is the newest trained AI there), or " \
-        "export it below."
+        "export it in 📦 Export."
     return (report, API.download(result["config_download_url"]), API.download(result["engine_download_url"]),
             curve, traits, result.get("run_id"),
             gr.Dropdown(choices=generations, value=generations[-1] if generations else None))
@@ -770,7 +818,7 @@ def run_work_ui(candidate_count, generations, simulation_steps, episodes):
             f"**{asked['limit']:,}** allowed.")
     if not asked["allowed"]:
         line = ("⚠ " + line + " It will be refused: use fewer storytellers, generations or stories, or raise "
-                "`max_simulation_work` in *⚙ Settings → App & jobs*.")
+                "`max_simulation_work` in *⚙ Advanced → App & jobs*.")
     return line
 
 
@@ -1056,7 +1104,7 @@ def studio_status_ui():
         LOG.warning("The world could not be read: %s", exc)
     try:
         runs = API.get("/v1/exports/engines")["engines"]
-        parts.append(f"🧠 **Trained AIs:** {len(runs)}" + ("" if runs else " (train one in 🧠 Train & export)"))
+        parts.append(f"🧠 **Trained AIs:** {len(runs)}" + ("" if runs else " (train one in 🧠 Train)"))
     except APIError as exc:
         LOG.warning("The trained AIs could not be read: %s", exc)
     try:
@@ -2412,12 +2460,26 @@ def build_app():
             "Create a world, train an AI storyteller on it, then play it as a game.",
             elem_classes="hero",
         )
-        gr.Markdown(WORKFLOW, elem_classes="workflow")
+        # The workflow banner is the navigation: a button per destination, the current one highlighted.
+        with gr.Row(elem_id="ane-banner", elem_classes="nav-banner", equal_height=True):
+            nav_buttons = [gr.Button(label, variant="primary" if key == "world" else "secondary", size="sm", scale=0,
+                                     min_width=0, elem_id=f"nav-{key}",
+                                     elem_classes=["nav-step" if key in WORKFLOW_IDS else "nav-advanced"]
+                                     + (["nav-last"] if key == WORKFLOW_IDS[-1] else []))
+                           for key, label in DESTINATIONS]
+        # On a narrow screen the banner gives way to this menu (every destination, by name).
+        nav_menu = gr.Radio([(label, key) for key, label in DESTINATIONS], value="world",
+                            label="☰ Menu: go to a section", elem_id="ane-menu", elem_classes="nav-menu")
         studio_status = gr.Markdown(elem_classes="status")
         demo.load(studio_status_ui, None, studio_status)
 
-        with gr.Tabs(elem_classes="main-tabs") as main_tabs:
-            with gr.Tab("🌍 World", id="world"):
+        # 📦 Export's choice of a run's generation, which a training in 🧠 Train fills: created here, and
+        # rendered in Export.
+        export_generation = gr.Dropdown([], label="Generation (for a generation's champion)", visible=False,
+                                        render=False)
+
+        with gr.Tabs(elem_id="ane-nav", elem_classes="main-tabs") as main_tabs:
+            with gr.Tab("🌍 World", id="world", elem_id="dest-world") as world_tab:
                 with gr.Tabs():
                     with gr.Tab("📝 Entries"):
                         with gr.Row():
@@ -2699,6 +2761,114 @@ def build_app():
                         save_missions_button.click(save_missions_yaml, missions_editor, [missions_editor, missions_status])
                         reload_missions_button.click(load_missions_yaml, None, missions_editor)
 
+                    with gr.Tab("📜 Story rules"):
+                        with gr.Accordion("Story rules", open=True):
+                            rules = dict(zip(REFERENCE["rule_fields"], load_rules_ui()))
+                            rule_choices = REFERENCE["rule_choices"]
+                            locations = _entity_names("Locations")
+                            gr.Markdown("**Missions and goal pursuit**")
+                            with gr.Row():
+                                rule_missions = gr.Checkbox(rules["missions_enabled"], label="Missions enabled")
+                                rule_end_on_goal = gr.Checkbox(rules["end_on_goal"], label="End the story when the goal is met")
+                                rule_start = gr.Number(rules["pursuit_start_step"], precision=0, minimum=0, label="Pursuit starts at step")
+                                rule_full = gr.Number(rules["pursuit_full_step"], precision=0, minimum=1, label="Full pursuit from step")
+                                rule_route = gr.Number(rules["route_weight"], label="Route weight")
+                            gr.Markdown("**How often options are offered** (unless an action sets `repeat`)")
+                            with gr.Row():
+                                rule_repeat = [
+                                    gr.Dropdown(rule_choices["repeat"], value=rules[f"repeat_{source}"], label=f"{source.title()} actions")
+                                    for source in ("location", "npc", "item", "event")
+                                ]
+                            gr.Markdown("**Arrests and discovery**")
+                            with gr.Row():
+                                rule_arrest = gr.Dropdown(locations, value=rules["arrest_location"], label="Arrest location")
+                                rule_lock = gr.Dropdown(
+                                    rule_choices["arrest_lock_when"], value=rules["arrest_lock_when"], label="Confine until escape",
+                                    info="sent: only when sent there; always: everyone; never: no escape needed",
+                                )
+                                rule_travel = gr.Checkbox(rules["auto_travel_on_spawn"], label="Follow compelling new paths")
+                                rule_threshold = gr.Number(rules["auto_travel_on_spawn_threshold"], label="Commitment threshold")
+                            gr.Markdown("**Persistent variables and events**")
+                            with gr.Row():
+                                rule_profile = gr.Textbox(rules["profile"], label="Default player profile")
+                                rule_save_on = gr.Dropdown(rule_choices["save_on"], value=rules["save_on"], label="Save variables on")
+                                rule_simulate = gr.Dropdown(rule_choices["simulate_with"], value=rules["simulate_with"],
+                                                            label="Evolution plays with")
+                            with gr.Row():
+                                rule_fallback = gr.Textbox(rules["fallback_action"], label="Event fallback option")
+                                rule_fallback_desc = gr.Textbox(rules["fallback_description"], label="Event fallback text")
+                            rule_by_field = {
+                                "missions_enabled": rule_missions, "end_on_goal": rule_end_on_goal,
+                                "pursuit_start_step": rule_start, "pursuit_full_step": rule_full, "route_weight": rule_route,
+                                "repeat_location": rule_repeat[0], "repeat_npc": rule_repeat[1], "repeat_item": rule_repeat[2],
+                                "repeat_event": rule_repeat[3], "arrest_location": rule_arrest, "arrest_lock_when": rule_lock,
+                                "auto_travel_on_spawn": rule_travel, "auto_travel_on_spawn_threshold": rule_threshold,
+                                "profile": rule_profile, "save_on": rule_save_on, "simulate_with": rule_simulate,
+                                "fallback_action": rule_fallback, "fallback_description": rule_fallback_desc,
+                            }
+                            rule_inputs = [rule_by_field[field] for field in REFERENCE["rule_fields"]]
+                            with gr.Row():
+                                save_rules_button = gr.Button("Save story rules", variant="primary")
+                                reload_rules_button = gr.Button("Reload")
+                            story_rules_status = gr.Markdown()
+                            save_rules_button.click(save_rules_ui, rule_inputs, story_rules_status)
+                            reload_rules_button.click(load_rules_ui, None, rule_inputs)
+                        with gr.Accordion("Story messages", open=False):
+                            gr.Markdown(
+                                "Rewrite any sentence the engine adds to a story, e.g. `voyage: \"You head towards "
+                                "the {location}.\"`. Each entry lists its `{placeholders}`; a list of texts is used "
+                                "in turn. Unknown messages or placeholders are rejected."
+                            )
+                            messages_editor = gr.Code(value=load_messages_yaml(), language="yaml", label="messages.yaml")
+                            with gr.Row():
+                                save_messages_button = gr.Button("Validate & save messages", variant="primary")
+                                reload_messages_button = gr.Button("Reload from disk")
+                            messages_status = gr.Markdown()
+                            save_messages_button.click(save_messages_yaml, messages_editor, [messages_editor, messages_status])
+                            reload_messages_button.click(load_messages_yaml, None, messages_editor)
+                        with gr.Accordion("Persistent variables", open=False):
+                            gr.Markdown(
+                                "Variables that carry over between playthroughs. Outcomes change them with "
+                                "`set_variables` / `change_variables`; locations, NPCs, items and missions use "
+                                "`enabled_if`. Only real play (the game on the Play tab) saves them."
+                            )
+                            variables_editor = gr.Code(value=load_variables_yaml(), language="yaml", label="variables.yaml")
+                            save_variables_button = gr.Button("Validate & save variable definitions", variant="primary")
+                            variables_status = gr.Markdown()
+                            gr.Markdown(
+                                "#### Stored values of a player profile\n"
+                                "Edit them to test later playthroughs (e.g. set `playthroughs: 1` or `reputation: -3`)."
+                            )
+                            values_profile = gr.Dropdown(profiles["profiles"], value=profiles["default"],
+                                                         allow_custom_value=True, label="Player profile")
+                            stored_values = gr.Code(value=stored_values_yaml(profiles["default"]), language="yaml",
+                                                    label="Stored values")
+                            with gr.Row():
+                                save_values_button = gr.Button("Save stored values", variant="primary")
+                                refresh_values_button = gr.Button("Refresh")
+                                reset_values_button = gr.Button("Reset profile (new player)", variant="stop")
+                            values_status = gr.Markdown()
+                            save_variables_button.click(
+                                save_variables_yaml, variables_editor, [variables_editor, variables_status],
+                            ).then(stored_values_yaml, values_profile, stored_values)
+                            values_profile.change(stored_values_yaml, values_profile, stored_values)
+                            refresh_values_button.click(stored_values_yaml, values_profile, stored_values)
+                            save_values_button.click(save_stored_values_yaml, [values_profile, stored_values],
+                                                     [stored_values, values_status])
+                            reset_values_button.click(reset_stored_values_ui, values_profile, [stored_values, values_status])
+                        with gr.Accordion("Character stats", open=False):
+                            gr.Markdown(
+                                "Define the stats of this story (any names), the points budget, how players get their "
+                                "points, which outcome tags need a check (`tag_checks`) and which stat softens combat "
+                                "damage. Difficulty lives in the Weights tab (**Skill check resolution**)."
+                            )
+                            stats_editor = gr.Code(value=load_stats_yaml(), language="yaml", label="stats.yaml")
+                            with gr.Row():
+                                save_stats_button = gr.Button("Validate & save character stats", variant="primary")
+                                reload_stats_button = gr.Button("Reload from disk")
+                            stats_status = gr.Markdown()
+                            save_stats_button.click(save_stats_yaml, stats_editor, [stats_editor, stats_status])
+                            reload_stats_button.click(load_stats_yaml, None, stats_editor)
                     with gr.Tab("🗺 Map"):
                         gr.Markdown("Pick a place and tick the places it borders: a route holds both ways, and a far "
                                     "place is reached through the places between. The map below shows every route.")
@@ -2757,7 +2927,7 @@ def build_app():
                     with gr.Tab("✨ Grow the world"):
                         gr.Markdown("The language model proposes new **places, people and items** that fit this world (its places "
                                     "and tags). Nothing is written until you add them: each must be new, and the whole world is "
-                                    "checked with them in place. The targets are `augmentation.min_*` (⚙ Settings → Engine logic).")
+                                    "checked with them in place. The targets are `augmentation.min_*` (⚙ Advanced → Engine logic).")
                         with gr.Row():
                             world_size = gr.Dataframe(label="The world's size", interactive=False, scale=2)
                             with gr.Column(scale=1):
@@ -2888,249 +3058,12 @@ def build_app():
                 add_proposal.click(add_proposal_ui, [proposal_text, proposal_pick], [grow_status, world_size]).success(
                     entity_names, kind, [entity, *entry_fields]).then(studio_status_ui, None, studio_status)
 
-            with gr.Tab("⚙ Settings", id="settings"):
-                with gr.Tabs():
-                    with gr.Tab("Simulation"):
-                        gr.Markdown(
-                            "### Complete configuration file\n"
-                            "Upload one combined YAML file containing all sections from the four files in `config/`. "
-                            "It is checked completely before it can replace the built-in runtime configuration."
-                        )
-                        with gr.Row():
-                            config_upload = gr.File(label="Combined YAML configuration", file_types=[".yaml", ".yml"],
-                                                    type="filepath")
-                            with gr.Column():
-                                activate_config = gr.Button("Validate & use uploaded config", variant="primary")
-                                restore_config = gr.Button("Use built-in config")
-                        with gr.Row():
-                            pop_size = gr.Number(settings["pop_size"], label="Evolution population", precision=0, minimum=1)
-                            generations = gr.Number(settings["generations"], label="Generations", precision=0, minimum=1)
-                            episodes = gr.Number(settings["episodes_per_genome"], label="Episodes / genome", precision=0, minimum=1)
-                            max_steps = gr.Number(settings["max_steps"], label="Maximum simulation steps", precision=0, minimum=1)
-                        with gr.Row():
-                            health = gr.Number(settings["initial_health"], label="Starting health", precision=0, minimum=1)
-                            max_health = gr.Number(
-                                settings["max_health"], label="Maximum health", precision=0, minimum=1,
-                                info="Healing never raises health above this value.",
-                            )
-                            coins = gr.Number(settings["initial_coins"], label="Starting coins", precision=0, minimum=0)
-                            max_actions = gr.Number(
-                                settings["max_actions"], label="Game action limit", precision=0, minimum=100,
-                                info="The action-limit cutoff cannot be set below 100; other ending conditions still apply.",
-                            )
-                        with gr.Row():
-                            deterministic = gr.Checkbox(
-                                value=settings["deterministic"], label="Deterministic reproducibility",
-                                info="Repeat the same evolution when the configuration and seed are unchanged.",
-                            )
-                            seed = gr.Number(settings["seed"], label="Reproducibility seed", precision=0)
-                        save_config = gr.Button("Save settings", variant="primary")
-                        config_status = gr.Markdown()
-                        setting_components = [pop_size, generations, episodes, max_steps, health, coins, max_actions,
-                                              deterministic, seed, max_health]
-                        activate_config.click(upload_config, config_upload, [*setting_components, config_status])
-                        restore_config.click(use_builtin_config, None, [*setting_components, config_status])
-                        save_config.click(save_settings, setting_components, config_status)
-
-                        with gr.Accordion("Advanced · all hyperparameters", open=False):
-                            gr.Markdown(
-                                "Edit every hyperparameter as YAML. The complete structure and value types "
-                                "are validated before saving."
-                            )
-                            hyperparameters_editor = gr.Code(value=API.get("/v1/hyperparameters")["yaml"], language="yaml",
-                                                             label="hyperparameters.yaml")
-                            save_all_config = gr.Button("Validate & save all hyperparameters")
-                            advanced_status = gr.Markdown()
-                            save_all_config.click(save_all_hyperparameters, hyperparameters_editor,
-                                                  [*setting_components, hyperparameters_editor, advanced_status])
-                        with gr.Accordion("The active configuration (read only)", open=False):
-                            gr.Markdown("Every configuration file merged (or the uploaded configuration): what new games "
-                                        "and runs use now.")
-                            show_config = gr.Button("Show")
-                            config_source = gr.Markdown()
-                            active_config = gr.Code(language="yaml", label="active configuration", interactive=False)
-                            show_config.click(active_config_ui, None, [config_source, active_config])
-
-                    with gr.Tab("Story"):
-                        with gr.Accordion("Story rules", open=True):
-                            rules = dict(zip(REFERENCE["rule_fields"], load_rules_ui()))
-                            rule_choices = REFERENCE["rule_choices"]
-                            locations = _entity_names("Locations")
-                            gr.Markdown("**Missions and goal pursuit**")
-                            with gr.Row():
-                                rule_missions = gr.Checkbox(rules["missions_enabled"], label="Missions enabled")
-                                rule_end_on_goal = gr.Checkbox(rules["end_on_goal"], label="End the story when the goal is met")
-                                rule_start = gr.Number(rules["pursuit_start_step"], precision=0, minimum=0, label="Pursuit starts at step")
-                                rule_full = gr.Number(rules["pursuit_full_step"], precision=0, minimum=1, label="Full pursuit from step")
-                                rule_route = gr.Number(rules["route_weight"], label="Route weight")
-                            gr.Markdown("**How often options are offered** (unless an action sets `repeat`)")
-                            with gr.Row():
-                                rule_repeat = [
-                                    gr.Dropdown(rule_choices["repeat"], value=rules[f"repeat_{source}"], label=f"{source.title()} actions")
-                                    for source in ("location", "npc", "item", "event")
-                                ]
-                            gr.Markdown("**Arrests and discovery**")
-                            with gr.Row():
-                                rule_arrest = gr.Dropdown(locations, value=rules["arrest_location"], label="Arrest location")
-                                rule_lock = gr.Dropdown(
-                                    rule_choices["arrest_lock_when"], value=rules["arrest_lock_when"], label="Confine until escape",
-                                    info="sent: only when sent there; always: everyone; never: no escape needed",
-                                )
-                                rule_travel = gr.Checkbox(rules["auto_travel_on_spawn"], label="Follow compelling new paths")
-                                rule_threshold = gr.Number(rules["auto_travel_on_spawn_threshold"], label="Commitment threshold")
-                            gr.Markdown("**Persistent variables and events**")
-                            with gr.Row():
-                                rule_profile = gr.Textbox(rules["profile"], label="Default player profile")
-                                rule_save_on = gr.Dropdown(rule_choices["save_on"], value=rules["save_on"], label="Save variables on")
-                                rule_simulate = gr.Dropdown(rule_choices["simulate_with"], value=rules["simulate_with"],
-                                                            label="Evolution plays with")
-                            with gr.Row():
-                                rule_fallback = gr.Textbox(rules["fallback_action"], label="Event fallback option")
-                                rule_fallback_desc = gr.Textbox(rules["fallback_description"], label="Event fallback text")
-                            rule_by_field = {
-                                "missions_enabled": rule_missions, "end_on_goal": rule_end_on_goal,
-                                "pursuit_start_step": rule_start, "pursuit_full_step": rule_full, "route_weight": rule_route,
-                                "repeat_location": rule_repeat[0], "repeat_npc": rule_repeat[1], "repeat_item": rule_repeat[2],
-                                "repeat_event": rule_repeat[3], "arrest_location": rule_arrest, "arrest_lock_when": rule_lock,
-                                "auto_travel_on_spawn": rule_travel, "auto_travel_on_spawn_threshold": rule_threshold,
-                                "profile": rule_profile, "save_on": rule_save_on, "simulate_with": rule_simulate,
-                                "fallback_action": rule_fallback, "fallback_description": rule_fallback_desc,
-                            }
-                            rule_inputs = [rule_by_field[field] for field in REFERENCE["rule_fields"]]
-                            with gr.Row():
-                                save_rules_button = gr.Button("Save story rules", variant="primary")
-                                reload_rules_button = gr.Button("Reload")
-                            rules_status = gr.Markdown()
-                            save_rules_button.click(save_rules_ui, rule_inputs, rules_status)
-                            reload_rules_button.click(load_rules_ui, None, rule_inputs)
-                        with gr.Accordion("Story messages", open=False):
-                            gr.Markdown(
-                                "Rewrite any sentence the engine adds to a story, e.g. `voyage: \"You head towards "
-                                "the {location}.\"`. Each entry lists its `{placeholders}`; a list of texts is used "
-                                "in turn. Unknown messages or placeholders are rejected."
-                            )
-                            messages_editor = gr.Code(value=load_messages_yaml(), language="yaml", label="messages.yaml")
-                            with gr.Row():
-                                save_messages_button = gr.Button("Validate & save messages", variant="primary")
-                                reload_messages_button = gr.Button("Reload from disk")
-                            messages_status = gr.Markdown()
-                            save_messages_button.click(save_messages_yaml, messages_editor, [messages_editor, messages_status])
-                            reload_messages_button.click(load_messages_yaml, None, messages_editor)
-                        with gr.Accordion("Persistent variables", open=False):
-                            gr.Markdown(
-                                "Variables that carry over between playthroughs. Outcomes change them with "
-                                "`set_variables` / `change_variables`; locations, NPCs, items and missions use "
-                                "`enabled_if`. Only real play (the game on the Play tab) saves them."
-                            )
-                            variables_editor = gr.Code(value=load_variables_yaml(), language="yaml", label="variables.yaml")
-                            save_variables_button = gr.Button("Validate & save variable definitions", variant="primary")
-                            variables_status = gr.Markdown()
-                            gr.Markdown(
-                                "#### Stored values of a player profile\n"
-                                "Edit them to test later playthroughs (e.g. set `playthroughs: 1` or `reputation: -3`)."
-                            )
-                            values_profile = gr.Dropdown(profiles["profiles"], value=profiles["default"],
-                                                         allow_custom_value=True, label="Player profile")
-                            stored_values = gr.Code(value=stored_values_yaml(profiles["default"]), language="yaml",
-                                                    label="Stored values")
-                            with gr.Row():
-                                save_values_button = gr.Button("Save stored values", variant="primary")
-                                refresh_values_button = gr.Button("Refresh")
-                                reset_values_button = gr.Button("Reset profile (new player)", variant="stop")
-                            values_status = gr.Markdown()
-                            save_variables_button.click(
-                                save_variables_yaml, variables_editor, [variables_editor, variables_status],
-                            ).then(stored_values_yaml, values_profile, stored_values)
-                            values_profile.change(stored_values_yaml, values_profile, stored_values)
-                            refresh_values_button.click(stored_values_yaml, values_profile, stored_values)
-                            save_values_button.click(save_stored_values_yaml, [values_profile, stored_values],
-                                                     [stored_values, values_status])
-                            reset_values_button.click(reset_stored_values_ui, values_profile, [stored_values, values_status])
-                        with gr.Accordion("Character stats", open=False):
-                            gr.Markdown(
-                                "Define the stats of this story (any names), the points budget, how players get their "
-                                "points, which outcome tags need a check (`tag_checks`) and which stat softens combat "
-                                "damage. Difficulty lives in the Weights tab (**Skill check resolution**)."
-                            )
-                            stats_editor = gr.Code(value=load_stats_yaml(), language="yaml", label="stats.yaml")
-                            with gr.Row():
-                                save_stats_button = gr.Button("Validate & save character stats", variant="primary")
-                                reload_stats_button = gr.Button("Reload from disk")
-                            stats_status = gr.Markdown()
-                            save_stats_button.click(save_stats_yaml, stats_editor, [stats_editor, stats_status])
-                            reload_stats_button.click(load_stats_yaml, None, stats_editor)
-                    with gr.Tab("Weights"):
-                        gr.Markdown(
-                            "Configure every numeric weight, bonus, penalty, threshold, chance, rate, "
-                            "mitigation, floor, and power control used by scoring and the narrative engine."
-                        )
-                        weight_entries = list(API.get("/v1/weights")["values"].items())
-                        weight_paths = [path for path, _ in weight_entries]
-                        weight_components = []
-                        grouped_weights = {}
-                        for weight_path, value in weight_entries:
-                            grouped_weights.setdefault(weight_path.split(".")[0], []).append((weight_path, value))
-                        for section, section_entries in grouped_weights.items():
-                            with gr.Accordion(section.replace("_", " ").title(), open=False):
-                                for index in range(0, len(section_entries), 3):
-                                    with gr.Row():
-                                        for weight_path, value in section_entries[index:index + 3]:
-                                            weight_components.append(gr.Number(value=value, label=weight_path))
-                        save_weights_button = gr.Button("Save all weights", variant="primary")
-                        weights_status = gr.Markdown()
-                        save_weights_button.click(save_weights, [gr.State(weight_paths), *weight_components], weights_status)
-
-                    with gr.Tab("Engine logic"):
-                        gr.Markdown(
-                            "The engine's logic runs in the backend scripts; here you change **how it behaves** "
-                            "through its parameters, section by section. Every section is checked (same settings, "
-                            "same value types) before it is saved, and new simulations and games use it at once."
-                        )
-                        sections = API.get("/v1/logic")["sections"]
-                        descriptions_by_section = {item["section"]: item["description"] for item in sections}
-                        logic_section = gr.Dropdown(list(descriptions_by_section), value="evolution", label="Logic section")
-                        logic_description = gr.Markdown(descriptions_by_section.get("evolution", ""))
-                        logic_editor = gr.Code(value=load_logic_section("evolution"), language="yaml", label="Parameters")
-                        with gr.Row():
-                            save_logic_button = gr.Button("Validate & save parameters", variant="primary")
-                            reload_logic_button = gr.Button("Reload")
-                        logic_status = gr.Markdown()
-                        logic_section.change(load_logic_section, logic_section, logic_editor)
-                        logic_section.change(lambda section: descriptions_by_section.get(section, ""), logic_section,
-                                             logic_description)
-                        reload_logic_button.click(load_logic_section, logic_section, logic_editor)
-                        save_logic_button.click(save_logic_section, [logic_section, logic_editor], logic_status)
-
-                    with gr.Tab("App & jobs"):
-                        with gr.Accordion("App parameters", open=True):
-                            gr.Markdown("Saved in config/ui_settings.yml. Upload limits are in bytes; crossover probability is between 0 and 1.")
-                            parameter_inputs = []
-                            for key, value in limits.items():
-                                label = key.replace("_", " ").title()
-                                if isinstance(value, bool):
-                                    component = gr.Checkbox(value=value, label=label)
-                                elif isinstance(value, str):
-                                    component = gr.Textbox(value=value, label=label)
-                                else:
-                                    component = gr.Number(value=value, label=label,
-                                                          precision=0 if isinstance(app_defaults[key], int) else None)
-                                parameter_inputs.append(component)
-                            save_parameters = gr.Button("Save app parameters", variant="primary")
-                            parameters_status = gr.Markdown()
-                            save_parameters.click(save_app_parameters, parameter_inputs, parameters_status)
-                        with gr.Accordion("Background jobs", open=False):
-                            gr.Markdown("Evolutions, continued trainings and judge runs started from here or by any client "
-                                        "of the API, newest first.")
-                            refresh_jobs = gr.Button("Refresh")
-                            jobs_table = gr.Dataframe(label="Jobs", interactive=False, wrap=True)
-                            refresh_jobs.click(jobs_table_ui, None, jobs_table)
-
-            with gr.Tab("🧠 Train & export", id="train"):
+            with gr.Tab("🧠 Train", id="train", elem_id="dest-train") as train_tab:
                 with gr.Tabs():
                     with gr.Tab("Train"):
                         gr.Markdown("Evolve AI storytellers on this world: a tournament of storytellers, each "
                                     "scored on the stories it tells. The best becomes a **trained AI**: play it in "
-                                    "**▶ Play**, export it in **Export**.")
+                                    "**▶ Play**, export it in **📦 Export**.")
                         with gr.Row():
                             candidates = gr.Slider(1, limits["candidate_limit"], value=limits["default_candidates"],
                                                    step=1, label="Candidate genomes")
@@ -3157,11 +3090,12 @@ def build_app():
                             )
                             deterministic_run = gr.Checkbox(
                                 value=settings["deterministic"], label="Run deterministically",
-                                info="Uses the reproducibility seed saved in ⚙ Settings → Simulation.",
+                                info="Uses the reproducibility seed saved in ⚙ Advanced → Simulation.",
                             )
                         with gr.Row():
                             run_button = gr.Button("🧠 Evolve storytellers", variant="primary", scale=3)
                             play_it = gr.Button("▶ Play the newest", scale=1)
+                            export_it = gr.Button("📦 Export it", scale=1)
                         simulation_report = gr.Markdown(elem_classes="status")
                         with gr.Row():
                             learning_plot = gr.LinePlot(
@@ -3234,59 +3168,6 @@ def build_app():
                                 import_button = gr.Button("Import", variant="primary")
                             import_status = gr.Markdown()
 
-                    with gr.Tab("Export"):
-                        gr.Markdown(
-                            "Download the engine to run offline in a game. **The ANE AI** (*Runs on* Windows, macOS, "
-                            "Linux or Unity) is a standalone program that a UNP launches, drives over HTTP and stops, "
-                            "no Python needed. An export is made from a **finished run**: its engine (world, "
-                            "storyteller, training state, tag vectors). The latest is chosen; choose several to export "
-                            "each. Finished runs are kept (in the records, or with the saves) and can be exported later. "
-                            "**The Python version** (for developers: embed it with `NarrativeEngine`, `python run.py "
-                            "serve`, `play`, `evolve`) can also be made from a generation's champion, the remembered "
-                            "storyteller or this game's storyteller. Each download's README explains how to use it."
-                        )
-                        with gr.Row():
-                            export_platform = gr.Dropdown(
-                                export_platform_choices(), value="python", label="Runs on",
-                                info="A standalone program for that system (the ANE AI, no Python needed), the Unity "
-                                "package, or Python.")
-                            export_source = gr.Radio(list(EXPORT_SOURCES), value=FINISHED_RUNS, label="What to export",
-                                                     info="The Python version only; the ANE AI is made from finished runs.")
-                        finished = finished_run_choices()
-                        export_engine = gr.Dropdown(finished, value=[v for _, v in finished[:1]], multiselect=True,
-                                                    label="Finished runs", info="Newest first: the latest is chosen. "
-                                                    "Choose several to export each.")
-                        export_generation = gr.Dropdown([], label="Generation (for a generation's champion)", visible=False)
-                        export_engine_note = gr.Markdown()
-                        with gr.Row():
-                            export_memory = gr.Checkbox(True, label="Include the learning memory (keep training offline)")
-                            export_name = gr.Textbox(label="Name", placeholder="narrative-engine")
-                        export_button = gr.Button("Export", variant="primary")
-                        export_file = gr.File(label="Downloads (ZIP, or .unitypackage for Unity)", interactive=False,
-                                              file_count="multiple")
-                        export_status = gr.Markdown()
-                        with gr.Accordion("Where the ANE AI runs, and the world it sends", open=False):
-                            gr.Markdown("The standalone runtimes this API has (built by CI for each system, from the same "
-                                        "engine code), and the world as the ANE AI sends it to a UNP (`GET /world`). "
-                                        "How a UNP uses the ANE AI: `docs/UNP.md`.")
-                            export_platforms = gr.Dataframe(export_platforms_table(), interactive=False, wrap=True)
-                            with gr.Row():
-                                refresh_platforms = gr.Button("Refresh")
-                                catalogue_button = gr.Button("Download the world as a UNP receives it (JSON)")
-                            catalogue_file = gr.File(label="World catalogue (ane.world/1)", interactive=False)
-                            catalogue_status = gr.Markdown()
-                            refresh_platforms.click(export_platforms_table, None, export_platforms)
-                            catalogue_button.click(world_catalogue_ui, None, [catalogue_file, catalogue_status])
-                        export_form = [export_source, export_generation, export_engine, export_engine_note, export_button]
-                        for control in (export_platform, export_source):
-                            control.change(export_form_ui, [export_platform, export_source, export_engine], export_form)
-                        demo.load(export_form_ui, [export_platform, export_source, export_engine], export_form)
-                        export_button.click(
-                            export_engine_ui,
-                            [export_source, run_state, export_generation, session_token, export_memory, export_name,
-                             export_platform, export_engine],
-                            [export_file, export_status],
-                        )
                 train_outputs = [simulation_report, generated_config, generated_engine, learning_plot, learned_traits]
                 engine_events = [run_button.click(
                     run_simulation_ui,
@@ -3304,11 +3185,8 @@ def build_app():
                     [record_engine, candidates, more_generations, sim_steps, episodes, deterministic_run],
                     record_outputs, concurrency_limit=1, concurrency_id="narrative_evolution"))
                 record_lists = [record_engine, record_story, runs_table, records_status]
-                for event in engine_events:  # a finished run: it is chosen for the export (the newest), and recorded
-                    event.success(lambda platform, source: export_form_ui(platform, source),
-                                  [export_platform, export_source], export_form).then(
-                        refresh_records_ui, None, record_lists)
-                play_it.click(lambda: gr.Tabs(selected="play"), None, main_tabs)
+                for event in engine_events:  # a finished run is recorded
+                    event.success(refresh_records_ui, None, record_lists)
                 refresh_records.click(refresh_records_ui, None, record_lists).then(
                     lambda: gr.Dropdown(choices=recorded_stories()), None, compare_story,
                 )
@@ -3326,7 +3204,7 @@ def build_app():
                                     concurrency_limit=1).then(refresh_records_ui, None, record_lists).then(
                     import_folder_ui, None, import_note)
 
-            with gr.Tab("▶ Play", id="play"):
+            with gr.Tab("▶ Play", id="play", elem_id="dest-play") as play_tab:
                 play_token = session_token  # the game played here (Export's "this game's storyteller" too)
                 play_actions = gr.State([])
                 play_finished = finished_run_choices()
@@ -3381,8 +3259,8 @@ def build_app():
                         gr.Markdown("Every session saves the player's progression: its report (goal achieved or "
                                     "mission failed, stats, inventory) and, when achieved, its goal, which then leaves "
                                     "the goal pool (each goal once per save game). The report goes to the UNP "
-                                    "(`session_report` in the engine logic). *Reset profile* (⚙ Settings → Story → "
-                                    "Persistent variables) starts a new save game.")
+                                    "(`session_report` in the engine logic). *Reset profile* (🌍 World → 📜 Story rules "
+                                    "→ Persistent variables) starts a new save game.")
                         with gr.Row():
                             refresh_quests = gr.Button("Refresh the quests", size="sm")
                             save_game_refresh = gr.Button("Show the save game", size="sm")
@@ -3408,7 +3286,7 @@ def build_app():
                     with gr.Column(scale=2):
                         play_quest_log = gr.Markdown("### 🎯 Quest\nStart a game to see its quest.",
                                                      elem_classes="quest-card")
-                        play_you = gr.Markdown(elem_classes="you-card")
+                        play_you = gr.Markdown("### 🧍 You\nStart a game to see your character.", elem_classes="you-card")
                         with gr.Accordion("👥 People met & the map", open=False):
                             play_people = gr.Markdown("### People met\nNobody yet.", elem_classes="people-card")
                 with gr.Accordion("🧭 Your journey: every choice and what came of it", open=False):
@@ -3456,9 +3334,7 @@ def build_app():
                                                   new_game_outputs, concurrency_limit=1)
                 for event in [*started, loaded]:  # a game is on: the setup folds away
                     event.success(lambda: gr.Accordion(open=False), None, play_setup)
-                loaded.success(lambda: play_runs_ui(), None, play_run).then(
-                    lambda platform, source: export_form_ui(platform, source), [export_platform, export_source],
-                    export_form).then(studio_status_ui, None, studio_status)
+                loaded.success(lambda: play_runs_ui(), None, play_run).then(studio_status_ui, None, studio_status)
                 play_refresh.click(play_runs_ui, play_run, play_run).then(
                     lambda: gr.Dropdown(choices=recorded_engines()), None, play_record_engine)
                 demo.load(play_runs_ui, play_run, play_run)
@@ -3487,7 +3363,7 @@ def build_app():
                                   concurrency_limit=1)
                 parameters_button.click(session_parameters_ui, play_token, parameters_view)
 
-            with gr.Tab("⚖ Evaluate", id="evaluate"):
+            with gr.Tab("⚖ Evaluate", id="evaluate", elem_id="dest-evaluate") as evaluate_tab:
                 gr.Markdown(
                     "Gemma 4 as a game critic (`vllm` in the engine logic: an embedded model or a vLLM server). "
                     "Stories are played in a separate process, so the games in progress keep their settings. "
@@ -3540,6 +3416,209 @@ def build_app():
                     save_weights_terms.click(save_term_weights_ui, term_weights_editor,
                                              [term_weights_editor, term_weights_status])
                     reload_weights_terms.click(load_term_weights_ui, None, term_weights_editor)
+
+            with gr.Tab("📦 Export", id="export", elem_id="dest-export") as export_tab:
+                gr.Markdown(
+                    "Download the engine to run offline in a game. **The ANE AI** (*Runs on* Windows, macOS, "
+                    "Linux or Unity) is a standalone program that a UNP launches, drives over HTTP and stops, "
+                    "no Python needed. An export is made from a **finished run**: its engine (world, "
+                    "storyteller, training state, tag vectors). The latest is chosen; choose several to export "
+                    "each. Finished runs are kept (in the records, or with the saves) and can be exported later. "
+                    "**The Python version** (for developers: embed it with `NarrativeEngine`, `python run.py "
+                    "serve`, `play`, `evolve`) can also be made from a generation's champion, the remembered "
+                    "storyteller or this game's storyteller. Each download's README explains how to use it."
+                )
+                with gr.Row():
+                    export_platform = gr.Dropdown(
+                        export_platform_choices(), value="python", label="Runs on",
+                        info="A standalone program for that system (the ANE AI, no Python needed), the Unity "
+                        "package, or Python.")
+                    export_source = gr.Radio(list(EXPORT_SOURCES), value=FINISHED_RUNS, label="What to export",
+                                             info="The Python version only; the ANE AI is made from finished runs.")
+                finished = finished_run_choices()
+                export_engine = gr.Dropdown(finished, value=[v for _, v in finished[:1]], multiselect=True,
+                                            label="Finished runs", info="Newest first: the latest is chosen. "
+                                            "Choose several to export each.")
+                export_generation.render()  # created above the destinations: a training (🧠 Train) fills it
+                export_engine_note = gr.Markdown()
+                with gr.Row():
+                    export_memory = gr.Checkbox(True, label="Include the learning memory (keep training offline)")
+                    export_name = gr.Textbox(label="Name", placeholder="narrative-engine")
+                export_button = gr.Button("Export", variant="primary")
+                export_file = gr.File(label="Downloads (ZIP, or .unitypackage for Unity)", interactive=False,
+                                      file_count="multiple")
+                export_status = gr.Markdown()
+                with gr.Accordion("Where the ANE AI runs, and the world it sends", open=False):
+                    gr.Markdown("The standalone runtimes this API has (built by CI for each system, from the same "
+                                "engine code), and the world as the ANE AI sends it to a UNP (`GET /world`). "
+                                "How a UNP uses the ANE AI: `docs/UNP.md`.")
+                    export_platforms = gr.Dataframe(export_platforms_table(), interactive=False, wrap=True)
+                    with gr.Row():
+                        refresh_platforms = gr.Button("Refresh")
+                        catalogue_button = gr.Button("Download the world as a UNP receives it (JSON)")
+                    catalogue_file = gr.File(label="World catalogue (ane.world/1)", interactive=False)
+                    catalogue_status = gr.Markdown()
+                    refresh_platforms.click(export_platforms_table, None, export_platforms)
+                    catalogue_button.click(world_catalogue_ui, None, [catalogue_file, catalogue_status])
+                export_form = [export_source, export_generation, export_engine, export_engine_note, export_button]
+                for control in (export_platform, export_source):
+                    control.change(export_form_ui, [export_platform, export_source, export_engine], export_form)
+                demo.load(export_form_ui, [export_platform, export_source, export_engine], export_form)
+                export_button.click(
+                    export_engine_ui,
+                    [export_source, run_state, export_generation, session_token, export_memory, export_name,
+                     export_platform, export_engine],
+                    [export_file, export_status],
+                )
+            with gr.Tab("⚙ Advanced", id="advanced", elem_id="dest-advanced") as advanced_tab:
+                gr.Markdown("Technical settings: the simulation, every weight, the engine's logic, the app and its background jobs. The story's own rules are in 🌍 World → 📜 Story rules.", elem_classes="lead")
+                with gr.Tabs():
+                    with gr.Tab("Simulation"):
+                        gr.Markdown(
+                            "### Complete configuration file\n"
+                            "Upload one combined YAML file containing all sections from the four files in `config/`. "
+                            "It is checked completely before it can replace the built-in runtime configuration."
+                        )
+                        with gr.Row():
+                            config_upload = gr.File(label="Combined YAML configuration", file_types=[".yaml", ".yml"],
+                                                    type="filepath")
+                            with gr.Column():
+                                activate_config = gr.Button("Validate & use uploaded config", variant="primary")
+                                restore_config = gr.Button("Use built-in config")
+                        with gr.Row():
+                            pop_size = gr.Number(settings["pop_size"], label="Evolution population", precision=0, minimum=1)
+                            generations = gr.Number(settings["generations"], label="Generations", precision=0, minimum=1)
+                            episodes = gr.Number(settings["episodes_per_genome"], label="Episodes / genome", precision=0, minimum=1)
+                            max_steps = gr.Number(settings["max_steps"], label="Maximum simulation steps", precision=0, minimum=1)
+                        with gr.Row():
+                            health = gr.Number(settings["initial_health"], label="Starting health", precision=0, minimum=1)
+                            max_health = gr.Number(
+                                settings["max_health"], label="Maximum health", precision=0, minimum=1,
+                                info="Healing never raises health above this value.",
+                            )
+                            coins = gr.Number(settings["initial_coins"], label="Starting coins", precision=0, minimum=0)
+                            max_actions = gr.Number(
+                                settings["max_actions"], label="Game action limit", precision=0, minimum=100,
+                                info="The action-limit cutoff cannot be set below 100; other ending conditions still apply.",
+                            )
+                        with gr.Row():
+                            deterministic = gr.Checkbox(
+                                value=settings["deterministic"], label="Deterministic reproducibility",
+                                info="Repeat the same evolution when the configuration and seed are unchanged.",
+                            )
+                            seed = gr.Number(settings["seed"], label="Reproducibility seed", precision=0)
+                        save_config = gr.Button("Save settings", variant="primary")
+                        config_status = gr.Markdown()
+                        setting_components = [pop_size, generations, episodes, max_steps, health, coins, max_actions,
+                                              deterministic, seed, max_health]
+                        activate_config.click(upload_config, config_upload, [*setting_components, config_status])
+                        restore_config.click(use_builtin_config, None, [*setting_components, config_status])
+                        save_config.click(save_settings, setting_components, config_status)
+
+                        with gr.Accordion("Advanced · all hyperparameters", open=False):
+                            gr.Markdown(
+                                "Edit every hyperparameter as YAML. The complete structure and value types "
+                                "are validated before saving."
+                            )
+                            hyperparameters_editor = gr.Code(value=API.get("/v1/hyperparameters")["yaml"], language="yaml",
+                                                             label="hyperparameters.yaml")
+                            save_all_config = gr.Button("Validate & save all hyperparameters")
+                            advanced_status = gr.Markdown()
+                            save_all_config.click(save_all_hyperparameters, hyperparameters_editor,
+                                                  [*setting_components, hyperparameters_editor, advanced_status])
+                        with gr.Accordion("The active configuration (read only)", open=False):
+                            gr.Markdown("Every configuration file merged (or the uploaded configuration): what new games "
+                                        "and runs use now.")
+                            show_config = gr.Button("Show")
+                            config_source = gr.Markdown()
+                            active_config = gr.Code(language="yaml", label="active configuration", interactive=False)
+                            show_config.click(active_config_ui, None, [config_source, active_config])
+
+                    with gr.Tab("Weights"):
+                        gr.Markdown(
+                            "Configure every numeric weight, bonus, penalty, threshold, chance, rate, "
+                            "mitigation, floor, and power control used by scoring and the narrative engine."
+                        )
+                        weight_entries = list(API.get("/v1/weights")["values"].items())
+                        weight_paths = [path for path, _ in weight_entries]
+                        weight_components = []
+                        grouped_weights = {}
+                        for weight_path, value in weight_entries:
+                            grouped_weights.setdefault(weight_path.split(".")[0], []).append((weight_path, value))
+                        for section, section_entries in grouped_weights.items():
+                            with gr.Accordion(section.replace("_", " ").title(), open=False):
+                                for index in range(0, len(section_entries), 3):
+                                    with gr.Row():
+                                        for weight_path, value in section_entries[index:index + 3]:
+                                            weight_components.append(gr.Number(value=value, label=weight_path))
+                        save_weights_button = gr.Button("Save all weights", variant="primary")
+                        weights_status = gr.Markdown()
+                        save_weights_button.click(save_weights, [gr.State(weight_paths), *weight_components], weights_status)
+
+                    with gr.Tab("Engine logic"):
+                        gr.Markdown(
+                            "The engine's logic runs in the backend scripts; here you change **how it behaves** "
+                            "through its parameters, section by section. Every section is checked (same settings, "
+                            "same value types) before it is saved, and new simulations and games use it at once."
+                        )
+                        sections = API.get("/v1/logic")["sections"]
+                        descriptions_by_section = {item["section"]: item["description"] for item in sections}
+                        logic_section = gr.Dropdown(list(descriptions_by_section), value="evolution", label="Logic section")
+                        logic_description = gr.Markdown(descriptions_by_section.get("evolution", ""))
+                        logic_editor = gr.Code(value=load_logic_section("evolution"), language="yaml", label="Parameters")
+                        with gr.Row():
+                            save_logic_button = gr.Button("Validate & save parameters", variant="primary")
+                            reload_logic_button = gr.Button("Reload")
+                        logic_status = gr.Markdown()
+                        logic_section.change(load_logic_section, logic_section, logic_editor)
+                        logic_section.change(lambda section: descriptions_by_section.get(section, ""), logic_section,
+                                             logic_description)
+                        reload_logic_button.click(load_logic_section, logic_section, logic_editor)
+                        save_logic_button.click(save_logic_section, [logic_section, logic_editor], logic_status)
+
+                    with gr.Tab("App & jobs"):
+                        with gr.Accordion("App parameters", open=True):
+                            gr.Markdown("Saved in config/ui_settings.yml. Upload limits are in bytes; crossover probability is between 0 and 1.")
+                            parameter_inputs = []
+                            for key, value in limits.items():
+                                label = key.replace("_", " ").title()
+                                if isinstance(value, bool):
+                                    component = gr.Checkbox(value=value, label=label)
+                                elif isinstance(value, str):
+                                    component = gr.Textbox(value=value, label=label)
+                                else:
+                                    component = gr.Number(value=value, label=label,
+                                                          precision=0 if isinstance(app_defaults[key], int) else None)
+                                parameter_inputs.append(component)
+                            save_parameters = gr.Button("Save app parameters", variant="primary")
+                            parameters_status = gr.Markdown()
+                            save_parameters.click(save_app_parameters, parameter_inputs, parameters_status)
+                        with gr.Accordion("Background jobs", open=False):
+                            gr.Markdown("Evolutions, continued trainings and judge runs started from here or by any client "
+                                        "of the API, newest first.")
+                            refresh_jobs = gr.Button("Refresh")
+                            jobs_table = gr.Dataframe(label="Jobs", interactive=False, wrap=True)
+                            refresh_jobs.click(jobs_table_ui, None, jobs_table)
+
+
+        # Across destinations: a finished run or a loaded engine is the newest to export.
+        for event in [*engine_events, loaded]:
+            event.success(lambda platform, source: export_form_ui(platform, source), [export_platform, export_source],
+                          export_form)
+
+        # Navigation: the banner, the menu, the address (?section=<id>) and the links inside a destination all
+        # select the destination's tab; nothing is re-rendered, so every form, game and run keeps its state.
+        nav_outputs = [main_tabs, *nav_buttons, nav_menu]
+        for key, button in zip(DESTINATION_IDS, nav_buttons):
+            button.click(lambda key=key: navigate(key), None, nav_outputs, show_progress="hidden")
+        nav_menu.input(navigate, nav_menu, nav_outputs, show_progress="hidden")
+        destination_tabs = {"world": world_tab, "train": train_tab, "play": play_tab, "evaluate": evaluate_tab,
+                            "export": export_tab, "advanced": advanced_tab}
+        for key, tab in destination_tabs.items():  # a tab chosen another way: the banner and the menu follow
+            tab.select(lambda key=key: mark_destination(key), None, [*nav_buttons, nav_menu], show_progress="hidden")
+        play_it.click(lambda: navigate("play"), None, nav_outputs, show_progress="hidden")
+        export_it.click(lambda: navigate("export"), None, nav_outputs, show_progress="hidden")
+        demo.load(open_requested, None, nav_outputs, show_progress="hidden")
 
     demo.launch_settings = limits
     return demo

@@ -3,13 +3,30 @@
 How to run the Adaptive Narrative Enabler and what each tab of the studio does. The REST API
 itself is in [API.md](API.md); the ANE AI that a game runs offline is in [UNP.md](UNP.md).
 
-The studio has five tabs, in the order of the work: **🌍 World** (create it) → **⚙ Settings**
-(tune the story) → **🧠 Train & export** (train the AI storyteller, export it for a game) →
-**▶ Play** (play the world) → **⚖ Evaluate** (with the judge). Each tab has sub-tabs, so a
-section is one click away instead of a long page of folded panels; the header shows the
-workflow and a status line: the active world's size, the trained AIs that can be played and
-exported, and whether recording is on. **Train & export only trains and exports**: every game
-is played in ▶ Play (a trained AI, a recorded engine, an engine file, or a save game).
+The studio has five destinations in the order of the work, and one for the technical settings:
+**🌍 World** (create it, with its story rules) → **🧠 Train** (train the AI storyteller) →
+**▶ Play** (play the world) → **⚖ Evaluate** (with the judge) → **📦 Export** (for a game), and
+**⚙ Advanced** (the simulation, the weights, the engine's logic, the app and its jobs). Inside a
+destination, its sections are tabs, so a section is one click away instead of a long page of
+folded panels. **Train only trains**: every game is played in ▶ Play (a trained AI, a recorded
+engine, an engine file, or a save game). Under the header, a status line gives the active world's
+size, the trained AIs that can be played and exported, and whether recording is on.
+
+### Navigation
+
+- **The workflow banner** (wide screens) is the navigation: *Workflow: 🌍 World → 🧠 Train → ▶ Play
+  → ⚖ Evaluate → 📦 Export*, with ⚙ Advanced set apart. Each step is a button that opens its
+  destination; the destination open now is highlighted.
+- **The menu** (screens narrower than 820 px): the banner gives way to *☰ Menu: go to a section*,
+  which lists every destination by name, the open one selected. No destination is ever behind an
+  overflow button: the destinations' own tab bar is not shown, at any width. When a destination's
+  sections do not fit a narrow screen, Gradio's overflow button for them reads **··· More**.
+- **Stable identifiers**: `world`, `train`, `play`, `evaluate`, `export`, `advanced` (`DESTINATIONS`
+  in `app.py`). They are the tabs' ids, the banner's buttons (`#nav-<id>`), the destinations'
+  elements (`#dest-<id>`), the menu's values, and the address: `?section=play` opens ▶ Play.
+- Changing destination only selects a tab: nothing is rebuilt or reloaded, so forms being edited,
+  a game in progress, a training's results and every other value stay as they were. Links inside a
+  destination use the same navigation (*▶ Play the newest* and *📦 Export it* after a training).
 
 ## Running
 
@@ -87,21 +104,21 @@ nothing is written.
 | … → *✨ Suggest* | The language model's suggestions for the entry's descriptions, goals, tags, views from afar, arrival texts, ways to go there or dialogue, in the world's voice (the terminal editor's suggestions): tick them and add them to the form, then save the entry or its details. Without the language model it says why and how to start it | `POST /v1/suggestions` (503 without the model) |
 | … → *Every field (YAML)* | The whole entry as stored, every field | `GET/PUT /v1/entities/{kind}/{name}/yaml` |
 | **🌍 World → 🎯 Missions** | Pick a mission (or add, delete one): key, title, description, weight, its condition and rewards, and its steps as a table (title, what the player is told, the goal, the rewards). Every mission as YAML under *advanced* | `GET/PUT/DELETE /v1/missions/{key}` (`rename`), `GET/PUT /v1/documents/missions` |
+| **🌍 World → 📜 Story rules** | *Story rules* (mission pacing and route weight, default repeat rules, arrest location and confinement, following new paths, persistence, event fallback); *Story messages* (every sentence the engine writes); *Persistent variables* (definitions; a profile's stored values, reset to a new player); *Character stats* (stat names, point budget, allocation mode, tag checks, damage-reduction stat) | `GET/PUT /v1/rules`, `GET/PUT /v1/documents/messages`, `GET/PUT /v1/documents/variables`, `GET/PUT /v1/documents/stored_values?profile=`, `POST /v1/variables/reset/yaml?profile=`, `GET /v1/variables/profiles`, `GET/PUT /v1/documents/stats` |
 | **🌍 World → 🗺 Map** | Pick a place and tick the places it borders (routes change both ways); the whole map is drawn beside it. The map as YAML under *advanced* | `GET /v1/map`, `PUT /v1/map/{place}`, `PUT /v1/map`, `GET/PUT /v1/documents/map` |
 | **🌍 World → 🏷 Behaviour by tags** | Two tables, people and places: a row per rule (its tags, and what each behaviour becomes), and what everyone does without one. A row with a new tag is a new choice in *Fields*; an invalid rule is refused with why | `GET /v1/behaviours/rules`, `PUT /v1/behaviours/rules/{npcs\|locations}` |
 | **🌍 World → ✨ Grow the world** | The world's size against the augmentation targets; the language model proposes new places, people and items (a background job; nothing written), shown ticked and as editable YAML; **Add the ticked ones** adds them once each is new and the whole world checks with them in place. Replaces the old augmenter's direct overwrite of the config files | `GET /v1/world/size`, `POST /v1/jobs/world-proposal`, `POST /v1/world/additions` |
 | **🌍 World → 🔍 Checks** | The actions whose failure changes nothing but health or coins and that no complication fits | `GET /v1/lint/failures` |
-| **⚙ Settings → Simulation** | Upload and activate a combined configuration YAML, or go back to the built-in files; population, steps, starting and **maximum health**, coins, reproducibility; every hyperparameter as one YAML document; the active configuration (read only) | `POST /v1/config/upload`, `POST /v1/config/reset`, `GET/PUT /v1/settings`, `GET/PUT /v1/hyperparameters`, `GET /v1/config` |
-| **⚙ Settings → Story** | *Story rules* (mission pacing and route weight, default repeat rules, arrest location and confinement, following new paths, persistence, event fallback); *Story messages* (every sentence the engine writes); *Persistent variables* (definitions; a profile's stored values, reset to a new player); *Character stats* (stat names, point budget, allocation mode, tag checks, damage-reduction stat) | `GET/PUT /v1/rules`, `GET/PUT /v1/documents/messages`, `GET/PUT /v1/documents/variables`, `GET/PUT /v1/documents/stored_values?profile=`, `POST /v1/variables/reset/yaml?profile=`, `GET /v1/variables/profiles`, `GET/PUT /v1/documents/stats` |
-| **⚙ Settings → Weights** | Difficulty (easier/harder), difficulty over time, chance floor/ceiling, damage mitigation, and every other weight | `GET/PUT /v1/weights` |
-| **⚙ Settings → Engine logic** | Every parameter of the engine's logic, section by section (no code editing) | `GET /v1/logic`, `GET/PUT /v1/logic/{section}` |
-| **⚙ Settings → App & jobs** | The studio's limits, defaults, queue and launch settings; the background jobs started by any client, with their progress | `GET/PUT /v1/app-settings`, `GET /v1/jobs` |
-| **🧠 Train & export → Train** | Storytellers, generations, steps, **stories per storyteller**, **continue learning from earlier runs**, deterministic runs; **Evolve storytellers** shows the report, the **learning curve**, **what the storyteller learned** and the run's files; **▶ Play the newest** opens ▶ Play with it chosen; forget the learning memory. No game is played here | `POST /v1/jobs/simulations` and `GET /v1/jobs/{id}` (or `POST /v1/simulations`), `GET/DELETE /v1/learning` |
-| **🧠 Train & export → Records** | Recorded engines: continue or retrain one, download its model file and world; recorded stories (judge one, or compare two), runs (their settings and every generation), worlds (download one as a configuration to upload); **import** the engines and games in the server's import folder (`ANE_ARTIFACT_DIR`, else `artifacts/`; copy or move, preview stories), as `python main.py --import-artifacts` does | `GET /v1/records/...`, `POST /v1/jobs/engines/{id}/continue\|retrain`, `POST /v1/records/stories/{id}/judge`, `POST /v1/judge/compare`, `GET /v1/records/import`, `POST /v1/jobs/records-import` |
-| **🧠 Train & export → Export** | Download the engine to run offline in a game, *Runs on* a system, Unity or Python, from the **finished runs** (and loaded engines): the latest is chosen, choose several to download each. The Python version can also be made from a generation's champion, the best remembered storyteller, or the game in ▶ Play. With or without the learning memory. *Where the ANE AI runs*: the standalone runtimes available here (or why not), and the world as the ANE AI sends it (JSON) | `GET /v1/exports/platforms`, `GET /v1/exports/engines`, `POST /v1/exports`, `GET /v1/artifacts/{id}`, `GET /v1/world/catalogue` |
+| **🧠 Train → Train** | Storytellers, generations, steps, **stories per storyteller**, **continue learning from earlier runs**, deterministic runs; **Evolve storytellers** shows the report, the **learning curve**, **what the storyteller learned** and the run's files; **▶ Play the newest** opens ▶ Play with it chosen and **📦 Export it** opens Export; forget the learning memory. No game is played here | `POST /v1/jobs/simulations` and `GET /v1/jobs/{id}` (or `POST /v1/simulations`), `GET/DELETE /v1/learning` |
+| **🧠 Train → Records** | Recorded engines: continue or retrain one, download its model file and world; recorded stories (judge one, or compare two), runs (their settings and every generation), worlds (download one as a configuration to upload); **import** the engines and games in the server's import folder (`ANE_ARTIFACT_DIR`, else `artifacts/`; copy or move, preview stories), as `python main.py --import-artifacts` does | `GET /v1/records/...`, `POST /v1/jobs/engines/{id}/continue\|retrain`, `POST /v1/records/stories/{id}/judge`, `POST /v1/judge/compare`, `GET /v1/records/import`, `POST /v1/jobs/records-import` |
 | **▶ Play** → *🎮 New game* | Choose the **trained AI** (finished runs and loaded engines, newest first; also without the records), the **player profile**, the **quest** (any quest open to the profile, or one the story draws) and the **character** (story default, random, balanced, or *my own points*, set with Randomize/Balance), then **▶ New game**, or **📂 Continue a save game** (saved here or by the ANE AI; exactly, or rebuilt from its parameters). *Another engine*: a recorded engine, or an engine file (an engine model, an older engine ZIP, or a configuration with its model parameters; it is kept, to play again or export). *The world's quests, and this profile's save game*: the quests with their stages, the sessions saved, the latest report sent to the UNP again. The panel folds away once a game is on | `GET /v1/exports/engines`, `POST /v1/engines/{id}/play` (`latest`: the newest), `POST /v1/records/engines/{id}/play`, `POST /v1/engines/load`, `POST /v1/sessions/load`, `GET /v1/missions/playable`, `POST /v1/stats/allocate`, `GET /v1/progression`, `POST /v1/progression/reports/{id}/send` |
 | **▶ Play** → the game | Sized to fit a window: the status bar (where, health, coins, the quest's step, an event, who you are talking with); the **place** (its description, who is here ★ quest · ⚠ hostile · ♥ ally, what can be seen); below it **What happened**, the last turn at a glance (your choice and with whom, the check rolled, what came of it, what it changed: ❤ health, 🪙 coins, 🎒 items, 📍 places, 👤 people; the quest step it completed); a button per choice with its check. Beside it the **quest card** (a progress bar, each step with the turn it was done, what to do now), **🧍 You** (power, inventory, stats with what items add, remembered values, the alert, the last check) and *People met & the map*. Below: **Your journey** (every choice as a table), **The story so far** (as a story), **Judge this playthrough**, and *This session as a UNP sees it* (**set the player**, tell it **what happened** in the UNP's game, its **parameters**). Save the game or end it | `POST /v1/sessions/{id}/actions`, `GET /v1/sessions/{id}/transcript`, `GET /v1/sessions/{id}/journal`, `GET /v1/sessions/{id}/savegame`, `POST /v1/sessions/{id}/end`, `POST /v1/sessions/{id}/judge`, `PATCH /v1/sessions/{id}/player`, `POST /v1/sessions/{id}/sync`, `GET /v1/sessions/{id}/state` |
 | **⚖ Evaluate** | Judge the engine's stories (current settings or a recorded engine), or compare the current settings with version B on the same seeds (pairwise A/B, both orders, win rate with its 95% interval); fit the fitness to the judge and save the suggested `fitness.term_weights`, or edit them | `POST /v1/jobs/judge-benchmark`, `POST /v1/jobs/calibrate-fitness`, `GET/PUT /v1/fitness/term-weights` |
+| **📦 Export** | Download the engine to run offline in a game, *Runs on* a system, Unity or Python, from the **finished runs** (and loaded engines): the latest is chosen, choose several to download each. The Python version can also be made from a generation's champion, the best remembered storyteller, or the game in ▶ Play. A finished training or an engine loaded in ▶ Play is chosen at once. With or without the learning memory. *Where the ANE AI runs*: the standalone runtimes available here (or why not), and the world as the ANE AI sends it (JSON) | `GET /v1/exports/platforms`, `GET /v1/exports/engines`, `POST /v1/exports`, `GET /v1/artifacts/{id}`, `GET /v1/world/catalogue` |
+| **⚙ Advanced → Simulation** | Upload and activate a combined configuration YAML, or go back to the built-in files; population, steps, starting and **maximum health**, coins, reproducibility; every hyperparameter as one YAML document; the active configuration (read only) | `POST /v1/config/upload`, `POST /v1/config/reset`, `GET/PUT /v1/settings`, `GET/PUT /v1/hyperparameters`, `GET /v1/config` |
+| **⚙ Advanced → Weights** | Difficulty (easier/harder), difficulty over time, chance floor/ceiling, damage mitigation, and every other weight | `GET/PUT /v1/weights` |
+| **⚙ Advanced → Engine logic** | Every parameter of the engine's logic, section by section (no code editing) | `GET /v1/logic`, `GET/PUT /v1/logic/{section}` |
+| **⚙ Advanced → App & jobs** | The studio's limits, defaults, queue and launch settings; the background jobs started by any client, with their progress | `GET/PUT /v1/app-settings`, `GET /v1/jobs` |
 
 Every endpoint of the API is reached from the studio, directly or through an equivalent
 one (the YAML form of a JSON endpoint, the job form of a long one);
@@ -113,10 +130,10 @@ action reference, repeat rules, goal keys, rule choices, stat choices, NPC roles
 judge's criteria) comes from `GET /v1/reference`.
 
 Choosing a new **Player profile** name in ▶ Play starts a new player.
-Stored values can be edited in *⚙ Settings → Story → Persistent variables*, for example
+Stored values can be edited in *🌍 World → 📜 Story rules → Persistent variables*, for example
 `playthroughs: 1`, to test what a returning player sees.
 
-**⚙ Settings → Engine logic** and **App & jobs** change how the engine behaves
+**⚙ Advanced → Engine logic** and **App & jobs** change how the engine behaves
 without editing code. The logic runs in the backend scripts (`core_engine/`,
 `backend/`). Every constant that shapes a decision is a parameter in
 `config/hyperparameters.yaml`: ranking weights, outcome objectives,
@@ -136,7 +153,7 @@ fitness, and the evolutionary search itself.
   largest run the API accepts); `max_simulation_work` caps the total simulated
   turns of one run (candidates × generations × story length × stories per
   storyteller; 1,000,000 by default, a few minutes on 16 CPUs, since a
-  generation's stories are played in parallel). *🧠 Train & export → Train* shows what a run
+  generation's stories are played in parallel). *🧠 Train → Train* shows what a run
   asks for under its sliders, before it starts. These are stored in
   `config/ui_settings.yml` (`GET|PUT /v1/app-settings`). Restart the UI and
   the API after saving them. `ANE_UI_HOST`,

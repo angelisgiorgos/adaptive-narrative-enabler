@@ -7,6 +7,24 @@ that introduces them.
 
 ## [Unreleased]
 
+### The studio's navigation: destinations, a workflow banner, a menu on narrow screens
+
+#### Changed
+- The studio's destinations are **🌍 World**, **🧠 Train**, **▶ Play**, **⚖ Evaluate** and **📦 Export**,
+  in the order of the work, and **⚙ Advanced** for the technical settings (simulation, weights,
+  engine logic, app and jobs). The story's own settings (story rules, messages, persistent
+  variables, character stats) moved to *🌍 World → 📜 Story rules*; Export is a destination of its
+  own (it was inside Train & export).
+- The workflow banner is the navigation: a button per destination, the open one highlighted. On
+  screens narrower than 820 px it gives way to *☰ Menu: go to a section*, which lists every
+  destination. The destinations' own tab bar is no longer shown, so no destination is behind
+  Gradio's overflow button; a destination's sections that do not fit a narrow screen are behind an
+  overflow button that now reads **··· More**.
+- Stable destination ids (`world`, `train`, `play`, `evaluate`, `export`, `advanced`): the tabs, the
+  banner's buttons (`#nav-<id>`), the destinations (`#dest-<id>`), the menu, and the address
+  (`?section=<id>`). Changing destination only selects a tab, so every form, game and result keeps
+  its state.
+
 ### The studio: five tabs, a game screen that fits a window
 
 #### Changed

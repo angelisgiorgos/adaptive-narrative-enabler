@@ -421,7 +421,7 @@ def play_finished_run(engine_id=None, profile=None, stats_choice=None, stats_poi
         model = complete_engine("engine", engine_id=None if engine_id in (None, "", "latest") else engine_id)
     except EngineRequired as exc:
         if engine_id in (None, "", "latest"):
-            raise EngineRequired("No finished run yet: train the AI first (🧠 Train & export → Evolve "
+            raise EngineRequired("No finished run yet: train the AI first (🧠 Train → Evolve "
                                  "storytellers), then play its world here.") from exc
         raise
     model.activate()
@@ -696,7 +696,7 @@ def _training_guard(pop_size, generations, episodes, steps):
             f"This run requests up to {asked['work']:,} simulated turns ({pop_size} storytellers x {generations} "
             f"generations x {episodes} stories x {asked['story_turns']} turns), above the limit of "
             f"{asked['limit']:,}. Use fewer storytellers, generations or stories per storyteller, or raise "
-            "`max_simulation_work` (⚙ Settings → App & jobs → App parameters).")
+            "`max_simulation_work` (⚙ Advanced → App & jobs → App parameters).")
 
 
 def continue_engine(engine_id, generations=1, profile=None, stats_choice=None, stats_points=None, origin="studio",

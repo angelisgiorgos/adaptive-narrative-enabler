@@ -1289,38 +1289,110 @@ class RecordsImportAndPointsTests(_Sandbox):
         self.assertIn("Moon", refused.json()["detail"])
 
 
-class StudioLayoutTests(_Sandbox):
-    """The studio's tabs: World, Settings, Train & export, Play, Evaluate; the game is played in ▶ Play
-    only (Train & export trains and exports)."""
+def _prop(update, name):
+    """A property of what a handler returns: an update (a dict) or a component (Gradio 6)."""
+    return update[name] if isinstance(update, dict) else getattr(update, name)
 
-    def test_the_tabs_and_where_the_game_is(self):
+
+class StudioLayoutTests(_Sandbox):
+    """The studio's destinations: World, Train, Play, Evaluate, Export and Advanced, each a tab with a stable
+    id, chosen with the workflow banner (wide screens) or the labelled menu (narrow screens). The game is
+    played in ▶ Play only."""
+
+    @classmethod
+    def _inside(cls, block, kind):
+        found, stack = [], list(block.children)
+        while stack:
+            child = stack.pop()
+            if isinstance(child, kind):
+                found.append(child)
+            stack.extend(getattr(child, "children", []) or [])
+        return found
+
+    def _studio(self):
         import gradio as gr
 
         import app
 
         demo = app.build_app()
-        tabs = [block for block in demo.blocks.values() if isinstance(block, gr.Tab)]
+        main = next(block for block in demo.blocks.values() if isinstance(block, gr.Tabs) and block.elem_id == "ane-nav")
+        return app, demo, main
 
-        def inside(tab, kind):
-            found, stack = [], list(tab.children)
-            while stack:
-                block = stack.pop()
-                if isinstance(block, kind):
-                    found.append(block)
-                stack.extend(getattr(block, "children", []) or [])
-            return found
+    def test_the_destinations_and_where_the_game_is(self):
+        import gradio as gr
 
-        main = next(block for block in demo.blocks.values() if isinstance(block, gr.Tabs)
-                    and "main-tabs" in (block.elem_classes or []))
-        self.assertEqual([tab.label for tab in main.children],
-                         ["🌍 World", "⚙ Settings", "🧠 Train & export", "▶ Play", "⚖ Evaluate"])
-        by_label = {tab.label: tab for tab in tabs}
-        choices = [b for b in inside(by_label["▶ Play"], gr.Button) if "choice" in (b.elem_classes or [])]
+        app, demo, main = self._studio()
+        self.assertEqual([(tab.id, tab.label) for tab in main.children], app.DESTINATIONS)
+        self.assertEqual(app.DESTINATION_IDS, ["world", "train", "play", "evaluate", "export", "advanced"])
+        by_id = {tab.id: tab for tab in main.children}
+        choices = [b for b in self._inside(by_id["play"], gr.Button) if "choice" in (b.elem_classes or [])]
         self.assertEqual(len(choices), app.CHOICE_BUTTONS)
-        self.assertFalse([b for b in inside(by_label["🧠 Train & export"], gr.Button)
-                          if "choice" in (b.elem_classes or [])])
-        self.assertFalse([r for r in inside(by_label["🧠 Train & export"], gr.Radio) if r.label == "What do you do?"])
-        for label in ("Fields", "Actions & outcomes", "Scheduling", "More details", "✨ Suggest", "🎯 Missions",
-                      "🗺 Map", "✨ Grow the world", "Simulation", "Story", "Weights", "Engine logic", "Train",
-                      "Records", "Export"):
-            self.assertIn(label, by_label)
+        for elsewhere in ("world", "train", "evaluate", "export", "advanced"):  # the game is in ▶ Play only
+            self.assertFalse([b for b in self._inside(by_id[elsewhere], gr.Button)
+                              if "choice" in (b.elem_classes or [])], elsewhere)
+        sections = {key: {tab.label for tab in self._inside(tab, gr.Tab)} for key, tab in by_id.items()}
+        self.assertLessEqual({"📝 Entries", "Fields", "Actions & outcomes", "Scheduling", "More details", "✨ Suggest",
+                              "🎯 Missions", "📜 Story rules", "🗺 Map", "✨ Grow the world", "🔍 Checks"},
+                             sections["world"])
+        self.assertEqual(sections["train"], {"Train", "Records"})
+        self.assertEqual(sections["advanced"], {"Simulation", "Weights", "Engine logic", "App & jobs"})
+        export_buttons = [b.value for b in self._inside(by_id["export"], gr.Button)]
+        self.assertIn("Export", export_buttons)
+        # Export's generation picker is filled by a training: one component, rendered in 📦 Export.
+        generation = [d for d in self._inside(by_id["export"], gr.Dropdown) if "generation" in (d.label or "")]
+        self.assertEqual(len(generation), 1)
+
+    def test_every_destination_is_reached_from_the_banner_the_menu_and_the_address(self):
+        import gradio as gr
+
+        app, demo, main = self._studio()
+        blocks = demo.blocks.values()
+        banner = next(b for b in blocks if isinstance(b, gr.Row) and b.elem_id == "ane-banner")
+        menu = next(b for b in blocks if isinstance(b, gr.Radio) and b.elem_id == "ane-menu")
+        buttons = [b for b in banner.children if isinstance(b, gr.Button)]
+        self.assertEqual([(b.elem_id, b.value) for b in buttons],
+                         [(f"nav-{key}", label) for key, label in app.DESTINATIONS])  # the whole banner, in order
+        self.assertEqual([b.variant for b in buttons], ["primary"] + ["secondary"] * 5)  # the World is open first
+        self.assertEqual([value for _, value in menu.choices], app.DESTINATION_IDS)    # the menu: every destination
+        self.assertTrue(menu.label.startswith("☰ Menu"))
+
+        def wired(trigger, event):
+            return [fn for fn in demo.fns.values() if (trigger._id, event) in fn.targets]
+
+        for button, key in zip(buttons, app.DESTINATION_IDS):
+            with self.subTest(destination=key):
+                (fn,) = wired(button, "click")
+                self.assertIn(main._id, [o._id for o in fn.outputs])  # the tabs follow
+                selected, *highlight, named = fn.fn()
+                self.assertEqual(_prop(selected, "selected"), key)
+                self.assertEqual([_prop(b, "variant") for b in highlight],
+                                 ["primary" if other == key else "secondary" for other in app.DESTINATION_IDS])
+                self.assertEqual(_prop(named, "value"), key)
+                (via_menu,) = wired(menu, "input")
+                self.assertEqual(_prop(via_menu.fn(key)[0], "selected"), key)
+        # Nothing is rebuilt on the way: navigation only selects a tab and highlights the banner and menu.
+        for fn in wired(menu, "input") + [f for b in buttons for f in wired(b, "click")]:
+            self.assertEqual({o._id for o in fn.outputs}, {main._id, menu._id, *(b._id for b in buttons)})
+        # The address names a destination (?section=play); anything else opens the World.
+        for asked, opened in (("play", "play"), ("EXPORT", "export"), ("nowhere", "world"), (None, "world")):
+            request = type("Request", (), {"query_params": {"section": asked} if asked else {}})()
+            self.assertEqual(_prop(app.open_requested(request)[0], "selected"), opened)
+        self.assertEqual(_prop(app.navigate("nowhere")[0], "selected"), "world")
+        # Links inside a destination: Train's "Play the newest" and "Export it".
+        train = next(tab for tab in main.children if tab.id == "train")
+        links = {b.value: b for b in self._inside(train, gr.Button)}
+        for label, key in (("▶ Play the newest", "play"), ("📦 Export it", "export")):
+            (fn,) = wired(links[label], "click")
+            self.assertEqual(_prop(fn.fn()[0], "selected"), key)
+
+    def test_narrow_screens_get_the_menu_and_no_destination_hides_behind_an_overflow_button(self):
+        import app
+
+        css = re.sub(r"\s+", " ", app.CSS)
+        self.assertIn("#ane-nav > .tab-wrapper {display: none !important}", css)  # no tab bar: no overflow button
+        self.assertIn("#ane-menu {display: none !important}", css)
+        narrow = css[css.index("@media (max-width: 820px)"):]
+        narrow = narrow[:narrow.index("} }") + 3]
+        self.assertIn("#ane-banner {display: none !important}", narrow)
+        self.assertIn("#ane-menu {display: block !important}", narrow)
+        self.assertIn('.overflow-menu > button::after {content: "More"', css)  # a section's overflow says so

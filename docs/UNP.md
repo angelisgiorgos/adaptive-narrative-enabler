@@ -42,7 +42,7 @@ The ANE AI is made from a **complete engine**: the engine model a finished train
 the API (also a continued or retrained one). It can be downloaded once one exists, from the studio
 or the API:
 
-- **Studio:** *🧠 Train & export → Export*: choose *Runs on* (a system or Unity),
+- **Studio:** *📦 Export*: choose *Runs on* (a system or Unity),
   then the complete engine (newest first). Until a training has finished or an engine is loaded,
   the export says so and stays off.
 - **API:** `GET /v1/exports/engines` lists the complete engines; `POST /v1/exports` with a

@@ -103,7 +103,7 @@ storytellers, so the tool keeps improving from run to run. In the studio,
 **Continue learning from earlier runs** switches this on or off, and **Forget
 what the AI learned** resets it. The API offers `GET|DELETE /v1/learning`.
 
-**What the AI learned is shown.** The studio's *🧠 Train & export → Train* draws the learning
+**What the AI learned is shown.** The studio's *🧠 Train* draws the learning
 curve: the benchmark champion, the best, and the average per generation. It
 also lists the evolved storyteller's traits next to the population average
 and bounds, with a plain meaning and whether the trait is high, moderate, or
