@@ -960,11 +960,17 @@ class StudioServiceTests(_Sandbox):
                 too_large = {**largest, field: largest[field] + 1}
                 self.assertEqual(self.client.post("/v1/simulations", json=too_large).status_code, 422)
                 self.assertEqual(self.client.post("/v1/jobs/simulations", json=too_large).status_code, 422)
-        # The largest run passes the API and reaches the backend unclamped; the total-work limit refuses it.
+        # The largest run passes the API and reaches the backend unclamped; the total-work limit refuses it,
+        # counting each story at the turns it can really take (GET /v1/simulations/work says how many).
+        turns = self.client.get("/v1/simulations/work", params={"candidate_count": 400, "generations": 1000,
+                                                                "simulation_steps": 400, "episodes": 1}).json()
         response = self.client.post("/v1/simulations", json=largest)
         self.assertEqual(response.status_code, 400, response.text)
-        requested = int(re.search(r"requests (?:up to )?([\d,]+) simulated turns", response.json()["detail"]).group(1).replace(",", ""))
-        self.assertGreaterEqual(requested, 400 * 1000 * 400)
+        detail = response.json()["detail"]
+        requested = int(re.search(r"requests (?:up to )?([\d,]+) simulated turns", detail).group(1).replace(",", ""))
+        self.assertEqual(requested, 400 * 1000 * 1 * turns["effective_max_turns"])
+        self.assertIn(f"400 storytellers x 1000 generations x 1 stories x {turns['effective_max_turns']} turns", detail)
+        self.assertIn("400 steps asked for", detail)  # the steps reached the backend unclamped too
 
     def test_documents(self):
         names = [d["name"] for d in self.client.get("/v1/documents").json()["documents"]]
