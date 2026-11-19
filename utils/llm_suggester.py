@@ -2,12 +2,13 @@ import json
 import re
 
 from utils.config_loader import config
-from utils.llm_model_loader import get_llm_runtime
+from utils.llm_model_loader import get_llm_runtime, settings as llm_settings
 
 
 class LLMSuggester:
     def __init__(self):
-        self.model_name = config.get("vllm.model_name", "google/gemma-4-E4B-it")
+        # The same model as the judge (ANE_JUDGE_MODEL, else vllm.model_name).
+        self.model_name = llm_settings()["model_name"]
         self.max_new_tokens = config.get("editor_suggester.max_new_tokens", 256)
         self.temperature = config.get("editor_suggester.temperature", 0.7)
         self._runtime = None

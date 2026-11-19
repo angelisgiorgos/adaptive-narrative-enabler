@@ -160,9 +160,9 @@ class LearningInPlayTests(_TempSaves):
 
     def test_studio_shows_the_learning_curve(self):
         import app
-        outputs = app.run_simulation_ui(4, 2, 3, False, "default", "story default", "", 1, False,
-                                        progress=lambda *a, **k: None)
-        curve, traits = outputs[9], outputs[10]  # after the scene, the files, the quest and the people
+        outputs = app.run_simulation_ui(4, 2, 3, False, 1, False, progress=lambda *a, **k: None)
+        curve, traits = outputs[3], outputs[4]  # after the report and the run's files: training only, no game
+        self.assertIn("▶ Play", outputs[0])     # the trained AI is played there
         self.assertEqual(set(curve["series"]), {"benchmark (champion)", "best this generation", "population average"})
         self.assertIn("goal_bias", set(traits["trait"]))
 

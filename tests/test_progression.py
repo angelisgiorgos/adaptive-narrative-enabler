@@ -326,8 +326,8 @@ class SessionAPITests(_Progression):
 
     def test_the_studio_ends_a_session_and_shows_the_save_game(self):
         import app
-        scene, _, _, _, people = app.end_session_ui(self.token)
-        self.assertIn("### Session report", people)
+        ended = app.play_end_ui(self.token)
+        self.assertIn("### Session report", app.play_part(ended, "people"))
         text, table = app.progression_ui("dora")
         self.assertIn("Save game `dora`", text)
         self.assertEqual(len(table), 1)

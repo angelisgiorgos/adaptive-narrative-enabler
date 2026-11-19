@@ -449,8 +449,8 @@ class UnpSessionTests(_Sandbox):
 
         token = self._game()["session_id"]
         self.assertEqual(json.loads(app.session_parameters_ui(token))["format"], "ane.session_state/1")
-        scene, choices, turn, quest, people = app.update_player_ui(token, '{"coins": 9}')
-        self.assertIn("coins", turn)
+        shown = app.update_player_ui(token, '{"coins": 9}')                # the game screen, then the story
+        self.assertIn("🪙 9", app.play_part(shown, "hud").value)
         app.sync_session_ui(token, "coins_changed", "-4")
         self.assertEqual(self.client.get(f"/v1/sessions/{token}/state").json()["coins"], 5)
         for bad in (lambda: app.sync_session_ui(token, "coins_changed", "a lot"),
@@ -459,7 +459,7 @@ class UnpSessionTests(_Sandbox):
                 bad()
         path, status = app.download_savegame_ui(token)
         self.assertEqual(json.loads(Path(path).read_text())["format"], "ane.savegame/1")
-        new_token, *view, status = app.load_savegame_ui(path, token)
+        new_token, *view, status = app.play_continue_ui(path, token)
         self.assertNotEqual(new_token, token)
         self.assertIn("Continued exactly", status)
         path, status = app.world_catalogue_ui()
@@ -495,23 +495,89 @@ class PlayTabTests(_Sandbox):
             self.assertEqual(self.client.post("/v1/engines/nothing/play", json={}).status_code, 409)
 
             # The studio's game screen: a button per choice, a turn per press, save and continue.
-            token, ending, hud, scene, turn, *rest = app.play_new_game_ui(engine_id, "player", "", "balanced")
-            buttons, actions, story = rest[:app.CHOICE_BUTTONS], rest[app.CHOICE_BUTTONS + 2], rest[-2]
+            started = app.play_new_game_ui(engine_id, "player", "", "balanced")
+            token, story = started[0], started[-2]
+            hud, place = app.play_part(started, "hud", 1), app.play_part(started, "place", 1)
+            buttons = [app.play_part(started, f"choice {i + 1}", 1) for i in range(app.CHOICE_BUTTONS)]
+            actions = app.play_part(started, "actions", 1)
             self.assertIn("📍", hud.value)  # the status bar: where, health, coins, the quest
             self.assertIn("❤", hud.value)
+            state = self.client.get(f"/v1/sessions/{token}").json()
+            self.assertTrue(place.startswith(f"### 📍 {state['scene_name']}"))  # where you are, compactly
+            self.assertIn(state["description"], place)
+            self.assertNotIn("**Inventory:**", place)                          # the player has a card of their own
+            self.assertIn("### 🧍 You", app.play_part(started, "you", 1))
             shown = [b.value for b in buttons if b.visible]
             self.assertEqual(len(shown), len(actions))
             self.assertTrue(all(name in label for label, name in zip(shown, actions)))
-            out = app.play_choose_ui(token, actions, 0)
-            self.assertIn("What happened", out[3].value)
+            took = next(i for i, name in enumerate(actions) if not name.startswith("Approach "))  # a turn
+            out = app.play_choose_ui(token, actions, took)
+            turn = app.play_part(out, "turn")
+            self.assertIn("What happened", turn.value)
+            self.assertIn("you chose", turn.value)                              # the choice, what came of it
             self.assertGreater(len(out[-1]), len(story))  # the story so far grew
+            journey = app.play_part(out, "journey")
+            self.assertIn("| # | Where | You chose |", journey)                  # every choice so far
+            self.assertIn("🎯", app.play_part(out, "quest"))                     # the quest card
+            state = self.client.get(f"/v1/sessions/{token}").json()
+            journal = self.client.get(f"/v1/sessions/{token}/journal").json()["journal"]
+            self.assertEqual(state["turn_summary"], journal[-1])
+            self.assertEqual(journal[-1]["action"].split(") ", 1)[-1], actions[took].split(") ", 1)[-1])
             path, _ = app.download_savegame_ui(token)
             continued = app.play_continue_ui(path, token)
             self.assertEqual(continued[-1], "Continued exactly where it was saved.")
             ended = app.play_end_ui(continued[0])
-            self.assertTrue(ended[0].visible and ended[0].value.startswith("## "))  # how the story ended
+            ending = app.play_part(ended, "ending")
+            self.assertTrue(ending.visible and ending.value.startswith("## "))  # how the story ended
             with self.assertRaises(Exception):
                 app.play_choose_ui("", [], 0)
+
+
+class GamePresentationTests(unittest.TestCase):
+    """How a game reads in ▶ Play: the story without the engine's bookkeeping, the last turn at a
+    glance, the journey as a table, the quest with its progress."""
+
+    def test_the_story_reads_as_a_story(self):
+        import app
+
+        text = "\n".join([
+            "[MISSION] Rid the market of the thief: Drive the thief out.", "\nYou are in the Market. Stalls everywhere.",
+            "Met a Guard: A city guard.", "Continuing your activities in the Market...", "> (Merchant) Ask about the thief",
+            "RESULT: Patched cloak, quick fingers.", "[LOCATION] Still at Market",
+            "[QUEST] Pick up the trail: done. Next: Catch the thief.", "[EVENT] The lookout: A boy blocks your way."])
+        story = app.story_markdown(text)
+        self.assertIn("🎯 **Rid the market of the thief", story)
+        self.assertIn("#### 📍 The Market", story)
+        self.assertIn("---\n\n**▶ (Merchant) Ask about the thief**", story)   # each choice after a rule
+        self.assertIn("✅ **Pick up the trail", story)
+        self.assertNotIn("Continuing your activities", story)
+        self.assertNotIn("Still at Market", story)
+        self.assertNotIn("RESULT:", story)
+
+    def test_the_last_turn_the_journey_and_the_quest(self):
+        import app
+
+        turn = {"turn": 4, "action": "(Captain of the Watch) Take the bounty", "with": "Captain of the Watch",
+                "where": "Market", "moved_to": "Sewers", "new_places": ["Sewers"], "check": {"stat": "persuasion",
+                "roll": 30, "needed": 55, "passed": True}, "succeeded": True, "told": "The captain hands you a warrant.",
+                "health_change": -2, "coin_change": 5, "items_gained": ["Warrant"], "items_lost": [], "met": ["Thief"],
+                "event": None, "quest_done": ["Pick up the trail"], "quest_now": "Catch the thief", "quest_complete": False}
+        card = app.turn_card_markdown(turn, "> (Captain of the Watch) Take the bounty\nRESULT: x\n[SPAWN] New path: Sewers")
+        for shown in ("Turn 4: you chose _Take the bounty_", "rolled 30, needed 55", "**passed ✓**",
+                      "> The captain hands you a warrant.", "❤ −2", "🪙 +5", "🎒 got Warrant", "📍 Sewers (new place)",
+                      "👤 met Thief", "Quest step done:** Pick up the trail → **now:** Catch the thief", "🗺 New path"):
+            self.assertIn(shown, card)
+        journey = app.journey_markdown([turn] * 20)
+        self.assertIn("*… 5 earlier turn(s)*", journey)
+        self.assertEqual(journey.count("| 4 | Market |"), 15)
+        quest = {"title": "Rid the market", "description": "", "status": "in progress", "todo": ["Catch the thief"],
+                 "stages": [{"title": "Pick up the trail", "state": "done"},
+                            {"title": "Catch the thief", "state": "current", "description": "At dusk."},
+                            {"title": "Drive them out", "state": "todo"}]}
+        shown = app.quest_markdown(quest, [turn])
+        self.assertIn("`▰▱▱` **1 of 3 steps**", shown)
+        self.assertIn("✅ **Pick up the trail** · turn 4", shown)
+        self.assertIn("**To do now:** Catch the thief", shown)
 
 
 @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root can write anything")
@@ -1044,3 +1110,217 @@ class ExampleWorldTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LanguageModelEditorTests(_Sandbox):
+    """The terminal editor's language-model features, in the API and the studio: suggestions for an
+    entry's text, and new places, people and items proposed, reviewed, then added (nothing written
+    before). The model is replaced by a stand-in: no language model runs here."""
+
+    READY = {"available": True, "mode": "server", "model": "gemma", "server": "http://judge/v1", "reason": None,
+             "how": None}
+    NOT_READY = {"available": False, "mode": "server", "model": "gemma", "server": "http://judge/v1",
+                 "reason": "No vLLM server answers at http://judge/v1.", "how": "Start the judge."}
+    ADDITIONS = {
+        "locations": {"Lighthouse": {"tags": ["harbor", "secluded"], "descriptions": ["A lamp turns above the rocks."],
+                                     "actions": [{"name": "Climb to the lamp", "outcomes": [
+                                         {"desc": "The whole bay lies below you.", "tags": ["discovery"]}]}]}},
+        "characters": [{"name": "Lamplighter", "associated_tags": ["harbor"], "goals": ["Keep the light burning"],
+                        "descriptions": ["An old keeper with soot on his hands."]}],
+        "objects": [{"name": "Brass Lens", "associated_tags": ["harbor"], "descriptions": ["A heavy lens."]}],
+    }
+
+    def test_suggestions_need_the_language_model_and_save_nothing(self):
+        import app
+
+        before = (self.dir / "npcs.yaml").read_text()
+        body = {"kind": "NPCs", "name": "Smuggler", "field": "goals"}
+        with patch("utils.llm_model_loader.status", return_value=self.NOT_READY):
+            refused = self.client.post("/v1/suggestions", json=body)
+        self.assertEqual(refused.status_code, 503)
+        self.assertIn("Start the judge", refused.json()["detail"])  # why, and how to make it available
+        self.assertEqual(self.client.post("/v1/suggestions", json=dict(body, field="secret")).status_code, 400)
+        self.assertEqual(self.client.post("/v1/suggestions", json=dict(body, name="Nobody")).status_code, 404)
+
+        seen = {}
+
+        class Suggester:
+            def available(self):
+                return True
+
+            def last_error(self):
+                return None
+
+            def suggest_list(self, field_name, context):
+                seen.update(field=field_name, context=context)
+                return ["Pay off the harbour master", "Leave the city by night"]
+
+        with patch("utils.llm_model_loader.status", return_value=self.READY), \
+                patch("utils.llm_suggester.LLMSuggester", Suggester):
+            found = self.client.post("/v1/suggestions", json=body)
+            ticks, note = app.suggest_ui("NPCs", "Smuggler", "goals")
+        self.assertEqual(found.status_code, 200, found.text)
+        self.assertEqual(found.json()["suggestions"], ["Pay off the harbour master", "Leave the city by night"])
+        self.assertEqual(seen["field"], "Goals")
+        self.assertEqual(seen["context"]["current_entry"]["name"], "Smuggler")  # the entry and the world it is in
+        self.assertIn("Vault", seen["context"]["whole_case"]["locations"])
+        self.assertEqual(ticks["value"], found.json()["suggestions"])  # all ticked, to untick
+        self.assertEqual((self.dir / "npcs.yaml").read_text(), before)  # nothing saved
+
+        # The ticked ones go into the form (saved with the form's own Save).
+        import pandas as pd
+
+        dialogue = pd.DataFrame(columns=["Said when (condition, empty: always)", "Says"])
+        shown = app.add_suggestions_ui("goals", ["Leave the city by night"], "A smuggler.", "Earn coin", ["urban"],
+                                       "", "", "", dialogue)
+        self.assertEqual(shown[1], "Earn coin\nLeave the city by night")
+        self.assertIn("Save entry", shown[-1])
+        shown = app.add_suggestions_ui("dialogue", ["Psst. Over here."], "", "", [], "", "", "", dialogue)
+        self.assertEqual(list(shown[6]["Says"]), ["Psst. Over here."])
+        self.assertEqual(app.add_suggestions_ui("tags", ["smuggler"], "", "", ["urban"], "", "", "", None)[2]["value"],
+                         ["urban", "smuggler"])
+
+    def test_the_world_grows_only_by_what_is_ticked_and_checked(self):
+        import app
+        from core_engine.augmenter import WorldAugmenter
+
+        size = self.client.get("/v1/world/size").json()
+        self.assertEqual(set(size["have"]), {"locations", "items", "npcs", "outcomes"})
+        self.assertEqual(set(size["want"]), set(size["have"]))
+        files = {name: (self.dir / name).read_text() for name in ("locations.yaml", "npcs.yaml", "items.yaml")}
+
+        # Without the language model, the proposal job fails and says why.
+        with patch("utils.llm_model_loader.status", return_value=self.NOT_READY):
+            job = _finished(self.client, self.client.post("/v1/jobs/world-proposal").json()["id"])
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("not available", job["error"])
+
+        # A proposal writes nothing; the studio shows it ticked, to edit and untick.
+        with patch("utils.llm_model_loader.status", return_value=self.READY), \
+                patch.object(WorldAugmenter, "propose", return_value=self.ADDITIONS):
+            job = _finished(self.client, self.client.post("/v1/jobs/world-proposal").json()["id"])
+            picks, text, note = app.propose_world_ui(progress=lambda *a, **k: None)
+        self.assertEqual(job["status"], "finished", job.get("error"))
+        self.assertEqual(job["result"], self.ADDITIONS)
+        self.assertEqual(picks["value"], ["Place: Lighthouse", "Person: Lamplighter", "Item: Brass Lens"])
+        self.assertEqual({name: (self.dir / name).read_text() for name in files}, files)
+
+        # Invalid or repeated entries are refused and nothing is written.
+        for bad in ({"objects": [{"name": "Ancient Map"}]},                        # already in the world
+                    {"locations": {"Harbor": {"tags": ["harbor"]}}},
+                    {"characters": [{"name": "Lamplighter", "role": "emperor"}]},  # no such role
+                    {"objects": [{"name": "Lens"}, {"name": "Lens"}]}, {}):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.client.post("/v1/world/additions", json=bad).status_code, 400)
+        self.assertEqual({name: (self.dir / name).read_text() for name in files}, files)
+
+        # The ticked entries (the place and the person, not the item) are added.
+        message, _ = app.add_proposal_ui(text, ["Place: Lighthouse", "Person: Lamplighter"])
+        self.assertIn("Lighthouse", message)
+        self.assertIn("Lighthouse", self._yaml("locations.yaml")["world_definition"]["locations"])
+        self.assertIn("Lamplighter", [c["name"] for c in self._yaml("npcs.yaml")["world_definition"]["characters"]])
+        self.assertEqual((self.dir / "items.yaml").read_text(), files["items.yaml"])
+
+    def test_the_augmenter_proposes_without_writing(self):
+        from core_engine.augmenter import WorldAugmenter
+
+        augmenter = WorldAugmenter()
+
+        class Model:
+            def generate(self, prompt):
+                return "{}"
+
+            def extract_json(self, text):
+                return {"locations": {"Harbor": {"tags": ["harbor"]}, "Lighthouse": {"tags": ["harbor", "secluded"]}},
+                        "objects": [{"name": "Ancient Map"}, {"name": "Brass Lens"}],
+                        "characters": [{"name": "Lamplighter"}]}
+
+        augmenter._llm = Model()
+        with patch.object(WorldAugmenter, "save_augmentation") as saved, \
+                patch.object(WorldAugmenter, "apply_to_modular_config") as written:
+            proposal = augmenter.propose()
+        self.assertEqual(list(proposal["locations"]), ["Lighthouse"])  # only what is new
+        self.assertEqual([o["name"] for o in proposal["objects"]], ["Brass Lens"])
+        self.assertEqual([c["name"] for c in proposal["characters"]], ["Lamplighter"])
+        saved.assert_not_called()
+        written.assert_not_called()
+
+
+class RecordsImportAndPointsTests(_Sandbox):
+    """Importing earlier engines and games from the server's folder (the terminal's --import-artifacts),
+    and a place's points of interest (the terminal editor's interaction points)."""
+
+    def test_the_import_folder_and_its_job(self):
+        import app
+
+        folder = self.dir / "artifacts"
+        folder.mkdir()
+        with patch.dict(os.environ, {"ANE_ARTIFACT_DIR": str(folder)}):
+            self.assertEqual(self.client.get("/v1/records/import").json(), {"folder": str(folder), "files": []})
+            empty = self.client.post("/v1/jobs/records-import", json={})
+            self.assertEqual(empty.status_code, 400)
+            self.assertIn("nothing to import", empty.json()["detail"])
+            (folder / "notes.yaml").write_text("just: notes\n")
+            self.assertEqual(self.client.get("/v1/records/import").json()["files"], ["notes.yaml"])
+            self.assertIn("notes.yaml", app.import_folder_ui())
+            job = _finished(self.client, self.client.post("/v1/jobs/records-import",
+                                                          json={"move": False, "preview": False}).json()["id"])
+        self.assertEqual(job["status"], "finished", job.get("error"))
+        self.assertEqual((job["result"]["files"], job["result"]["engines"]), (1, 0))
+        self.assertEqual([f["file"] for f in job["result"]["failed"]], ["notes.yaml"])  # not an engine: it stays
+        self.assertTrue((folder / "notes.yaml").exists())
+
+    def test_a_place_s_points_of_interest(self):
+        import app
+
+        shown = app.details_form_ui("Locations", "Harbor")
+        table = shown[-1]
+        self.assertEqual(list(table.columns), app.POINT_COLUMNS)
+        self.assertIn("Waterfront", list(table["Label"]))
+        details = self.client.get("/v1/entities/Locations/Harbor/details").json()
+        self.assertIn("interaction_points", details["fields"])
+        status, _ = app.save_details_ui("Locations", "Harbor", [], [], "", None, *shown[7:11], table)
+        self.assertIn("Harbor", status)
+        place = self._yaml("locations.yaml")["world_definition"]["locations"]["Harbor"]
+        self.assertEqual(place["interaction_points"], details["details"]["interaction_points"])  # nothing lost
+        bad = [dict(details["details"]["interaction_points"][0], linked_location="Moon")]
+        refused = self.client.put("/v1/entities/Locations/Harbor/details", json={"details": {"interaction_points": bad}})
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("Moon", refused.json()["detail"])
+
+
+class StudioLayoutTests(_Sandbox):
+    """The studio's tabs: World, Settings, Train & export, Play, Evaluate; the game is played in ▶ Play
+    only (Train & export trains and exports)."""
+
+    def test_the_tabs_and_where_the_game_is(self):
+        import gradio as gr
+
+        import app
+
+        demo = app.build_app()
+        tabs = [block for block in demo.blocks.values() if isinstance(block, gr.Tab)]
+
+        def inside(tab, kind):
+            found, stack = [], list(tab.children)
+            while stack:
+                block = stack.pop()
+                if isinstance(block, kind):
+                    found.append(block)
+                stack.extend(getattr(block, "children", []) or [])
+            return found
+
+        main = next(block for block in demo.blocks.values() if isinstance(block, gr.Tabs)
+                    and "main-tabs" in (block.elem_classes or []))
+        self.assertEqual([tab.label for tab in main.children],
+                         ["🌍 World", "⚙ Settings", "🧠 Train & export", "▶ Play", "⚖ Evaluate"])
+        by_label = {tab.label: tab for tab in tabs}
+        choices = [b for b in inside(by_label["▶ Play"], gr.Button) if "choice" in (b.elem_classes or [])]
+        self.assertEqual(len(choices), app.CHOICE_BUTTONS)
+        self.assertFalse([b for b in inside(by_label["🧠 Train & export"], gr.Button)
+                          if "choice" in (b.elem_classes or [])])
+        self.assertFalse([r for r in inside(by_label["🧠 Train & export"], gr.Radio) if r.label == "What do you do?"])
+        for label in ("Fields", "Actions & outcomes", "Scheduling", "More details", "✨ Suggest", "🎯 Missions",
+                      "🗺 Map", "✨ Grow the world", "Simulation", "Story", "Weights", "Engine logic", "Train",
+                      "Records", "Export"):
+            self.assertIn(label, by_label)

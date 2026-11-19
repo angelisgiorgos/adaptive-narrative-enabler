@@ -255,7 +255,7 @@ class StudioAndTerminalRecordingTests(_Records):
         engines = sessions.recorded_engines()
         self.assertIn(game["engine_id"], [engine_id for _, engine_id in engines])
         outputs = app.play_recorded_ui(game["engine_id"], None, None, None)
-        self.assertTrue(outputs[0] and outputs[2])                        # a session and its scene
+        self.assertTrue(outputs[0] and app.play_part(outputs, "place", 1))  # a session and where it starts
         story_id = next(i for _, i in sessions.recorded_stories() if records.get_story(i)["session_id"] == outputs[0])
         self.assertIn("**studio play**", app.story_view_ui(story_id))
         model_path, world_path = app.download_recorded_ui(game["engine_id"])

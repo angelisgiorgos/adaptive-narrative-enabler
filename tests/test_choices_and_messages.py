@@ -457,6 +457,39 @@ class PlaceBehaviourTests(unittest.TestCase):
         self.assertIn("Yard", [a.owner for a in state.ranked_available_actions() if a.source == "navigation"])
 
 
+class JournalTests(unittest.TestCase):
+    """The story turn by turn as a player follows it (GameState.journal): what was chosen, what
+    came of it, what it changed, and the quest's steps as they are done."""
+
+    def test_every_turn_says_what_it_changed_and_how_the_quest_went(self):
+        from core_engine import Mission
+
+        world = WorldGraph()
+        for name in ("Gate", "Yard"):
+            world.add_location(Location(name, ["gate"]))
+        world.locations["Gate"].connect(world.locations["Yard"])
+        world.locations["Gate"].actions = [
+            Action("Find a coin", [Outcome("A coin glints in the dust.", coin_change=3, tags=["success"])],
+                   source="location", owner="Gate", repeat="once"),
+            Action("Trip over a stone", [Outcome("You fall hard.", health_change=-2, tags=["threat"])],
+                   source="location", owner="Gate", repeat="always")]
+        world.add_mission(Mission("walk", {}, title="A walk", stages=[
+            {"title": "Find a coin", "goal": {"action": "Find a coin"}},
+            {"title": "Reach the yard", "goal": {"location": "Yard"}}]))
+        with patch.dict(config._config.setdefault("mission_settings", {}), {"end_on_goal": True}):
+            state = GameState(world, _genome(), start="Gate", rng=random.Random(1), mission="walk")
+            _choose(state, "Trip over a stone")
+            _choose(state, "Find a coin")
+            _choose(state, "Move to Yard")
+        trip, coin, walk = state.journal()
+        self.assertEqual((trip["turn"], trip["action"], trip["where"]), (1, "Trip over a stone", "Gate"))
+        self.assertLess(trip["health_change"], 0)
+        self.assertEqual((trip["quest_done"], trip["quest_now"]), ([], "Find a coin"))
+        self.assertEqual((coin["coin_change"], coin["quest_done"], coin["quest_now"]), (3, ["Find a coin"], "Reach the yard"))
+        self.assertEqual((walk["moved_to"], walk["new_places"]), ("Yard", ["Yard"]))
+        self.assertEqual((walk["quest_done"], walk["quest_complete"], walk["ended"]), (["Reach the yard"], True, True))
+
+
 class QuestionAndGuideTests(unittest.TestCase):
     """Choices that make sense: a question is asked once, and a guide leads toward the quest."""
 
