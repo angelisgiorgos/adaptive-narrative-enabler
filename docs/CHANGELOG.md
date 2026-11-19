@@ -7,6 +7,24 @@ that introduces them.
 
 ## [Unreleased]
 
+### Deleting in the World editor: asked first, with Undo
+
+#### Added
+- *Delete entry*, *Delete action* and *Delete mission* ask first, naming exactly what goes (content
+  type, name and place; an action's number and name; a mission's title and key) with **Delete** and
+  **Cancel**; after a deletion, **↶ Undo** brings it back for the rest of the session.
+- The API keeps a deleted entry, action or mission whole with its place: the delete responses carry
+  `undo` (a token), and `POST /v1/deletions/{token}/restore` puts back that record only, where it was
+  (next to its old neighbour if the list changed since, and said so). A name taken again or an
+  action's entry gone is `409` (nothing newer overwritten); a record that would now be invalid is
+  `400`; a deletion no longer kept is `404`.
+- `DELETE /v1/entities/{kind}/{name}/actions/{index}?expected_name=`: deletes only if the action at
+  that index has that name (`409` otherwise), as the studio now asks.
+
+#### Unchanged
+- The delete rules: at least one place, person and item remains (events may all go); an action's
+  remaining list and the remaining missions are checked as before.
+
 ### World editor: drafts, and nothing discarded without asking
 
 #### Added

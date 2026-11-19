@@ -248,6 +248,11 @@ button[role="tab"] {font-size: .88rem !important; padding: .3rem .75rem !importa
 .draft-prompt {border: 2px solid #f59e0b !important; border-radius: 12px; padding: .2rem .6rem;
                background: var(--background-fill-secondary)}
 .draft-prompt h3 {font-size: 1rem; margin: .2rem 0}
+/* Deleting: the question first (naming what goes), then the Undo bar. */
+.delete-confirm {border: 2px solid #ef4444 !important; border-radius: 12px; padding: .2rem .6rem}
+.delete-confirm h3 {font-size: 1rem; margin: .2rem 0}
+.undo-bar {border: 1px solid var(--border-color-primary) !important; border-left: 5px solid #64748b !important;
+           border-radius: 10px; padding: .1rem .6rem; background: var(--background-fill-secondary)}
 /* 🧠 Train's completed engine: its card, then the actions that carry its id to Play, Evaluate and Export. */
 .result-card {padding: .3rem .9rem; border-radius: 12px; border: 1px solid var(--border-color-primary);
               border-left: 5px solid #10b981; background: var(--background-fill-secondary); min-height: 3.2rem}
@@ -402,16 +407,6 @@ def save_entity_ui(kind, selected_name, name, tags, descriptions, goals, unique,
         body["secret"] = from_yaml(secret, "`Secret`") or {}  # {} removes it
     saved = API.put(_path(f"/v1/entities/{kind}", selected_name or name), body)
     return gr.Dropdown(choices=_entity_names(kind), value=saved["name"]), f"Saved **{saved['name']}**."
-
-
-@ui
-def delete_entity_ui(kind, selected_name):
-    if not selected_name:
-        raise gr.Error("Choose an entry to delete.")
-    result = API.delete(_path(f"/v1/entities/{kind}", selected_name))
-    names = result["entities"]
-    value = names[0] if names else None
-    return gr.Dropdown(choices=names, value=value), *_entry_values(kind, _entity(kind, value)), result["message"]
 
 
 @ui
@@ -2269,16 +2264,6 @@ def save_action_form_ui(state, *values):
             f"Saved the action **{action['name']}** of {name}.", load_entity_actions_yaml(kind, name))
 
 
-@ui
-def delete_action_ui(state):
-    state = dict(state or {})
-    if not state.get("name") or state.get("index") is None:
-        raise gr.Error("Pick an action first.")
-    kind, name = state["kind"], state["name"]
-    API.delete(_path(f"/v1/entities/{kind}", name, "actions", state["index"]))
-    return (*action_list_ui(kind, name), f"Deleted the action from {name}.", load_entity_actions_yaml(kind, name))
-
-
 ACTION_FIELD_NAMES = ("name", "repeat", "retry", "stat", "modifier", "group", "event", "coins", "item", "tag",
                       "consumes", "collects", "enabled_if", "until")
 
@@ -2857,33 +2842,250 @@ def reload_part_ui(part, loaded, base, *values):
 
 
 @ui
-def delete_action_part_ui(loaded, base, *values):
-    """*Delete action*: the action form back to the list, and what the deletion made out of date."""
-    split = _split_draft(values)
-    loaded = loaded or {}
-    message = delete_action_ui(split["action"][0])[-2]
-    others = set(unsaved_parts(base, *values)) - {"action"}
-    reload = ["action", *(p for p in STALE_AFTER["action"] if p not in others)]
-    segments = {p: _part_load(p, loaded.get("kind"), loaded.get("entity")) for p in reload}
-    return (*_entry_update(**segments), message, reload)
-
-
-@ui
-def delete_entry_part_ui(loaded, base, *values):
-    """*Delete entry*: deleted (its draft with it), and the content type's first entry opened."""
-    loaded = loaded or {}
-    kind, name = loaded.get("kind"), loaded.get("entity")
-    if not name:
-        raise gr.Error("Choose an entry to delete.")
-    result = API.delete(_path(f"/v1/entities/{kind}", name))
-    names = result["entities"]
-    return (*_entry_load(kind, names[0] if names else None, names=names), result["message"], list(DRAFT_PARTS))
-
-
-@ui
 def refresh_entry_names_ui(kind, name):
     """The entries' names after the world grew: the entry being edited stays chosen (nothing reloaded)."""
     return gr.Dropdown(choices=_entity_names(kind), value=name)
+
+
+# ---- deleting, with a question first and Undo after (entries, actions, missions) ---------------------
+#
+# *Delete* asks first, naming exactly what goes (content type, name, place in its list, what goes with
+# it); the confirmed deletion removes that one, even if the form moved on meanwhile. The API keeps the
+# deleted record whole with its place (DELETE ... -> undo.token), and this session's **Undo** puts it
+# back (POST /v1/deletions/{token}/restore): only it, where it was, never over anything newer.
+
+ENTRY_WORDS = {"Locations": "place", "NPCs": "person", "Items": "item", "Events": "event"}
+
+
+def deletion_panels(prefix):
+    """The question asked before a deletion (its text, Delete, Cancel) and the Undo bar shown after one,
+    both hidden until needed (built in the Blocks being defined)."""
+    with gr.Group(visible=False, elem_id=f"{prefix}-confirm", elem_classes="delete-confirm") as confirm:
+        question = gr.Markdown()
+        with gr.Row():
+            delete = gr.Button("🗑 Delete", variant="stop", elem_id=f"{prefix}-confirm-delete")
+            cancel = gr.Button("Cancel", elem_id=f"{prefix}-confirm-cancel")
+    with gr.Group(visible=False, elem_id=f"{prefix}-undo", elem_classes="undo-bar") as bar:
+        with gr.Row(equal_height=True):
+            said = gr.Markdown()
+            undo = gr.Button("↶ Undo", elem_id=f"{prefix}-undo-button", scale=0, min_width=120)
+    return confirm, question, delete, cancel, bar, said, undo
+
+
+def _ordinal(number):
+    suffix = "th" if 10 <= number % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(number % 10, "th")
+    return f"{number}{suffix}"
+
+
+def _question(text, deletable=True):
+    """(the question's panel shown, its text, its Delete button)."""
+    return gr.update(visible=True), text, gr.update(visible=deletable)
+
+
+def _closed():
+    return gr.update(visible=False), "", gr.update(visible=True)
+
+
+def _undo_bar(undo, text):
+    """(what Undo restores, its bar, its text): shown after a deletion, gone once used."""
+    return undo, gr.update(visible=bool(undo)), text
+
+
+@ui
+def ask_delete_entry_ui(loaded, base, *values):
+    """*Delete entry*: the question, naming the entry exactly. Returns (what is to be deleted, the
+    question's panel, its text, its Delete button)."""
+    loaded = loaded or {}
+    kind, name = loaded.get("kind"), loaded.get("entity")
+    if not name:
+        raise gr.Error("Choose an entry to delete (a new entry is not saved: there is nothing to delete).")
+    names = _entity_names(kind)
+    if name not in names:
+        raise gr.Error(f"`{name}` is no longer in {kind}: choose it again from the list.")
+    actions = len(API.get(_path(f"/v1/entities/{kind}", name, "actions"))["actions"])
+    unsaved = unsaved_parts(base, *values)
+    text = (f"### 🗑 Delete the {ENTRY_WORDS.get(kind, 'entry')} **{name}**?\n"
+            f"{kind}, {_ordinal(names.index(name) + 1)} of {len(names)}: every field of the entry, its "
+            f"{actions} action(s) and its details."
+            + (f" Its unsaved changes ({', '.join(DRAFT_PARTS[p] for p in unsaved)}) go with it." if unsaved else "")
+            + " **Undo** brings it back, where it was, in this session.")
+    return {"type": "entity", "kind": kind, "name": name}, *_question(text)
+
+
+@ui
+def ask_delete_action_ui(loaded, base, *values):
+    """*Delete action*: the question, naming the stored action exactly (its number and name)."""
+    state = _split_draft(values)["action"][0] or {}
+    kind, entry, index = state.get("kind"), state.get("name"), state.get("index")
+    actions = API.get(_path(f"/v1/entities/{kind}", entry, "actions"))["actions"] if entry else []
+    if index is None or not entry or index >= len(actions):
+        raise gr.Error("Pick a saved action first (a new action is not saved: *Discard changes* drops it).")
+    action = actions[index]
+    edited = "action" in unsaved_parts(base, *values)
+    text = (f"### 🗑 Delete the action **{index + 1}. {action.get('name')}** of **{entry}** ({kind})?\n"
+            f"It goes with its {len(action.get('outcomes') or [])} outcome(s)"
+            + (", and the changes not saved in the form" if edited else "")
+            + ". **Undo** brings it back, where it was, in this session.")
+    return {"type": "action", "kind": kind, "entry": entry, "index": index, "name": action.get("name")}, \
+        *_question(text)
+
+
+@ui
+def ask_delete_mission_ui(state):
+    """*Delete mission*: the question, naming the mission exactly (title, key, place)."""
+    key = (state or {}).get("key")
+    if not key:
+        raise gr.Error("Pick a mission first.")
+    missions = API.get("/v1/missions")["missions"]
+    if key not in missions:
+        raise gr.Error(f"The mission `{key}` is no longer there: pick it again from the list.")
+    mission = missions[key] or {}
+    stages = len(mission.get("stages") or [])
+    parts = f"its {stages} step(s)" if stages else "its goal"
+    text = (f"### 🗑 Delete the mission **{mission.get('title') or key}** (`{key}`)?\n"
+            f"{_ordinal(list(missions).index(key) + 1)} of {len(missions)}: {parts}, rewards and conditions. "
+            "**Undo** brings it back, where it was, in this session.")
+    return {"type": "mission", "key": key, "title": mission.get("title") or key}, *_question(text)
+
+
+def cancel_delete_ui():
+    """*Cancel*: nothing is deleted. Returns (nothing pending, the question closed)."""
+    return None, *_closed()
+
+
+def _refused(exc, outputs_before):
+    """A deletion the API refused (the last place, person or item; an action that changed): nothing
+    was deleted; the question stays open with why, and without its Delete button."""
+    return (*outputs_before, gr.skip(), gr.update(visible=True), f"⚠ **Not deleted:** {html.escape(str(exc))}",
+            gr.update(visible=False), gr.skip(), gr.skip(), gr.skip())
+
+
+@ui
+def confirm_delete_entry_ui(pending, loaded, base, *values):
+    """The confirmed deletion of exactly the entry asked about. When it is the one being edited, the
+    content type's first entry opens. Returns (the entry editor, the message, the parts to capture,
+    nothing pending, the question closed, Undo's state, bar and text)."""
+    if not pending or pending.get("type") != "entity":
+        raise gr.Error("Nothing to delete: press *Delete entry* first.")
+    kind, name = pending["kind"], pending["name"]
+    try:
+        result = API.delete(_path(f"/v1/entities/{kind}", name))
+    except APIError as exc:
+        return _refused(exc, (*_entry_update(), gr.skip(), []))
+    loaded = loaded or {}
+    names = result["entities"]
+    if (loaded.get("kind"), loaded.get("entity")) == (kind, name):
+        entry, capture = _entry_load(kind, names[0] if names else None, names=names), list(DRAFT_PARTS)
+    else:  # another entry is being edited: it stays; the list follows
+        entry = _entry_update(selection=(gr.skip(), gr.Dropdown(choices=names, value=loaded.get("entity")))) \
+            if loaded.get("kind") == kind else _entry_update()
+        capture = []
+    word = ENTRY_WORDS.get(kind, "entry")
+    return (*entry, f"Deleted the {word} **{name}** ({kind}).", capture, None, *_closed(),
+            *_undo_bar(result["undo"], f"🗑 Deleted the {word} **{name}** ({kind}, {_ordinal(result['undo']['position'])} "
+                                        f"of {result['undo']['of']})."))
+
+
+@ui
+def confirm_delete_action_ui(pending, loaded, base, *values):
+    """The confirmed deletion of exactly the action asked about (refused if the action at its number
+    is not that one any more)."""
+    if not pending or pending.get("type") != "action":
+        raise gr.Error("Nothing to delete: press *Delete action* first.")
+    kind, entry, index, name = pending["kind"], pending["entry"], pending["index"], pending["name"]
+    try:
+        result = API.delete(_path(f"/v1/entities/{kind}", entry, "actions", index), expected_name=name)
+    except APIError as exc:
+        return _refused(exc, (*_entry_update(), gr.skip(), []))
+    loaded = loaded or {}
+    capture = []
+    entry_update = _entry_update()
+    if (loaded.get("kind"), loaded.get("entity")) == (kind, entry):
+        others = set(unsaved_parts(base, *values)) - {"action"}
+        capture = ["action", *(p for p in STALE_AFTER["action"] if p not in others)]
+        entry_update = _entry_update(**{p: _part_load(p, kind, entry) for p in capture})
+    return (*entry_update, result["message"], capture, None, *_closed(),
+            *_undo_bar(result["undo"], f"🗑 Deleted the action **{index + 1}. {name}** of **{entry}** ({kind})."))
+
+
+@ui
+def confirm_delete_mission_ui(pending):
+    """The confirmed deletion of exactly the mission asked about. Returns (the mission picker, the
+    message, missions.yaml, nothing pending, the question closed, Undo's state, bar and text)."""
+    if not pending or pending.get("type") != "mission":
+        raise gr.Error("Nothing to delete: press *Delete mission* first.")
+    key = pending["key"]
+    try:
+        result = API.delete(_path("/v1/missions", key))
+    except APIError as exc:
+        return _refused(exc, (gr.skip(), gr.skip(), gr.skip()))
+    return (gr.Dropdown(choices=list(result["missions"]), value=None), result["message"], load_missions_yaml(), None,
+            *_closed(), *_undo_bar(result["undo"], f"🗑 Deleted the mission **{pending['title']}** (`{key}`)."))
+
+
+def _restore(undo):
+    """POST /v1/deletions/{token}/restore. Returns (the result, None) or (None, why it was not restored,
+    whether Undo can still be tried: not when the deletion is no longer kept)."""
+    if not undo:
+        raise gr.Error("Nothing to undo.")
+    try:
+        return API.post(_path("/v1/deletions", undo["token"], "restore")), None, True
+    except APIError as exc:
+        return None, f"⚠ **Not restored:** {html.escape(str(exc))}", exc.status != 404
+
+
+@ui
+def undo_delete_entry_ui(undo, loaded, base, *values):
+    """**Undo** a deleted entry: it goes back where it was and opens, unless the entry being edited has
+    unsaved changes (they are kept: the list shows it). Returns (the entry editor, the message, the parts
+    to capture, Undo's state, bar and text)."""
+    result, why, retry = _restore(undo)
+    if result is None:
+        return (*_entry_update(), gr.skip(), [], undo if retry else None, gr.update(visible=True), why)
+    loaded = loaded or {}
+    kind, name = result["kind"], result["name"]
+    if unsaved_parts(base, *values):
+        entry = _entry_update(selection=(gr.skip(), gr.Dropdown(choices=_entity_names(kind), value=loaded.get("entity")))) \
+            if loaded.get("kind") == kind else _entry_update()
+        message, capture = result["message"] + " Your unsaved changes were kept: open it from the list.", []
+    else:
+        entry, message, capture = _entry_load(kind, name), result["message"], list(DRAFT_PARTS)
+    return (*entry, message, capture, None, gr.update(visible=False), "")
+
+
+@ui
+def undo_delete_action_ui(undo, loaded, base, *values):
+    """**Undo** a deleted action: it goes back where it was; when its entry is the one being edited, it
+    opens (unless the action form has unsaved changes: then only the list shows it)."""
+    result, why, retry = _restore(undo)
+    if result is None:
+        return (*_entry_update(), gr.skip(), [], undo if retry else None, gr.update(visible=True), why)
+    loaded = loaded or {}
+    kind, entry = result["kind"], result["entry"]
+    capture, segments = [], {}
+    if (loaded.get("kind"), loaded.get("entity")) == (kind, entry):
+        dirty = set(unsaved_parts(base, *values))
+        capture = [p for p in STALE_AFTER["action"] if p not in dirty]
+        segments = {p: _part_load(p, kind, entry) for p in capture}
+        if "action" in dirty:
+            segments["action"] = (gr.Dropdown(choices=_action_choices(kind, entry)),
+                                  *[gr.skip()] * (ENTRY_SEGMENTS["action"] - 1))
+        else:
+            segments["action"] = _part_load("action", kind, entry, index=result["position"] - 1)
+            capture.append("action")
+    return (*_entry_update(**segments), result["message"], capture, None, gr.update(visible=False), "")
+
+
+@ui
+def undo_delete_mission_ui(undo):
+    """**Undo** a deleted mission: it goes back where it was, and opens in the form. Returns (the picker,
+    the mission form and its state, the message, missions.yaml, Undo's state, bar and text)."""
+    result, why, retry = _restore(undo)
+    if result is None:
+        return (gr.skip(), *[gr.skip()] * 8, gr.skip(), gr.skip(), undo if retry else None, gr.update(visible=True), why)
+    key = result["name"]
+    return (gr.Dropdown(choices=_mission_keys(), value=key), *mission_form_ui(key), result["message"],
+            load_missions_yaml(), None, gr.update(visible=False), "")
 
 
 # Before the page is closed or reloaded with unsaved changes, the browser asks (launch(head=...)).
@@ -3017,15 +3219,6 @@ def save_mission_form_ui(state, key, title, description, weight, enabled_if, rew
     target = old or new
     result = API.put(_path("/v1/missions", target), {"mission": mission, "rename": new if old and new != old else None})
     return (gr.Dropdown(choices=list(result["missions"]), value=new), result["message"], load_missions_yaml())
-
-
-@ui
-def delete_mission_form_ui(state):
-    key = (state or {}).get("key")
-    if not key:
-        raise gr.Error("Pick a mission first.")
-    result = API.delete(_path("/v1/missions", key))
-    return gr.Dropdown(choices=list(result["missions"]), value=None), result["message"], load_missions_yaml()
 
 
 # The map (/v1/map): a place's borders, and the whole map drawn.
@@ -3359,6 +3552,9 @@ def build_app():
                                     save_entry = gr.Button("Save entry", variant="primary")
                                     delete_entry = gr.Button("Delete entry", variant="stop")
                                 editor_status = gr.Markdown()
+                                (entry_confirm, entry_question, entry_delete, entry_cancel, entry_undo_bar,
+                                 entry_undo_said, entry_undo) = deletion_panels("entry")
+                                entry_pending, entry_undo_state = gr.State(None), gr.State(None)
 
                             with gr.Tab("Actions & outcomes"):
                                 gr.Markdown("Pick one of the entry's actions to edit it, or add one. An action's **outcomes** are "
@@ -3370,6 +3566,9 @@ def build_app():
                                                            value=None, scale=4)
                                     act_new = gr.Button("➕ New action", scale=1)
                                     act_delete = gr.Button("🗑 Delete action", variant="stop", scale=1)
+                                (action_confirm, action_question, action_delete, action_cancel, action_undo_bar,
+                                 action_undo_said, action_undo) = deletion_panels("action")
+                                action_pending, action_undo_state = gr.State(None), gr.State(None)
                                 with gr.Group():
                                     with gr.Row():
                                         act_name = gr.Textbox(label="Name", scale=3)
@@ -3525,6 +3724,9 @@ def build_app():
                             mis_pick = gr.Dropdown(label="Mission", choices=_mission_keys(), value=None, scale=4)
                             mis_new = gr.Button("➕ New mission", scale=1)
                             mis_delete = gr.Button("🗑 Delete mission", variant="stop", scale=1)
+                        (mission_confirm, mission_question, mission_delete, mission_cancel, mission_undo_bar,
+                         mission_undo_said, mission_undo) = deletion_panels("mission")
+                        mission_pending, mission_undo_state = gr.State(None), gr.State(None)
                         with gr.Group():
                             with gr.Row():
                                 mis_key = gr.Textbox(label="Key", info="letters, digits and _")
@@ -3789,10 +3991,24 @@ def build_app():
                                      (reload_actions_button, "actions_yaml"), (reload_policy_button, "policy_yaml")):
                     button.click(lambda *rest, part=part: reload_part_ui(part, *rest), guard_inputs,
                                  [*entry_outputs, draft_capture]).success(**capture)
-                act_delete.click(delete_action_part_ui, guard_inputs,
-                                 [*entry_outputs, actions_status, draft_capture]).success(**capture)
-                delete_entry.click(delete_entry_part_ui, guard_inputs,
-                                   [*entry_outputs, editor_status, draft_capture]).success(**capture)
+                # Deleting: a question naming exactly what goes, then Undo (this session) once it is gone.
+                for ask, asked, pending, (confirm, question, delete, cancel, bar, said, undo), state, confirmed, \
+                        undone, said_where in (
+                        (delete_entry, ask_delete_entry_ui, entry_pending,
+                         (entry_confirm, entry_question, entry_delete, entry_cancel, entry_undo_bar, entry_undo_said,
+                          entry_undo), entry_undo_state, confirm_delete_entry_ui, undo_delete_entry_ui, editor_status),
+                        (act_delete, ask_delete_action_ui, action_pending,
+                         (action_confirm, action_question, action_delete, action_cancel, action_undo_bar,
+                          action_undo_said, action_undo), action_undo_state, confirm_delete_action_ui,
+                         undo_delete_action_ui, actions_status)):
+                    question_outputs = [pending, confirm, question, delete]
+                    ask.click(asked, guard_inputs, question_outputs, show_progress="hidden")
+                    cancel.click(cancel_delete_ui, None, question_outputs, show_progress="hidden")
+                    delete.click(confirmed, [pending, *guard_inputs],
+                                 [*entry_outputs, said_where, draft_capture, *question_outputs, state, bar, said]).success(
+                        **capture)
+                    undo.click(undone, [state, *guard_inputs],
+                               [*entry_outputs, said_where, draft_capture, state, bar, said]).success(**capture)
                 # An action's outcomes are switched, added and removed inside its draft (saved with Save action).
                 out_pick.input(pick_outcome_ui, [action_state, out_pick, *outcome_fields],
                                [action_state, *outcome_fields]).then(**status)
@@ -3814,7 +4030,15 @@ def build_app():
                 save_mission_form.click(save_mission_form_ui, [mission_state, *mission_fields],
                                         [mis_pick, missions_status, missions_editor]).then(
                     mission_form_ui, mis_pick, [*mission_fields, mission_state])
-                mis_delete.click(delete_mission_form_ui, mission_state, [mis_pick, missions_status, missions_editor])
+                mission_question_outputs = [mission_pending, mission_confirm, mission_question, mission_delete]
+                mis_delete.click(ask_delete_mission_ui, mission_state, mission_question_outputs, show_progress="hidden")
+                mission_cancel.click(cancel_delete_ui, None, mission_question_outputs, show_progress="hidden")
+                mission_delete.click(confirm_delete_mission_ui, mission_pending,
+                                     [mis_pick, missions_status, missions_editor, *mission_question_outputs,
+                                      mission_undo_state, mission_undo_bar, mission_undo_said])
+                mission_undo.click(undo_delete_mission_ui, mission_undo_state,
+                                   [mis_pick, *mission_fields, mission_state, missions_status, missions_editor,
+                                    mission_undo_state, mission_undo_bar, mission_undo_said])
                 # The map.
                 map_place.input(map_place_ui, map_place, [map_view, map_borders])
                 demo.load(map_form_ui, map_place, [map_view, map_place, map_borders])

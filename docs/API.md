@@ -411,7 +411,22 @@ one); `tests/test_studio_coverage.py` checks it.
   kept, edited or not): each must be new and pass the checks of a saved entry, and the whole world
   is checked with them in place; otherwise `400` and nothing is written.
 - `GET|PUT|DELETE /v1/missions/{key}`: one mission (`PUT` adds or replaces it; `rename` gives it a
-  new key), checked with every other one. `GET /v1/map`: `{routes: {place: [borders]} or null,
+  new key), checked with every other one.
+- **Deleting, and undoing it.** `DELETE /v1/entities/{kind}/{name}` (at least one location, NPC and
+  item remains: `400` for the last; events may all go), `DELETE
+  /v1/entities/{kind}/{name}/actions/{index}` (optional `?expected_name=`: the name the action at
+  `index` must have, else `409` and nothing is deleted, so an action list changed by someone else
+  never loses the wrong action) and `DELETE /v1/missions/{key}` answer as before, with `undo`:
+  `{token, type: entity | action | mission, name, kind, entry, position, of}`. The API keeps the
+  deleted record whole (every field, as stored) with its place: its index, its neighbours and the
+  list it left. `POST /v1/deletions/{token}/restore` puts back that record only (never a whole file
+  or configuration): where it was when its list is as the deletion left it, otherwise next to its
+  old neighbour; the answer says where (`position`, `was`, `moved`, `changed_since`, `message`).
+  `409` when its name is taken again (an entry, an action of its entry, a mission key) or its entry
+  is gone (an action): nothing newer is overwritten; `400` when it would now be invalid (it is
+  checked as a save checks it, only against problems the world did not already have when it was
+  deleted); `404` when it was undone already or the API restarted since (deletions are kept in
+  memory, the most recent 200). `GET /v1/map`: `{routes: {place: [borders]} or null,
   places}`; `PUT /v1/map/{place}` `{borders}` sets a place's borders, both ways; `PUT /v1/map`
   `{routes}` the whole map (null: every story draws its own).
 - `GET /v1/behaviours/rules` and `PUT /v1/behaviours/rules/{npcs|locations}` `{default, rules}`:

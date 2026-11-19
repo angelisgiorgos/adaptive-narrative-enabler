@@ -1,9 +1,13 @@
 """World authoring: entries, actions, missions, messages, persistent variables, character stats."""
 from __future__ import annotations
 
+import collections
 import copy
+import hashlib
+import json
 import random
 import re
+import uuid
 from numbers import Number
 import yaml
 import main as engine
@@ -16,7 +20,7 @@ from core_engine.narration import DEFAULT_MESSAGES, validate_messages
 from core_engine.variables import PROFILE_PATTERN, VariableStore, clamp, validate_changes, validate_definitions
 from utils.config_loader import config
 
-from .errors import AuthoringError
+from .errors import AuthoringError, ConflictError
 from .store import CONFIG_DIR, CONFIG_LOCK, _lines, _read_yaml, _write_yaml
 
 
@@ -263,6 +267,16 @@ def save_entity(kind: str, selected_name: str, name: str, tags, descriptions: st
     return choices, name, f"Saved **{name}** to `{path.name}`."
 
 def delete_entity(kind: str, selected_name: str):
+    """Delete an entry (at least one location, NPC and item remains; events may all go). Returns (the
+    entries left, the first of them, a message); remove_entity also keeps it to be restored."""
+    result = remove_entity(kind, selected_name)
+    choices = result["entities"]
+    return choices, (choices[0] if choices else None), result["message"]
+
+
+def remove_entity(kind: str, selected_name: str) -> dict:
+    """delete_entity, keeping the entry whole, with its place, to be restored (restore_deletion).
+    Returns {entities, message, undo}."""
     if not selected_name:
         raise AuthoringError("Select an entry to delete first.")
 
@@ -270,22 +284,19 @@ def delete_entity(kind: str, selected_name: str):
         path, data, records, shape = _entity_records(kind)
         if kind != "Events" and len(records) <= 1:
             raise AuthoringError(f"At least one {kind.lower()[:-1]} must remain in the configuration.")
-        if shape == "mapping":
-            if selected_name not in records:
-                raise AuthoringError(f"`{selected_name}` no longer exists. Refresh the entry list.")
-            del records[selected_name]
-            choices = list(records)
-        else:
-            index = next((i for i, entry in enumerate(records) if entry.get("name") == selected_name), None)
-            if index is None:
-                raise AuthoringError(f"`{selected_name}` no longer exists. Refresh the entry list.")
-            records.pop(index)
-            choices = [entry["name"] for entry in records]
+        names = _names_in(records, shape)
+        if selected_name not in names:
+            raise AuthoringError(f"`{selected_name}` no longer exists. Refresh the entry list.")
+        index = names.index(selected_name)
+        known = _entity_known_errors(kind, records[selected_name] if shape == "mapping" else records[index])
+        record = records.pop(selected_name) if shape == "mapping" else records.pop(index)
         _write_yaml(path, data)
         config.clear_override()
         config.reload()
-
-    return choices, (choices[0] if choices else None), f"Deleted **{selected_name}** from `{path.name}`."
+        choices = _names_in(records, shape)
+        undo = _keep_deletion({"type": "entity", "kind": kind, "name": selected_name, "record": record, "file": path.name,
+                               "known_errors": known}, names, index, choices)
+    return {"entities": choices, "message": f"Deleted **{selected_name}** from `{path.name}`.", "undo": undo}
 
 ACTION_FIELDS = content_rules.ACTION_FIELDS
 
@@ -880,12 +891,30 @@ def save_entity_action(kind: str, name: str, index: int, action: dict) -> list:
 
 
 def delete_entity_action(kind: str, name: str, index: int) -> list:
-    actions = load_entity_actions(kind, name)
-    if not 0 <= index < len(actions):
-        raise AuthoringError(f"`{name}` has no action {index + 1} (it has {len(actions)}).")
-    del actions[index]
-    save_entity_actions(kind, name, actions)
-    return load_entity_actions(kind, name)
+    """Delete one action of an entry (the others are checked as a save checks them). Returns the actions."""
+    return remove_entity_action(kind, name, index)["actions"]
+
+
+def remove_entity_action(kind: str, name: str, index: int, expected: str | None = None) -> dict:
+    """delete_entity_action, keeping the action whole, with its place, to be restored. ``expected``:
+    the name the action must have (else ConflictError: the actions changed, and nothing is deleted).
+    Returns {actions, message, undo}."""
+    with CONFIG_LOCK:
+        actions = load_entity_actions(kind, name)
+        if not 0 <= index < len(actions):
+            raise AuthoringError(f"`{name}` has no action {index + 1} (it has {len(actions)}).")
+        found = str(actions[index].get("name", ""))
+        if expected is not None and found != expected:
+            raise ConflictError(f"Action {index + 1} of `{name}` is now `{found}`, not `{expected}` (its actions changed "
+                                "since): nothing was deleted. Reload them and try again.")
+        before = copy.deepcopy(actions)
+        known = validate_entity_actions(kind, before)
+        removed = actions.pop(index)
+        save_entity_actions(kind, name, actions)
+        stored = load_entity_actions(kind, name)
+        undo = _keep_deletion({"type": "action", "kind": kind, "entry": name, "name": found, "record": removed,
+                               "known_errors": known}, before, index, stored)
+    return {"actions": stored, "message": f"Deleted the action `{found}` of `{name}`.", "undo": undo}
 
 
 def save_mission(key: str, mission: dict, rename: str | None = None) -> dict:
@@ -909,12 +938,24 @@ def save_mission(key: str, mission: dict, rename: str | None = None) -> dict:
 
 
 def delete_mission(key: str) -> dict:
-    missions = _stored_missions()
-    if key not in missions:
-        raise AuthoringError(f"No mission `{key}`.")
-    del missions[key]
-    save_missions(missions)
-    return missions
+    """Delete a mission (the others are checked as a save checks them). Returns the missions left."""
+    return remove_mission(key)["missions"]
+
+
+def remove_mission(key: str) -> dict:
+    """delete_mission, keeping the mission whole, with its place, to be restored. Returns
+    {missions, message, undo}."""
+    with CONFIG_LOCK:
+        missions = _stored_missions()
+        if key not in missions:
+            raise AuthoringError(f"No mission `{key}`.")
+        keys = list(missions)
+        known = validate_missions(missions)
+        record = missions.pop(key)
+        save_missions(missions)
+        undo = _keep_deletion({"type": "mission", "name": key, "title": (record or {}).get("title") or key,
+                               "record": record, "known_errors": known}, keys, keys.index(key), list(missions))
+    return {"missions": missions, "message": f"Deleted the mission `{key}`.", "undo": undo}
 
 
 def _stored_missions() -> dict:
@@ -1149,3 +1190,194 @@ def add_world_entries(additions: dict) -> dict:
         config.clear_override()
         config.reload()
     return {"locations": sorted(places), "objects": [e["name"] for e in items], "characters": [e["name"] for e in people]}
+
+
+# ---- deletions and their undo ---------------------------------------------------------------------
+#
+# A deleted entry, action or mission is kept whole (every field, as stored) with its place: its index,
+# its neighbours, and the list it left. Undo (restore_deletion) puts back that record only, never a
+# whole file or configuration: where it was when the list is as the deletion left it, else next to its
+# old neighbour. A name taken again, or an entry no longer there for its action, is a conflict:
+# nothing newer is overwritten. Kept in this process, for its most recent deletions.
+
+DELETIONS: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
+MAX_DELETIONS = 200
+
+
+def _names_in(records, shape) -> list:
+    return list(records) if shape == "mapping" else [entry.get("name") for entry in records]
+
+
+def _fingerprint(value) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, default=str, ensure_ascii=False).encode()).hexdigest()
+
+
+def _entity_known_errors(kind: str, record: dict) -> list:
+    """The problems the world (and the entry) had while the entry was there: a restore is blocked only
+    by problems it would bring that were not there then (an older configuration's are not)."""
+    from .store import _validate_complete_config
+
+    key, shape = ENTITY_FILES[kind][1], ENTITY_FILES[kind][2]
+    world = config.get("world_definition") or {}
+    entries = world.get(key) or ({} if shape == "mapping" else [])
+    return list(dict.fromkeys([*_entry_errors(kind, record), *logic_errors(world),
+                               *_validate_complete_config(entries, None, f"world_definition.{key}")]))
+
+
+def _keep_deletion(deletion: dict, items: list, index: int, remaining: list) -> dict:
+    """Keep a deletion to undo: the record whole, its index among ``items`` (the list before it was
+    deleted), its neighbours there, and the list it left (``remaining``). Returns what the client
+    keeps to undo it: {token, type, name, kind, entry, position, of}."""
+    token = uuid.uuid4().hex
+    kept = {**deletion, "record": copy.deepcopy(deletion["record"]), "index": index, "of": len(items),
+            "before": copy.deepcopy(items[index - 1]) if index > 0 else None,
+            "after": copy.deepcopy(items[index + 1]) if index + 1 < len(items) else None,
+            "context": _fingerprint(remaining)}
+    with CONFIG_LOCK:
+        DELETIONS[token] = kept
+        while len(DELETIONS) > MAX_DELETIONS:
+            DELETIONS.popitem(last=False)
+    return {"token": token, "type": kept["type"], "name": kept["name"], "kind": kept.get("kind"),
+            "entry": kept.get("entry"), "position": index + 1, "of": len(items)}
+
+
+def _place(current: list, deletion: dict) -> tuple[int, tuple | None]:
+    """Where a restored record goes among ``current``: its old index when the list is as the deletion
+    left it; when it changed since, after its old neighbour before it, else before the one after it,
+    else its old index. Returns (index, the neighbour it was placed by: ("after" | "before", it), or None)."""
+    index, anchor = deletion["index"], None
+    if _fingerprint(current) != deletion["context"]:
+        before, after = deletion.get("before"), deletion.get("after")
+        if before is not None and before in current:
+            index, anchor = current.index(before) + 1, ("after", before)
+        elif after is not None and after in current:
+            index, anchor = current.index(after), ("before", after)
+    return min(index, len(current)), anchor
+
+
+def _insert(entries, shape, name, record, index):
+    if shape == "mapping":
+        items = list(entries.items())
+        items.insert(index, (name, record))
+        entries.clear()
+        entries.update(items)
+    else:
+        entries.insert(index, record)
+
+
+def _not_restorable(what: str, errors) -> AuthoringError:
+    return AuthoringError(f"{what} cannot go back as it was: the world changed since it was deleted, and it would "
+                          "now be invalid:\n" + "\n".join(f"- {e}" for e in dict.fromkeys(errors)))
+
+
+def _restore_entity(deletion: dict) -> int:
+    from .store import _validate_complete_config
+
+    kind, name, record = deletion["kind"], deletion["name"], copy.deepcopy(deletion["record"])
+    path, data, records, shape = _entity_records(kind)
+    names = _names_in(records, shape)
+    if name in names:
+        raise ConflictError(f"An entry named `{name}` is in {kind} again (added or renamed since it was deleted): it "
+                            "is not overwritten. Rename or delete that one, then undo again.")
+    index, anchor = _place(names, deletion)
+    key = ENTITY_FILES[kind][1]
+    current = copy.deepcopy(config.get("world_definition") or {})
+    world = copy.deepcopy(current)
+    entries = world.setdefault(key, {} if shape == "mapping" else [])
+    _insert(entries, shape, name, copy.deepcopy(record), index)
+    known = set(deletion["known_errors"]) | set(logic_errors(current)) | set(
+        _validate_complete_config(current.get(key) or ({} if shape == "mapping" else []), None, f"world_definition.{key}"))
+    errors = [*_entry_errors(kind, record), *_validate_complete_config(entries, None, f"world_definition.{key}"),
+              *logic_errors(world)]
+    new = [error for error in errors if error not in known]
+    if new:
+        raise _not_restorable(f"`{name}`", new)
+    _insert(records, shape, name, record, index)
+    _write_yaml(path, data)
+    config.clear_override()
+    config.reload()
+    return index, anchor
+
+
+def _restore_action(deletion: dict) -> int:
+    kind, entry, name, record = deletion["kind"], deletion["entry"], deletion["name"], copy.deepcopy(deletion["record"])
+    try:
+        path, data, stored = _record(kind, entry)
+    except AuthoringError as exc:
+        raise ConflictError(f"`{entry}` is no longer in {kind} (deleted or renamed since): its action `{name}` cannot "
+                            f"go back. Restore or recreate `{entry}` first.") from exc
+    actions = copy.deepcopy(stored.get("actions") or [])
+    if any(str(action.get("name", "")) == name for action in actions):
+        raise ConflictError(f"`{entry}` has an action named `{name}` again (added or renamed since it was deleted): it "
+                            "is not overwritten. Rename or delete that one, then undo again.")
+    index, anchor = _place(actions, deletion)
+    known = set(deletion["known_errors"]) | set(validate_entity_actions(kind, actions))
+    actions.insert(index, record)
+    new = [error for error in validate_entity_actions(kind, actions) if error not in known]
+    if new:
+        raise _not_restorable(f"The action `{name}` of `{entry}`", new)
+    stored["actions"] = actions
+    _write_yaml(path, data)
+    config.clear_override()
+    config.reload()
+    return index, anchor
+
+
+def _restore_mission(deletion: dict) -> int:
+    key, record = deletion["name"], copy.deepcopy(deletion["record"])
+    missions = _stored_missions()
+    if key in missions:
+        raise ConflictError(f"A mission `{key}` exists again (added or renamed since it was deleted): it is not "
+                            "overwritten. Rename or delete that one, then undo again.")
+    index, anchor = _place(list(missions), deletion)
+    items = list(missions.items())
+    items.insert(index, (key, record))
+    restored = dict(items)
+    known = set(deletion["known_errors"]) | set(validate_missions(missions))
+    new = [error for error in validate_missions(restored) if error not in known]
+    if new:
+        raise _not_restorable(f"The mission `{key}`", new)
+    _store_missions(yaml.safe_dump({"world_definition": {"missions": restored}}, sort_keys=False, allow_unicode=True))
+    return index, anchor
+
+
+def _ordinal(number: int) -> str:
+    suffix = "th" if 10 <= number % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(number % 10, "th")
+    return f"{number}{suffix}"
+
+
+def restore_deletion(token: str) -> dict:
+    """Undo a deletion (``token``: from its response): the record goes back whole, only it. LookupError:
+    no such deletion here (undone already, or this process restarted since); ConflictError: its name is
+    taken again, or its entry is gone (nothing is overwritten); AuthoringError: it would now be invalid.
+    Returns {type, name, kind, entry, position, was, moved, changed_since, message}."""
+    with CONFIG_LOCK:
+        deletion = DELETIONS.get(token)
+        if deletion is None:
+            raise LookupError("This deletion can no longer be undone here: it was undone already, or the server "
+                              "restarted since (undo is kept for its recent deletions).")
+        restore = {"entity": _restore_entity, "action": _restore_action, "mission": _restore_mission}[deletion["type"]]
+        context = {"entity": lambda: _names_in(*_entity_records(deletion["kind"])[2:]),
+                   "action": lambda: load_entity_actions(deletion["kind"], deletion["entry"]),
+                   "mission": lambda: list(_stored_missions())}[deletion["type"]]
+        try:
+            changed = _fingerprint(context()) != deletion["context"]
+        except AuthoringError:
+            changed = True
+        index, anchor = restore(deletion)
+        DELETIONS.pop(token, None)
+    what = {"entity": f"**{deletion['name']}** to {deletion.get('kind')}",
+            "action": f"the action **{deletion['name']}** to `{deletion.get('entry')}`",
+            "mission": f"the mission **{deletion['name']}**"}[deletion["type"]]
+    moved = index != deletion["index"]
+    if not changed:
+        where = f"where it was ({_ordinal(index + 1)})"
+    else:
+        side, neighbour = anchor or (None, None)
+        label = neighbour.get("name") if isinstance(neighbour, dict) else neighbour
+        where = (_ordinal(index + 1) + (f", {side} **{label}** as before" if side else "")
+                 + (f" (it was {_ordinal(deletion['index'] + 1)})" if moved else "")
+                 + "; the list changed since it was deleted")
+    return {"type": deletion["type"], "name": deletion["name"], "kind": deletion.get("kind"),
+            "entry": deletion.get("entry"), "position": index + 1, "was": deletion["index"] + 1, "moved": moved,
+            "changed_since": changed, "message": f"Restored {what}, {where}."}

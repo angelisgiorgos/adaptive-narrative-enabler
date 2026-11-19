@@ -1586,6 +1586,252 @@ class EntryDraftTests(_Sandbox):
         return StudioLayoutTests._inside(block, kind)
 
 
+class DeletionUndoTests(_Sandbox):
+    """Deleting asks first, naming exactly what goes; the deleted entry, action or mission is kept whole
+    with its place, and Undo (this session) puts back that record only: where it was, or next to its old
+    neighbour when the list changed, never over a newer one with its name. The delete rules stay: at least
+    one place, person and item remains; an action's remaining list and the missions are checked."""
+
+    def _names(self, kind):
+        return self.client.get(f"/v1/entities/{kind}", params={"fields": "names"}).json()["names"]
+
+    def _stored(self, kind, name):
+        files = {"Locations": ("locations.yaml", "locations"), "NPCs": ("npcs.yaml", "characters"),
+                 "Items": ("items.yaml", "objects"), "Events": ("events.yaml", "events")}
+        file, key = files[kind]
+        records = yaml.safe_load((self.dir / file).read_text())["world_definition"][key]
+        return records.get(name) if isinstance(records, dict) else next((r for r in records if r["name"] == name), None)
+
+    def _restore(self, undo):
+        return self.client.post(f"/v1/deletions/{undo['token']}/restore")
+
+    def test_an_entry_comes_back_whole_and_where_it_was(self):
+        for kind, name in (("NPCs", "Smuggler"), ("Locations", "Alley"), ("Events", "bandit_ambush"),
+                           ("Items", "Steel Dagger")):
+            with self.subTest(kind=kind):
+                names, record = self._names(kind), self._stored(kind, name)
+                deleted = self.client.delete(f"/v1/entities/{kind}/{name}")
+                self.assertEqual(deleted.status_code, 200, deleted.text)
+                undo = deleted.json()["undo"]
+                self.assertEqual((undo["type"], undo["kind"], undo["name"], undo["position"], undo["of"]),
+                                 ("entity", kind, name, names.index(name) + 1, len(names)))
+                self.assertIsNone(self._stored(kind, name))
+                restored = self._restore(undo)
+                self.assertEqual(restored.status_code, 200, restored.text)
+                self.assertFalse(restored.json()["changed_since"])
+                self.assertIn("where it was", restored.json()["message"])
+                self.assertEqual(self._names(kind), names)              # its place
+                self.assertEqual(self._stored(kind, name), record)      # every field, as stored
+                self.assertEqual(self._restore(undo).status_code, 404)  # once
+
+    def test_a_name_taken_again_or_a_changed_list_is_detected_and_nothing_newer_is_overwritten(self):
+        names = self._names("NPCs")
+        undo = self.client.delete("/v1/entities/NPCs/Smuggler").json()["undo"]
+        newer = {"name": "Smuggler", "tags": ["dock"], "descriptions": ["A newer smuggler."], "goals": []}
+        self.assertEqual(self.client.put("/v1/entities/NPCs/Smuggler", json=newer).status_code, 200)
+        conflict = self._restore(undo)
+        self.assertEqual(conflict.status_code, 409)
+        self.assertIn("not overwritten", conflict.json()["detail"])
+        self.assertEqual(self._stored("NPCs", "Smuggler")["descriptions"], ["A newer smuggler."])  # the newer one stays
+        self.client.delete("/v1/entities/NPCs/Smuggler")         # that one gone: the first can come back
+        before = names[names.index("Smuggler") - 1]
+        self.client.delete(f"/v1/entities/NPCs/{names[0]}")      # and the list changed meanwhile
+        restored = self._restore(undo).json()
+        self.assertTrue(restored["changed_since"])
+        self.assertIn(f"after **{before}** as before", restored["message"])
+        now = self._names("NPCs")
+        self.assertEqual(now.index("Smuggler"), now.index(before) + 1)
+
+    def test_an_action_comes_back_and_only_the_one_asked_for_is_deleted(self):
+        actions = self.client.get("/v1/entities/NPCs/Gate Guard/actions").json()["actions"]
+        wrong = self.client.delete("/v1/entities/NPCs/Gate Guard/actions/1", params={"expected_name": actions[2]["name"]})
+        self.assertEqual(wrong.status_code, 409)                 # the action at 2 is not that one: nothing deleted
+        self.assertEqual(self.client.get("/v1/entities/NPCs/Gate Guard/actions").json()["actions"], actions)
+        deleted = self.client.delete("/v1/entities/NPCs/Gate Guard/actions/1", params={"expected_name": actions[1]["name"]})
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        undo = deleted.json()["undo"]
+        self.assertEqual((undo["type"], undo["entry"], undo["name"], undo["position"]),
+                         ("action", "Gate Guard", actions[1]["name"], 2))
+        self.assertEqual(self._restore(undo).status_code, 200)
+        self.assertEqual(self.client.get("/v1/entities/NPCs/Gate Guard/actions").json()["actions"], actions)
+        # Its entry gone, or an action of that name back: a conflict, nothing written.
+        undo = self.client.delete("/v1/entities/NPCs/Gate Guard/actions/1").json()["undo"]
+        entry = self.client.delete("/v1/entities/NPCs/Gate Guard").json()["undo"]
+        gone = self._restore(undo)
+        self.assertEqual(gone.status_code, 409)
+        self.assertIn("no longer in NPCs", gone.json()["detail"])
+        self.assertEqual(self._restore(entry).status_code, 200)  # the entry back (without that action)
+        again = {**actions[1], "outcomes": [{"desc": "Another take.", "tags": ["neutral"]}]}
+        added = self.client.put("/v1/entities/NPCs/Gate Guard/actions/4", json={"action": again})
+        self.assertEqual(added.status_code, 200, added.text)
+        self.assertEqual(self._restore(undo).status_code, 409)
+        self.assertEqual(self.client.get("/v1/entities/NPCs/Gate Guard/actions").json()["actions"][-1]["outcomes"],
+                         again["outcomes"])
+
+    def test_a_restore_that_would_now_be_invalid_is_refused(self):
+        undo = self.client.delete("/v1/entities/NPCs/Thief/actions/0").json()["undo"]  # it starts confront_thief
+        world = store.config.as_dict()
+        del world["world_definition"]["events"]["confront_thief"]                    # gone since
+        store.config.use_override(world)
+        self.addCleanup(lambda: (setattr(store.config, "_override", None), type(store.config).reload(store.config)))
+        refused = self._restore(undo)
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("would now be invalid", refused.json()["detail"])
+        self.assertNotIn(undo["name"], [action["name"] for action in               # nothing written
+                                        self.client.get("/v1/entities/NPCs/Thief/actions").json()["actions"]])
+        store.config._override = None                                            # the event back: it can
+        type(store.config).reload(store.config)
+        self.assertEqual(self._restore(undo).status_code, 200)
+
+    def test_a_mission_comes_back_where_it_was(self):
+        missions = self.client.get("/v1/missions").json()["missions"]
+        deleted = self.client.delete("/v1/missions/shield_bearer").json()
+        self.assertEqual((deleted["undo"]["type"], deleted["undo"]["position"]), ("mission", 3))
+        self.assertEqual(self._restore(deleted["undo"]).status_code, 200)
+        stored = yaml.safe_load((self.dir / "missions.yaml").read_text())["world_definition"]["missions"]
+        self.assertEqual(list(stored), list(missions))
+        self.assertEqual(stored["shield_bearer"], missions["shield_bearer"])
+        undo = self.client.delete("/v1/missions/shield_bearer").json()["undo"]
+        self.client.put("/v1/missions/shield_bearer", json={"mission": missions["royal_audience"]})
+        self.assertEqual(self._restore(undo).status_code, 409)
+
+    def test_the_last_place_person_and_item_cannot_be_deleted_but_events_can_all_go(self):
+        names = self._names("Items")
+        for name in names[1:]:
+            self.assertEqual(self.client.delete(f"/v1/entities/Items/{name}").status_code, 200)
+        last = self.client.delete(f"/v1/entities/Items/{names[0]}")
+        self.assertEqual(last.status_code, 400)
+        self.assertIn("At least one item must remain", last.json()["detail"])
+        self.assertEqual(self._names("Items"), names[:1])
+        for name in self._names("Events"):
+            self.assertEqual(self.client.delete(f"/v1/entities/Events/{name}").status_code, 200)
+        self.assertEqual(self._names("Events"), [])
+
+    def test_the_studio_asks_exactly_then_deletes_then_undoes(self):
+        import gradio as gr
+
+        import app
+
+        editor = _Editor(app, "NPCs", "Smuggler")
+        names = self._names("NPCs")
+        # Cancel: nothing deleted.
+        pending, panel, question, button = app.ask_delete_entry_ui(*editor.guard)
+        self.assertEqual(pending, {"type": "entity", "kind": "NPCs", "name": "Smuggler"})
+        self.assertTrue(panel["visible"])
+        self.assertIn("Delete the person **Smuggler**?", question)
+        self.assertIn(f"NPCs, {app._ordinal(names.index('Smuggler') + 1)} of {len(names)}", question)
+        editor.type("fields", 2, "Unsaved words.")
+        self.assertIn("unsaved changes (Fields) go with it", app.ask_delete_entry_ui(*editor.guard)[2])
+        cleared = app.cancel_delete_ui()
+        self.assertEqual((cleared[0], cleared[1]["visible"]), (None, False))
+        self.assertIn("Smuggler", self._names("NPCs"))
+        # Confirmed: exactly that entry goes, the next one opens, Undo is offered.
+        out = app.confirm_delete_entry_ui(pending, *editor.guard)
+        n = app.ENTRY_OUTPUTS
+        editor._entry(out[:n])
+        editor._capture(out[n + 1])
+        message, _, left, panel, _, _, undo, bar, said = out[n:]
+        self.assertNotIn("Smuggler", self._names("NPCs"))
+        self.assertEqual((left, panel["visible"], bar["visible"]), (None, False, True))
+        self.assertIn("Deleted the person **Smuggler**", said)
+        self.assertEqual(editor.entity, names[0])
+        self.assertEqual(editor.unsaved, [])
+        # Undo: it comes back where it was and opens.
+        out = app.undo_delete_entry_ui(undo, *editor.guard)
+        editor._entry(out[:n])
+        editor._capture(out[n + 1])
+        self.assertEqual(self._names("NPCs"), names)
+        self.assertEqual((editor.entity, editor.unsaved), ("Smuggler", []))
+        self.assertIn("Restored **Smuggler** to NPCs, where it was", out[n])
+        self.assertEqual((out[-3], out[-2]["visible"]), (None, False))
+        # Undo again (it was undone): said, and offered no more.
+        again = app.undo_delete_entry_ui(undo, *editor.guard)
+        self.assertIn("Not restored", again[-1])
+        self.assertIsNone(again[-3])
+        # A conflict: said, and Undo stays to try again once the name is free.
+        undo = app.confirm_delete_entry_ui(pending, *editor.guard)[n + 6]
+        self.client.put("/v1/entities/NPCs/Smuggler", json={"name": "Smuggler", "tags": [], "descriptions": ["New."],
+                                                             "goals": []})
+        conflict = app.undo_delete_entry_ui(undo, *editor.guard)
+        self.assertIn("not overwritten", conflict[-1])
+        self.assertEqual(conflict[-3], undo)
+        # The last item: the API refuses; the question says why, without its Delete button; no Undo.
+        for name in self._names("Items")[1:]:
+            self.client.delete(f"/v1/entities/Items/{name}")
+        editor.choose("Items")
+        pending = app.ask_delete_entry_ui(*editor.guard)[0]
+        refused = app.confirm_delete_entry_ui(pending, *editor.guard)
+        self.assertIn("Not deleted", refused[n + 4])
+        self.assertIn("At least one item must remain", refused[n + 4])
+        self.assertEqual((refused[n + 3]["visible"], refused[n + 5]["visible"]), (True, False))
+        self.assertEqual(refused[n + 6], gr.skip())  # no Undo: nothing was deleted
+        self.assertEqual(len(self._names("Items")), 1)
+
+    def test_the_studio_deletes_and_undoes_an_action_and_a_mission(self):
+        import app
+
+        editor = _Editor(app, "NPCs", "Gate Guard")
+        editor.pick_action(1)
+        stored = self.client.get("/v1/entities/NPCs/Gate Guard/actions").json()["actions"]
+        pending, panel, question, _ = app.ask_delete_action_ui(*editor.guard)
+        self.assertIn(f"Delete the action **2. {stored[1]['name']}** of **Gate Guard** (NPCs)?", question)
+        self.assertIn(f"{len(stored[1]['outcomes'])} outcome(s)", question)
+        n = app.ENTRY_OUTPUTS
+        out = app.confirm_delete_action_ui(pending, *editor.guard)
+        editor._entry(out[:n])
+        editor._capture(out[n + 1])
+        self.assertEqual(len(self.client.get("/v1/entities/NPCs/Gate Guard/actions").json()["actions"]), len(stored) - 1)
+        self.assertEqual(editor.unsaved, [])
+        undo = out[n + 6]
+        out = app.undo_delete_action_ui(undo, *editor.guard)
+        editor._entry(out[:n])
+        editor._capture(out[n + 1])
+        self.assertEqual(self.client.get("/v1/entities/NPCs/Gate Guard/actions").json()["actions"], stored)
+        self.assertEqual((editor.value("action")["index"], editor.value("action", 1)), (1, stored[1]["name"]))
+        self.assertEqual(editor.unsaved, [])
+        # A mission: asked, deleted, undone (it opens in the form).
+        missions = list(self.client.get("/v1/missions").json()["missions"])
+        state = app.mission_form_ui("shield_bearer")[-1]
+        pending, _, question, _ = app.ask_delete_mission_ui(state)
+        self.assertIn("(`shield_bearer`)?", question)
+        self.assertIn(f"3rd of {len(missions)}", question)
+        def stored():  # missions.yaml (the sandbox does not reload the active configuration)
+            return list(yaml.safe_load((self.dir / "missions.yaml").read_text())["world_definition"]["missions"])
+
+        out = app.confirm_delete_mission_ui(pending)
+        self.assertNotIn("shield_bearer", stored())
+        self.assertIn("Deleted the mission **Find a shield** (`shield_bearer`)", out[-1])
+        out = app.undo_delete_mission_ui(out[7])
+        self.assertEqual((_prop(out[0], "value"), out[1]), ("shield_bearer", "shield_bearer"))
+        self.assertEqual(stored(), missions)
+
+    def test_the_studio_s_delete_buttons_ask_first(self):
+        import gradio as gr
+
+        import app
+
+        demo = app.build_app()
+        blocks = list(demo.blocks.values())
+        by = {b.elem_id: b for b in blocks if getattr(b, "elem_id", None)}
+        buttons = {b.value: b for b in blocks if isinstance(b, gr.Button)}
+
+        def handler(component):
+            (fn,) = [fn for fn in demo.fns.values() if (component._id, "click") in fn.targets]
+            return fn.fn.__name__
+
+        self.assertEqual([handler(buttons[label]) for label in ("Delete entry", "🗑 Delete action", "🗑 Delete mission")],
+                         ["ask_delete_entry_ui", "ask_delete_action_ui", "ask_delete_mission_ui"])
+        for prefix, confirmed, undone in (("entry", "confirm_delete_entry_ui", "undo_delete_entry_ui"),
+                                          ("action", "confirm_delete_action_ui", "undo_delete_action_ui"),
+                                          ("mission", "confirm_delete_mission_ui", "undo_delete_mission_ui")):
+            with self.subTest(prefix=prefix):
+                self.assertFalse(by[f"{prefix}-confirm"].visible)
+                self.assertFalse(by[f"{prefix}-undo"].visible)
+                self.assertEqual(handler(by[f"{prefix}-confirm-delete"]), confirmed)
+                self.assertEqual(handler(by[f"{prefix}-confirm-cancel"]), "cancel_delete_ui")
+                self.assertEqual(handler(by[f"{prefix}-undo-button"]), undone)
+
+
 class StudioServiceTests(_Sandbox):
     """The endpoints the studio is built on: every studio tab works through the API."""
 

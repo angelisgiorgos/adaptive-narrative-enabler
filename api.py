@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 import yaml
 
 from backend import content, evaluation, export, records, sessions, store
+from backend.errors import ConflictError
 from core_engine import Mission
 from core_engine.actions import REPEAT_RULES
 from utils.config_loader import config
@@ -350,7 +351,7 @@ def _fail(exc: Exception):
                    "(permission denied).")
     else:
         message = getattr(exc, "message", None) or str(exc)
-    status = 409 if isinstance(exc, (export.RuntimeUnavailable, export.EngineRequired)) else 400
+    status = 409 if isinstance(exc, (export.RuntimeUnavailable, export.EngineRequired, ConflictError)) else 400
     raise HTTPException(status_code=status, detail=public_message(message)) from exc
 
 
@@ -625,12 +626,14 @@ def put_entity(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str,
 
 @api.delete("/v1/entities/{kind}/{name}", tags=["World authoring"])
 def delete_entity(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str):
+    """Delete an entry (at least one location, NPC and item remains: 400 for the last). ``undo``: what
+    POST /v1/deletions/{token}/restore puts back (the entry whole, where it was)."""
     names, _ = content._entity_name_values(kind)
     if name not in names:
         raise HTTPException(status_code=404, detail="Entity not found.")
     try:
-        content.delete_entity(kind, name)
-        return {"message": f"Deleted {name}.", "entities": content._entity_name_values(kind)[0]}
+        result = content.remove_entity(kind, name)
+        return {"message": f"Deleted {name}.", "entities": result["entities"], "undo": result["undo"]}
     except Exception as exc:
         _fail(exc)
 
@@ -1667,10 +1670,15 @@ def put_one_action(kind: Literal["Locations", "NPCs", "Items", "Events"], name: 
 
 
 @api.delete("/v1/entities/{kind}/{name}/actions/{index}", tags=["World authoring"])
-def delete_one_action(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str, index: int):
+def delete_one_action(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str, index: int,
+                      expected_name: str | None = None):
+    """Delete one action (the others are checked as a save checks them). ``expected_name``: the name the
+    action at ``index`` must have, else 409 and nothing is deleted (the actions changed since they were
+    read). ``undo``: what POST /v1/deletions/{token}/restore puts back."""
     _known_entity(kind, name)
     try:
-        return {"actions": content.delete_entity_action(kind, name, index)}
+        result = content.remove_entity_action(kind, name, index, expected=expected_name)
+        return {"actions": result["actions"], "message": result["message"], "undo": result["undo"]}
     except Exception as exc:
         _fail(exc)
 
@@ -1725,8 +1733,26 @@ def put_one_mission(key: str, body: OneMission):
 
 @api.delete("/v1/missions/{key}", tags=["World authoring"])
 def delete_one_mission(key: str):
+    """Delete a mission (the others are checked as a save checks them). ``undo``: what
+    POST /v1/deletions/{token}/restore puts back."""
     try:
-        return {"missions": content.delete_mission(key), "message": f"Deleted the mission `{key}`."}
+        result = content.remove_mission(key)
+        return {"missions": result["missions"], "message": result["message"], "undo": result["undo"]}
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.post("/v1/deletions/{token}/restore", tags=["World authoring"])
+def restore_deletion(token: str):
+    """Undo a deletion: ``token`` is the ``undo.token`` of a DELETE of an entry, an action or a mission
+    (kept in this process, for its recent deletions). The record goes back whole, and only it (never a
+    whole file): where it was when its list is as the deletion left it, else next to its old neighbour
+    (``changed_since``, ``moved``). 404: no such deletion (undone already, or the API restarted); 409: its
+    name is taken again, or its entry is gone (nothing is overwritten); 400: it would now be invalid."""
+    try:
+        return content.restore_deletion(token)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         _fail(exc)
 
