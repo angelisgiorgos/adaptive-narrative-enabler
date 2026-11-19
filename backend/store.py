@@ -867,3 +867,26 @@ def save_logic_section(name: str, section_text: str) -> str:
         config.reload()
         engine.refresh_runtime_settings()
     return f"Saved the `{name}` engine logic. New simulations and games use it."
+
+
+# ---- what people and places do, by their tags, as data (the studio's tables) -------------------------
+
+BEHAVIOUR_SECTIONS = {"npcs": "npc_behaviour", "locations": "location_behaviour"}
+
+
+def load_behaviour_rules() -> dict:
+    """{npcs: {default, rules}, locations: {default, rules}} as hyperparameters.yaml has them."""
+    data = _read_yaml(HYPERPARAMETERS_PATH)
+    return {group: {"default": dict((data.get(section) or {}).get("default") or {}),
+                    "rules": list((data.get(section) or {}).get("rules") or [])}
+            for group, section in BEHAVIOUR_SECTIONS.items()}
+
+
+def save_behaviour_rules(group: str, value: dict) -> str:
+    """Replace the people's (``npcs``) or the places' (``locations``) rules, checked as rules."""
+    if group not in BEHAVIOUR_SECTIONS:
+        raise AuthoringError(f"Unknown group `{group}`; use npcs or locations.")
+    section = BEHAVIOUR_SECTIONS[group]
+    cleaned = {"default": dict((value or {}).get("default") or {}), "rules": list((value or {}).get("rules") or [])}
+    text = yaml.safe_dump({section: cleaned}, sort_keys=False, allow_unicode=True, default_flow_style=None, width=1 << 16)
+    return save_logic_section(section, text)

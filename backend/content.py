@@ -820,3 +820,159 @@ def save_messages_yaml(yaml_text: str):
         raise AuthoringError("The story messages are invalid:\n" + "\n".join(f"- {e}" for e in errors))
     _store_messages(yaml_text)
     return yaml_text, f"Saved {len(messages)} story message(s). New stories use them straight away."
+
+
+# ---- the studio's forms: one action, one quest, an entry's details, the map (JSON) ------------------
+
+def load_entity_action(kind: str, name: str, index: int) -> dict:
+    """One action of an entry (by its place in the list), as stored."""
+    actions = load_entity_actions(kind, name)
+    if not 0 <= index < len(actions):
+        raise AuthoringError(f"`{name}` has no action {index + 1} (it has {len(actions)}).")
+    return copy.deepcopy(actions[index])
+
+
+def save_entity_action(kind: str, name: str, index: int, action: dict) -> list:
+    """Replace one action of an entry (``index`` = the number of actions: a new one, at the end);
+    the whole list is checked as when it is saved at once. Returns the actions."""
+    if not isinstance(action, dict) or not str(action.get("name", "")).strip():
+        raise AuthoringError("An action needs a name.")
+    actions = load_entity_actions(kind, name)
+    if index == len(actions):
+        actions.append(action)
+    elif 0 <= index < len(actions):
+        actions[index] = action
+    else:
+        raise AuthoringError(f"`{name}` has no action {index + 1} (it has {len(actions)}).")
+    save_entity_actions(kind, name, actions)
+    return load_entity_actions(kind, name)
+
+
+def delete_entity_action(kind: str, name: str, index: int) -> list:
+    actions = load_entity_actions(kind, name)
+    if not 0 <= index < len(actions):
+        raise AuthoringError(f"`{name}` has no action {index + 1} (it has {len(actions)}).")
+    del actions[index]
+    save_entity_actions(kind, name, actions)
+    return load_entity_actions(kind, name)
+
+
+def save_mission(key: str, mission: dict, rename: str | None = None) -> dict:
+    """Add or replace one mission (``rename``: its new key, in the same place); every mission is
+    checked as when they are saved at once. Returns the missions."""
+    key, new_key = str(key).strip(), str(rename or key).strip()
+    if not new_key or not re.fullmatch(r"[A-Za-z0-9_]+", new_key):
+        raise AuthoringError("A mission's key is letters, digits and _ (e.g. rid_the_market_of_the_thief).")
+    if not isinstance(mission, dict):
+        raise AuthoringError("A mission is a mapping of its fields.")
+    missions = _stored_missions()
+    if new_key != key and new_key in missions:
+        raise AuthoringError(f"A mission `{new_key}` exists already.")
+    updated = {}
+    for name, value in missions.items():
+        updated[new_key if name == key else name] = mission if name == key else value
+    if key not in missions:
+        updated[new_key] = mission
+    save_missions(updated)
+    return updated
+
+
+def delete_mission(key: str) -> dict:
+    missions = _stored_missions()
+    if key not in missions:
+        raise AuthoringError(f"No mission `{key}`.")
+    del missions[key]
+    save_missions(missions)
+    return missions
+
+
+def _stored_missions() -> dict:
+    """The missions as missions.yaml has them (what a save writes), else the active ones."""
+    if MISSIONS_PATH.exists():
+        return copy.deepcopy((_read_yaml(MISSIONS_PATH).get("world_definition") or {}).get("missions") or {})
+    return load_missions()
+
+
+# The fields of an entry the studio's details form edits (the rest: the entry form, the YAML).
+DETAIL_FIELDS = {
+    "NPCs": ("known_locations", "known_objects", "article", "dialogue"),
+    "Locations": ("distant_descriptions", "entered_descriptions", "interact_prompts", "exit_locked"),
+}
+
+
+def load_entity_details(kind: str, name: str) -> dict:
+    record = _record(kind, name)[2]
+    return {field: copy.deepcopy(record.get(field)) for field in DETAIL_FIELDS.get(kind, ())}
+
+
+def save_entity_details(kind: str, name: str, details: dict) -> dict:
+    """Change an entry's details (DETAIL_FIELDS; an empty value removes the field). The entry is
+    checked with the whole world in place, as every save is. Returns the details."""
+    fields = DETAIL_FIELDS.get(kind, ())
+    unknown = sorted(set(details or {}) - set(fields))
+    if unknown:
+        raise AuthoringError(f"{kind} have no detail {', '.join(unknown)}; use {', '.join(fields) or 'none'}.")
+    errors = []
+    world = config.get("world_definition") or {}
+    places = set(world.get("locations") or {})
+    items = {entry.get("name") for entry in world.get("objects") or [] if isinstance(entry, dict)}
+    for field, known in (("known_locations", places), ("known_objects", items)):
+        for value in (details or {}).get(field) or []:
+            if value not in known:
+                errors.append(f"{field}: `{value}` is not a {'location' if field == 'known_locations' else 'item'}.")
+    if (details or {}).get("article") not in (None, "", "the", "a", "an", "none"):
+        errors.append("article must be the, a, an, none (a proper name) or empty (automatic).")
+    for number, line in enumerate((details or {}).get("dialogue") or [], start=1):
+        if not isinstance(line, dict) or not str(line.get("text", "")).strip():
+            errors.append(f"dialogue line {number} needs a text.")
+    if errors:
+        raise AuthoringError("The details are invalid:\n" + "\n".join(f"- {e}" for e in errors))
+    record = copy.deepcopy(_record(kind, name)[2])
+    for field, value in (details or {}).items():
+        if field == "article" and value == "none":
+            value = ""  # a proper name: no article
+        if value in (None, [], {}) or (value == "" and field != "article") or (field == "exit_locked" and not value):
+            record.pop(field, None)
+        else:
+            record[field] = value
+    save_entity_yaml(kind, name, yaml.safe_dump(record, sort_keys=False, allow_unicode=True))
+    return load_entity_details(kind, name)
+
+
+def load_map() -> dict:
+    """The world's map as data: {routes: {place: [the places it borders]} (null: every story draws
+    its own map), places: [every location]}."""
+    routes = (_read_yaml(MAP_PATH).get("world_definition") or {}).get("routes")
+    places = sorted((config.get("world_definition") or {}).get("locations") or {})
+    return {"routes": routes, "places": places}
+
+
+def save_map(routes) -> tuple:
+    """Save the whole map (null: none); checked like the map document. Returns (map, message)."""
+    _, message = save_map_yaml(yaml.safe_dump({"routes": routes}, sort_keys=False, allow_unicode=True))
+    return load_map(), message
+
+
+def set_borders(place: str, borders) -> tuple:
+    """The places ``place`` borders, both ways: a route added or removed here is added to or
+    removed from the other place too. Returns (map, message)."""
+    places = set(load_map()["places"])
+    if place not in places:
+        raise AuthoringError(f"`{place}` is not a location.")
+    borders = [str(other) for other in borders or [] if str(other) != place]
+    unknown = sorted(set(borders) - places)
+    if unknown:
+        raise AuthoringError(f"Not locations: {', '.join(unknown)}.")
+    routes = load_map()["routes"] or {}
+    adjacency = {name: set(neighbours or []) for name, neighbours in routes.items()}
+    for name, neighbours in list(adjacency.items()):
+        for other in neighbours:
+            adjacency.setdefault(other, set()).add(name)  # a route holds both ways
+    for other in adjacency.get(place, set()) - set(borders):
+        adjacency[other].discard(place)
+    for other in borders:
+        adjacency.setdefault(other, set()).add(place)
+    adjacency[place] = set(borders)
+    order = list(routes) + sorted(set(adjacency) - set(routes))
+    updated = {name: sorted(adjacency[name]) for name in order if adjacency.get(name)}
+    return save_map(updated or None)

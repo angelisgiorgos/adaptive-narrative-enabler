@@ -1473,6 +1473,516 @@ def save_term_weights_ui(text):
     return to_yaml(result["weights"]), result["message"]
 
 
+# ---- the world editor's forms (one action, one outcome, scheduling, details, missions, map) ------
+
+NONE = "(none)"
+ACTING = "(the person acting)"
+
+
+def _names_of(kind):
+    try:
+        return _entity_names(kind)
+    except APIError:
+        return []
+
+
+def _stat_names():
+    try:
+        return list((API.get("/v1/stats")["character_stats"].get("stats") or {}))
+    except APIError:
+        return []
+
+
+def _flow(value):
+    """A value on one line, as YAML (a condition, a mapping of variables)."""
+    return to_yaml(value, flow=True) if value not in (None, "", {}, []) else ""
+
+
+def _parse_flow(text, what):
+    """One-line YAML: a mapping written with or without its braces ("reputation: 1, coins: 2")."""
+    text = str(text or "").strip()
+    if not text:
+        return None
+    try:
+        value = yaml.safe_load(text if text.startswith(("{", "[")) else "{" + text + "}")
+    except yaml.YAMLError as exc:
+        raise gr.Error(f"{what}: could not read `{text}` ({exc.problem if hasattr(exc, 'problem') else exc}).")
+    return value
+
+
+def _set(record, key, value):
+    """Set a field, or leave it out when it is empty (the defaults apply)."""
+    if value in (None, "", NONE, [], {}) or value is False or (isinstance(value, (int, float)) and value == 0
+                                                                 and key in ("health_change", "coin_change",
+                                                                             "required_coins")):
+        record.pop(key, None)
+    else:
+        record[key] = value
+
+
+def _outcome_fields(outcome):
+    """An outcome's form values (the order of OUTCOME_FIELDS)."""
+    remove = outcome.get("remove_npc")
+    return (outcome.get("desc", ""), outcome.get("on_check") or "any", list(outcome.get("tags") or []),
+            outcome.get("health_change") or 0, outcome.get("coin_change") or 0,
+            outcome.get("move_to") or NONE, outcome.get("send_to") or NONE,
+            outcome.get("reveal_location") or NONE, outcome.get("reveal_npc") or NONE,
+            outcome.get("reveal_object") or NONE, ACTING if remove is True else (remove or NONE),
+            bool(outcome.get("spawn")), bool(outcome.get("lead_to_known")),
+            _flow(outcome.get("set_variables")), _flow(outcome.get("change_variables")),
+            _flow(outcome.get("change_stats")), to_yaml(outcome.get("effects")))
+
+
+def _outcome_from(outcome, values):
+    """The outcome with the form's values (fields the form does not show are kept)."""
+    (text, when, tags, health, coins, move, send, place, person, item, remove, spawn, lead, sets, changes, stats,
+     effects) = values
+    outcome = dict(outcome or {})
+    outcome["desc"] = str(text or "").strip()
+    _set(outcome, "on_check", None if when == "any" else when)
+    _set(outcome, "tags", list(tags or []))
+    _set(outcome, "health_change", int(health or 0))
+    _set(outcome, "coin_change", int(coins or 0))
+    for key, value in (("move_to", move), ("send_to", send), ("reveal_location", place), ("reveal_npc", person),
+                       ("reveal_object", item)):
+        _set(outcome, key, value)
+    _set(outcome, "remove_npc", True if remove == ACTING else remove)
+    _set(outcome, "spawn", bool(spawn))
+    _set(outcome, "lead_to_known", bool(lead))
+    _set(outcome, "set_variables", _parse_flow(sets, "Sets variables"))
+    _set(outcome, "change_variables", _parse_flow(changes, "Changes variables"))
+    _set(outcome, "change_stats", _parse_flow(stats, "Changes stats"))
+    try:
+        _set(outcome, "effects", yaml.safe_load(effects) if str(effects or "").strip() else None)
+    except yaml.YAMLError as exc:
+        raise gr.Error(f"Other effects: could not read the YAML ({exc}).")
+    return outcome
+
+
+def _action_fields(action):
+    """An action's form values (the order of ACTION_FIELDS)."""
+    check = action.get("skill_check") or {}
+    return (action.get("name", ""), action.get("repeat") or REFERENCE["repeat_default"],
+            bool(action.get("retry_on_failure")), check.get("stat") or NONE, check.get("modifier") or 0,
+            action.get("exclusive_group") or "", action.get("triggers_event") or NONE,
+            action.get("required_coins") or 0, action.get("required_object") or NONE, action.get("required_tag") or "",
+            bool(action.get("consumes_object")), action.get("collects_object") or NONE,
+            _flow(action.get("enabled_if")), _flow(action.get("until")))
+
+
+def _action_from(action, values):
+    (name, repeat, retry, stat, modifier, group, event, coins, item, tag, consumes, collects, enabled, until) = values
+    action = dict(action or {})
+    action["name"] = str(name or "").strip()
+    _set(action, "repeat", None if repeat == REFERENCE["repeat_default"] else repeat)
+    _set(action, "retry_on_failure", bool(retry))
+    _set(action, "skill_check", None if stat in (None, NONE) else
+         {"stat": stat, **({"modifier": int(modifier)} if modifier else {})})
+    _set(action, "exclusive_group", str(group or "").strip())
+    _set(action, "triggers_event", event)
+    _set(action, "required_coins", int(coins or 0))
+    _set(action, "required_object", item)
+    _set(action, "required_tag", str(tag or "").strip())
+    _set(action, "consumes_object", bool(consumes))
+    _set(action, "collects_object", collects)
+    _set(action, "enabled_if", _parse_flow(enabled, "Offered only if"))
+    _set(action, "until", _parse_flow(until, "No longer offered once"))
+    return action
+
+
+def _outcome_choices(action):
+    return [(f"{index + 1}. {(outcome.get('desc') or '(nothing told)')[:60]}", index)
+            for index, outcome in enumerate(action.get("outcomes") or [])]
+
+
+def _action_form(kind, name, index, action):
+    """Everything the action form shows for ``action`` (index ``index`` of the entry)."""
+    state = {"kind": kind, "name": name, "index": index, "action": action, "outcome": 0 if action.get("outcomes") else None}
+    outcome = (action.get("outcomes") or [{}])[0]
+    return (state, *_action_fields(action), gr.Dropdown(choices=_outcome_choices(action), value=state["outcome"]),
+            *_outcome_fields(outcome))
+
+
+@ui
+def action_list_ui(kind, name):
+    """The entry's actions, and an empty form."""
+    blank = _action_form(kind, name, None, {"name": "", "outcomes": []})
+    return (gr.Dropdown(choices=_action_choices(kind, name), value=None), *blank)
+
+
+@ui
+def load_action_form_ui(kind, name, index):
+    if index is None or not name:
+        return _action_form(kind, name, None, {"name": "", "outcomes": []})
+    action = API.get(_path(f"/v1/entities/{kind}", name, "actions", int(index)))["action"]
+    return _action_form(kind, name, int(index), action)
+
+
+@ui
+def new_action_ui(kind, name):
+    if not name:
+        raise gr.Error("Select an entry first.")
+    count = len(API.get(_path(f"/v1/entities/{kind}", name, "actions"))["actions"])
+    return _action_form(kind, name, count, {"name": "New action", "outcomes": [{"desc": "", "tags": ["neutral"]}]})
+
+
+def pick_outcome_ui(state, index, *values):
+    """Switching outcomes keeps what was typed in the one left."""
+    state = dict(state or {})
+    action = dict(state.get("action") or {"outcomes": []})
+    outcomes = list(action.get("outcomes") or [])
+    previous = state.get("outcome")
+    if previous is not None and previous < len(outcomes):
+        outcomes[previous] = _outcome_from(outcomes[previous], values)
+    action["outcomes"] = outcomes
+    state.update(action=action, outcome=index)
+    shown = outcomes[index] if index is not None and index < len(outcomes) else {}
+    return (state, *_outcome_fields(shown))
+
+
+def new_outcome_ui(state, *values):
+    state = dict(state or {})
+    action = dict(state.get("action") or {"outcomes": []})
+    outcomes = list(action.get("outcomes") or [])
+    if state.get("outcome") is not None and state["outcome"] < len(outcomes):
+        outcomes[state["outcome"]] = _outcome_from(outcomes[state["outcome"]], values)
+    outcomes.append({"desc": "", "tags": ["neutral"]})
+    action["outcomes"] = outcomes
+    state.update(action=action, outcome=len(outcomes) - 1)
+    return (state, gr.Dropdown(choices=_outcome_choices(action), value=state["outcome"]), *_outcome_fields(outcomes[-1]))
+
+
+def delete_outcome_ui(state):
+    state = dict(state or {})
+    action = dict(state.get("action") or {"outcomes": []})
+    outcomes = list(action.get("outcomes") or [])
+    if state.get("outcome") is not None and state["outcome"] < len(outcomes):
+        outcomes.pop(state["outcome"])
+    action["outcomes"] = outcomes
+    state.update(action=action, outcome=0 if outcomes else None)
+    return (state, gr.Dropdown(choices=_outcome_choices(action), value=state["outcome"]),
+            *_outcome_fields(outcomes[0] if outcomes else {}))
+
+
+@ui
+def save_action_form_ui(state, *values):
+    """Save the action in the form (with the outcome being edited); the whole list is checked."""
+    state = dict(state or {})
+    if not state.get("name") or state.get("index") is None:
+        raise gr.Error("Pick an action, or add one, first.")
+    action_values, outcome_values = values[:len(ACTION_FIELD_NAMES)], values[len(ACTION_FIELD_NAMES):]
+    action = _action_from(state.get("action"), action_values)
+    outcomes = list(action.get("outcomes") or [])
+    if state.get("outcome") is not None and state["outcome"] < len(outcomes):
+        outcomes[state["outcome"]] = _outcome_from(outcomes[state["outcome"]], outcome_values)
+    if outcomes:
+        action["outcomes"] = outcomes
+    else:
+        action.pop("outcomes", None)  # an action that only starts an event
+    if not action["name"]:
+        raise gr.Error("The action needs a name.")
+    kind, name, index = state["kind"], state["name"], state["index"]
+    API.put(_path(f"/v1/entities/{kind}", name, "actions", index), {"action": action})
+    form = load_action_form_ui(kind, name, index)
+    return (gr.Dropdown(choices=_action_choices(kind, name), value=index), *form,
+            f"Saved the action **{action['name']}** of {name}.", load_entity_actions_yaml(kind, name))
+
+
+@ui
+def delete_action_ui(state):
+    state = dict(state or {})
+    if not state.get("name") or state.get("index") is None:
+        raise gr.Error("Pick an action first.")
+    kind, name = state["kind"], state["name"]
+    API.delete(_path(f"/v1/entities/{kind}", name, "actions", state["index"]))
+    return (*action_list_ui(kind, name), f"Deleted the action from {name}.", load_entity_actions_yaml(kind, name))
+
+
+ACTION_FIELD_NAMES = ("name", "repeat", "retry", "stat", "modifier", "group", "event", "coins", "item", "tag",
+                      "consumes", "collects", "enabled_if", "until")
+
+
+# Scheduling: an event's start rules, an item's uniqueness (/v1/entities/{Events|Items}/{name}/policy).
+
+@ui
+def policy_form_ui(kind, name):
+    """The scheduling form of an event or an item (hidden for places and people)."""
+    event, item = kind == "Events", kind == "Items"
+    policy = API.get(_path(f"/v1/entities/{kind}", name, "policy"))["policy"] if name and (event or item) else {}
+    note = ("" if event or item else
+            "Places and people: their behaviour comes from their tags (the choices above, and *Behaviour by tags*).")
+    return (gr.update(visible=event), gr.update(visible=item), note,
+            policy.get("trigger") or "action", float(policy.get("chance") or 0.0), float(policy.get("weight") or 1.0),
+            int(policy.get("cooldown") or 0), int(policy.get("max_occurrences") or 0), policy.get("repeat") or "always",
+            bool(policy.get("unique")), policy.get("location") or NONE)
+
+
+@ui
+def save_policy_form_ui(kind, name, trigger, chance, weight, cooldown, most, repeat, unique, location):
+    if kind not in ("Events", "Items") or not name:
+        raise gr.Error("Pick an event or an item.")
+    if kind == "Events":
+        policy = {"trigger": trigger, "repeat": repeat}
+        if trigger == "random":
+            policy.update(chance=float(chance), weight=float(weight or 1.0))
+        if cooldown:
+            policy["cooldown"] = int(cooldown)
+        if most:
+            policy["max_occurrences"] = int(most)
+    else:
+        policy = {"unique": bool(unique)}
+        if unique and location not in (None, NONE):
+            policy["location"] = location
+    API.put(_path(f"/v1/entities/{kind}", name, "policy"), {"policy": policy})
+    return f"Saved when **{name}** happens." if kind == "Events" else f"Saved **{name}**'s uniqueness.", \
+        load_entity_policy_yaml(kind, name)
+
+
+# An entry's details (/v1/entities/{kind}/{name}/details): what the entry form does not show.
+
+ARTICLES = [("automatic", ""), ("the", "the"), ("a", "a"), ("an", "an"), ("none: a proper name", "none")]
+
+
+@ui
+def details_form_ui(kind, name):
+    npc, place = kind == "NPCs", kind == "Locations"
+    details = API.get(_path(f"/v1/entities/{kind}", name, "details"))["details"] if name and (npc or place) else {}
+    places, items = _names_of("Locations"), _names_of("Items")
+    article = details.get("article")
+    dialogue = pd.DataFrame([[_flow(line.get("enabled_if")), line.get("text") if isinstance(line.get("text"), str)
+                              else " / ".join(line.get("text") or [])] for line in details.get("dialogue") or []],
+                            columns=["Said when (condition, empty: always)", "Says"])
+    return (gr.update(visible=npc), gr.update(visible=place),
+            "" if npc or place else "Items and events have no more details than the form above shows.",
+            gr.update(choices=places, value=details.get("known_locations") or []),
+            gr.update(choices=items, value=details.get("known_objects") or []),
+            "none" if article == "" else (article or ""), dialogue,
+            "\n".join(details.get("distant_descriptions") or []), "\n".join(details.get("entered_descriptions") or []),
+            "\n".join(details.get("interact_prompts") or []), bool(details.get("exit_locked")))
+
+
+@ui
+def save_details_ui(kind, name, known_places, known_items, article, dialogue, distant, entered, prompts, locked):
+    if kind not in ("NPCs", "Locations") or not name:
+        raise gr.Error("Pick a person or a place.")
+    if kind == "NPCs":
+        lines = []
+        for _, row in (dialogue if dialogue is not None else pd.DataFrame()).iterrows():
+            condition, text = str(row.iloc[0] or "").strip(), str(row.iloc[1] or "").strip()
+            if text:
+                lines.append({"text": text, **({"enabled_if": _parse_flow(condition, "Said when")} if condition else {})})
+        details = {"known_locations": list(known_places or []), "known_objects": list(known_items or []),
+                   "article": article or None, "dialogue": lines}
+    else:
+        details = {"distant_descriptions": _lines(distant), "entered_descriptions": _lines(entered),
+                   "interact_prompts": _lines(prompts), "exit_locked": bool(locked)}
+    API.put(_path(f"/v1/entities/{kind}", name, "details"), {"details": details})
+    return f"Saved the details of **{name}**.", load_entity_yaml_ui(kind, name)
+
+
+# Missions (/v1/missions/{key}): a form, and its steps as a table.
+
+STAGE_COLUMNS = ["Step", "What the player is told", "Goal", "Rewards"]
+
+
+def _pairs(mapping):
+    """A goal (or one effect) as `key: value; key: value`."""
+    return "; ".join(f"{key}: {_flow(value) if isinstance(value, (dict, list)) else value}"
+                     for key, value in (mapping or {}).items())
+
+
+def _parse_pairs(text, what):
+    """`key: value; key: value` back into a mapping (values read as YAML)."""
+    found = {}
+    for part in [part.strip() for part in str(text or "").split(";") if part.strip()]:
+        if ":" not in part:
+            raise gr.Error(f"{what}: write `key: value` (e.g. `item: Heavy Shield`), not `{part}`.")
+        key, value = part.split(":", 1)
+        try:
+            found[key.strip()] = yaml.safe_load(value.strip()) if value.strip() else None
+        except yaml.YAMLError as exc:
+            raise gr.Error(f"{what}: could not read `{value.strip()}` ({exc}).")
+    return found
+
+
+def _rewards_text(rewards):
+    return "; ".join(_pairs(effect) for effect in rewards or [] if isinstance(effect, dict))
+
+
+def _parse_rewards(text):
+    return [{key: value} for key, value in _parse_pairs(text, "Rewards").items()]
+
+
+def _mission_keys():
+    return list(API.get("/v1/missions")["missions"])
+
+
+@ui
+def mission_form_ui(key):
+    mission = API.get(_path("/v1/missions", key))["mission"] if key else {}
+    stages = mission.get("stages") or ([{"title": mission.get("title", ""), "description": "",
+                                         "goal": mission.get("goal") or {}, "rewards": []}] if mission else [])
+    table = pd.DataFrame([[stage.get("title", ""), stage.get("description", ""), _pairs(stage.get("goal")),
+                           _rewards_text(stage.get("rewards"))] for stage in stages], columns=STAGE_COLUMNS)
+    return (key or "", mission.get("title", ""), mission.get("description", ""), float(mission.get("weight") or 1.0),
+            _flow(mission.get("enabled_if")), _rewards_text(mission.get("rewards")), table,
+            {"key": key, "staged": bool(mission.get("stages")), "mission": mission})
+
+
+def new_mission_ui():
+    table = pd.DataFrame([["First step", "", "location: Market", ""]], columns=STAGE_COLUMNS)
+    return (gr.Dropdown(value=None), "new_mission", "A new quest", "", 1.0, "", "", table,
+            {"key": None, "staged": True, "mission": {}})
+
+
+@ui
+def save_mission_form_ui(state, key, title, description, weight, enabled_if, rewards, table):
+    state = dict(state or {})
+    mission = dict(state.get("mission") or {})
+    mission.update(title=str(title or "").strip(), description=str(description or "").strip())
+    _set(mission, "weight", None if float(weight or 1.0) == 1.0 else float(weight))
+    _set(mission, "enabled_if", _parse_flow(enabled_if, "Offered only if"))
+    _set(mission, "rewards", _parse_rewards(rewards))
+    rows = [row for _, row in (table if table is not None else pd.DataFrame()).iterrows()
+            if str(row.iloc[2] or "").strip()]
+    if not rows:
+        raise gr.Error("A mission needs a goal: at least one step with a Goal.")
+    stages = [{"title": str(row.iloc[0] or "").strip() or f"Step {number}", "description": str(row.iloc[1] or "").strip(),
+               "goal": _parse_pairs(row.iloc[2], f"Step {number}: Goal"),
+               **({"rewards": _parse_rewards(row.iloc[3])} if str(row.iloc[3] or "").strip() else {})}
+              for number, (row) in enumerate(rows, start=1)]
+    if len(stages) > 1 or state.get("staged"):
+        mission["stages"] = stages
+        mission.pop("goal", None)
+    else:
+        mission["goal"] = stages[0]["goal"]
+        mission.pop("stages", None)
+    old, new = state.get("key"), str(key or "").strip()
+    target = old or new
+    result = API.put(_path("/v1/missions", target), {"mission": mission, "rename": new if old and new != old else None})
+    return (gr.Dropdown(choices=list(result["missions"]), value=new), result["message"], load_missions_yaml())
+
+
+@ui
+def delete_mission_form_ui(state):
+    key = (state or {}).get("key")
+    if not key:
+        raise gr.Error("Pick a mission first.")
+    result = API.delete(_path("/v1/missions", key))
+    return gr.Dropdown(choices=list(result["missions"]), value=None), result["message"], load_missions_yaml()
+
+
+# The map (/v1/map): a place's borders, and the whole map drawn.
+
+def _map_svg(routes, places, selected=None):
+    """The map drawn: every place on a ring, a line for each route; the selected place and its
+    borders stand out."""
+    import math
+
+    places = list(places)
+    if not places:
+        return "<p>No places yet.</p>"
+    size, radius = 640, 230
+    spots = {place: (size / 2 + radius * math.cos(2 * math.pi * i / len(places) - math.pi / 2),
+                     size / 2 + radius * math.sin(2 * math.pi * i / len(places) - math.pi / 2))
+             for i, place in enumerate(places)}
+    pairs = {tuple(sorted((a, b))) for a, borders in (routes or {}).items() for b in borders or [] if a in spots and b in spots}
+    near = set((routes or {}).get(selected) or []) | {a for a, borders in (routes or {}).items() if selected in (borders or [])}
+    lines = []
+    for a, b in sorted(pairs):
+        lit = selected in (a, b)
+        (x1, y1), (x2, y2) = spots[a], spots[b]
+        lines.append(f'<line x1="{x1:.0f}" y1="{y1:.0f}" x2="{x2:.0f}" y2="{y2:.0f}" stroke="{"#8b5cf6" if lit else "#94a3b8"}" '
+                     f'stroke-width="{3 if lit else 1.5}" opacity="{1 if lit or not selected else .35}"/>')
+    for place, (x, y) in spots.items():
+        fill = "#8b5cf6" if place == selected else "#c4b5fd" if place in near else "#e2e8f0"
+        anchor = "start" if x > size / 2 + 5 else "end" if x < size / 2 - 5 else "middle"
+        dx = 12 if anchor == "start" else -12 if anchor == "end" else 0
+        dy = 18 if y > size / 2 + radius * .9 else -12 if y < size / 2 - radius * .9 else 4
+        weight = ' font-weight="bold"' if place == selected else ""
+        label = place.replace("&", "&amp;").replace("<", "&lt;")
+        lines.append(f'<circle cx="{x:.0f}" cy="{y:.0f}" r="9" fill="{fill}" stroke="#475569" stroke-width="1"/>'
+                     f'<text x="{x + dx:.0f}" y="{y + dy:.0f}" text-anchor="{anchor}" font-size="13" '
+                     f'fill="currentColor"{weight}>{label}</text>')
+    if not routes:
+        lines.append(f'<text x="{size / 2}" y="{size / 2}" text-anchor="middle" font-size="14" fill="currentColor">'
+                     'No authored map: every story draws its own.</text>')
+    return (f'<svg viewBox="-110 0 {size + 220} {size}" style="width:100%;max-width:820px;height:auto" '
+            f'xmlns="http://www.w3.org/2000/svg">{"".join(lines)}</svg>')
+
+
+@ui
+def map_form_ui(place):
+    found = API.get("/v1/map")
+    routes, places = found.get("routes") or {}, found.get("places") or []
+    place = place if place in places else (places[0] if places else None)
+    borders = sorted(set(routes.get(place) or []) | {a for a, b in routes.items() if place in (b or [])})
+    return (_map_svg(routes, places, place), gr.Dropdown(choices=places, value=place),
+            gr.CheckboxGroup(choices=[p for p in places if p != place], value=borders,
+                             label=f"The places {place} borders" if place else "Borders"))
+
+
+def map_place_ui(place):
+    """Another place picked: the map, with its borders ticked."""
+    view, _, borders = map_form_ui(place)
+    return view, borders
+
+
+@ui
+def save_borders_ui(place, borders):
+    if not place:
+        raise gr.Error("Pick a place.")
+    result = API.put(_path("/v1/map", place), {"borders": list(borders or [])})
+    return (_map_svg(result.get("routes") or {}, result.get("places") or [], place), result["message"],
+            load_document("map"))
+
+
+# Behaviour by tags as tables (/v1/behaviours/rules/{npcs|locations}).
+
+BEHAVIOUR_TABLES = {"npcs": ("starts_conversation", "appearances"), "locations": ("draws_in", "visits")}
+BEHAVIOUR_COLUMNS = {"npcs": ["Tags (comma separated)", "Comes up to the player", "How often seen"],
+                     "locations": ["Tags (comma separated)", "Draws the player in", "How many visits"]}
+
+
+def _rules_table(group, value):
+    first, second = BEHAVIOUR_TABLES[group]
+    rows = [[", ".join(rule.get("tags") or []), str(rule.get(first, "")), str(rule.get(second, ""))]
+            for rule in value.get("rules") or []]
+    return pd.DataFrame(rows, columns=BEHAVIOUR_COLUMNS[group])
+
+
+def _cell(value):
+    value = str(value if value is not None else "").strip()
+    return int(value) if value.isdigit() else value
+
+
+@ui
+def behaviour_tables_ui():
+    found = API.get("/v1/behaviours/rules")
+    npcs, places = found["npcs"], found["locations"]
+    return (_rules_table("npcs", npcs), str(npcs["default"].get("starts_conversation", "never")),
+            str(npcs["default"].get("appearances", "always")),
+            _rules_table("locations", places), str(places["default"].get("draws_in", "never")),
+            str(places["default"].get("visits", "always")))
+
+
+@ui
+def save_behaviour_table_ui(group, table, first_default, second_default):
+    first, second = BEHAVIOUR_TABLES[group]
+    rules = []
+    for _, row in (table if table is not None else pd.DataFrame()).iterrows():
+        tags = [tag.strip() for tag in str(row.iloc[0] or "").split(",") if tag.strip()]
+        rule = {"tags": tags}
+        for key, cell in ((first, row.iloc[1]), (second, row.iloc[2])):
+            if str(cell if cell is not None else "").strip():
+                rule[key] = _cell(cell)
+        if tags or len(rule) > 1:
+            rules.append(rule)
+    default = {first: _cell(first_default) or "never", second: _cell(second_default) or "always"}
+    result = API.put(_path("/v1/behaviours/rules", group), {"default": default, "rules": rules})
+    return result["message"]
+
+
 # ---- what people and places do, by their tags (/v1/behaviours, /v1/logic/npc_behaviour, ...) -------
 
 # The two behaviours of each kind of entry: (the API's group, the behaviour, its label in the editor).
@@ -1661,90 +2171,205 @@ def build_app():
                     delete_entry = gr.Button("Delete entry", variant="stop")
                 editor_status = gr.Markdown()
 
+                places_now, people_now, items_now = _names_of("Locations"), _names_of("NPCs"), _names_of("Items")
+                events_now, stats_now = _names_of("Events"), _stat_names()
                 with gr.Accordion("Actions & outcomes of this entry", open=False):
-                    gr.Markdown(
-                        "Edit the entry's actions as YAML: one-time (`repeat: once`) and exclusive "
-                        "(`exclusive_group`) options, events (`triggers_event`), one-way moves (`send_to`), "
-                        "persistent variables (`set_variables` / `change_variables`) and more. Everything is "
-                        "checked (fields, events, locations, NPCs, items, variables) before saving."
-                        + REFERENCE["action_reference"]
-                    )
-                    actions_editor = gr.Code(
-                        value=load_entity_actions_yaml("Locations", selected_name), language="yaml", label="actions",
-                    )
+                    gr.Markdown("Pick one of the entry's actions to edit it, or add one. An action's **outcomes** are "
+                                "what can happen when it is taken; pick one to edit it. **Save action** checks the "
+                                "whole entry (fields, events, places, people, items, variables) before writing.")
+                    action_state = gr.State({})
+                    with gr.Row(equal_height=True):
+                        act_pick = gr.Dropdown(label="Action", choices=_action_choices("Locations", selected_name),
+                                               value=None, scale=4)
+                        act_new = gr.Button("➕ New action", scale=1)
+                        act_delete = gr.Button("🗑 Delete action", variant="stop", scale=1)
+                    with gr.Group():
+                        with gr.Row():
+                            act_name = gr.Textbox(label="Name", scale=3)
+                            act_repeat = gr.Radio([REFERENCE["repeat_default"], *REFERENCE["repeat_rules"]],
+                                                  value=REFERENCE["repeat_default"], label="Offered", scale=3,
+                                                  info="once per game · again on each visit · every turn")
+                            act_retry = gr.Checkbox(label="Retry after failure", scale=1,
+                                                    info="A failure uses nothing up.")
+                        with gr.Row():
+                            act_stat = gr.Dropdown([NONE, *stats_now], value=NONE, label="Skill check")
+                            act_modifier = gr.Number(value=0, precision=0, label="Check modifier",
+                                                     info="+ easier, - harder")
+                            act_group = gr.Textbox(label="Exclusive group", info="Actions sharing it are one choice.")
+                            act_event = gr.Dropdown([NONE, *events_now], value=NONE, label="Starts the event")
+                        with gr.Row():
+                            act_coins = gr.Number(value=0, precision=0, minimum=0, label="Costs coins")
+                            act_item = gr.Dropdown([NONE, *items_now], value=NONE, label="Needs the item")
+                            act_tag = gr.Textbox(label="Needs an item tagged")
+                            act_consumes = gr.Checkbox(label="Uses the item up")
+                            act_collects = gr.Dropdown([NONE, *items_now], value=NONE, label="Takes the item")
+                        with gr.Row():
+                            act_enabled = gr.Textbox(label="Offered only if", placeholder="e.g. reputation: {gte: 1}")
+                            act_until = gr.Textbox(label="No longer offered once",
+                                                   placeholder="e.g. action_done: Crack the main safe")
+                    gr.Markdown("**Outcomes**")
+                    with gr.Row(equal_height=True):
+                        out_pick = gr.Dropdown(label="Outcome", choices=[], value=None, scale=4)
+                        out_new = gr.Button("➕ New outcome", scale=1)
+                        out_delete = gr.Button("🗑 Delete outcome", variant="stop", scale=1)
+                    with gr.Group():
+                        out_text = gr.Textbox(label="What is told", lines=2)
+                        with gr.Row():
+                            out_when = gr.Radio(["any", "pass", "fail"], value="any", label="When (with a skill check)")
+                            out_tags = gr.Dropdown(REFERENCE["common_tags"], value=[], multiselect=True,
+                                                   allow_custom_value=True, label="Tags")
+                        with gr.Row():
+                            out_health = gr.Number(value=0, precision=0, label="Health ±")
+                            out_coins = gr.Number(value=0, precision=0, label="Coins ±")
+                            out_move = gr.Dropdown([NONE, *places_now], value=NONE, label="Moves to")
+                            out_send = gr.Dropdown([NONE, *places_now], value=NONE, label="Sends to (one way)")
+                        with gr.Row():
+                            out_place = gr.Dropdown([NONE, *places_now], value=NONE, label="Reveals a place")
+                            out_person = gr.Dropdown([NONE, *people_now], value=NONE, label="Reveals a person")
+                            out_item = gr.Dropdown([NONE, *items_now], value=NONE, label="Reveals an item")
+                            out_remove = gr.Dropdown([NONE, ACTING, *people_now], value=NONE, label="Removes a person")
+                        with gr.Row():
+                            out_spawn = gr.Checkbox(label="Opens a new path")
+                            out_lead = gr.Checkbox(label="Someone shows the way")
+                            out_sets = gr.Textbox(label="Sets variables", placeholder="thief_caught: true")
+                            out_changes = gr.Textbox(label="Changes variables", placeholder="reputation: 1")
+                            out_stats = gr.Textbox(label="Changes stats", placeholder="persuasion: 5")
+                        out_effects = gr.Code(language="yaml", label="Other effects (YAML list, optional)", lines=2)
                     with gr.Row():
-                        save_actions_button = gr.Button("Validate & save actions", variant="primary")
-                        reload_actions_button = gr.Button("Reload from disk")
+                        act_save = gr.Button("Save action", variant="primary")
+                        act_discard = gr.Button("Discard changes")
                     actions_status = gr.Markdown()
-                    gr.Markdown("**How often one action is offered**")
-                    with gr.Row():
-                        action_pick = gr.Dropdown(label="Action", choices=_action_choices("Locations", selected_name),
-                                                  value=None)
-                        action_repeat = gr.Radio(
-                            [REFERENCE["repeat_default"], *REFERENCE["repeat_rules"]], value=REFERENCE["repeat_default"],
-                            label="Repeat",
-                            info="once: per game · per_visit: again on each visit · always: every turn · "
-                            "default: action_rules.default_repeat for its source.",
+                    with gr.Accordion("All of this entry's actions as YAML (advanced)", open=False):
+                        gr.Markdown(REFERENCE["action_reference"])
+                        actions_editor = gr.Code(
+                            value=load_entity_actions_yaml("Locations", selected_name), language="yaml", label="actions",
                         )
-                        action_retry = gr.Checkbox(
-                            label="Retry after failure",
-                            info="A failed attempt does not use the action up: a once action disappears only "
-                            "after it succeeds, a per_visit one stays on offer in the visit until it succeeds.",
-                        )
-                    save_repetition_button = gr.Button("Save repetition")
+                        with gr.Row():
+                            save_actions_button = gr.Button("Validate & save actions")
+                            reload_actions_button = gr.Button("Reload from disk")
 
                 with gr.Accordion("Uniqueness & scheduling (events and items)", open=False):
-                    gr.Markdown(
-                        "**Events:** when the event may start, enforced for every way in (trigger actions, "
-                        "encounters, chains, effects, random schedule): `trigger` (action / random), `chance` and "
-                        "`weight` (random), `cooldown`, `max_occurrences`, `repeat` (once / per_location / "
-                        "per_visit / always). **Items:** `unique: true` makes one instance per story, placed at "
-                        "`location` (or where it fits best)."
-                    )
-                    policy_editor = gr.Code(value=load_entity_policy_yaml("Locations", selected_name),
-                                            language="yaml", label="rules")
+                    policy_note = gr.Markdown()
+                    with gr.Group(visible=False) as event_policy:
+                        with gr.Row():
+                            pol_trigger = gr.Radio(["action", "random"], value="action", label="Starts",
+                                                   info="action: something in the story starts it · random: also by itself")
+                            pol_chance = gr.Slider(0, 1, value=0, step=0.01, label="Chance each turn (random)")
+                            pol_weight = gr.Number(value=1.0, minimum=0, label="Weight among random events")
+                        with gr.Row():
+                            pol_cooldown = gr.Number(value=0, precision=0, minimum=0, label="Cooldown (turns)")
+                            pol_most = gr.Number(value=0, precision=0, minimum=0, label="At most (times; 0: no limit)")
+                            pol_repeat = gr.Radio(["once", "per_location", "per_visit", "always"], value="always",
+                                                  label="How often")
+                    with gr.Group(visible=False) as item_policy:
+                        with gr.Row():
+                            pol_unique = gr.Checkbox(label="Unique: one in each story")
+                            pol_location = gr.Dropdown([NONE, *places_now], value=NONE,
+                                                       label="Lies at (none: where it fits best)")
                     with gr.Row():
-                        save_policy_button = gr.Button("Validate & save rules", variant="primary")
-                        reload_policy_button = gr.Button("Reload from disk")
+                        save_policy_form = gr.Button("Save", variant="primary")
                     policy_status = gr.Markdown()
+                    with gr.Accordion("As YAML (advanced)", open=False):
+                        policy_editor = gr.Code(value=load_entity_policy_yaml("Locations", selected_name),
+                                                language="yaml", label="rules")
+                        with gr.Row():
+                            save_policy_button = gr.Button("Validate & save rules")
+                            reload_policy_button = gr.Button("Reload from disk")
 
                 with gr.Accordion("Behaviour by tags (people and places)", open=False):
                     gr.Markdown(
-                        "What people and places do comes from their **tags**: a rule gives everyone with one of its "
-                        "tags a behaviour, and the choices above set those tags. **People**: `starts_conversation` "
-                        "(never, first_meeting, every_visit) and `appearances` (always, once, a number of visits). "
-                        "**Places**: `draws_in` (never, first_visit, every_visit: on arrival their own activities "
-                        "first) and `visits` (always, once, a number). The first rule that sets a behaviour and "
-                        "shares a tag decides; someone or somewhere the quest needs now is always there. Add a rule "
-                        "with a new tag and it is a new choice above."
+                        "What people and places do comes from their **tags**: each row gives everyone (or "
+                        "everywhere) with one of its tags a behaviour, and the choices above set those tags. Leave a "
+                        "cell empty to leave that behaviour to other rules. **People** come up to the player "
+                        "`never`, `first_meeting` or `every_visit`, and are seen `always`, `once` or in a number of "
+                        "visits. **Places** draw the player in `never`, `first_visit` or `every_visit`, and may be "
+                        "visited `always`, `once` or a number of times. The first matching row decides; someone or "
+                        "somewhere the quest needs now is always there."
                     )
                     with gr.Row():
-                        npc_rules = gr.Code(language="yaml", label="People (npc_behaviour)", lines=12)
-                        place_rules = gr.Code(language="yaml", label="Places (location_behaviour)", lines=12)
-                    with gr.Row():
-                        save_npc_rules = gr.Button("Save the people's rules")
-                        save_place_rules = gr.Button("Save the places' rules")
+                        with gr.Column():
+                            gr.Markdown("**People**")
+                            with gr.Row():
+                                npc_default_a = gr.Dropdown(["never", "first_meeting", "every_visit"], value="never",
+                                                            label="Without a rule: comes up")
+                                npc_default_b = gr.Dropdown(["always", "once", "2", "3", "5"], value="always",
+                                                            allow_custom_value=True, label="Without a rule: seen")
+                            npc_table = gr.Dataframe(headers=BEHAVIOUR_COLUMNS["npcs"], datatype=["str", "str", "str"],
+                                                     column_count=(3, "fixed"), interactive=True, wrap=True)
+                            save_npc_rules = gr.Button("Save the people's rules", variant="primary")
+                        with gr.Column():
+                            gr.Markdown("**Places**")
+                            with gr.Row():
+                                place_default_a = gr.Dropdown(["never", "first_visit", "every_visit"], value="never",
+                                                              label="Without a rule: draws in")
+                                place_default_b = gr.Dropdown(["always", "once", "2", "3", "5"], value="always",
+                                                              allow_custom_value=True, label="Without a rule: visits")
+                            place_table = gr.Dataframe(headers=BEHAVIOUR_COLUMNS["locations"],
+                                                       datatype=["str", "str", "str"], column_count=(3, "fixed"),
+                                                       interactive=True, wrap=True)
+                            save_place_rules = gr.Button("Save the places' rules", variant="primary")
                     rules_status = gr.Markdown()
+
                 with gr.Accordion("Missions", open=False):
-                    gr.Markdown(
-                        "Each story draws one mission (weighted by `weight`) whose `enabled_if` holds. Goal keys: "
-                        + ", ".join(f"`{key}`" for key in REFERENCE["goal_keys"])
-                        + "; all must be met. References and conditions are checked before saving."
-                    )
-                    missions_editor = gr.Code(value=load_missions_yaml(), language="yaml", label="missions.yaml")
-                    with gr.Row():
-                        save_missions_button = gr.Button("Validate & save missions", variant="primary")
-                        reload_missions_button = gr.Button("Reload from disk")
+                    gr.Markdown("Each story draws one mission (by weight) among those it may have. A mission is a "
+                                "quest in **steps**, done in order; the last completes it. A step's **Goal** is one "
+                                "or more of `location: Palace`, `item: Heavy Shield`, `action: Crack the main safe`, "
+                                "`npc_removed: Thief`, `event: confront_thief`, `outcome_tag: brawl_won`, "
+                                "`coins: 20`, `condition: {any: [...]}`, separated by `;` (all must hold). "
+                                "**Rewards**: effects such as `change_coins: 10; change_variable: {reputation: 1}`.")
+                    mission_state = gr.State({})
+                    with gr.Row(equal_height=True):
+                        mis_pick = gr.Dropdown(label="Mission", choices=_mission_keys(), value=None, scale=4)
+                        mis_new = gr.Button("➕ New mission", scale=1)
+                        mis_delete = gr.Button("🗑 Delete mission", variant="stop", scale=1)
+                    with gr.Group():
+                        with gr.Row():
+                            mis_key = gr.Textbox(label="Key", info="letters, digits and _")
+                            mis_title = gr.Textbox(label="Title", scale=2)
+                            mis_weight = gr.Number(value=1.0, minimum=0, label="Weight")
+                        mis_description = gr.Textbox(label="Description", lines=2)
+                        with gr.Row():
+                            mis_enabled = gr.Textbox(label="Offered only if", placeholder="e.g. thief_caught: false")
+                            mis_rewards = gr.Textbox(label="Rewards when complete",
+                                                     placeholder="change_coins: 10; change_variable: {reputation: 1}")
+                        mis_stages = gr.Dataframe(headers=STAGE_COLUMNS, datatype=["str", "str", "str", "str"],
+                                                  column_count=(4, "fixed"), interactive=True, wrap=True,
+                                                  label="Steps (one row each; one row: a mission with one goal)")
+                    save_mission_form = gr.Button("Save mission", variant="primary")
                     missions_status = gr.Markdown()
+                    with gr.Accordion("Every mission as YAML (advanced)", open=False):
+                        missions_editor = gr.Code(value=load_missions_yaml(), language="yaml", label="missions.yaml")
+                        with gr.Row():
+                            save_missions_button = gr.Button("Validate & save missions")
+                            reload_missions_button = gr.Button("Reload from disk")
                     save_missions_button.click(save_missions_yaml, missions_editor, [missions_editor, missions_status])
                     reload_missions_button.click(load_missions_yaml, None, missions_editor)
 
-                with gr.Accordion("Every field of this entry (YAML)", open=False):
+                with gr.Accordion("More about this entry", open=False):
+                    details_note = gr.Markdown()
+                    with gr.Group(visible=False) as npc_details:
+                        with gr.Row():
+                            det_places = gr.Dropdown(places_now, value=[], multiselect=True, label="Knows these places",
+                                                     info="Where they can lead the player; unique ones live in one of them.")
+                            det_items = gr.Dropdown(items_now, value=[], multiselect=True, label="Knows these items")
+                            det_article = gr.Dropdown(ARTICLES, value="", label="The story calls them")
+                        det_dialogue = gr.Dataframe(headers=["Said when (condition, empty: always)", "Says"],
+                                                    datatype=["str", "str"], column_count=(2, "fixed"), interactive=True,
+                                                    wrap=True, label="What they say when talked with (the first line "
+                                                    "whose condition holds)")
+                    with gr.Group(visible=False) as place_details:
+                        with gr.Row():
+                            det_distant = gr.Textbox(label="Seen from afar", lines=3, info="One per line.")
+                            det_entered = gr.Textbox(label="On arrival", lines=3, info="One per line.")
+                            det_prompts = gr.Textbox(label="Ways to go there", lines=3, info="Travel option names.")
+                        det_locked = gr.Checkbox(label="Its exits are locked until an outcome opens them")
+                    save_details = gr.Button("Save the details", variant="primary")
+                    details_status = gr.Markdown()
+
+                with gr.Accordion("Every field of this entry (YAML, advanced)", open=False):
                     gr.Markdown(
-                        "The whole entry as stored: what the form shows and everything else (an NPC's role, secret, "
-                        "dialogue, known places and items; a location's distant views, exits and prompts; its "
-                        "actions). The whole world is checked with the entry in place before it is saved; rename "
-                        "an entry with the form above."
+                        "The whole entry as stored: what the forms show and everything else. The whole world is "
+                        "checked with the entry in place before it is saved; rename an entry with the form above."
                     )
                     entity_yaml_editor = gr.Code(value=load_entity_yaml_ui("Locations", selected_name), language="yaml",
                                                  label="entry")
@@ -1754,15 +2379,25 @@ def build_app():
                     entity_yaml_status = gr.Markdown()
 
                 with gr.Accordion("Map: which places border which", open=False):
-                    gr.Markdown(REFERENCE["documents"].get("map", "") + " A route holds both ways; a far place is "
-                                "reached through the places between. `routes: null`: every story draws its own map.")
-                    map_editor = gr.Code(value=load_document("map"), language="yaml", label="map")
+                    gr.Markdown("Pick a place and tick the places it borders: a route holds both ways, and a far "
+                                "place is reached through the places between. The map below shows every route.")
                     with gr.Row():
-                        save_map_button = gr.Button("Validate & save the map", variant="primary")
-                        reload_map_button = gr.Button("Reload from disk")
-                    map_status = gr.Markdown()
-                    save_map_button.click(lambda text: save_document("map", text), map_editor, [map_editor, map_status])
-                    reload_map_button.click(lambda: load_document("map"), None, map_editor)
+                        with gr.Column(scale=2):
+                            map_place = gr.Dropdown(places_now, value=places_now[0] if places_now else None,
+                                                    label="Place")
+                            map_borders = gr.CheckboxGroup([], label="Borders")
+                            save_borders = gr.Button("Save the borders", variant="primary")
+                            map_status = gr.Markdown()
+                        with gr.Column(scale=3):
+                            map_view = gr.HTML()
+                    with gr.Accordion("The map as YAML (advanced)", open=False):
+                        map_editor = gr.Code(value=load_document("map"), language="yaml", label="map")
+                        with gr.Row():
+                            save_map_button = gr.Button("Validate & save the map")
+                            reload_map_button = gr.Button("Reload from disk")
+                        save_map_button.click(lambda text: save_document("map", text), map_editor,
+                                              [map_editor, map_status])
+                        reload_map_button.click(lambda: load_document("map"), None, map_editor)
 
                 with gr.Accordion("Failures that lead nowhere", open=False):
                     gr.Markdown(
@@ -1776,31 +2411,75 @@ def build_app():
                 npc_fields = [unique, encounter_event, encounter_repeat, enabled_if, event_title, stat_bonus,
                               start_eligible, start_weight, npc_role, npc_secret]
                 entry_fields = [name, tags, descriptions, goals, *npc_fields]
-                repetition_fields = [action_pick, action_repeat, action_retry]
+                action_fields = [act_name, act_repeat, act_retry, act_stat, act_modifier, act_group, act_event,
+                                 act_coins, act_item, act_tag, act_consumes, act_collects, act_enabled, act_until]
+                outcome_fields = [out_text, out_when, out_tags, out_health, out_coins, out_move, out_send, out_place,
+                                  out_person, out_item, out_remove, out_spawn, out_lead, out_sets, out_changes,
+                                  out_stats, out_effects]
+                action_form = [action_state, *action_fields, out_pick, *outcome_fields]
+                policy_fields = [pol_trigger, pol_chance, pol_weight, pol_cooldown, pol_most, pol_repeat, pol_unique,
+                                 pol_location]
+                detail_fields = [det_places, det_items, det_article, det_dialogue, det_distant, det_entered, det_prompts,
+                                 det_locked]
+                mission_fields = [mis_key, mis_title, mis_description, mis_weight, mis_enabled, mis_rewards, mis_stages]
+
+                def entry_forms(kind_value, entity_value):
+                    """Every form of the entry: its actions, scheduling and details."""
+                    return (*action_list_ui(kind_value, entity_value),
+                            *policy_form_ui(kind_value, entity_value),
+                            *details_form_ui(kind_value, entity_value))
+
+                entry_form_outputs = [act_pick, *action_form, event_policy, item_policy, policy_note, *policy_fields,
+                                      npc_details, place_details, details_note, *detail_fields]
                 kind.change(entity_names, kind, [entity, *entry_fields]).then(
                     load_entity_actions_yaml, [kind, entity], actions_editor,
                 ).then(load_entity_policy_yaml, [kind, entity], policy_editor).then(
-                    action_picker, [kind, entity], repetition_fields,
+                    entry_forms, [kind, entity], entry_form_outputs,
                 )
-                entity.change(action_picker, [kind, entity], repetition_fields)
-                action_pick.change(load_action_repetition, [kind, entity, action_pick], [action_repeat, action_retry])
-                save_repetition_button.click(
-                    save_repetition_ui, [kind, entity, *repetition_fields], [actions_editor, actions_status],
-                )
+                entity.change(entry_forms, [kind, entity], entry_form_outputs)
+                demo.load(entry_forms, [kind, entity], entry_form_outputs)
+                # One action: pick it, edit its fields and its outcomes, save it (or add, delete).
+                act_pick.input(load_action_form_ui, [kind, entity, act_pick], action_form)
+                act_new.click(new_action_ui, [kind, entity], action_form)
+                act_discard.click(load_action_form_ui, [kind, entity, act_pick], action_form)
+                out_pick.input(pick_outcome_ui, [action_state, out_pick, *outcome_fields], [action_state, *outcome_fields])
+                out_new.click(new_outcome_ui, [action_state, *outcome_fields], [action_state, out_pick, *outcome_fields])
+                out_delete.click(delete_outcome_ui, action_state, [action_state, out_pick, *outcome_fields])
+                act_save.click(save_action_form_ui, [action_state, *action_fields, *outcome_fields],
+                               [act_pick, *action_form, actions_status, actions_editor])
+                act_delete.click(delete_action_ui, action_state, [act_pick, *action_form, actions_status, actions_editor])
+                # Scheduling, details.
+                save_policy_form.click(save_policy_form_ui, [kind, entity, *policy_fields], [policy_status, policy_editor])
+                save_details.click(save_details_ui, [kind, entity, *detail_fields], [details_status, entity_yaml_editor])
+                # Missions.
+                mis_pick.input(mission_form_ui, mis_pick, [*mission_fields, mission_state])
+                mis_new.click(new_mission_ui, None, [mis_pick, *mission_fields, mission_state])
+                save_mission_form.click(save_mission_form_ui, [mission_state, *mission_fields],
+                                        [mis_pick, missions_status, missions_editor]).then(
+                    mission_form_ui, mis_pick, [*mission_fields, mission_state])
+                mis_delete.click(delete_mission_form_ui, mission_state, [mis_pick, missions_status, missions_editor])
+                # The map.
+                map_place.input(map_place_ui, map_place, [map_view, map_borders])
+                demo.load(map_form_ui, map_place, [map_view, map_place, map_borders])
+                save_borders.click(save_borders_ui, [map_place, map_borders], [map_view, map_status, map_editor])
+                save_map_button.click(map_form_ui, map_place, [map_view, map_place, map_borders])
+
                 entity.change(load_entity_ui, [kind, entity], entry_fields)
                 entity.change(load_entity_yaml_ui, [kind, entity], entity_yaml_editor)
                 save_entity_yaml_button.click(save_entity_yaml_ui, [kind, entity, entity_yaml_editor],
                                               [entity_yaml_editor, entity_yaml_status]).then(
                     load_entity_ui, [kind, entity], entry_fields,
-                ).then(load_entity_actions_yaml, [kind, entity], actions_editor)
+                ).then(load_entity_actions_yaml, [kind, entity], actions_editor).then(
+                    entry_forms, [kind, entity], entry_form_outputs)
                 reload_entity_yaml_button.click(load_entity_yaml_ui, [kind, entity], entity_yaml_editor)
                 entity.change(load_entity_actions_yaml, [kind, entity], actions_editor)
                 entity.change(load_entity_policy_yaml, [kind, entity], policy_editor)
-                save_policy_button.click(save_entity_policy_ui, [kind, entity, policy_editor], [policy_editor, policy_status])
+                save_policy_button.click(save_entity_policy_ui, [kind, entity, policy_editor], [policy_editor, policy_status]).then(
+                    entry_forms, [kind, entity], entry_form_outputs)
                 reload_policy_button.click(load_entity_policy_yaml, [kind, entity], policy_editor)
                 save_actions_button.click(
                     save_entity_actions_ui, [kind, entity, actions_editor], [actions_editor, actions_status],
-                ).then(action_picker, [kind, entity], repetition_fields)
+                ).then(entry_forms, [kind, entity], entry_form_outputs)
                 reload_actions_button.click(load_entity_actions_yaml, [kind, entity], actions_editor)
                 add_entry.click(new_entity, None, [entity, *entry_fields])
                 save_entry.click(save_entity_ui, [kind, entity, *entry_fields], [entity, editor_status]).then(
@@ -1815,12 +2494,15 @@ def build_app():
                 demo.load(behaviour_fields_ui, [kind, tags], behaviours)
                 behaviour_a.input(lambda k, c, t: apply_behaviour_ui(k, 0, c, t), [kind, behaviour_a, tags], tags)
                 behaviour_b.input(lambda k, c, t: apply_behaviour_ui(k, 1, c, t), [kind, behaviour_b, tags], tags)
-                demo.load(lambda: (load_logic_section("npc_behaviour"), load_logic_section("location_behaviour")),
-                          None, [npc_rules, place_rules])
-                save_npc_rules.click(lambda text: save_logic_section("npc_behaviour", text), npc_rules, rules_status).then(
-                    behaviour_fields_ui, [kind, tags], behaviours)
-                save_place_rules.click(lambda text: save_logic_section("location_behaviour", text), place_rules,
-                                       rules_status).then(behaviour_fields_ui, [kind, tags], behaviours)
+                behaviour_tables = [npc_table, npc_default_a, npc_default_b, place_table, place_default_a,
+                                    place_default_b]
+                demo.load(behaviour_tables_ui, None, behaviour_tables)
+                save_npc_rules.click(lambda t, a, b: save_behaviour_table_ui("npcs", t, a, b),
+                                     [npc_table, npc_default_a, npc_default_b], rules_status).then(
+                    behaviour_fields_ui, [kind, tags], behaviours).then(behaviour_tables_ui, None, behaviour_tables)
+                save_place_rules.click(lambda t, a, b: save_behaviour_table_ui("locations", t, a, b),
+                                       [place_table, place_default_a, place_default_b], rules_status).then(
+                    behaviour_fields_ui, [kind, tags], behaviours).then(behaviour_tables_ui, None, behaviour_tables)
 
             with gr.Tab("2 · Simulation settings"):
                 gr.Markdown(

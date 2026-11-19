@@ -1505,6 +1505,154 @@ def put_action_repetition(kind: Literal["Locations", "NPCs", "Items", "Events"],
         _fail(exc)
 
 
+# ---- the studio's forms: one action, one mission, an entry's details, the map, the rules ----------
+
+class OneAction(BaseModel):
+    action: dict[str, Any] = Field(description="One action: name, outcomes and the action's fields, as stored "
+                                               "(GET .../actions/{index}); fields left out are not kept.")
+
+
+@api.get("/v1/entities/{kind}/{name}/actions/{index}", tags=["World authoring"])
+def get_one_action(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str, index: int):
+    """One action of an entry (``index``: its place in the list, from 0), as stored."""
+    _known_entity(kind, name)
+    try:
+        return {"index": index, "action": content.load_entity_action(kind, name, index)}
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@api.put("/v1/entities/{kind}/{name}/actions/{index}", tags=["World authoring"])
+def put_one_action(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str, index: int, body: OneAction):
+    """Replace one action (``index`` = the number of actions: add one at the end), checked with the
+    others as a whole save is. Returns every action."""
+    _known_entity(kind, name)
+    try:
+        return {"actions": content.save_entity_action(kind, name, index, body.action)}
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.delete("/v1/entities/{kind}/{name}/actions/{index}", tags=["World authoring"])
+def delete_one_action(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str, index: int):
+    _known_entity(kind, name)
+    try:
+        return {"actions": content.delete_entity_action(kind, name, index)}
+    except Exception as exc:
+        _fail(exc)
+
+
+class EntityDetails(BaseModel):
+    details: dict[str, Any] = Field(description="NPCs: known_locations, known_objects, article (the | a | an | "
+                                                "none: a proper name | empty: automatic), dialogue [{text, enabled_if}]. "
+                                                "Locations: distant_descriptions, entered_descriptions, interact_prompts, "
+                                                "exit_locked. An empty value removes the field.")
+
+
+@api.get("/v1/entities/{kind}/{name}/details", tags=["World authoring"])
+def get_entity_details(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str):
+    """The fields of an entry the entry form does not show: an NPC's known places and items, how the
+    story names them and what they say; a place's distant views, arrival texts, ways in and exits."""
+    _known_entity(kind, name)
+    return {"details": content.load_entity_details(kind, name), "fields": list(content.DETAIL_FIELDS.get(kind, ()))}
+
+
+@api.put("/v1/entities/{kind}/{name}/details", tags=["World authoring"])
+def put_entity_details(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str, body: EntityDetails):
+    _known_entity(kind, name)
+    try:
+        return {"details": content.save_entity_details(kind, name, body.details), "message": f"Saved `{name}`."}
+    except Exception as exc:
+        _fail(exc)
+
+
+class OneMission(BaseModel):
+    mission: dict[str, Any] = Field(description="title, description, goal or stages [{title, description, goal, "
+                                                "rewards}], weight, enabled_if, rewards")
+    rename: str | None = Field(default=None, description="A new key for it (letters, digits, _).")
+
+
+@api.get("/v1/missions/{key}", tags=["World authoring"])
+def get_one_mission(key: str):
+    missions = content.load_missions()
+    if key not in missions:
+        raise HTTPException(status_code=404, detail=f"No mission `{key}`.")
+    return {"key": key, "mission": missions[key]}
+
+
+@api.put("/v1/missions/{key}", tags=["World authoring"])
+def put_one_mission(key: str, body: OneMission):
+    """Add or replace one mission (``rename``: give it a new key), checked with every other one."""
+    try:
+        missions = content.save_mission(key, body.mission, body.rename)
+        return {"missions": missions, "message": f"Saved the mission `{body.rename or key}`."}
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.delete("/v1/missions/{key}", tags=["World authoring"])
+def delete_one_mission(key: str):
+    try:
+        return {"missions": content.delete_mission(key), "message": f"Deleted the mission `{key}`."}
+    except Exception as exc:
+        _fail(exc)
+
+
+class MapRoutes(BaseModel):
+    routes: dict[str, list[str]] | None = Field(description="place: [the places it borders] (a route holds both "
+                                                            "ways); null: every story draws its own map.")
+
+
+class Borders(BaseModel):
+    borders: list[str] = Field(description="Every place this one borders; routes change both ways.")
+
+
+@api.get("/v1/map", tags=["World authoring"])
+def get_map():
+    """The world's map as data: {routes: {place: [borders]} or null, places: [every location]}."""
+    return content.load_map()
+
+
+@api.put("/v1/map", tags=["World authoring"])
+def put_map(body: MapRoutes):
+    try:
+        found, message = content.save_map(body.routes)
+        return {**found, "message": message}
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.put("/v1/map/{place}", tags=["World authoring"])
+def put_borders(place: str, body: Borders):
+    """The places ``place`` borders: a route added or removed here changes the other place too."""
+    try:
+        found, message = content.set_borders(place, body.borders)
+        return {**found, "message": message}
+    except Exception as exc:
+        _fail(exc)
+
+
+class BehaviourRules(BaseModel):
+    default: dict[str, Any] = Field(default_factory=dict, description="What everyone (everywhere) does without a rule.")
+    rules: list[dict[str, Any]] = Field(default_factory=list, description="[{tags: [...], <behaviour>: <value>}]")
+
+
+@api.get("/v1/behaviours/rules", tags=["Engine logic"])
+def get_behaviour_rules():
+    """The rules that give people and places their behaviour by tags, as data: {npcs: {default, rules},
+    locations: {default, rules}} (GET /v1/behaviours: the values, defaults and the tags of each)."""
+    return store.load_behaviour_rules()
+
+
+@api.put("/v1/behaviours/rules/{group}", tags=["Engine logic"])
+def put_behaviour_rules(group: Literal["npcs", "locations"], body: BehaviourRules):
+    """Replace the people's or the places' rules, checked as rules (400 says what is wrong)."""
+    try:
+        return {"message": store.save_behaviour_rules(group, body.model_dump()), **store.load_behaviour_rules()}
+    except Exception as exc:
+        _fail(exc)
+
+
 # ---- jobs: long runs with progress -------------------------------------------------------
 
 def _job_or_404(job_id):
