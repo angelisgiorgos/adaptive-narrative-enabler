@@ -291,18 +291,35 @@ class ConversationTests(unittest.TestCase):
         self.assertIsNone(state.conversation())
         self.assertEqual(state.actions_taken, 1)
 
-    def test_someone_may_start_the_conversation(self):
+    def _greeter(self, when):
         world = _world(unique=True)
-        world.characters[0].starts_conversation = True
+        world.characters[0].associated_tags.add("doorman")
+        rules = {"default": {}, "rules": [{"tags": ["doorman"], "starts_conversation": when}]}
+        patcher = patch.dict(config._config, {"npc_behaviour": rules})
+        patcher.start()
+        self.addCleanup(patcher.stop)
         state = GameState(world, _genome(), start="Gate", rng=random.Random(1))
         state.npc_homes["Guard"] = "Gate"
+        return state
+
+    def test_someone_may_start_the_conversation_by_their_tags(self):
+        state = self._greeter("first_meeting")
         state.player_options()
         self.assertEqual(state.conversation(), "Guard")
         self.assertTrue(any("comes up to you" in line for line in state.history))
         state.take_option(next(o for o in state.player_options() if o.source == "leave"))
-        state.take_option(self._offered(state)["Wait at the Gate"])
+        state.take_option(self._offered(state)["Move to Yard"])
+        state.take_option(self._offered(state)["Return to Gate"])
         state.player_options()
         self.assertIsNone(state.conversation())  # only the first time they meet
+
+        state = self._greeter("every_visit")
+        state.player_options()
+        state.take_option(next(o for o in state.player_options() if o.source == "leave"))
+        state.take_option(self._offered(state)["Move to Yard"])
+        state.take_option(self._offered(state)["Return to Gate"])
+        state.player_options()
+        self.assertEqual(state.conversation(), "Guard")  # again, on the next visit
 
     def test_conversations_off_and_a_story_that_always_moves_on(self):
         with patch.dict(config._config["conversations"], {"enabled": False}):
@@ -330,6 +347,57 @@ class ConversationTests(unittest.TestCase):
         view = game.choose(approach)
         self.assertEqual((view["talking_to"], view["turn_number"]), ("Guard", 0))
         self.assertEqual(view["actions"][-1], "Leave the conversation")
+
+
+class NpcBehaviourTests(unittest.TestCase):
+    """What people do comes from their tags (npc_behaviour), not from each character."""
+
+    def _state(self, appearances, mission=None):
+        from core_engine import Mission
+
+        world = _world()
+        world.characters[0].associated_tags.add("drifter")
+        if mission:
+            world.add_mission(Mission("bribe", {"action": "Bribe with wine"}))
+        rules = {"default": {"appearances": "always"}, "rules": [{"tags": ["drifter"], "appearances": appearances}]}
+        patcher = patch.dict(config._config, {"npc_behaviour": rules})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return GameState(world, _genome(), start="Gate", rng=random.Random(1), mission=mission)
+
+    @staticmethod
+    def _visits_seen(state, visits):
+        seen = 0
+        for _ in range(visits):
+            state.ranked_available_actions()
+            seen += "Guard" in state.visible_inhabitants
+            there = "Yard" if state.current.name == "Gate" else "Gate"
+            ranked = state.ranked_available_actions()
+            state.step(next(i for i, a in enumerate(ranked) if a.source == "navigation" and a.owner == there))
+        return seen
+
+    def test_how_often_someone_appears(self):
+        self.assertEqual(self._visits_seen(self._state("once"), 6), 1)
+        self.assertEqual(self._visits_seen(self._state(2), 6), 2)
+        self.assertEqual(self._visits_seen(self._state("always"), 6), 6)
+        # The quest needs him: no limit (as often as with none; a quest's target is revealed as the story goes).
+        self.assertEqual(self._visits_seen(self._state("once", mission="bribe"), 6),
+                         self._visits_seen(self._state("always", mission="bribe"), 6))
+        self.assertGreater(self._visits_seen(self._state("once", mission="bribe"), 6), 1)
+
+    def test_the_rules_are_checked(self):
+        from core_engine import rules
+
+        self.assertEqual(rules.validate_npc_behaviour(config.get("npc_behaviour")), [])
+        self.assertEqual(rules.npc_behaviour({"prisoner"}, "starts_conversation"), "first_meeting")
+        self.assertEqual(rules.npc_behaviour({"nobody"}, "appearances"), "always")
+        for bad in ({"rules": [{"tags": ["x"], "appearances": 0}]}, {"rules": [{"tags": ["x"], "starts_conversation": "maybe"}]},
+                    {"rules": [{"appearances": "once"}]}, {"rules": [{"tags": ["x"], "smiles": True}]}):
+            with self.subTest(rules=bad):
+                self.assertTrue(rules.validate_npc_behaviour(bad))
+        with patch.dict(config._config, {"npc_behaviour": {"rules": [{"tags": ["x"], "appearances": "never"}]}}):
+            with self.assertRaises(ValueError):
+                engine.build_world(_genome())
 
 
 class QuestionAndGuideTests(unittest.TestCase):

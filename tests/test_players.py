@@ -93,9 +93,7 @@ class WhoPlaysTests(_Players):
             options = state.player_options()
             if not options:
                 return False
-            chosen = options[player.choose(state, options)]
-            names = [action.name for action in state.ranked_available_actions()]
-            return state.step(names.index(chosen.name))
+            return state.take_option(options[player.choose(state, options)])  # ranks again on its own
 
         for seed in range(3):
             with self.subTest(seed=seed):
