@@ -7,6 +7,16 @@ that introduces them.
 
 ## [Unreleased]
 
+### 🌍 World → Entries: a condition builder
+
+#### Added
+- A condition builder under an entry's *Enabled if* and an action's *Offered only if*: nested ALL, ANY
+  and NOT groups, and predicates (has item, visited, at location, variable, stat and resource comparisons,
+  mission, events, actions, ...) chosen from the world. It is checked as a save checks it. Conditions it
+  reads are written back as they were, and parts it cannot show are kept as written. The YAML field stays
+  as the advanced mode.
+- `GET /v1/conditions/reference` and `POST /v1/conditions/validate`.
+
 ### 🌍 World → Entries: preview the unsaved draft
 
 #### Added

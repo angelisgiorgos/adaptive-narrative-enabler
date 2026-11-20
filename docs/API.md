@@ -325,6 +325,12 @@ one); `tests/test_studio_coverage.py` checks it.
   (`retry_on_failure`). The whole action list is validated before it is
   written; an unknown index is `404`.
 - `GET /v1/entities/{kind}?fields=names` returns only the names.
+- `GET /v1/conditions/reference` is what a condition can say in the current world, for a condition
+  builder: `groups`, `operators`, and `facts` (`{fact: {refers_to, names}}`, with `refers_to` null for
+  free text). It also gives `comparisons`: variables with their types, stats and resources.
+- `POST /v1/conditions/validate` (`{condition, where}`; the condition may be its YAML text) checks a
+  condition as every save checks it (structure, operators, references, operand types):
+  `{valid, errors, empty}`. Nothing is saved.
 - `POST /v1/entities/{kind}/{name}/preview` (the body of `PUT …/draft`; an empty body previews the
   stored entry; `?create`, `?simulate`, `?seed`) previews an entry as its unsaved draft makes it. It is
   read only: no configuration is written, no progression changes, nothing is recorded, no session

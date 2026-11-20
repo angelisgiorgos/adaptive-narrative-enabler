@@ -225,6 +225,36 @@ def _references() -> conditions.References:
     """The names conditions and effects may refer to in the current world."""
     return conditions.References.from_world(config.get("world_definition") or {})
 
+def condition_reference() -> dict:
+    """What a condition can say in the current world (core_engine/conditions.py), for a builder: {groups,
+    operators, facts: {fact: {refers_to (items | locations | npcs | events | missions | null: free text),
+    names}}, comparisons: {variable: {name: type}, stat: [names], resource: [names]}}."""
+    refs = _references()
+    names = {"items": sorted(refs.items or []), "locations": list(refs.locations or []),
+             "npcs": sorted(refs.npcs or []), "events": sorted(refs.events or []),
+             "missions": list(refs.missions or [])}
+    variables = {name: (spec or {}).get("type") if isinstance(spec, dict) else None
+                 for name, spec in (refs.variables or {}).items()}
+    variables.update({name: kind for name, kind in conditions.BUILTIN_VARIABLES.items() if name not in variables})
+    return {"groups": list(conditions.GROUPS), "operators": list(conditions.OPERATORS),
+            "facts": {fact: {"refers_to": field, "names": names.get(field, []) if field else []}
+                      for fact, field in conditions._FACT_REFERENCES.items()},
+            "comparisons": {"variable": variables, "stat": sorted(refs.stats or []),
+                            "resource": list(conditions.RESOURCES)}}
+
+
+def validate_condition(condition, where: str = "enabled_if") -> dict:
+    """A condition checked as every save checks it (structure, operators, references, operand types):
+    {valid, errors, empty}. ``condition``: the condition, or its YAML text."""
+    if isinstance(condition, str):
+        try:
+            condition = yaml.safe_load(condition) if condition.strip() else None
+        except yaml.YAMLError as exc:
+            return {"valid": False, "errors": [f"`{where}` is not valid YAML: {exc}"], "empty": False}
+    errors = conditions.validate(condition, _references(), where=where)
+    return {"valid": not errors, "errors": errors, "empty": condition in (None, {}, [])}
+
+
 def _apply_enabled_if(record: dict, enabled_if) -> None:
     """Set or clear an entry's enabled_if (a condition, see core_engine/conditions.py)
     from a mapping, a list or YAML text (None keeps it)."""

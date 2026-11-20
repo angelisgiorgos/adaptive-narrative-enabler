@@ -1615,6 +1615,27 @@ def _known_entity(kind, name):
         raise HTTPException(status_code=404, detail="Entity not found.")
 
 
+class ConditionCheck(BaseModel):
+    condition: Any = Field(default=None, description="A condition (a mapping, a list, or its YAML text).")
+    where: str = Field(default="enabled_if", description="What the messages call it.")
+
+
+@api.get("/v1/conditions/reference", tags=["World authoring"])
+def get_condition_reference():
+    """What a condition can say in the current world, for a condition builder: the groups (all, any,
+    not), the operators, every fact predicate with the names it may refer to (items, locations, NPCs,
+    events, missions; null: free text), and the comparisons (variables with their types, stats,
+    resources). See core_engine/conditions.py."""
+    return content.condition_reference()
+
+
+@api.post("/v1/conditions/validate", tags=["World authoring"])
+def validate_condition(body: ConditionCheck):
+    """Check a condition as every save checks it (structure, operators, references, operand types):
+    {valid, errors, empty}. Nothing is saved."""
+    return content.validate_condition(body.condition, body.where or "enabled_if")
+
+
 @api.get("/v1/reference", tags=["Studio"])
 def get_reference():
     """What a client needs to build an authoring UI: entry kinds, suggested tags, the

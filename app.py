@@ -38,6 +38,7 @@ as one other clients use (the studio reaches the same function through another e
 from __future__ import annotations
 
 import atexit
+import copy
 import functools
 import html
 import json
@@ -2991,6 +2992,433 @@ def _flow(value):
     return to_yaml(value, flow=True) if value not in (None, "", {}, []) else ""
 
 
+# ---- the condition builder: a condition (core_engine/conditions.py) as a tree of groups and predicates -----
+# The tree keeps how the condition was written: a list or {all: [...]}, the variables' shorthand, an `op`
+# left out, so that a condition the builder only reads is written back exactly as it was; what the builder
+# cannot show is kept as written (an "advanced" node) and never dropped or simplified.
+
+CONDITION_GROUPS = {"all": "ALL of", "any": "ANY of", "not": "NOT"}
+CONDITION_FACTS = {"has_item": "Player has item", "item_collected": "Item collected (this story)",
+                   "visited": "Visited location", "at_location": "Player is at location", "npc_removed": "NPC removed",
+                   "event_done": "Event done", "event_succeeded": "Event succeeded", "event_failed": "Event failed",
+                   "action_done": "Action done", "outcome_tag": "Outcome tag happened", "mission": "Mission is",
+                   "secret_known": "NPC's secret known"}
+CONDITION_COMPARISONS = {"variable": "Variable", "stat": "Stat", "resource": "Coins, health or turn"}
+CONDITION_OPERATORS = {"eq": "=", "ne": "≠", "gt": ">", "gte": "≥", "lt": "<", "lte": "≤", "in": "in", "not_in": "not in"}
+CONDITION_KINDS = ([(f"Group: {label} …", key) for key, label in (("all", "all of"), ("any", "any of"), ("not", "not"))]
+                   + [(label, key) for key, label in CONDITION_FACTS.items()]
+                   + [(f"{label} comparison", key) for key, label in CONDITION_COMPARISONS.items()])
+CONDITION_TOP = "top"  # the condition itself (a path); its children: "top.0", "top.1", ...
+
+
+def _advanced(raw, why):
+    return {"t": "raw", "raw": raw, "why": why}
+
+
+def condition_tree(raw):
+    """The builder's tree of a condition (None: no condition): groups {t: group, g, form, c}, predicates
+    {t: leaf, k, name, op, value, short}, and what the builder does not show, kept as written {t: raw}."""
+    if raw is None or raw == {} or raw == []:
+        return None
+    return _condition_node(raw)
+
+
+def _condition_node(raw):
+    if isinstance(raw, list):
+        if not raw:
+            return _advanced(raw, "an empty list")
+        return {"t": "group", "g": "all", "form": "list", "c": [_condition_node(child) for child in raw]}
+    if not isinstance(raw, dict) or not raw:
+        return _advanced(raw, "not a mapping or a list")
+    keys = set(raw)
+    groups = keys & set(CONDITION_GROUPS)
+    if groups:
+        group = groups.pop()
+        body = raw[group]
+        if len(keys) != 1:
+            return _advanced(raw, f"`{group}` with other keys")
+        if group == "not":
+            if body in (None, {}, []):  # an empty NOT (being built): kept as written, still a group
+                return {"t": "group", "g": "not", "form": "map", "c": [], "empty": body}
+            return {"t": "group", "g": "not", "form": "map", "c": [_condition_node(body)]}
+        if not isinstance(body, list):
+            return _advanced(raw, f"`{group}` without a list of conditions")
+        return {"t": "group", "g": group, "form": "map", "c": [_condition_node(child) for child in body]}
+    subjects = keys & (set(CONDITION_FACTS) | set(CONDITION_COMPARISONS))
+    if subjects:
+        if len(subjects) != 1:
+            return _advanced(raw, "more than one predicate in one mapping")
+        key = subjects.pop()
+        if key in CONDITION_FACTS:
+            if keys != {key} or not isinstance(raw[key], str):
+                return _advanced(raw, f"`{key}` written another way")
+            return {"t": "leaf", "k": key, "name": raw[key], "op": None, "value": None, "short": None}
+        if keys - {key, "op", "value"} or "value" not in raw or not isinstance(raw[key], str):
+            return _advanced(raw, f"`{key}` written another way")
+        return {"t": "leaf", "k": key, "name": raw[key], "op": raw.get("op"), "value": raw["value"], "short": None}
+    # The shorthand: a mapping of variables, each a value or {op: value, ...}; all of them hold.
+    children = []
+    for name, expected in raw.items():
+        if not isinstance(name, str):
+            return _advanced(raw, "a shorthand with a name that is not text")
+        if isinstance(expected, dict):
+            if not expected or any(op not in CONDITION_OPERATORS for op in expected):
+                return _advanced(raw, f"`{name}` with an unknown comparison")
+            children += [{"t": "leaf", "k": "variable", "name": name, "op": op, "value": value, "short": "ops"}
+                         for op, value in expected.items()]
+        else:
+            children.append({"t": "leaf", "k": "variable", "name": name, "op": None, "value": expected, "short": "bare"})
+    return {"t": "group", "g": "all", "form": "shorthand", "c": children}
+
+
+def condition_value(node):
+    """The condition a tree stands for, written as it was read (what changed, written plainly)."""
+    if node is None:
+        return None
+    if node["t"] == "raw":
+        return copy.deepcopy(node["raw"])
+    if node["t"] == "leaf":
+        if node["k"] in CONDITION_FACTS:
+            return {node["k"]: node["name"]}
+        written = {node["k"]: node["name"]}
+        if node.get("op") is not None:
+            written["op"] = node["op"]
+        written["value"] = copy.deepcopy(node["value"])
+        return written
+    children = node["c"]
+    if node["g"] == "not":
+        return {"not": condition_value(children[0]) if children else copy.deepcopy(node.get("empty"))}
+    if node["g"] == "all" and node.get("form") == "shorthand":
+        mapping = _as_shorthand(children)
+        if mapping is not None:
+            return mapping
+    if node["g"] == "all" and node.get("form") == "list":
+        return [condition_value(child) for child in children]
+    return {node["g"]: [condition_value(child) for child in children]}
+
+
+def _as_shorthand(children):
+    """The variables' shorthand mapping of these predicates, or None when they cannot be written so."""
+    mapping = {}
+    for child in children:
+        if child["t"] != "leaf" or child["k"] != "variable" or child["name"] in CONDITION_GROUPS \
+                or child["name"] in CONDITION_FACTS or child["name"] in CONDITION_COMPARISONS:
+            return None
+        op = child.get("op")
+        if child.get("short") == "bare" and op in (None, "eq") and child["name"] not in mapping:
+            mapping[child["name"]] = copy.deepcopy(child["value"])
+        elif isinstance(mapping.get(child["name"], {}), dict) and (op or "eq") not in mapping.get(child["name"], {}):
+            mapping.setdefault(child["name"], {})[op or "eq"] = copy.deepcopy(child["value"])
+        else:
+            return None
+    return mapping or None
+
+
+def _condition_at(node, path):
+    """The node at ``path`` ("top", "top.0.2", ...) and its parent (None for the top)."""
+    parent = None
+    for index in [int(part) for part in path.split(".")[1:]]:
+        if node is None or node["t"] != "group" or not 0 <= index < len(node["c"]):
+            raise gr.Error("That part of the condition no longer exists: choose it again.")
+        parent, node = node, node["c"][index]
+    return node, parent
+
+
+def condition_add(tree, target, new):
+    """``new`` added into the group at ``target`` (the top: into the top group; a top that is no group, or
+    no condition: every one must hold, an ALL group around the two, or ``new`` alone)."""
+    tree, new = copy.deepcopy(tree), copy.deepcopy(new)
+    if tree is None:
+        return new
+    target = target or CONDITION_TOP
+    node, _ = _condition_at(tree, target)
+    if node["t"] == "group":
+        if node["g"] == "not" and node["c"]:
+            raise gr.Error("NOT holds one condition: put an ALL or ANY group in it to hold more.")
+        if node.get("form") == "shorthand" and not (new["t"] == "leaf" and new["k"] == "variable"):
+            node["form"] = "map"  # no longer only variables: written as {all: [...]}
+        if node.get("form") == "shorthand":
+            new["short"] = "bare" if new.get("op") in (None, "eq") else "ops"
+        node["c"].append(new)
+        return tree
+    if target != CONDITION_TOP:
+        raise gr.Error("Add into a group (ALL, ANY or NOT), or at the top.")
+    return {"t": "group", "g": "all", "form": "map", "c": [tree, new]}
+
+
+def condition_replace(tree, path, new):
+    """The node at ``path`` replaced by ``new``; a group changed into another keeps its conditions."""
+    tree = copy.deepcopy(tree)
+    node, parent = _condition_at(tree, path)
+    if node["t"] == "group" and new["t"] == "group":
+        if new["g"] == "not" and len(node["c"]) > 1:
+            raise gr.Error("NOT holds one condition: remove the others first, or put them in an ALL group.")
+        node.update(g=new["g"], form="map" if node.get("form") == "shorthand" or new["g"] != "all" else node["form"])
+        return tree
+    new = copy.deepcopy(new)
+    if node["t"] == "leaf" and new["t"] == "leaf" and node.get("short") and new["k"] == "variable":
+        new["short"] = node["short"] if (new.get("op") in (None, "eq")) == (node["short"] == "bare") else "ops"
+    if parent is None:
+        return new
+    if parent.get("form") == "shorthand" and not (new["t"] == "leaf" and new["k"] == "variable"):
+        parent["form"] = "map"
+    parent["c"][parent["c"].index(node)] = new
+    return tree
+
+
+def condition_remove(tree, path):
+    """The node at ``path`` removed (the top: no condition)."""
+    if (path or CONDITION_TOP) == CONDITION_TOP:
+        return None
+    tree = copy.deepcopy(tree)
+    node, parent = _condition_at(tree, path)
+    parent["c"].remove(node)
+    return tree
+
+
+def condition_node(kind, subject=None, op=None, value=""):
+    """A node from the builder's form: a group, or a predicate (a comparison's value is YAML: 2, true,
+    "text", [a, b])."""
+    if kind in CONDITION_GROUPS:
+        return {"t": "group", "g": kind, "form": "map", "c": []}
+    if kind not in CONDITION_FACTS and kind not in CONDITION_COMPARISONS:
+        raise gr.Error("Choose what the condition checks.")
+    subject = str(subject or "").strip()
+    if not subject:
+        raise gr.Error("Choose what it refers to (an item, a place, a variable, ...).")
+    if kind in CONDITION_FACTS:
+        return {"t": "leaf", "k": kind, "name": subject, "op": None, "value": None, "short": None}
+    if str(value if value is not None else "").strip() == "":
+        raise gr.Error("Give the value to compare with (e.g. 2, true, \"text\", [a, b]).")
+    try:
+        parsed = yaml.safe_load(str(value))
+    except yaml.YAMLError as exc:
+        raise gr.Error(f"The value is not valid YAML: {exc}") from exc
+    return {"t": "leaf", "k": kind, "name": subject, "op": None if op in (None, "", "eq") else op, "value": parsed,
+            "short": None}
+
+
+def _condition_label(node):
+    if node is None:
+        return "*(no condition: always)*"
+    if node["t"] == "raw":
+        return f"⚙ kept as written (advanced: {node['why']}): `{to_yaml(node['raw'], flow=True) or node['raw']}`"
+    if node["t"] == "group":
+        return f"**{CONDITION_GROUPS[node['g']]}**" + (" *(shorthand)*" if node.get("form") == "shorthand" else "")
+    if node["k"] in CONDITION_FACTS:
+        return f"{CONDITION_FACTS[node['k']]}: **{node['name']}**"
+    op = node.get("op") or "eq"
+    return (f"{CONDITION_COMPARISONS[node['k']]} **{node['name']}** {CONDITION_OPERATORS.get(op, op)} "
+            f"`{to_yaml(node['value'], flow=True) if isinstance(node['value'], (list, dict)) else node['value']}`")
+
+
+def condition_rows(tree):
+    """(path, display number, depth, label) of every node, in order (the top first)."""
+    rows = []
+
+    def walk(node, path, number, depth):
+        rows.append((path, number, depth, _condition_label(node)))
+        if node is not None and node["t"] == "group":
+            for index, child in enumerate(node["c"]):
+                walk(child, f"{path}.{index}", f"{number}.{index + 1}" if number else str(index + 1), depth + 1)
+
+    walk(tree, CONDITION_TOP, "", 0)
+    return rows
+
+
+def condition_tree_markdown(tree):
+    lines = []
+    for _, number, depth, label in condition_rows(tree):
+        lines.append(("&nbsp;" * 6 * depth) + (f"`{number}` " if number else "") + label)
+    return "  \n".join(lines)
+
+
+def condition_text(text):
+    """A condition field's text as YAML (one line; the braces of a mapping may be left out)."""
+    text = str(text or "").strip()
+    if not text:
+        return None
+    try:
+        return yaml.safe_load(text if text.startswith(("{", "[")) else "{" + text + "}")
+    except yaml.YAMLError as exc:
+        raise gr.Error(f"The condition is not valid YAML, so the builder cannot read it: {exc}") from exc
+
+
+def condition_yaml(value):
+    """A condition as the one-line YAML its field holds (empty: no condition)."""
+    if value in (None, {}, []):
+        return ""
+    return yaml.safe_dump(value, default_flow_style=True, sort_keys=False, allow_unicode=True, width=10**9).strip()
+
+
+def _plain_label(label):
+    return re.sub(r"[*`]", "", label).replace("&nbsp;", " ")
+
+
+def condition_targets(tree):
+    """The builder's *Part of the condition* choices: every node, numbered as the tree shows them."""
+    return [(f"{number or 'The top'} — {_plain_label(label)}"[:90], path) for path, number, _, label in condition_rows(tree)]
+
+
+def condition_status(tree, where="enabled_if"):
+    """The condition checked as a save checks it (POST /v1/conditions/validate), and what is kept as written."""
+    value = condition_value(tree)
+    try:
+        checked = API.post("/v1/conditions/validate", {"condition": value, "where": where})
+    except APIError as exc:
+        return f"⚠ The condition could not be checked: {exc}"
+    kept = sum(1 for _, _, _, label in condition_rows(tree) if label.startswith("⚙"))
+    note = (f"  \n{kept} part(s) kept as written (advanced): edit them in *Advanced YAML*; the builder leaves them "
+            "as they are." if kept else "")
+    if checked["empty"]:
+        return "✓ No condition: always." + note
+    if checked["valid"]:
+        return "✓ Valid: checked as a save checks it." + note
+    return "⚠ **Not valid:**\n" + "\n".join(f"- {error}" for error in checked["errors"]) + note
+
+
+def _subject_choices(kind, ref):
+    """What a predicate of this kind may name (from GET /v1/conditions/reference)."""
+    ref = ref or {}
+    if kind in CONDITION_FACTS:
+        return list(((ref.get("facts") or {}).get(kind) or {}).get("names") or [])
+    if kind == "variable":
+        return [(f"{name} ({kind_ or 'any'})", name) for name, kind_ in ((ref.get("comparisons") or {}).get("variable")
+                                                                        or {}).items()]
+    if kind in ("stat", "resource"):
+        return list((ref.get("comparisons") or {}).get(kind) or [])
+    return []
+
+
+@ui
+def condition_kind_ui(kind, ref, subject=None):
+    """The builder's form for a kind of condition: what it may name, and an operator and a value for a
+    comparison (a group names nothing)."""
+    comparison = kind in CONDITION_COMPARISONS
+    group = kind in CONDITION_GROUPS
+    choices = _subject_choices(kind, ref)
+    values = [value if isinstance(value, str) else value[1] for value in choices]
+    free = kind in ("action_done", "outcome_tag")
+    return (gr.Dropdown(choices=choices, value=subject if subject in values or (free and subject) else None,
+                        visible=not group, allow_custom_value=free,
+                        info="Type it: any text." if free else None),
+            gr.Dropdown(visible=comparison), gr.Textbox(visible=comparison))
+
+
+@ui
+def condition_mode_ui(mode, text, where="enabled_if"):
+    """*Edit the condition as*: the builder reads the field (what it cannot show is kept as written); the
+    YAML field is then written by the builder only. Advanced YAML: the field is edited as text. Returns
+    (the mode, the builder, the field, the tree, the reference, the tree shown, the parts, the status)."""
+    if mode != "Builder":
+        return (gr.skip(), gr.update(visible=False), gr.Textbox(interactive=True), gr.skip(), gr.skip(), gr.skip(),
+                gr.skip(), "")
+    try:
+        tree = condition_tree(condition_text(text))
+    except gr.Error as exc:
+        return (gr.Radio(value="Advanced YAML"), gr.update(visible=False), gr.Textbox(interactive=True), gr.skip(),
+                gr.skip(), gr.skip(), gr.skip(), f"⚠ {_error_text(exc)} Correct it here first.")
+    ref = API.get("/v1/conditions/reference")
+    return (gr.skip(), gr.update(visible=True), gr.Textbox(interactive=False), tree, ref,
+            condition_tree_markdown(tree), gr.Dropdown(choices=condition_targets(tree), value=CONDITION_TOP),
+            condition_status(tree, where))
+
+
+@ui
+def condition_sync_ui(mode, text, where="enabled_if", tree=None):
+    """The field changed by a load (another entry or action): the builder follows it (not when the field
+    holds what the builder itself just wrote: its tree stays as it is)."""
+    if mode != "Builder":
+        return gr.skip(), gr.skip(), gr.skip(), gr.skip()
+    try:
+        parsed = condition_text(text)
+    except gr.Error as exc:
+        return gr.skip(), gr.skip(), gr.skip(), f"⚠ {_error_text(exc)}"
+    if tree is not None and condition_value(tree) == parsed:
+        return gr.skip(), gr.skip(), gr.skip(), gr.skip()
+    tree = condition_tree(parsed)
+    return (tree, condition_tree_markdown(tree), gr.Dropdown(choices=condition_targets(tree), value=CONDITION_TOP),
+            condition_status(tree, where))
+
+
+@ui
+def condition_pick_ui(tree, target, ref):
+    """A part of the condition chosen: the form shows it (to replace it), or stays as it is for a group."""
+    node, _ = _condition_at(tree, target or CONDITION_TOP) if tree is not None else (None, None)
+    if node is None or node["t"] == "raw":
+        return gr.skip(), gr.skip(), gr.skip(), gr.skip()
+    if node["t"] == "group":
+        return node["g"], gr.Dropdown(visible=False), gr.Dropdown(visible=False), gr.Textbox(visible=False)
+    comparison = node["k"] in CONDITION_COMPARISONS
+    return (node["k"], condition_kind_ui(node["k"], ref, node["name"])[0],
+            gr.Dropdown(visible=comparison, value=node.get("op") or "eq"),
+            gr.Textbox(visible=comparison, value=condition_yaml(node["value"]) if isinstance(node["value"], (list, dict))
+                       else ("" if node["value"] is None else yaml.safe_dump(node["value"]).strip().removesuffix("..."
+                                                                                                         ).strip())))
+
+
+@ui
+def condition_edit_ui(action, tree, target, kind, subject, op, value, where="enabled_if"):
+    """➕ Add, ✏ Replace or 🗑 Remove a part of the condition: the tree, then the field written from it (as it
+    was written, but for what changed). Returns (the tree, the field, the tree shown, the parts, the status)."""
+    if action == "remove":
+        tree = condition_remove(tree, target)
+    else:
+        node = condition_node(kind, subject, op, value)
+        tree = condition_add(tree, target, node) if action == "add" else condition_replace(tree, target or CONDITION_TOP, node)
+    targets = condition_targets(tree)
+    keep = target if action != "remove" and target in [path for _, path in targets] else CONDITION_TOP
+    return (tree, condition_yaml(condition_value(tree)), condition_tree_markdown(tree),
+            gr.Dropdown(choices=targets, value=keep), condition_status(tree, where))
+
+
+def condition_builder_panel(prefix, label):
+    """The builder beside a condition field (its components; wired by wire_condition_builder)."""
+    with gr.Accordion(f"🧩 {label}: condition builder", open=False, elem_id=f"{prefix}-builder"):
+        mode = gr.Radio(["Advanced YAML", "Builder"], value="Advanced YAML", label="Edit the condition as",
+                        elem_id=f"{prefix}-mode",
+                        info="Builder: groups (ALL, ANY, NOT) and predicates chosen from the world; what it cannot "
+                        "show is kept as written. Advanced YAML: the field above, as text.")
+        with gr.Group(visible=False) as box:
+            tree_view = gr.Markdown(elem_id=f"{prefix}-tree")
+            with gr.Row():
+                target = gr.Dropdown([("The top", CONDITION_TOP)], value=CONDITION_TOP, label="Part of the condition",
+                                     scale=3, elem_id=f"{prefix}-target")
+                add = gr.Button("➕ Add into it", scale=1, elem_id=f"{prefix}-add")
+                replace = gr.Button("✏ Replace it", scale=1, elem_id=f"{prefix}-replace")
+                remove = gr.Button("🗑 Remove it", scale=1, elem_id=f"{prefix}-remove")
+            with gr.Row():
+                kind = gr.Dropdown(CONDITION_KINDS, value="has_item", label="Checks", scale=2, elem_id=f"{prefix}-kind")
+                subject = gr.Dropdown([], label="Which", scale=2, elem_id=f"{prefix}-subject")
+                op = gr.Dropdown([(symbol, key) for key, symbol in CONDITION_OPERATORS.items()], value="gte",
+                                 label="Compare", scale=1, visible=False, elem_id=f"{prefix}-op")
+                value = gr.Textbox(label="Value (YAML: 2, true, text, [a, b])", scale=2, visible=False,
+                                   elem_id=f"{prefix}-value")
+        status = gr.Markdown(elem_id=f"{prefix}-status")
+        tree, ref = gr.State(None), gr.State({})
+    return {"mode": mode, "box": box, "tree_view": tree_view, "target": target, "add": add, "replace": replace,
+            "remove": remove, "kind": kind, "subject": subject, "op": op, "value": value, "status": status,
+            "tree": tree, "ref": ref}
+
+
+def wire_condition_builder(panel, field, where, after):
+    """Wire a builder to its field; ``after``: what follows a write into the field (its draft's status)."""
+    b = panel
+    b["mode"].input(lambda mode, text: condition_mode_ui(mode, text, where), [b["mode"], field],
+                    [b["mode"], b["box"], field, b["tree"], b["ref"], b["tree_view"], b["target"], b["status"]]).then(
+        condition_kind_ui, [b["kind"], b["ref"]], [b["subject"], b["op"], b["value"]], show_progress="hidden")
+    field.change(lambda mode, text, tree: condition_sync_ui(mode, text, where, tree), [b["mode"], field, b["tree"]],
+                 [b["tree"], b["tree_view"], b["target"], b["status"]], show_progress="hidden")
+    b["kind"].input(condition_kind_ui, [b["kind"], b["ref"]], [b["subject"], b["op"], b["value"]], show_progress="hidden")
+    b["target"].input(condition_pick_ui, [b["tree"], b["target"], b["ref"]],
+                      [b["kind"], b["subject"], b["op"], b["value"]], show_progress="hidden")
+    for button, action in ((b["add"], "add"), (b["replace"], "replace"), (b["remove"], "remove")):
+        button.click(lambda tree, target, kind, subject, op, value, action=action: condition_edit_ui(
+            action, tree, target, kind, subject, op, value, where),
+            [b["tree"], b["target"], b["kind"], b["subject"], b["op"], b["value"]],
+            [b["tree"], field, b["tree_view"], b["target"], b["status"]], show_progress="hidden").success(**after)
+
+
 def _parse_flow(text, what):
     """One-line YAML: a mapping written with or without its braces ("reputation: 1, coins: 2")."""
     text = str(text or "").strip()
@@ -5403,6 +5831,7 @@ def build_app():
                                     "variable, stat, resource, has_item, visited, at_location, npc_removed, event_done, action_done, "
                                     "outcome_tag, mission. Comparisons: eq, ne, gt, gte, lt, lte, in, not_in.",
                                 )
+                                entry_condition = condition_builder_panel("entry-condition", "Enabled if")
                                 event_title = gr.Textbox(label="Event title", visible=False, info="Shown while the event is active.")
                                 stat_bonus = gr.Textbox(
                                     label="Stat bonus while held", visible=False,
@@ -5478,6 +5907,7 @@ def build_app():
                                         act_enabled = gr.Textbox(label="Offered only if", placeholder="e.g. reputation: {gte: 1}")
                                         act_until = gr.Textbox(label="No longer offered once",
                                                                placeholder="e.g. action_done: Crack the main safe")
+                                action_condition = condition_builder_panel("action-condition", "Offered only if")
                                 gr.Markdown("**Outcomes**")
                                 with gr.Row(equal_height=True):
                                     out_pick = gr.Dropdown(label="Outcome", choices=[], value=None, scale=4)
@@ -5966,6 +6396,9 @@ def build_app():
                 for part, components in part_components.items():
                     gr.on([c.input for c in components if not isinstance(c, gr.State)], trigger_mode="always_last",
                           **part_status[part])
+                # The condition builders write their field; its part's draft status follows.
+                wire_condition_builder(entry_condition, enabled_if, "Enabled if", part_status["fields"])
+                wire_condition_builder(action_condition, act_enabled, "Offered only if", part_status["action"])
                 # An action's outcomes are switched, added and removed inside its draft (saved with Save action).
                 out_pick.input(pick_outcome_ui, [action_state, out_pick, *outcome_fields],
                                [action_state, *outcome_fields]).then(**part_status["action"])

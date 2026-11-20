@@ -2485,6 +2485,8 @@ the API disagree, or when this guide names a request the API does not have.
 | `GET` | `/v1/records/stories/{story_id}` | [advanced-integration](#advanced-integration), [advanced-records](#advanced-records), [evaluate-stories](#evaluate-stories) | A story with its parameters, result, transcript and every turn. |
 | `POST` | `/v1/records/stories/{story_id}/judge` | [evaluate-stories](#evaluate-stories) | Gemma 4 as a game critic: |
 | `POST` | `/v1/sessions/{session_id}/judge` | [play-judge](#play-judge) | The LLM judge on the game played so far in this session (as for a recorded story). |
+| `GET` | `/v1/conditions/reference` | [entries](#entries) | What a condition can say in the current world, for a condition builder. |
+| `POST` | `/v1/conditions/validate` | [entries](#entries) | Check a condition as every save checks it (nothing is saved). |
 | `GET` | `/v1/reference` | [advanced-integration](#advanced-integration), [entries](#entries), [global-loads](#global-loads), [story-rules](#story-rules) | What a client needs to build an authoring UI: |
 | `GET` | `/v1/app-settings` | [advanced-app-jobs](#advanced-app-jobs), [checks](#checks), [global-loads](#global-loads) | The studio's app parameters (config/ui_settings.yml): |
 | `PUT` | `/v1/app-settings` | [advanced-app-jobs](#advanced-app-jobs), [advanced-integration](#advanced-integration) | Validate and save app parameters; they apply when the studio and the API restart. |

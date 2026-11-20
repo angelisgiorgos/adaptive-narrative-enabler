@@ -3054,6 +3054,174 @@ class EntryPreviewTests(_Sandbox):
             self.assertEqual(fn.fn.__name__, name)
 
 
+class ConditionBuilderTests(_Sandbox):
+    """The condition builder (🌍 World → Entries: an entry's *Enabled if*, an action's *Offered only if*):
+    groups (ALL, ANY, NOT) and predicates chosen from the world (GET /v1/conditions/reference), checked as a
+    save checks them (POST /v1/conditions/validate). A condition it reads is written back as it was; what it
+    cannot show is kept as written, never dropped or simplified; the YAML field stays the advanced mode."""
+
+    SAMPLES = (
+        "{thief_caught: false, reputation: {gte: 2, lt: 5}}",                      # the variables' shorthand
+        "{reputation: 3}",
+        "[{has_item: Royal Pass}, {visited: Palace}]",                             # a list: all of them
+        "{any: [{has_item: Ancient Map}, {not: {stat: persuasion, op: gte, value: 60}}, "
+        "{all: [{mission: shield_bearer}, {variable: reputation, value: 1}]}]}",   # nested; an op left out
+        "{resource: coins, op: in, value: [1, 2]}",
+        "{all: [{has_item: Ancient Map, extra: 1}, {visited: Market}]}",           # a part it cannot show
+        "{has_item: [Ancient Map, Royal Pass]}",
+        "{not: {any: [{event_done: tavern_brawl}, {action_done: (Priest) Seek a blessing}]}}",
+        "{any: []}",                                                               # groups being built
+        "{all: [{not: null}, {any: [{visited: Market}]}]}",
+    )
+
+    def test_the_reference_and_the_check_come_from_the_backend(self):
+        ref = self.client.get("/v1/conditions/reference").json()
+        self.assertEqual(ref["groups"], ["all", "any", "not"])
+        self.assertIn("Ancient Map", ref["facts"]["has_item"]["names"])
+        self.assertIn("Market", ref["facts"]["visited"]["names"])
+        self.assertIn("shield_bearer", ref["facts"]["mission"]["names"])
+        self.assertIsNone(ref["facts"]["action_done"]["refers_to"])                # free text
+        self.assertEqual(ref["comparisons"]["variable"]["reputation"], "int")
+        self.assertIn("persuasion", ref["comparisons"]["stat"])
+        self.assertEqual(ref["comparisons"]["resource"], ["coins", "health", "turn"])
+
+        def check(condition):
+            return self.client.post("/v1/conditions/validate", json={"condition": condition}).json()
+
+        self.assertTrue(check({"any": [{"has_item": "Ancient Map"}, {"visited": "Market"}]})["valid"])
+        self.assertEqual(check(None), {"valid": True, "errors": [], "empty": True})
+        bad = check({"all": [{"has_item": "Nope"}, {"stat": "charm", "op": "gte", "value": 2},
+                             {"variable": "reputation", "op": "gte", "value": "high"}]})
+        self.assertFalse(bad["valid"])
+        self.assertTrue(any("unknown item `Nope`" in e for e in bad["errors"]))
+        self.assertTrue(any("undefined stat `charm`" in e for e in bad["errors"]))
+        self.assertEqual(len(bad["errors"]), 3)
+        self.assertFalse(check("{any: [")["valid"])                                # YAML text, unreadable
+
+    def test_conditions_round_trip_exactly_and_unsupported_parts_are_kept(self):
+        import app
+
+        for text in self.SAMPLES:
+            with self.subTest(text=text):
+                value = yaml.safe_load(text)
+                tree = app.condition_tree(value)
+                self.assertEqual(app.condition_value(tree), value)                     # nothing changed
+                self.assertEqual(app.condition_text(app.condition_yaml(app.condition_value(tree))), value)
+        self.assertIsNone(app.condition_tree(None))
+        self.assertEqual(app.condition_text("reputation: {gte: 1}"), {"reputation": {"gte": 1}})  # braces optional
+        # Edited, a part the builder cannot show is kept as it was written.
+        tree = app.condition_tree(yaml.safe_load(self.SAMPLES[5]))
+        rows = app.condition_rows(tree)
+        self.assertTrue(rows[1][3].startswith("⚙ kept as written"))
+        tree = app.condition_add(tree, "top", app.condition_node("mission", "shield_bearer"))
+        self.assertEqual(app.condition_value(tree), {"all": [{"has_item": "Ancient Map", "extra": 1},
+                                                             {"visited": "Market"}, {"mission": "shield_bearer"}]})
+
+    def test_nested_groups_shorthand_and_invalid_references(self):
+        import gradio as gr
+
+        import app
+        from core_engine import conditions
+
+        # An empty group written to the field and read back is still that group (more can be added into it).
+        empty = app.condition_tree(app.condition_text(app.condition_yaml(app.condition_value(
+            app.condition_add(None, "top", app.condition_node("any"))))))
+        self.assertEqual((empty["t"], empty["g"], empty["c"]), ("group", "any", []))
+        self.assertIn("needs a non-empty list", app.condition_status(empty))
+        # Built from nothing: ANY of (has item, NOT (stat ≥ 60), ALL (visited, variable)).
+        tree = app.condition_add(None, "top", app.condition_node("any"))
+        tree = app.condition_add(tree, "top", app.condition_node("has_item", "Ancient Map"))
+        tree = app.condition_add(tree, "top", app.condition_node("not"))
+        tree = app.condition_add(tree, "top.1", app.condition_node("stat", "persuasion", "gte", "60"))
+        with self.assertRaises(gr.Error):                                       # NOT holds one condition
+            app.condition_add(tree, "top.1", app.condition_node("visited", "Market"))
+        tree = app.condition_add(tree, "top", app.condition_node("all"))
+        tree = app.condition_add(tree, "top.2", app.condition_node("visited", "Market"))
+        tree = app.condition_add(tree, "top.2", app.condition_node("variable", "reputation", "eq", "1"))
+        built = {"any": [{"has_item": "Ancient Map"}, {"not": {"stat": "persuasion", "op": "gte", "value": 60}},
+                         {"all": [{"visited": "Market"}, {"variable": "reputation", "value": 1}]}]}
+        self.assertEqual(app.condition_value(tree), built)
+        self.assertIn("✓ Valid", app.condition_status(tree))
+        tree = app.condition_replace(tree, "top", app.condition_node("all"))       # a group changed keeps its parts
+        self.assertEqual(list(app.condition_value(tree)), ["all"])
+        self.assertEqual(len(app.condition_value(tree)["all"]), 3)
+        tree = app.condition_remove(tree, "top.2.0")
+        self.assertEqual(app.condition_value(tree)["all"][2], {"all": [{"variable": "reputation", "value": 1}]})
+        self.assertIsNone(app.condition_remove(tree, "top"))
+        # The shorthand: a variable added stays shorthand; another predicate makes it a written ALL, same meaning.
+        before = yaml.safe_load(self.SAMPLES[0])
+        tree = app.condition_tree(before)
+        tree = app.condition_add(tree, "top", app.condition_node("variable", "fence_exposed", "eq", "true"))
+        self.assertEqual(app.condition_value(tree), {**before, "fence_exposed": True})
+        tree = app.condition_replace(tree, "top.1", app.condition_node("variable", "reputation", "gt", "2"))
+        self.assertEqual(app.condition_value(tree)["reputation"], {"gt": 2, "lt": 5})
+        tree = app.condition_add(tree, "top", app.condition_node("has_item", "Ancient Map"))
+        written = app.condition_value(tree)
+        self.assertEqual(list(written), ["all"])
+        expected = {"all": [{"thief_caught": False}, {"reputation": {"gt": 2, "lt": 5}}, {"fence_exposed": True},
+                            {"has_item": "Ancient Map"}]}
+        def flat(tree):  # ALL inside ALL means the same as one ALL
+            if tree[0] != "all":
+                return tree
+            parts = []
+            for child in (flat(c) for c in tree[1]):
+                parts.extend(child[1] if child[0] == "all" else (child,))
+            return ("all", tuple(parts))
+
+        self.assertEqual(flat(conditions.normalize(written)), flat(conditions.normalize(expected)))  # the same meaning
+        # An invalid reference: written, and said not valid (a save refuses it).
+        bad = app.condition_add(None, "top", app.condition_node("has_item", "No Such Thing"))
+        status = app.condition_status(bad, "Enabled if")
+        self.assertIn("Not valid", status)
+        self.assertIn("unknown item `No Such Thing`", status)
+        with self.assertRaises(gr.Error):
+            app.condition_node("stat", "persuasion", "gte", "")                    # a comparison needs a value
+
+    def test_switching_between_the_builder_and_the_yaml(self):
+        import app
+
+        text = self.SAMPLES[3]
+        mode, box, field, tree, ref, shown, targets, status = app.condition_mode_ui("Builder", text)
+        self.assertTrue(box["visible"])
+        self.assertFalse(_prop(field, "interactive"))                                # the builder writes the field
+        self.assertIn("Stat **persuasion** ≥ `60`", shown)
+        self.assertIn("✓ Valid", status)
+        self.assertIn("top.1.0", [value for _, value in _prop(targets, "choices")])
+        self.assertIn("Ancient Map", ref["facts"]["has_item"]["names"])
+        # An edit in the builder writes the field; the YAML read back is the builder's condition.
+        tree, written, shown, targets, status = app.condition_edit_ui(
+            "add", tree, "top.2", "item_collected", "Royal Pass", None, "")
+        self.assertEqual(app.condition_text(written)["any"][2]["all"][-1], {"item_collected": "Royal Pass"})
+        self.assertEqual(app.condition_tree(app.condition_text(written)), tree)
+        # A part picked: the form shows it; a group shows its kind.
+        self.assertEqual(app.condition_pick_ui(tree, "top.1.0", ref)[0], "stat")
+        self.assertEqual(_prop(app.condition_pick_ui(tree, "top.1.0", ref)[3], "value"), "60")
+        self.assertEqual(app.condition_pick_ui(tree, "top.2", ref)[0], "all")
+        # Back to the YAML: the field is editable again, as written.
+        mode, box, field, *_ = app.condition_mode_ui("Advanced YAML", written)
+        self.assertEqual((box["visible"], _prop(field, "interactive")), (False, True))
+        # YAML the builder cannot read: it stays in Advanced YAML, saying why; nothing is lost.
+        mode, box, field, tree_out, *_, status = app.condition_mode_ui("Builder", "{any: [")
+        self.assertEqual(_prop(mode, "value"), "Advanced YAML")
+        self.assertIn("not valid YAML", status)
+        self.assertEqual(tree_out, app.gr.skip())
+        # The field changed by a load: the builder follows it (only in Builder mode).
+        tree, shown, targets, status = app.condition_sync_ui("Builder", "{visited: Palace}")
+        self.assertEqual(app.condition_value(tree), {"visited": "Palace"})
+        self.assertEqual(app.condition_sync_ui("Builder", "{visited: Palace}", "enabled_if", tree)[0],
+                         app.gr.skip())                                       # what the builder wrote: kept
+        self.assertEqual(app.condition_sync_ui("Advanced YAML", "{visited: Palace}")[0], app.gr.skip())
+        # Wired: both condition fields have a builder that writes the field, then its draft's status.
+        demo = app.build_app()
+        by = {b.elem_id: b for b in demo.blocks.values() if getattr(b, "elem_id", None)}
+        for prefix in ("entry-condition", "action-condition"):
+            for button in ("add", "replace", "remove"):
+                (fn,) = [fn for fn in demo.fns.values() if (by[f"{prefix}-{button}"]._id, "click") in fn.targets]
+                followers = [f for f in demo.fns.values() if f.trigger_after == fn._id]
+                self.assertEqual(len(followers), 1)                              # the draft's status
+            self.assertTrue([fn for fn in demo.fns.values() if (by[f"{prefix}-mode"]._id, "input") in fn.targets])
+
+
 class WeightsFollowUpTests(_Sandbox):
     """Weights: saved values changed from the shipped ones are listed (and the shipped values can be put
     in the draft); leaving ⚙ Advanced with an unsaved weights draft asks Save, Discard or Stay; the Basic
