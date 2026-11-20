@@ -7,6 +7,24 @@ that introduces them.
 
 ## [Unreleased]
 
+### Training defaults, Train's result, and the records by purpose
+
+#### Changed
+- The saved training defaults are 40 storytellers × 25 generations × 2 stories (with full-length stories:
+  200,000 simulated turns of the 1,000,000 allowed). They were 400 × 200 × 6 (48,000,000), so a run that
+  set nothing was refused; `python main.py` uses the same defaults.
+- *▶ Play this result* starts a game with the completed engine at once (with the player, quest and
+  character chosen in ▶ Play), instead of only choosing it.
+- The records are where they are used: *🧠 Train → From a recorded engine* (continue, retrain), *⚖ Evaluate*
+  (recorded stories: read, judge, compare), *📦 Export* (a recorded engine's, run's and world's files) and
+  *⚙ Advanced → 🗂 Records* (recording, the import folder). Train's *Records* tab is gone.
+
+#### Added
+- After a warm-started run, its summary says how many remembered storytellers it really started from (the
+  summary before the run counted the memory), and a run's `training.executed` has `warm_started`.
+- Train's completed engine is kept in the browser: its card and actions come back after a reload, while
+  that engine is still a finished run.
+
 ### Tuning parameters: labels, units, defaults and bounds from the engine
 
 #### Added

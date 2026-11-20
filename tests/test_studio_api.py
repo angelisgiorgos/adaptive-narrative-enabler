@@ -1152,16 +1152,16 @@ class TrainResultTests(_Sandbox):
         self.assertEqual(app.finished_run_choices()[0][1], newest)
         engine_id = done["engine_id"]
 
-        # ▶ Play this result: Play opens with this engine as its trained AI; New game plays exactly it.
+        # ▶ Play this result: a game with exactly this engine starts in Play (the player's choices there).
         before = set(sessions.SESSIONS)
-        opened = app.play_result_ui(done)
-        picker, setup, note = opened[-3:]
+        opened = app.play_result_ui(done, "result-test", "", "story default")
+        nav = len(app.DESTINATIONS) + 3
+        picker, setup, token = opened[nav:nav + 3]
         self.assertEqual(_prop(opened[0], "selected"), "play")
         self.assertEqual(_prop(picker, "value"), engine_id)
-        self.assertTrue(_prop(setup, "open"))
-        self.assertIn(engine_id, note)
-        self.assertEqual(set(sessions.SESSIONS), before)  # choosing it starts nothing
-        token, *_ = app.play_new_game_ui(_prop(picker, "value"), "result-test", "", "story default")
+        self.assertFalse(_prop(setup, "open"))                   # the game is on: its setup folds away
+        self.assertIn(f"Playing the engine just trained, `{engine_id}`", opened[-1])
+        self.assertEqual(set(sessions.SESSIONS) - before, {token})  # one game, the one asked for
         (story,) = records.list_stories(session_id=token)
         self.assertEqual(story["engine_id"], engine_id)
 
@@ -1217,7 +1217,8 @@ class TrainResultTests(_Sandbox):
         self.assertEqual(_prop(app.export_result_ui(done, "linux-x64")[-5], "visible"), False)  # ANE AI: runs only
 
         # Without a completed engine, or with one no longer offered, nothing is chosen in its place.
-        for action in (app.play_result_ui, app.evaluate_result_ui, lambda d: app.export_result_ui(d, "python")):
+        for action in (lambda d: app.play_result_ui(d, "result-test", "", "story default"), app.evaluate_result_ui,
+                       lambda d: app.export_result_ui(d, "python")):
             for missing in (None, {**done, "engine_id": "0" * 32}):
                 with self.subTest(action=action, missing=bool(missing)), self.assertRaises(gr.Error):
                     action(missing)
@@ -1285,7 +1286,7 @@ class _Editor:
         self._entry(out[:n])
         self.nav = out[n:n + len(self.app.DESTINATIONS) + 3]
         rest = out[n + len(self.app.DESTINATIONS) + 3:]
-        section, pending, prompt, message, capture = rest
+        section, pending, prompt, message, section_now, capture = rest
         self.section = _applied(section, None) if not isinstance(section, dict) else None
         self.pending = _applied(pending, self.pending)
         if isinstance(prompt, dict) and "visible" in prompt:
@@ -1302,6 +1303,20 @@ class _Editor:
     @property
     def guard(self):
         return (self.loaded, self.base, *self.values)
+
+    @property
+    def dirty(self):
+        """drafts_dirty as the per-part status events keep it (the entry editor's unsaved parts)."""
+        return {"entries": self.unsaved}
+
+    def leave(self, result):
+        """A leave guard's result (nav_choice_ui, section_choice_ui): its navigation, section and question."""
+        self.nav = result.get("nav")
+        self.section = result.get("section")
+        asked = (result.get("prompts") or {}).get("entries")
+        if asked:
+            self.prompt, self.message, self.pending = asked
+        return result
 
     @property
     def unsaved(self):
@@ -1423,9 +1438,9 @@ class EntryDraftTests(_Sandbox):
         # each is undone and asked about; the draft and the entry stay.
         attempts = [lambda: editor.choose("Locations", "Market"), lambda: editor.choose("NPCs"),
                     lambda: editor._draft(app.new_entry_choice_ui(*editor.guard)),
-                    lambda: editor._draft(app.nav_choice_ui("play", "world", *editor.guard)),
-                    lambda: editor._draft(app.nav_choice_ui("advanced", "world", *editor.guard)),
-                    lambda: editor._draft(app.section_choice_ui("map", *editor.guard))]
+                    lambda: editor.leave(app.nav_choice_ui("play", "world", "entries", editor.loaded, editor.dirty)),
+                    lambda: editor.leave(app.nav_choice_ui("advanced", "world", "entries", editor.loaded, editor.dirty)),
+                    lambda: editor.leave(app.section_choice_ui("map", "entries", editor.loaded, editor.dirty))]
         for attempt in attempts:
             with self.subTest(attempt=attempt):
                 attempt()
@@ -1436,14 +1451,14 @@ class EntryDraftTests(_Sandbox):
                 self.assertIn("**Fields**", editor.message)
                 self.assertEqual(editor.unsaved, ["fields"])
                 if editor.pending["type"] in ("destination", "section"):
-                    self.assertEqual(_prop(editor.section, "selected"), "entries")  # back to the editor
+                    self.assertEqual(editor.section, "entries")  # back to the editor
                 if editor.pending["type"] == "destination":
                     self.assertEqual(_prop(editor.nav[0], "selected"), "world")
                     self.assertEqual(editor.nav[-1], "world")
         self.assertEqual(self._stored("Locations", "Harbor")["descriptions"], stored)  # nothing written
         # Leaving from another destination (the editor is not open) goes at once.
-        out = app.nav_choice_ui("train", "play", *editor.guard)
-        self.assertEqual(_prop(out[app.ENTRY_OUTPUTS], "selected"), "train")
+        out = app.nav_choice_ui("train", "play", "entries", editor.loaded, editor.dirty)
+        self.assertEqual((_prop(out["nav"][0], "selected"), out.get("prompts")), ("train", None))
         # Stay: the question goes, the draft and the entry stay.
         editor.choose("Locations", "Market")
         editor.answer("stay")
@@ -1470,7 +1485,7 @@ class EntryDraftTests(_Sandbox):
         self.assertEqual(self.client.get("/v1/entities/Events/tavern_brawl/policy").json()["policy"]["cooldown"], 6)
         # Leaving for another destination: saved, then gone there.
         editor.type("fields", 3, "Find the map's owner.")  # goals
-        editor._draft(app.nav_choice_ui("train", "world", *editor.guard))
+        editor.leave(app.nav_choice_ui("train", "world", "entries", editor.loaded, editor.dirty))
         editor.answer("save")
         self.assertEqual(_prop(editor.nav[0], "selected"), "train")
         self.assertEqual(self._stored("Items", "Ancient Map")["goals"], ["Find the map's owner."])
@@ -1579,7 +1594,7 @@ class EntryDraftTests(_Sandbox):
         self.assertIn("beforeunload", app.DRAFT_HEAD)
         for button in (b for b in blocks if isinstance(b, gr.Button) and (b.elem_id or "").startswith("nav-")):
             (fn,) = listeners(button, "click")
-            self.assertEqual(len(fn.inputs), 3 + sum(app.DRAFT_SIZES.values()))  # where, the draft, its baseline
+            self.assertEqual(len(fn.inputs), 4)  # where, which World section, the entry, the unsaved parts: no draft
 
     @staticmethod
     def _inside(block, kind):
@@ -1726,7 +1741,7 @@ class DeletionUndoTests(_Sandbox):
         self.assertEqual((cleared[0], cleared[1]["visible"]), (None, False))
         self.assertIn("Smuggler", self._names("NPCs"))
         # Confirmed: exactly that entry goes, the next one opens, Undo is offered.
-        out = app.confirm_delete_entry_ui(pending, *editor.guard)
+        out = app.confirm_delete_entry_ui(pending, [], *editor.guard)
         n = app.ENTRY_OUTPUTS
         editor._entry(out[:n])
         editor._capture(out[n + 1])
@@ -1743,13 +1758,13 @@ class DeletionUndoTests(_Sandbox):
         self.assertEqual(self._names("NPCs"), names)
         self.assertEqual((editor.entity, editor.unsaved), ("Smuggler", []))
         self.assertIn("Restored **Smuggler** to NPCs, where it was", out[n])
-        self.assertEqual((out[-3], out[-2]["visible"]), (None, False))
-        # Undo again (it was undone): said, and offered no more.
+        self.assertEqual((out[-3], out[-2]["visible"]), ([], False))
+        # Undo again from a stale history (it was undone): said, and dropped from the history.
         again = app.undo_delete_entry_ui(undo, *editor.guard)
         self.assertIn("Not restored", again[-1])
-        self.assertIsNone(again[-3])
+        self.assertEqual(again[-3], [])
         # A conflict: said, and Undo stays to try again once the name is free.
-        undo = app.confirm_delete_entry_ui(pending, *editor.guard)[n + 6]
+        undo = app.confirm_delete_entry_ui(pending, [], *editor.guard)[n + 6]
         self.client.put("/v1/entities/NPCs/Smuggler", json={"name": "Smuggler", "tags": [], "descriptions": ["New."],
                                                              "goals": []})
         conflict = app.undo_delete_entry_ui(undo, *editor.guard)
@@ -1760,7 +1775,7 @@ class DeletionUndoTests(_Sandbox):
             self.client.delete(f"/v1/entities/Items/{name}")
         editor.choose("Items")
         pending = app.ask_delete_entry_ui(*editor.guard)[0]
-        refused = app.confirm_delete_entry_ui(pending, *editor.guard)
+        refused = app.confirm_delete_entry_ui(pending, [], *editor.guard)
         self.assertIn("Not deleted", refused[n + 4])
         self.assertIn("At least one item must remain", refused[n + 4])
         self.assertEqual((refused[n + 3]["visible"], refused[n + 5]["visible"]), (True, False))
@@ -1777,7 +1792,7 @@ class DeletionUndoTests(_Sandbox):
         self.assertIn(f"Delete the action **2. {stored[1]['name']}** of **Gate Guard** (NPCs)?", question)
         self.assertIn(f"{len(stored[1]['outcomes'])} outcome(s)", question)
         n = app.ENTRY_OUTPUTS
-        out = app.confirm_delete_action_ui(pending, *editor.guard)
+        out = app.confirm_delete_action_ui(pending, [], *editor.guard)
         editor._entry(out[:n])
         editor._capture(out[n + 1])
         self.assertEqual(len(self.client.get("/v1/entities/NPCs/Gate Guard/actions").json()["actions"]), len(stored) - 1)
@@ -1990,6 +2005,54 @@ class TuningParameterTests(_Sandbox):
         self.assertEqual(self._file(), before)
 
 
+class TrainFollowUpTests(_Sandbox):
+    """The shipped training defaults fit the work limit; a run says how many remembered storytellers it
+    really started from; the completed engine's card comes back after a reload, if the engine is still there."""
+
+    def test_the_shipped_defaults_can_run(self):
+        plan = sessions.resolve_training({})  # the configuration as shipped (config/hyperparameters.yaml)
+        self.assertTrue(plan["ready"], plan["errors"])
+        self.assertTrue(plan["work"]["allowed"])
+        self.assertLessEqual(plan["work"]["work"], plan["work"]["limit"])
+
+    def test_the_run_reports_how_many_storytellers_it_started_from(self):
+        import app
+
+        world = store.config.as_dict()
+        world["evolution"].update({"full_length_stories": False, "warm_start": True})
+        store.config.use_override(world)
+        self.addCleanup(lambda: (setattr(store.config, "_override", None), type(store.config).reload(store.config)))
+        controls = _controls(population=2, generations=1, episodes=1, steps=3, reproducibility="off", warm_start="on")
+        app.run_simulation_ui(*controls, None, progress=lambda *a, **k: None)        # something to remember
+        shown = _form(controls)[2]
+        outputs = app.run_simulation_ui(*controls, shown, progress=lambda *a, **k: None)
+        done = outputs[-5]
+        training = self.client.get(f"/v1/records/runs/{done['run_id']}").status_code  # recorded
+        self.assertEqual(training, 200)
+        self.assertIn("started from", done["check"])
+        self.assertRegex(done["check"], r"started from \d+ remembered storyteller")
+
+    def test_the_card_comes_back_after_a_reload_while_its_engine_is_there(self):
+        import app
+
+        controls = _controls(population=2, generations=1, episodes=1, steps=3, reproducibility="off", warm_start="off")
+        world = store.config.as_dict()
+        world["evolution"]["full_length_stories"] = False
+        store.config.use_override(world)
+        self.addCleanup(lambda: (setattr(store.config, "_override", None), type(store.config).reload(store.config)))
+        done = app.run_simulation_ui(*controls, None, progress=lambda *a, **k: None)[-5]
+        restored, card, *buttons = app.restore_result_ui(done)
+        self.assertEqual(restored, done)
+        self.assertIn(f"Completed engine `{done['engine_id']}`", card)
+        self.assertIn("Trained earlier in this browser", card)
+        self.assertTrue(all(_prop(b, "interactive") for b in buttons))
+        gone, card, *buttons = app.restore_result_ui({**done, "engine_id": "0" * 32})
+        self.assertIsNone(gone)
+        self.assertIn("no longer among the finished runs", card)
+        self.assertFalse(any(_prop(b, "interactive") for b in buttons))
+        self.assertIsNone(app.restore_result_ui(None)[0])
+
+
 class StudioServiceTests(_Sandbox):
     """The endpoints the studio is built on: every studio tab works through the API."""
 
@@ -2153,7 +2216,7 @@ class AppSettingsTests(unittest.TestCase):
                 store.save_app_settings(settings)
                 self.assertEqual(store.load_app_settings(), settings)
                 for key, value in (("server_port", 70000), ("max_web_sessions", 0),
-                                   ("crossover_probability", float("nan")), ("candidate_limit", 401),
+                                   ("candidate_limit", 401),
                                    ("generation_limit", 1001), ("simulation_step_limit", 401),
                                    ("queue_max_size", True)):
                     with self.subTest(key=key), self.assertRaises(ValueError):
@@ -2519,8 +2582,18 @@ class StudioLayoutTests(_Sandbox):
         self.assertLessEqual({"📝 Entries", "Fields", "Actions & outcomes", "Scheduling", "More details", "✨ Suggest",
                               "🎯 Missions", "📜 Story rules", "🗺 Map", "✨ Grow the world", "🔍 Checks"},
                              sections["world"])
-        self.assertEqual(sections["train"], {"Run", "Records"})
-        self.assertEqual(sections["advanced"], {"Simulation", "Weights", "Engine logic", "App & jobs", "🔌 Integration"})
+        self.assertEqual(sections["train"], {"Run", "From a recorded engine"})
+        self.assertEqual(sections["advanced"], {"Simulation", "Weights", "Engine logic", "App & jobs", "🗂 Records",
+                                                "🔌 Integration"})
+        # The records by purpose: continue/retrain in Train, stories in Evaluate, files in Export, import in Advanced.
+        buttons = {key: {b.value for b in self._inside(tab, gr.Button)} for key, tab in by_id.items()}
+        self.assertLessEqual({"Continue its training", "Retrain from it"}, buttons["train"])
+        self.assertLessEqual({"Judge this story (Gemma 4)", "Which is the better game?"}, buttons["evaluate"])
+        self.assertLessEqual({"Download its model file and world", "Download it as a configuration to upload"},
+                             buttons["export"])
+        self.assertIn("Import", buttons["advanced"])
+        for moved in ("Judge this story (Gemma 4)", "Download its model file and world", "Import"):
+            self.assertNotIn(moved, buttons["train"])
         # The integration diagnostics are in ⚙ Advanced → 🔌 Integration only: not in Play, Export or Train.
         diagnostics = {"Set the player", "Tell the session", "Show the session's parameters (ane.session_state/1)",
                        "Send its latest report to the UNP again", "Download the world as a UNP receives it (JSON)"}
@@ -2535,7 +2608,7 @@ class StudioLayoutTests(_Sandbox):
         export_buttons = [b.value for b in self._inside(by_id["export"], gr.Button)]
         self.assertIn("Export", export_buttons)
         # Export's generation picker is filled by a training: one component, rendered in 📦 Export.
-        generation = [d for d in self._inside(by_id["export"], gr.Dropdown) if "generation" in (d.label or "")]
+        generation = [d for d in self._inside(by_id["export"], gr.Dropdown) if (d.label or "").startswith("Generation")]
         self.assertEqual(len(generation), 1)
 
     def test_every_destination_is_reached_from_the_banner_the_menu_and_the_address(self):
@@ -2556,24 +2629,23 @@ class StudioLayoutTests(_Sandbox):
             return [fn for fn in demo.fns.values() if (trigger._id, event) in fn.targets]
 
         # A click: where the user is, the entry editor's draft and its baseline (nothing unsaved here).
-        draft = ("world", {"kind": "Locations", "entity": "Harbor"}, {}, *[None] * sum(app.DRAFT_SIZES.values()))
-        at = app.ENTRY_OUTPUTS  # the navigation's outputs follow the entry editor's (untouched)
+        # A click: where the user is, the World section open, the entry, the unsaved parts (none here).
+        draft = ("world", "entries", {"kind": "Locations", "entity": "Harbor"}, {})
+        nav = len(app.DESTINATIONS) + 3
         for button, key in zip(buttons, app.DESTINATION_IDS):
             with self.subTest(destination=key):
                 (fn,) = wired(button, "click")
                 self.assertIn(main._id, [o._id for o in fn.outputs])  # the tabs follow
                 out = fn.fn(*draft)
-                selected, *highlight, named, now = out[at:at + len(app.DESTINATIONS) + 3]
+                selected, *highlight, named, now = out[:nav]
                 self.assertEqual(_prop(selected, "selected"), key)
                 self.assertEqual([_prop(b, "variant") for b in highlight],
                                  ["primary" if other == key else "secondary" for other in app.DESTINATION_IDS])
                 self.assertEqual((_prop(named, "value"), now), (key, key))
-                # Nothing is rebuilt on the way: every other output is skipped (no draft was unsaved).
-                skipped = [o for i, o in enumerate(out) if not at <= i < at + len(app.DESTINATIONS) + 3]
-                self.assertTrue(all(o == gr.skip() for o in skipped[:-1]))
-                self.assertEqual(skipped[-1], [])  # nothing to capture
+                # Nothing else changes on the way: every other output is skipped (nothing was unsaved).
+                self.assertTrue(all(o == gr.skip() for o in out[nav:]))
                 (via_menu,) = wired(menu, "input")
-                self.assertEqual(_prop(via_menu.fn(key, *draft)[at], "selected"), key)
+                self.assertEqual(_prop(via_menu.fn(key, *draft)[0], "selected"), key)
         # The address names a destination (?section=play); anything else opens the World.
         for asked, opened in (("play", "play"), ("EXPORT", "export"), ("nowhere", "world"), (None, "world")):
             request = type("Request", (), {"query_params": {"section": asked} if asked else {}})()

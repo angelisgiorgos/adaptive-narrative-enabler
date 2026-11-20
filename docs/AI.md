@@ -134,9 +134,9 @@ evolution**):
 
 ```yaml
 evolution:
-  pop_size: 400                 # storytellers per generation (studio: "Candidate genomes")
-  generations: 200
-  episodes_per_genome: 6        # stories per storyteller per generation (studio: "Stories per storyteller")
+  pop_size: 40                  # storytellers per generation (studio: "Population")
+  generations: 25
+  episodes_per_genome: 2        # stories per storyteller per generation (studio: "Stories per storyteller")
   max_steps: 100                # with full_length_stories, whole stories
   full_length_stories: true
   stratify_episodes: true

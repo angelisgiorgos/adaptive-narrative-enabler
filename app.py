@@ -2660,7 +2660,9 @@ def _draft_update(entry=None, nav=None, section=None, pending=gr.skip, prompt=No
             gr.skip() if section is None else gr.Tabs(selected=section),
             gr.skip() if pending is gr.skip else pending,
             gr.skip() if prompt is None else gr.update(visible=prompt),
-            gr.skip() if message is None else message, list(capture))
+            gr.skip() if message is None else message,
+            gr.skip() if section is None else section,  # the World section open now
+            list(capture))
 
 
 def _going(target):
@@ -2760,20 +2762,48 @@ def new_action_choice_ui(loaded, base, *values):
     return _choose({"type": "action", "new": True}, loaded, base, values, scope=("action",))
 
 
-def section_choice_ui(section, loaded, base, *values):
-    """Another section of 🌍 World opened: with unsaved changes the editor stays open and asks."""
-    dirty = unsaved_parts(base, *values)
-    return _ask({"type": "section", "id": section}, loaded, dirty, values) if dirty else _draft_update()
+# Which World section each editor with a draft is in (drafts_dirty: {editor: [parts unsaved]}).
+EDITOR_SECTIONS = {"entries": "entries", "missions": "missions", "rules": "story-rules", "map": "map"}
+SECTION_EDITORS = {section: editor for editor, section in EDITOR_SECTIONS.items()}
 
 
-def nav_choice_ui(destination, now, loaded, base, *values):
-    """The banner or the menu: leaving 🌍 World (``now``) with unsaved changes asks first; anything
-    else goes at once (navigate)."""
+def _dirty_of(dirty, editor):
+    return list((dirty or {}).get(editor) or [])
+
+
+def _leave_question(editor, loaded, parts, target):
+    if editor == "entries":
+        what, who = ", ".join(DRAFT_PARTS[p] for p in parts), _entry_label(loaded)
+    else:
+        what = ", ".join(_form_parts(editor)[p][0] for p in parts)
+        who = FORM_EDITORS[editor]["title"]
+    return (f"### ● Unsaved changes\n{who} has unsaved changes in **{what}**. Save them before {_going(target)}? "
+            "**Discard** drops them; **Stay** keeps editing.")
+
+
+def section_choice_ui(section, now_section, loaded, dirty):
+    """Another section of 🌍 World opened: leaving an editor with unsaved changes keeps it open and asks
+    (in that editor); otherwise the section is the one open now. Returns {section, section_now, prompts}."""
+    editor = SECTION_EDITORS.get(now_section)
+    parts = _dirty_of(dirty, editor) if editor and section != now_section else []
+    if parts:
+        target = {"type": "section", "id": section}
+        return {"section": now_section, "prompts": {editor: (True, _leave_question(editor, loaded, parts, target), target)}}
+    return {"section_now": section}
+
+
+def nav_choice_ui(destination, now, now_section, loaded, dirty):
+    """The banner or the menu: leaving 🌍 World (``now``) with unsaved changes in any of its editors asks
+    first, in that editor (opened); anything else goes at once. Reads only which parts are unsaved
+    (drafts_dirty), not the drafts. Returns {nav, section, section_now, prompts}."""
     destination = destination if destination in DESTINATION_IDS else "world"
-    dirty = unsaved_parts(base, *values) if now == "world" and destination != "world" else []
-    if dirty:
-        return _ask({"type": "destination", "id": destination}, loaded, dirty, values)
-    return _draft_update(nav=navigate(destination))
+    if now == "world" and destination != "world":
+        editor = next((name for name in EDITOR_SECTIONS if _dirty_of(dirty, name)), None)
+        if editor:
+            target = {"type": "destination", "id": destination}
+            return {"nav": navigate("world"), "section": EDITOR_SECTIONS[editor], "section_now": EDITOR_SECTIONS[editor],
+                    "prompts": {editor: (True, _leave_question(editor, loaded, _dirty_of(dirty, editor), target), target)}}
+    return {"nav": navigate(destination)}
 
 
 class DraftNotSaved(Exception):
@@ -2920,6 +2950,19 @@ def refresh_entry_names_ui(kind, name):
 # back (POST /v1/deletions/{token}/restore): only it, where it was, never over anything newer.
 
 ENTRY_WORDS = {"Locations": "place", "NPCs": "person", "Items": "item", "Events": "event"}
+
+
+def form_panels(prefix):
+    """A form editor's draft indicator and its question (Save, Discard, Stay), hidden until asked, with
+    what it was asked for (built in the Blocks being defined)."""
+    status = gr.HTML(form_status_markup(prefix, []), elem_id=f"{prefix}-draft-status")
+    with gr.Group(visible=False, elem_id=f"{prefix}-draft-prompt", elem_classes="draft-prompt") as prompt:
+        text = gr.Markdown()
+        with gr.Row():
+            save = gr.Button("💾 Save", variant="primary", elem_id=f"{prefix}-draft-save")
+            discard = gr.Button("Discard", variant="stop", elem_id=f"{prefix}-draft-discard")
+            stay = gr.Button("Stay", elem_id=f"{prefix}-draft-stay")
+    return status, prompt, text, save, discard, stay, gr.State(None)
 
 
 def deletion_panels(prefix):
@@ -3167,21 +3210,428 @@ def undo_delete_action_ui(history, loaded, base, *values):
 
 
 @ui
-def undo_delete_mission_ui(history):
-    """**Undo** a deleted mission: it goes back where it was, and opens in the form. Returns (the picker,
-    the mission form and its state, the message, missions.yaml, Undo's state, bar and text)."""
+def undo_delete_mission_ui(history, base=None, dirty=None):
+    """**Undo** a deleted mission: it goes back where it was, and opens in the form, unless the mission
+    form has unsaved changes (they are kept; the list shows it); missions.yaml is reloaded unless it has
+    unsaved changes. Returns (the picker, the mission form and its state, the message, missions.yaml,
+    Undo's state, bar and text, forms_base, drafts_dirty, the Missions indicator)."""
     result, history, why = _restore(history)
     if result is None:
-        return (gr.skip(), *[gr.skip()] * 8, gr.skip(), gr.skip(), *_history_bar(history, why))
-    key = result["name"]
-    return (gr.Dropdown(choices=_mission_keys(), value=key), *mission_form_ui(key), result["message"],
-            load_missions_yaml(), *_history_bar(history))
+        return (gr.skip(), *[gr.skip()] * 8, gr.skip(), gr.skip(), *_history_bar(history, why), gr.skip(), gr.skip(),
+                gr.skip())
+    key, unsaved = result["name"], _dirty_of(dirty, "missions")
+    reload = {"values": {}}
+    if "mission" not in unsaved:
+        *values, state = mission_form_ui(key)
+        reload["values"]["mission"], reload["context"] = tuple(values), state
+    if "missions_yaml" not in unsaved:
+        reload["values"]["missions_yaml"] = (load_missions_yaml(),)
+    done = _form_captured("missions", reload, base, dirty, list(reload["values"]))
+    form = reload["values"].get("mission")
+    message = result["message"] + ("" if form else " Your unsaved mission changes were kept: pick it to edit.")
+    picker = gr.Dropdown(choices=_mission_keys(), value=key) if form else gr.Dropdown(choices=_mission_keys())
+    return (picker,
+            *(form if form else [gr.skip()] * 7), reload.get("context", gr.skip()), message,
+            reload["values"].get("missions_yaml", (gr.skip(),))[0], *_history_bar(history),
+            done["base"], done["dirty"], done["status"])
+
+
+# ---- the entry editor's unsaved parts, kept as they change (each edit sends only its part) ----------
+
+def part_canonical(part, values):
+    """One part of the entry draft as it compares (draft_parts, part by part)."""
+    values = tuple(values)
+    if part == "action":
+        return _action_draft(values[0], values[1:])
+    if part in ("entry_yaml", "actions_yaml", "policy_yaml"):
+        return _plain(values[0])
+    return _plain(values)
+
+
+def _output_value(update):
+    """(whether an output sets a value, the value): a skip or an update without a value sets none."""
+    if isinstance(update, dict) and update.get("__type__") == "update":
+        return ("value" in update), update.get("value")
+    if hasattr(update, "get_config") and hasattr(update, "value"):
+        return True, update.value
+    return True, update
+
+
+def _parts_from_entry(entry):
+    """The draft parts an update of the entry editor sets in full ({part: values}); a part it skips is
+    not there (its baseline stays)."""
+    segments, at = {}, 0
+    for name, size in ENTRY_SEGMENTS.items():
+        segments[name], at = list(entry[at:at + size]), at + size
+    picked = {"fields": segments["fields"], "entry_yaml": segments["entry_yaml"],
+              "actions_yaml": segments["actions_yaml"], "policy_yaml": segments["policy_yaml"],
+              "action": [segments["action"][1], *segments["action"][2:16], *segments["action"][17:]],
+              "scheduling": segments["scheduling"][3:], "details": segments["details"][3:]}
+    found = {}
+    for part, updates in picked.items():
+        values = [_output_value(update) for update in updates]
+        if all(has for has, _ in values):
+            found[part] = tuple(value for _, value in values)
+    return found
+
+
+def _serial(value):
+    if isinstance(value, pd.DataFrame):
+        return {"__table__": {"headers": [str(c) for c in value.columns],
+                              "data": value.astype(object).where(value.notna(), "").values.tolist()}}
+    return value
+
+
+def _unserial(value):
+    if isinstance(value, dict) and "__table__" in value:
+        return pd.DataFrame(value["__table__"]["data"], columns=value["__table__"]["headers"])
+    return value
+
+
+def _kept_draft(saved, loaded, part, values):
+    """The draft kept in this browser (it survives the tab being closed): {kind, entity, parts: {part:
+    values}}; ``values`` None drops the part."""
+    loaded = loaded or {}
+    saved = dict(saved or {})
+    if (saved.get("kind"), saved.get("entity")) != (loaded.get("kind"), loaded.get("entity")):
+        saved = {"kind": loaded.get("kind"), "entity": loaded.get("entity"), "parts": {}}
+    parts = dict(saved.get("parts") or {})
+    if values is None:
+        parts.pop(part, None)
+    else:
+        parts[part] = [_serial(value) for value in values]
+    return {**saved, "parts": parts} if parts else {}
+
+
+def entry_part_status_ui(part, base, dirty, loaded, saved, *values):
+    """An edit of one part of the entry draft (only its values travel): whether it now differs from its
+    baseline, the indicator, and the draft kept in this browser. Returns (drafts_dirty, indicator, kept)."""
+    changed = part in (base or {}) and part_canonical(part, values) != base[part]
+    parts = set(_dirty_of(dirty, "entries"))
+    (parts.add if changed else parts.discard)(part)
+    ordered = [p for p in DRAFT_PARTS if p in parts]
+    return ({**(dirty or {}), "entries": ordered}, draft_status_markup(ordered, loaded),
+            _kept_draft(saved, loaded, part, values if changed else None))
+
+
+def entry_baselined(entry, capture, base, dirty, saved, loaded):
+    """After a load or a save of the entry editor (``entry``: its update; ``capture``: the parts it
+    loaded or saved): those parts' baselines from the very values it sets, in the same step (no round
+    trip in which a keystroke could be taken for loaded), and they are no longer unsaved. Returns
+    (baseline, drafts_dirty, indicator, kept draft)."""
+    parts = _parts_from_entry(entry)
+    captured = [part for part in (capture or ()) if part in parts]
+    base = dict(base or {})
+    base.update({part: part_canonical(part, parts[part]) for part in captured})
+    has, now = _output_value(entry[-1])
+    loaded = now if has and now else loaded
+    left = [p for p in _dirty_of(dirty, "entries") if p not in captured]
+    kept = saved or {}
+    for part in captured:
+        kept = _kept_draft(kept, loaded, part, None) if kept else kept
+    if not left:
+        kept = {}
+    return base, {**(dirty or {}), "entries": left}, draft_status_markup(left, loaded), kept
+
+
+# ---- a draft kept in the browser: offered back when the studio opens again ---------------------------
+
+def offer_kept_draft_ui(saved):
+    """When the studio opens: an entry draft this browser kept (the tab was closed or reloaded with it
+    unsaved) is offered back. Returns (what is offered, its panel, its text)."""
+    parts = [p for p in (saved or {}).get("parts") or {} if p in DRAFT_PARTS]
+    if not parts:
+        return None, gr.update(visible=False), ""
+    what = ", ".join(DRAFT_PARTS[p] for p in parts)
+    return saved, gr.update(visible=True), (
+        f"### ↺ Unsaved changes from your last visit\\n**{html.escape(str(saved.get('entity') or 'A new entry'))}** "
+        f"({html.escape(str(saved.get('kind')))}) had unsaved changes in **{what}** when the page was closed. "
+        "**Restore** opens it with them (still unsaved); **Discard** drops them.")
+
+
+@ui
+def restore_kept_draft_ui(offer, base, dirty, loaded, *values):
+    """**Restore**: the entry opens as stored, with the kept changes on top (unsaved, so they can be saved
+    or discarded). Not over unsaved changes made since. Returns (the entry editor, baseline, drafts_dirty,
+    indicator, kept draft, offered nothing, the panel hidden, its text)."""
+    if unsaved_parts(base, *values):
+        raise gr.Error("Save or discard the changes you made since first.")
+    kind, name, kept = (offer or {}).get("kind"), (offer or {}).get("entity"), (offer or {}).get("parts") or {}
+    names = _entity_names(kind) if kind else []
+    if name and name not in names:
+        return (*_entry_update(), base, dirty, gr.skip(), {}, None, gr.update(visible=True),
+                f"⚠ **{html.escape(str(name))}** is no longer in {kind}: its kept changes cannot be restored.")
+    entry = list(_entry_load(kind, name, names=names))
+    loaded_now = {"kind": kind, "entity": name}
+    new_base, _, _, _ = entry_baselined(entry, list(DRAFT_PARTS), base, {}, {}, loaded_now)
+    at, places = 0, {}
+    for segment, size in ENTRY_SEGMENTS.items():
+        places[segment] = list(range(at, at + size))
+        at += size
+    slots = {"fields": places["fields"], "entry_yaml": places["entry_yaml"], "actions_yaml": places["actions_yaml"],
+             "policy_yaml": places["policy_yaml"], "scheduling": places["scheduling"][3:], "details": places["details"][3:],
+             "action": [places["action"][1], *places["action"][2:16], *places["action"][17:]]}
+    restored = []
+    for part, values in kept.items():
+        if part not in slots or len(values) != len(slots[part]):
+            continue
+        values = [_unserial(value) for value in values]
+        for slot, value in zip(slots[part], values):
+            entry[slot] = value
+        if part == "action":  # its pickers follow the kept action
+            state = values[0] or {}
+            entry[places["action"][0]] = gr.Dropdown(choices=_action_choices(kind, name) if name else [],
+                                                     value=state.get("index"))
+            entry[places["action"][16]] = gr.Dropdown(choices=_outcome_choices(state.get("action") or {}),
+                                                      value=state.get("outcome"))
+        if part_canonical(part, values) != new_base.get(part):
+            restored.append(part)
+    ordered = [p for p in DRAFT_PARTS if p in restored]
+    return (*entry, new_base, {**(dirty or {}), "entries": ordered}, draft_status_markup(ordered, loaded_now),
+            offer if ordered else {}, None, gr.update(visible=False), "")
+
+
+def discard_kept_draft_ui():
+    """**Discard**: the kept changes are dropped. Returns (kept draft, offered nothing, panel, text)."""
+    return {}, None, gr.update(visible=False), ""
+
+
+# ---- the other World editors with a draft: 🎯 Missions, 📜 Story rules, 🗺 Map --------------------------
+#
+# Each has parts (a form, a YAML editor) with a baseline (forms_base: {editor: {part: canonical}}) set
+# in the same step as every load and save, the parts unsaved in drafts_dirty, an indicator, and a
+# question (Save, Discard, Stay) when its picker would replace a draft or the user leaves it.
+
+FORM_EDITORS = {
+    "missions": {"title": "🎯 Missions", "scope": "mission"},
+    "rules": {"title": "📜 Story rules", "scope": "values"},
+    "map": {"title": "🗺 Map", "scope": "borders"},
+}
+NEW_MISSION = "__new_mission__"
+# What a part's save makes out of date (reloaded unless it has unsaved changes of its own).
+FORM_STALE = {("missions", "mission"): ("missions_yaml",), ("missions", "missions_yaml"): ("mission",),
+              ("rules", "variables"): ("values",), ("map", "borders"): ("map_yaml",), ("map", "map_yaml"): ("borders",)}
+FORM_CONFLICTS = {"missions": ("mission", "missions_yaml"), "map": ("borders", "map_yaml")}
+
+
+def _form_parts(editor):
+    """{part: (label, number of components)}, in the order of the editor's components."""
+    return {"missions": {"mission": ("Mission form", 7), "missions_yaml": ("Missions as YAML", 1)},
+            "rules": {"rules": ("Story rules", len(REFERENCE["rule_fields"])), "messages": ("Story messages", 1),
+                      "variables": ("Persistent variables", 1), "values": ("Stored values of a profile", 1),
+                      "stats": ("Character stats", 1)},
+            "map": {"borders": ("Borders", 1), "map_yaml": ("Map as YAML", 1)}}[editor]
+
+
+def _form_split(editor, values):
+    parts, at = {}, 0
+    for part, (_, size) in _form_parts(editor).items():
+        parts[part], at = tuple(values[at:at + size]), at + size
+    return parts
+
+
+def _form_canonical(values):
+    return _plain([_output_value(value)[1] for value in values])
+
+
+def form_status_markup(editor, parts):
+    if parts:
+        what = ", ".join(_form_parts(editor)[p][0] for p in parts)
+        return f'<div class="draft-status dirty" data-dirty="1">● Unsaved changes: {html.escape(what)}</div>'
+    return '<div class="draft-status" data-dirty="0">✓ No unsaved changes</div>'
+
+
+def form_part_status_ui(editor, part, base, dirty, *values):
+    """An edit in one part of a form editor (only its values travel). Returns (drafts_dirty, indicator)."""
+    known = ((base or {}).get(editor) or {}).get(part)
+    changed = known is not None and _form_canonical(values) != known
+    parts = set(_dirty_of(dirty, editor))
+    (parts.add if changed else parts.discard)(part)
+    ordered = [p for p in _form_parts(editor) if p in parts]
+    return {**(dirty or {}), editor: ordered}, form_status_markup(editor, ordered)
+
+
+def _form_selected(editor, context):
+    return (context or {}).get("key") if editor == "missions" else context
+
+
+def _form_load(editor, part, context):
+    """A part as stored: (its values, other outputs: context, view)."""
+    if editor == "missions":
+        if part == "mission":
+            *values, state = mission_form_ui(_form_selected(editor, context))
+            return tuple(values), {"context": state}
+        return (load_missions_yaml(),), {}
+    if editor == "rules":
+        if part == "rules":
+            return tuple(load_rules_ui()), {}
+        loader = {"messages": load_messages_yaml, "variables": load_variables_yaml, "stats": load_stats_yaml,
+                  "values": lambda: stored_values_yaml(context)}[part]
+        return (loader(),), {}
+    if part == "borders":
+        view, borders = map_place_ui(context)
+        return (borders,), {"view": view}
+    return (load_document("map"),), {}
+
+
+def _form_save(editor, part, context, values):
+    """Save a part with its own save (a failure raises gr.Error). Returns (message, other outputs)."""
+    if editor == "missions":
+        if part == "mission":
+            picker, message, _ = save_mission_form_ui(context, *values)
+            key = _output_value(picker)[1]
+            return message, {"context": {**(context or {}), "key": key},
+                             "picker": gr.Dropdown(choices=_mission_keys(), value=key)}
+        return save_missions_yaml(values[0])[1], {"picker": gr.Dropdown(choices=_mission_keys())}
+    if editor == "rules":
+        if part == "rules":
+            return save_rules_ui(*values), {}
+        if part == "values":
+            return save_stored_values_yaml(context, values[0])[1], {}
+        saver = {"messages": save_messages_yaml, "variables": save_variables_yaml, "stats": save_stats_yaml}[part]
+        return saver(values[0])[1], {}
+    if part == "borders":
+        view, message, _ = save_borders_ui(context, values[0])
+        return message, {"view": view}
+    return save_document("map", values[0])[1], {}
+
+
+def _form_go(editor, target, context):
+    """Carry out a pick: the scope part loaded for ``target`` (a mission, a profile, a place, or a new
+    mission). Returns a result with that part's values, the context and the picker."""
+    if editor == "missions":
+        if target == NEW_MISSION:
+            picker, *values, state = new_mission_ui()
+            return {"values": {"mission": tuple(values)}, "context": state, "picker": picker}
+        *values, state = mission_form_ui(target)
+        return {"values": {"mission": tuple(values)}, "context": state, "picker": gr.update(value=target)}
+    if editor == "rules":
+        return {"values": {"values": (stored_values_yaml(target),)}, "context": target, "picker": gr.update(value=target)}
+    view, borders = map_place_ui(target)
+    return {"values": {"borders": (borders,)}, "context": target, "view": view, "picker": gr.update(value=target)}
+
+
+def _form_captured(editor, result, base, dirty, parts):
+    """A result whose ``parts`` were just loaded or saved: their baselines from the values it sets."""
+    base = {**(base or {})}
+    known = dict(base.get(editor) or {})
+    for part in parts:
+        known[part] = _form_canonical(result["values"][part])
+    base[editor] = known
+    left = [p for p in _dirty_of(dirty, editor) if p not in parts]
+    return {**result, "base": base, "dirty": {**(dirty or {}), editor: left}, "status": form_status_markup(editor, left)}
+
+
+def _with_stale(editor, saved, context, dirty, result):
+    """Reload what the saves made out of date, unless it has unsaved changes. Returns the parts reloaded."""
+    reloaded = []
+    for part in saved:
+        for stale in FORM_STALE.get((editor, part), ()):
+            if stale not in saved and stale not in _dirty_of(dirty, editor) and stale not in reloaded:
+                values, extras = _form_load(editor, stale, context)
+                result["values"][stale] = values
+                result.update({k: v for k, v in extras.items() if k != "context" or stale == FORM_EDITORS[editor]["scope"]})
+                reloaded.append(stale)
+    return reloaded
+
+
+def form_load_all_ui(editor, context):
+    """The editor as stored (the studio opening), with every baseline."""
+    result = {"values": {}}
+    for part in _form_parts(editor):
+        values, extras = _form_load(editor, part, context)
+        result["values"][part] = values
+        result.update(extras)
+    return _form_captured(editor, result, {}, {}, list(_form_parts(editor)))
+
+
+def form_pick_ui(editor, target, context, base, dirty):
+    """The editor's picker changed (a mission, *New mission*, a profile, a place): carried out, unless its
+    form has unsaved changes; then the picker goes back and Save, Discard or Stay is asked."""
+    scope = FORM_EDITORS[editor]["scope"]
+    if scope in _dirty_of(dirty, editor):
+        pending = {"type": "pick", "value": target}
+        what = "starting a new mission" if target == NEW_MISSION else f"opening {target}"
+        text = (f"### ● Unsaved changes\\n{FORM_EDITORS[editor]['title']} has unsaved changes in "
+                f"**{_form_parts(editor)[scope][0]}**. Save them before {what}? **Discard** drops them; "
+                "**Stay** keeps editing.")
+        revert = {} if target == NEW_MISSION else {"picker": gr.update(value=_form_selected(editor, context))}
+        return {**revert, "prompt": True, "prompt_text": text, "pending": pending}
+    return _form_captured(editor, {**_form_go(editor, target, context), "prompt": False, "pending": None},
+                          base, dirty, [scope])
+
+
+def form_save_ui(editor, part, context, base, dirty, *values):
+    """A part's own save button: that part (a failure changes nothing), then reloaded as stored, with what
+    the save made out of date unless it has unsaved changes of its own."""
+    split = _form_split(editor, values)
+    message, extras = _form_save(editor, part, context, split[part])
+    context = extras.get("context", context)
+    result = {"values": {}, **extras}
+    loaded, more = _form_load(editor, part, context)
+    result["values"][part] = loaded
+    result.update(more)
+    reloaded = _with_stale(editor, [part], context, dirty, result)
+    return {**_form_captured(editor, result, base, dirty, [part, *reloaded]), "message": message}
+
+
+def form_reload_ui(editor, part, context, base, dirty):
+    """*Reload* / *Reload from disk*: that part as stored (its changes dropped)."""
+    values, extras = _form_load(editor, part, context)
+    return _form_captured(editor, {"values": {part: values}, **extras}, base, dirty, [part])
+
+
+def form_resolve_ui(editor, choice, pending, context, base, dirty, *values):
+    """The editor's question answered: **save** the unsaved parts concerned (each with its own save; a
+    failure keeps the drafts and asks again, with why), **discard** them, then carry on (the pick, the
+    section, the destination); or **stay**."""
+    if not pending or choice == "stay":
+        return {"prompt": False, "prompt_text": "", "pending": None}
+    scope = [FORM_EDITORS[editor]["scope"]] if pending["type"] == "pick" else list(_form_parts(editor))
+    parts = [p for p in _dirty_of(dirty, editor) if p in scope]
+    result, saved = {"values": {}}, []
+    if choice == "save":
+        conflict = FORM_CONFLICTS.get(editor)
+        if conflict and all(p in parts for p in conflict):
+            labels = " and ".join(_form_parts(editor)[p][0] for p in conflict)
+            return {"prompt": True, "prompt_text": f"⚠ **Nothing was saved:** {labels} both change the same data. "
+                    "Choose **Stay** and save the one to keep with its own button, or **Discard** both."}
+        split = _form_split(editor, values)
+        for part in parts:
+            try:
+                message, extras = _form_save(editor, part, context, split[part])
+            except gr.Error as exc:
+                done = {p: split[p] for p in saved}
+                partial = _form_captured(editor, {"values": done}, base, dirty, saved) if saved else {}
+                return {**partial, "values": {}, "prompt": True, "prompt_text":
+                        f"⚠ **{_form_parts(editor)[part][0]} could not be saved:** {_error_text(exc)}  \\nNothing was "
+                        "discarded: correct it and **Save** again, **Stay**, or **Discard**."}
+            context = extras.get("context", context)
+            result.update({k: v for k, v in extras.items() if k != "context"})
+            saved.append(part)
+            result["message"] = message
+    for part in parts:  # saved or discarded: as stored now
+        loaded, extras = _form_load(editor, part, context)
+        result["values"][part] = loaded
+        result.update(extras)
+    captured = list(parts) + _with_stale(editor, saved, context, dirty, result)
+    if pending["type"] == "pick":
+        result.update({k: v for k, v in _form_go(editor, pending["value"], result.get("context", context)).items()
+                       if k != "values"})
+        result["values"].update(_form_go(editor, pending["value"], result.get("context", context))["values"])
+        captured.append(FORM_EDITORS[editor]["scope"])
+    elif pending["type"] == "destination":
+        result["nav"] = navigate(pending["id"])
+    elif pending["type"] == "section":
+        result["section"], result["section_now"] = pending["id"], pending["id"]
+    return _form_captured(editor, {**result, "prompt": False, "prompt_text": "", "pending": None}, base, dirty,
+                          list(dict.fromkeys(captured)))
 
 
 # Before the page is closed or reloaded with unsaved changes, the browser asks (launch(head=...)).
 DRAFT_HEAD = """<script>
 window.addEventListener("beforeunload", (event) => {
-  if (document.querySelector('#draft-status [data-dirty="1"]')) { event.preventDefault(); event.returnValue = ""; }
+  if (document.querySelector('.draft-status[data-dirty="1"]')) { event.preventDefault(); event.returnValue = ""; }
 });
 </script>"""
 
@@ -3527,6 +3977,10 @@ def build_app():
         nav_menu = gr.Radio([(label, key) for key, label in DESTINATIONS], value="world",
                             label="☰ Menu: go to a section", elem_id="ane-menu", elem_classes="nav-menu")
         dest_now = gr.State("world")  # the destination open (leaving 🌍 World with unsaved changes asks first)
+        drafts_dirty = gr.State({})  # every World editor's unsaved parts, {editor: [parts]}: what the guards read
+        forms_base = gr.State({})  # 🎯 Missions, 📜 Story rules, 🗺 Map: their baselines, {editor: {part: ...}}
+        section_now = gr.State("entries")  # the World section open
+        saved_draft = gr.BrowserState({}, storage_key="ane-entry-draft")  # the entry draft, kept in this browser
         # 🧠 Train's completed engine, kept in this browser so that a reload shows it again (restore_result_ui).
         # Defined here, outside the destinations: the browser restores it before the page's load events.
         saved_result = gr.BrowserState(None, storage_key="ane-train-result")
@@ -3545,7 +3999,7 @@ def build_app():
             nav_outputs = [main_tabs, *nav_buttons, nav_menu, dest_now]  # what navigate() returns
             with gr.Tab("🌍 World", id="world", elem_id="dest-world") as world_tab:
                 with gr.Tabs(selected="entries") as world_sections:
-                    with gr.Tab(WORLD_SECTIONS["entries"], id="entries"):
+                    with gr.Tab(WORLD_SECTIONS["entries"], id="entries") as section_entries:
                         with gr.Row():
                             kind = gr.Radio(REFERENCE["entity_kinds"], value="Locations", label="Content type")
                             entity = gr.Dropdown(label="Entry", choices=names, value=selected_name)
@@ -3562,6 +4016,13 @@ def build_app():
                                 draft_save = gr.Button("💾 Save", variant="primary", elem_id="draft-save")
                                 draft_discard = gr.Button("Discard", variant="stop", elem_id="draft-discard")
                                 draft_stay = gr.Button("Stay", elem_id="draft-stay")
+                        # A draft kept in this browser when the page was closed: offered back.
+                        with gr.Group(visible=False, elem_id="draft-offer", elem_classes="draft-prompt") as draft_offer_group:
+                            draft_offer_text = gr.Markdown()
+                            with gr.Row():
+                                draft_offer_restore = gr.Button("↺ Restore", variant="primary", elem_id="draft-offer-restore")
+                                draft_offer_discard = gr.Button("Discard", elem_id="draft-offer-discard")
+                        draft_offer = gr.State(None)
                         places_now, people_now, items_now = _names_of("Locations"), _names_of("NPCs"), _names_of("Items")
                         events_now, stats_now = _names_of("Events"), _stat_names()
                         with gr.Tabs():
@@ -3823,6 +4284,8 @@ def build_app():
                         (mission_confirm, mission_question, mission_delete, mission_cancel, mission_undo_bar,
                          mission_undo_said, mission_undo) = deletion_panels("mission")
                         mission_pending, mission_undo_state = gr.State(None), gr.State(None)
+                        (missions_draft_status, missions_prompt, missions_prompt_text, missions_save, missions_discard,
+                         missions_stay, missions_pending_state) = form_panels("missions")
                         with gr.Group():
                             with gr.Row():
                                 mis_key = gr.Textbox(label="Key", info="letters, digits and _")
@@ -3843,10 +4306,11 @@ def build_app():
                             with gr.Row():
                                 save_missions_button = gr.Button("Validate & save missions")
                                 reload_missions_button = gr.Button("Reload from disk")
-                        save_missions_button.click(save_missions_yaml, missions_editor, [missions_editor, missions_status])
-                        reload_missions_button.click(load_missions_yaml, None, missions_editor)
 
                     with gr.Tab(WORLD_SECTIONS["story-rules"], id="story-rules") as section_story_rules:
+                        rules_profile = gr.State(profiles["default"])  # the profile whose stored values are shown
+                        (rules_draft_status, rules_prompt, rules_prompt_text, rules_save, rules_discard, rules_stay,
+                         rules_pending_state) = form_panels("rules")
                         with gr.Accordion("Story rules", open=True):
                             rules = dict(zip(REFERENCE["rule_fields"], load_rules_ui()))
                             rule_choices = REFERENCE["rule_choices"]
@@ -3896,8 +4360,6 @@ def build_app():
                                 save_rules_button = gr.Button("Save story rules", variant="primary")
                                 reload_rules_button = gr.Button("Reload")
                             story_rules_status = gr.Markdown()
-                            save_rules_button.click(save_rules_ui, rule_inputs, story_rules_status)
-                            reload_rules_button.click(load_rules_ui, None, rule_inputs)
                         with gr.Accordion("Story messages", open=False):
                             gr.Markdown(
                                 "Rewrite any sentence the engine adds to a story, e.g. `voyage: \"You head towards "
@@ -3909,8 +4371,6 @@ def build_app():
                                 save_messages_button = gr.Button("Validate & save messages", variant="primary")
                                 reload_messages_button = gr.Button("Reload from disk")
                             messages_status = gr.Markdown()
-                            save_messages_button.click(save_messages_yaml, messages_editor, [messages_editor, messages_status])
-                            reload_messages_button.click(load_messages_yaml, None, messages_editor)
                         with gr.Accordion("Persistent variables", open=False):
                             gr.Markdown(
                                 "Variables that carry over between playthroughs. Outcomes change them with "
@@ -3933,14 +4393,6 @@ def build_app():
                                 refresh_values_button = gr.Button("Refresh")
                                 reset_values_button = gr.Button("Reset profile (new player)", variant="stop")
                             values_status = gr.Markdown()
-                            save_variables_button.click(
-                                save_variables_yaml, variables_editor, [variables_editor, variables_status],
-                            ).then(stored_values_yaml, values_profile, stored_values)
-                            values_profile.change(stored_values_yaml, values_profile, stored_values)
-                            refresh_values_button.click(stored_values_yaml, values_profile, stored_values)
-                            save_values_button.click(save_stored_values_yaml, [values_profile, stored_values],
-                                                     [stored_values, values_status])
-                            reset_values_button.click(reset_stored_values_ui, values_profile, [stored_values, values_status])
                         with gr.Accordion("Character stats", open=False):
                             gr.Markdown(
                                 "Define the stats of this story (any names), the points budget, how players get their "
@@ -3952,9 +4404,10 @@ def build_app():
                                 save_stats_button = gr.Button("Validate & save character stats", variant="primary")
                                 reload_stats_button = gr.Button("Reload from disk")
                             stats_status = gr.Markdown()
-                            save_stats_button.click(save_stats_yaml, stats_editor, [stats_editor, stats_status])
-                            reload_stats_button.click(load_stats_yaml, None, stats_editor)
                     with gr.Tab(WORLD_SECTIONS["map"], id="map") as section_map:
+                        map_selected = gr.State(places_now[0] if places_now else None)  # the place whose borders show
+                        (map_draft_status, map_prompt, map_prompt_text, map_save, map_discard, map_stay,
+                         map_pending_state) = form_panels("map")
                         gr.Markdown("Pick a place and tick the places it borders: a route holds both ways, and a far "
                                     "place is reached through the places between. The map below shows every route.")
                         with gr.Row():
@@ -3971,9 +4424,6 @@ def build_app():
                             with gr.Row():
                                 save_map_button = gr.Button("Validate & save the map")
                                 reload_map_button = gr.Button("Reload from disk")
-                            save_map_button.click(lambda text: save_document("map", text), map_editor,
-                                                  [map_editor, map_status])
-                            reload_map_button.click(lambda: load_document("map"), None, map_editor)
 
                     with gr.Tab(WORLD_SECTIONS["behaviour"], id="behaviour") as section_behaviour:
                         gr.Markdown(
@@ -4058,22 +4508,44 @@ def build_app():
                 if len(draft_inputs) != sum(DRAFT_SIZES.values()) or len(entry_outputs) != ENTRY_OUTPUTS:
                     raise RuntimeError("The entry editor's components do not match DRAFT_SIZES / ENTRY_SEGMENTS.")
                 draft_outputs = [*entry_outputs, *nav_outputs, world_sections, draft_pending, draft_prompt,
-                                 draft_message, draft_capture]
+                                 draft_message, section_now, draft_capture]
                 guard_inputs = [draft_loaded, draft_base, *draft_inputs]
-                capture = {"fn": capture_draft_ui, "inputs": [draft_capture, draft_base, draft_loaded, *draft_inputs],
-                           "outputs": [draft_base, draft_status, draft_capture], "show_progress": "hidden"}
-                status = {"fn": draft_status_ui, "inputs": [draft_base, draft_loaded, *draft_inputs],
-                          "outputs": draft_status, "show_progress": "hidden"}
-                demo.load(load_selection_ui, [kind, entity], [*entry_outputs, draft_capture]).success(**capture)
+
+                def tracked(fn, inputs, outputs, keep_saved=False):
+                    """A handler of the entry editor whose output at draft_capture names the parts it loaded or
+                    saved: their baselines are set from the values it sets, in the same step (entry_baselined),
+                    with the unsaved parts, the indicator and the draft kept in this browser."""
+                    at = outputs.index(draft_capture)
+
+                    def run(dirty, saved, base, loaded, *args):
+                        out = list(fn(*args))
+                        new_base, new_dirty, indicator, kept = entry_baselined(out[:ENTRY_OUTPUTS], out[at], base, dirty,
+                                                                               saved, loaded)
+                        out[at] = new_base
+                        return (*out, new_dirty, indicator, *(() if keep_saved else (kept,)))
+
+                    run.__name__ = getattr(fn, "__name__", "run")  # the handler it runs (not functools.wraps: its signature)
+                    return (run, [drafts_dirty, saved_draft, draft_base, draft_loaded, *inputs],
+                            [*outputs[:at], draft_base, *outputs[at + 1:], drafts_dirty, draft_status,
+                             *(() if keep_saved else (saved_draft,))])
+
+                demo.load(*tracked(load_selection_ui, [kind, entity], [*entry_outputs, draft_capture], keep_saved=True))
+                demo.load(offer_kept_draft_ui, saved_draft, [draft_offer, draft_offer_group, draft_offer_text])
+                draft_offer_restore.click(restore_kept_draft_ui, [draft_offer, draft_base, drafts_dirty, draft_loaded,
+                                                                  *draft_inputs],
+                                          [*entry_outputs, draft_base, drafts_dirty, draft_status, saved_draft, draft_offer,
+                                           draft_offer_group, draft_offer_text])
+                draft_offer_discard.click(discard_kept_draft_ui, None,
+                                          [saved_draft, draft_offer, draft_offer_group, draft_offer_text])
                 # The user's choices: carried out at once, or, with unsaved changes, undone and asked about.
-                kind.input(entry_choice_ui, [kind, entity, *guard_inputs], draft_outputs).success(**capture)
-                entity.input(entry_choice_ui, [kind, entity, *guard_inputs], draft_outputs).success(**capture)
-                add_entry.click(new_entry_choice_ui, guard_inputs, draft_outputs).success(**capture)
-                act_pick.input(action_choice_ui, [act_pick, *guard_inputs], draft_outputs).success(**capture)
-                act_new.click(new_action_choice_ui, guard_inputs, draft_outputs).success(**capture)
+                kind.input(*tracked(entry_choice_ui, [kind, entity, *guard_inputs], draft_outputs))
+                entity.input(*tracked(entry_choice_ui, [kind, entity, *guard_inputs], draft_outputs))
+                add_entry.click(*tracked(new_entry_choice_ui, guard_inputs, draft_outputs))
+                act_pick.input(*tracked(action_choice_ui, [act_pick, *guard_inputs], draft_outputs))
+                act_new.click(*tracked(new_action_choice_ui, guard_inputs, draft_outputs))
                 for button, choice in ((draft_save, "save"), (draft_discard, "discard"), (draft_stay, "stay")):
-                    button.click(lambda pending, *rest, choice=choice: resolve_draft_ui(choice, pending, *rest),
-                                 [draft_pending, *guard_inputs], draft_outputs).success(**capture)
+                    button.click(*tracked(lambda pending, *rest, choice=choice: resolve_draft_ui(choice, pending, *rest),
+                                          [draft_pending, *guard_inputs], draft_outputs))
                 # Each form's own save: that part (a failure changes nothing), then reloaded as stored.
                 for button, part, said in ((save_entry, "fields", editor_status), (act_save, "action", actions_status),
                                            (save_policy_form, "scheduling", policy_status),
@@ -4081,12 +4553,12 @@ def build_app():
                                            (save_entity_yaml_button, "entry_yaml", entity_yaml_status),
                                            (save_actions_button, "actions_yaml", actions_status),
                                            (save_policy_button, "policy_yaml", policy_status)):
-                    button.click(lambda *rest, part=part: save_part_ui(part, *rest), guard_inputs,
-                                 [*entry_outputs, said, draft_capture]).success(**capture)
+                    button.click(*tracked(lambda *rest, part=part: save_part_ui(part, *rest), guard_inputs,
+                                          [*entry_outputs, said, draft_capture]))
                 for button, part in ((act_discard, "action"), (reload_entity_yaml_button, "entry_yaml"),
                                      (reload_actions_button, "actions_yaml"), (reload_policy_button, "policy_yaml")):
-                    button.click(lambda *rest, part=part: reload_part_ui(part, *rest), guard_inputs,
-                                 [*entry_outputs, draft_capture]).success(**capture)
+                    button.click(*tracked(lambda *rest, part=part: reload_part_ui(part, *rest), guard_inputs,
+                                          [*entry_outputs, draft_capture]))
                 # Deleting: a question naming exactly what goes, then Undo (this session) once it is gone.
                 history_events = {"entry": [], "action": [], "mission": []}
                 for ask, asked, pending, (confirm, question, delete, cancel, bar, said, undo), state, confirmed, \
@@ -4101,35 +4573,32 @@ def build_app():
                     question_outputs = [pending, confirm, question, delete]
                     ask.click(asked, guard_inputs, question_outputs, show_progress="hidden")
                     cancel.click(cancel_delete_ui, None, question_outputs, show_progress="hidden")
-                    deleted = delete.click(confirmed, [pending, state, *guard_inputs],
-                                           [*entry_outputs, said_where, draft_capture, *question_outputs, state, bar,
-                                            said])
-                    undone_event = undo.click(undone, [state, *guard_inputs],
-                                              [*entry_outputs, said_where, draft_capture, state, bar, said])
-                    for event in (deleted, undone_event):
-                        event.success(**capture)
+                    deleted = delete.click(*tracked(confirmed, [pending, state, *guard_inputs],
+                                                    [*entry_outputs, said_where, draft_capture, *question_outputs, state,
+                                                     bar, said]))
+                    undone_event = undo.click(*tracked(undone, [state, *guard_inputs],
+                                                       [*entry_outputs, said_where, draft_capture, state, bar, said]))
                     history_events["entry" if state is entry_undo_state else "action"] += [deleted, undone_event]
+                # Every edit: only its part travels, and is compared with that part's baseline.
+                part_components, at = {}, 0
+                for part, size in DRAFT_SIZES.items():
+                    part_components[part], at = draft_inputs[at:at + size], at + size
+                part_status = {part: {"fn": (lambda base, dirty, loaded, saved, *values, part=part:
+                                             entry_part_status_ui(part, base, dirty, loaded, saved, *values)),
+                                      "inputs": [draft_base, drafts_dirty, draft_loaded, saved_draft, *components],
+                                      "outputs": [drafts_dirty, draft_status, saved_draft], "show_progress": "hidden"}
+                               for part, components in part_components.items()}
+                for part, components in part_components.items():
+                    gr.on([c.input for c in components if not isinstance(c, gr.State)], trigger_mode="always_last",
+                          **part_status[part])
                 # An action's outcomes are switched, added and removed inside its draft (saved with Save action).
                 out_pick.input(pick_outcome_ui, [action_state, out_pick, *outcome_fields],
-                               [action_state, *outcome_fields]).then(**status)
+                               [action_state, *outcome_fields]).then(**part_status["action"])
                 out_new.click(new_outcome_ui, [action_state, *outcome_fields],
-                              [action_state, out_pick, *outcome_fields]).then(**status)
-                out_delete.click(delete_outcome_ui, action_state, [action_state, out_pick, *outcome_fields]).then(**status)
-                # Every edit: the indicator compares the draft with what was last loaded or saved.
-                gr.on([component.input for component in draft_inputs if not isinstance(component, gr.State)],
-                      trigger_mode="always_last", **status)
-                # Leaving the editor for another section of the World asks first, with unsaved changes.
-                for section, tab in (("missions", section_missions), ("story-rules", section_story_rules),
-                                     ("map", section_map), ("behaviour", section_behaviour), ("grow", section_grow),
-                                     ("checks", section_checks)):
-                    tab.select(lambda *rest, section=section: section_choice_ui(section, *rest), guard_inputs,
-                               draft_outputs, show_progress="hidden")
+                              [action_state, out_pick, *outcome_fields]).then(**part_status["action"])
+                out_delete.click(delete_outcome_ui, action_state, [action_state, out_pick, *outcome_fields]).then(
+                    **part_status["action"])
                 # Missions.
-                mis_pick.input(mission_form_ui, mis_pick, [*mission_fields, mission_state])
-                mis_new.click(new_mission_ui, None, [mis_pick, *mission_fields, mission_state])
-                save_mission_form.click(save_mission_form_ui, [mission_state, *mission_fields],
-                                        [mis_pick, missions_status, missions_editor]).then(
-                    mission_form_ui, mis_pick, [*mission_fields, mission_state])
                 mission_question_outputs = [mission_pending, mission_confirm, mission_question, mission_delete]
                 mis_delete.click(ask_delete_mission_ui, mission_state, mission_question_outputs, show_progress="hidden")
                 mission_cancel.click(cancel_delete_ui, None, mission_question_outputs, show_progress="hidden")
@@ -4137,14 +4606,112 @@ def build_app():
                     mission_delete.click(confirm_delete_mission_ui, [mission_pending, mission_undo_state],
                                          [mis_pick, missions_status, missions_editor, *mission_question_outputs,
                                           mission_undo_state, mission_undo_bar, mission_undo_said]),
-                    mission_undo.click(undo_delete_mission_ui, mission_undo_state,
+                    mission_undo.click(undo_delete_mission_ui, [mission_undo_state, forms_base, drafts_dirty],
                                        [mis_pick, *mission_fields, mission_state, missions_status, missions_editor,
-                                        mission_undo_state, mission_undo_bar, mission_undo_said])]
+                                        mission_undo_state, mission_undo_bar, mission_undo_said, forms_base,
+                                        drafts_dirty, missions_draft_status])]
+                # 🎯 Missions, 📜 Story rules, 🗺 Map: each form's draft, its picker guarded, its saves and reloads
+                # setting its baselines in the same step, and a question when its draft would be replaced.
+                form_layouts = {
+                    "missions": {"parts": {"mission": mission_fields, "missions_yaml": [missions_editor]},
+                                 "context": mission_state, "picker": mis_pick, "view": None, "message": missions_status,
+                                 "panels": (missions_draft_status, missions_prompt, missions_prompt_text, missions_save,
+                                            missions_discard, missions_stay, missions_pending_state)},
+                    "rules": {"parts": {"rules": rule_inputs, "messages": [messages_editor],
+                                        "variables": [variables_editor], "values": [stored_values],
+                                        "stats": [stats_editor]},
+                              "context": rules_profile, "picker": values_profile, "view": None,
+                              "message": story_rules_status,
+                              "panels": (rules_draft_status, rules_prompt, rules_prompt_text, rules_save, rules_discard,
+                                         rules_stay, rules_pending_state)},
+                    "map": {"parts": {"borders": [map_borders], "map_yaml": [map_editor]}, "context": map_selected,
+                            "picker": map_place, "view": map_view, "message": map_status,
+                            "panels": (map_draft_status, map_prompt, map_prompt_text, map_save, map_discard, map_stay,
+                                       map_pending_state)}}
+
+                def form_outputs(editor, message=None):
+                    layout = form_layouts[editor]
+                    status_box, prompt_box, prompt_text, *_, pending_state = layout["panels"]
+                    return [*[c for components in layout["parts"].values() for c in components], layout["context"],
+                            layout["picker"], *([layout["view"]] if layout["view"] else []),
+                            message or layout["message"], status_box, prompt_box, prompt_text, pending_state,
+                            forms_base, drafts_dirty, *nav_outputs, world_sections, section_now]
+
+                def form_emit(editor, result):
+                    """A form editor's result dict as its outputs (form_outputs; what it leaves out is skipped)."""
+                    layout, skip = form_layouts[editor], gr.skip()
+                    out = []
+                    for part, components in layout["parts"].items():
+                        values = (result.get("values") or {}).get(part)
+                        out += list(values) if values is not None else [skip] * len(components)
+                    out += [result.get("context", skip), result.get("picker", skip)]
+                    if layout["view"]:
+                        out.append(result.get("view", skip))
+                    out += [result.get("message", skip), result.get("status", skip),
+                            gr.update(visible=result["prompt"]) if "prompt" in result else skip,
+                            result.get("prompt_text", skip), result.get("pending", skip),
+                            result.get("base", skip), result.get("dirty", skip),
+                            *(result.get("nav") or [skip] * len(nav_outputs)),
+                            gr.Tabs(selected=result["section"]) if result.get("section") else skip,
+                            result.get("section_now", skip)]
+                    return tuple(out)
+
+                for editor, layout in form_layouts.items():
+                    values = [c for components in layout["parts"].values() for c in components]
+                    status_box, prompt_box, prompt_text, save_button, discard_button, stay_button, pending_state = \
+                        layout["panels"]
+                    demo.load(lambda context, editor=editor: form_emit(editor, form_load_all_ui(editor, context)),
+                              layout["context"], form_outputs(editor), show_progress="hidden")
+                    for part, components in layout["parts"].items():  # every edit: its part against its baseline
+                        gr.on([c.input for c in components],
+                              lambda base, dirty, *vals, editor=editor, part=part: form_part_status_ui(
+                                  editor, part, base, dirty, *vals),
+                              [forms_base, drafts_dirty, *components], [drafts_dirty, status_box],
+                              trigger_mode="always_last", show_progress="hidden")
+                    for button, choice in ((save_button, "save"), (discard_button, "discard"), (stay_button, "stay")):
+                        button.click(lambda pending, context, base, dirty, *vals, editor=editor, choice=choice: form_emit(
+                            editor, form_resolve_ui(editor, choice, pending, context, base, dirty, *vals)),
+                            [pending_state, layout["context"], forms_base, drafts_dirty, *values], form_outputs(editor))
+                pick_inputs = {editor: [form_layouts[editor]["context"], forms_base, drafts_dirty] for editor in form_layouts}
+                mis_pick.input(lambda target, context, base, dirty: form_emit("missions", form_pick_ui(
+                    "missions", target, context, base, dirty)), [mis_pick, *pick_inputs["missions"]], form_outputs("missions"))
+                mis_new.click(lambda context, base, dirty: form_emit("missions", form_pick_ui(
+                    "missions", NEW_MISSION, context, base, dirty)), pick_inputs["missions"], form_outputs("missions"))
+                values_profile.input(lambda target, context, base, dirty: form_emit("rules", form_pick_ui(
+                    "rules", target, context, base, dirty)), [values_profile, *pick_inputs["rules"]], form_outputs("rules"))
+                map_place.input(lambda target, context, base, dirty: form_emit("map", form_pick_ui(
+                    "map", target, context, base, dirty)), [map_place, *pick_inputs["map"]], form_outputs("map"))
+                # Each part's own save and reload buttons (a failure changes nothing).
+                for editor, part, button, said, action in (
+                        ("missions", "mission", save_mission_form, missions_status, "save"),
+                        ("missions", "missions_yaml", save_missions_button, missions_status, "save"),
+                        ("missions", "missions_yaml", reload_missions_button, missions_status, "reload"),
+                        ("rules", "rules", save_rules_button, story_rules_status, "save"),
+                        ("rules", "rules", reload_rules_button, story_rules_status, "reload"),
+                        ("rules", "messages", save_messages_button, messages_status, "save"),
+                        ("rules", "messages", reload_messages_button, messages_status, "reload"),
+                        ("rules", "variables", save_variables_button, variables_status, "save"),
+                        ("rules", "values", save_values_button, values_status, "save"),
+                        ("rules", "values", refresh_values_button, values_status, "reload"),
+                        ("rules", "stats", save_stats_button, stats_status, "save"),
+                        ("rules", "stats", reload_stats_button, stats_status, "reload"),
+                        ("map", "borders", save_borders, map_status, "save"),
+                        ("map", "map_yaml", save_map_button, map_status, "save"),
+                        ("map", "map_yaml", reload_map_button, map_status, "reload")):
+                    layout = form_layouts[editor]
+                    values = [c for components in layout["parts"].values() for c in components]
+                    if action == "save":
+                        button.click(lambda context, base, dirty, *vals, editor=editor, part=part: form_emit(
+                            editor, form_save_ui(editor, part, context, base, dirty, *vals)),
+                            [layout["context"], forms_base, drafts_dirty, *values], form_outputs(editor, said))
+                    else:
+                        button.click(lambda context, base, dirty, editor=editor, part=part: form_emit(
+                            editor, form_reload_ui(editor, part, context, base, dirty)),
+                            [layout["context"], forms_base, drafts_dirty], form_outputs(editor, said))
+                reset_values_button.click(reset_stored_values_ui, values_profile, [stored_values, values_status]).success(
+                    lambda context, base, dirty: form_emit("rules", form_reload_ui("rules", "values", context, base, dirty)),
+                    [rules_profile, forms_base, drafts_dirty], form_outputs("rules"))
                 # The map.
-                map_place.input(map_place_ui, map_place, [map_view, map_borders])
-                demo.load(map_form_ui, map_place, [map_view, map_place, map_borders])
-                save_borders.click(save_borders_ui, [map_place, map_borders], [map_view, map_status, map_editor])
-                save_map_button.click(map_form_ui, map_place, [map_view, map_place, map_borders])
 
                 # What an NPC or a place does follows its tags: the choices show the tag in effect, and
                 # choosing one sets it (an entry loaded, a tag typed: the choices follow).
@@ -4153,9 +4720,9 @@ def build_app():
                 tags.change(behaviour_fields_ui, [kind, tags], behaviours)
                 demo.load(behaviour_fields_ui, [kind, tags], behaviours)
                 behaviour_a.input(lambda k, c, t: apply_behaviour_ui(k, 0, c, t), [kind, behaviour_a, tags], tags).then(
-                    **status)
+                    **part_status["fields"])
                 behaviour_b.input(lambda k, c, t: apply_behaviour_ui(k, 1, c, t), [kind, behaviour_b, tags], tags).then(
-                    **status)
+                    **part_status["fields"])
                 behaviour_tables = [npc_table, npc_default_a, npc_default_b, place_table, place_default_a,
                                     place_default_b]
                 demo.load(behaviour_tables_ui, None, behaviour_tables)
@@ -4173,7 +4740,7 @@ def build_app():
                                       [suggest_field, suggestions, descriptions, goals, tags, det_distant, det_entered,
                                        det_prompts, det_dialogue],
                                       [descriptions, goals, tags, det_distant, det_entered, det_prompts, det_dialogue,
-                                       suggest_status]).then(**status)
+                                       suggest_status]).then(**part_status["fields"]).then(**part_status["details"])
                 demo.load(world_size_ui, None, world_size)
                 demo.load(judge_status_ui, None, grow_llm_status)
                 propose_button.click(propose_world_ui, None, [proposal_pick, proposal_text, grow_status],
@@ -4674,13 +5241,13 @@ def build_app():
                         grouped_weights = {}
                         for info in weight_infos:
                             grouped_weights.setdefault(info["section"], []).append(info)
-                        for section, section_entries in grouped_weights.items():
-                            described = sum(info["described"] for info in section_entries)
-                            with gr.Accordion(f"{section} ({described} of {len(section_entries)} described)",
+                        for section, weight_group in grouped_weights.items():
+                            described = sum(info["described"] for info in weight_group)
+                            with gr.Accordion(f"{section} ({described} of {len(weight_group)} described)",
                                               open=False):
-                                for index in range(0, len(section_entries), 3):
+                                for index in range(0, len(weight_group), 3):
                                     with gr.Row():
-                                        for info in section_entries[index:index + 3]:
+                                        for info in weight_group[index:index + 3]:
                                             weight_components.append(weight_field(info))
                         save_weights_button = gr.Button("Save all weights", variant="primary")
                         weights_status = gr.Markdown()
@@ -4813,12 +5380,36 @@ def build_app():
         # Navigation: the banner, the menu, the address (?section=<id>) and the links inside a destination all
         # select the destination's tab; nothing is re-rendered, so every form, game and run keeps its state.
         # Leaving 🌍 World with unsaved changes in the entry editor asks first (Save, Discard or Stay).
-        leave_inputs = [dest_now, *guard_inputs]
-        nav_events = {key: button.click(lambda *rest, key=key: nav_choice_ui(key, *rest), leave_inputs, draft_outputs,
+        # Leaving 🌍 World, or one of its sections, with unsaved changes in any of its editors asks first (in
+        # that editor); the guards read only which parts are unsaved (drafts_dirty), not the drafts.
+        form_prompts = {editor: form_layouts[editor]["panels"] for editor in form_layouts}
+        leave_outputs = [*nav_outputs, world_sections, section_now, draft_pending, draft_prompt, draft_message,
+                         *[c for editor in form_prompts for c in (form_prompts[editor][6], form_prompts[editor][1],
+                                                                  form_prompts[editor][2])]]
+
+        def leave_emit(result):
+            skip = gr.skip()
+            out = [*(result.get("nav") or [skip] * len(nav_outputs)),
+                   gr.Tabs(selected=result["section"]) if result.get("section") else skip, result.get("section_now", skip)]
+            for editor in ("entries", *form_prompts):
+                asked = (result.get("prompts") or {}).get(editor)
+                out += [asked[2], gr.update(visible=True), asked[1]] if asked else [skip, skip, skip]
+            return tuple(out)
+
+        leave_inputs = [dest_now, section_now, draft_loaded, drafts_dirty]
+        for section, tab in (("entries", section_entries), ("missions", section_missions),
+                             ("story-rules", section_story_rules), ("map", section_map), ("behaviour", section_behaviour),
+                             ("grow", section_grow), ("checks", section_checks)):
+            tab.select(lambda now_section, loaded, dirty, section=section: leave_emit(
+                section_choice_ui(section, now_section, loaded, dirty)), [section_now, draft_loaded, drafts_dirty],
+                leave_outputs, show_progress="hidden")
+        nav_events = {key: button.click(lambda *rest, key=key: leave_emit(nav_choice_ui(key, *rest)), leave_inputs,
+                                        leave_outputs,
                                         show_progress="hidden")
                       for key, button in zip(DESTINATION_IDS, nav_buttons)}
         train_button_event = nav_events["train"]
-        menu_event = nav_menu.input(nav_choice_ui, [nav_menu, *leave_inputs], draft_outputs, show_progress="hidden")
+        menu_event = nav_menu.input(lambda key, *rest: leave_emit(nav_choice_ui(key, *rest)), [nav_menu, *leave_inputs],
+                                    leave_outputs, show_progress="hidden")
         destination_tabs = {"world": world_tab, "train": train_tab, "play": play_tab, "evaluate": evaluate_tab,
                             "export": export_tab, "advanced": advanced_tab}
         for key, tab in destination_tabs.items():  # a tab chosen another way: the banner and the menu follow

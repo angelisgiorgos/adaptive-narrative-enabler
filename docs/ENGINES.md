@@ -188,8 +188,9 @@ stay where they are.
   `POST /v1/config/upload` accepts), `/v1/records/engines[/{id}]`,
   `/v1/records/engines/{id}/model`, and `/v1/records/stories[/{id}]` (with
   every turn; filter by run, engine, kind, origin, or session). In the studio:
-  **🧠 Train → Records** (which also imports the server's
-  import folder). In the terminal:
+  **🧠 Train → From a recorded engine** (continue, retrain), **⚖ Evaluate** (recorded
+  stories), **📦 Export** (a recorded engine's, run's or world's files) and **⚙ Advanced →
+  🗂 Records** (recording, the server's import folder). In the terminal:
   `python main.py --list-engines`. In Python: `backend.records`.
 - **Docker.** `compose.yaml` mounts `${ANE_RECORDS_HOST_DIR:-/data/angelisg/ane}`
   at the same path. The container runs as uid 10001, so grant it write access
