@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 import yaml
 
-from backend import content, evaluation, export, records, sessions, store, tuning
+from backend import content, engine_meta, evaluation, export, records, sessions, store, tuning
 from backend.errors import ConflictError
 from core_engine import Mission
 from core_engine.actions import REPEAT_RULES
@@ -569,8 +569,11 @@ def put_hyperparameters(body: YAMLDocument):
 
 def _weights():
     entries = store._weight_entries()
-    return {"values": dict(entries), "parameters": [tuning.describe(path, value) for path, value in entries],
-            "basic": tuning.basic_view(path for path, _ in entries)}
+    shipped = tuning.shipped_values()
+    return {"values": dict(entries),
+            "parameters": [{**tuning.describe(path, value), "shipped": shipped.get(path)} for path, value in entries],
+            "basic": tuning.basic_view(path for path, _ in entries),
+            "shipped": {path: shipped[path] for path, _ in entries if path in shipped}}
 
 
 @api.get("/v1/weights", tags=["Configuration"])
@@ -583,7 +586,9 @@ def get_weights():
     false) has a label from its name and the type it is written with, nothing more. ``requires``: the
     true/false setting a parameter needs, ``inactive``: why it has no effect now (that setting is off).
     ``basic``: the Basic view, a chosen set of common gameplay controls, each ONE of these parameters
-    (no presets): [{key, title, summary, controls: [{path, effect}]}]."""
+    (no presets): [{key, title, summary, controls: [{path, effect, scaled_by?, scaling?}]}] (``scaling``:
+    how far each storyteller's learned traits move the value). ``shipped``: {path: value} as this release
+    ships them (config/default_history.json), to tell which saved values were changed."""
     return _weights()
 
 
@@ -860,12 +865,55 @@ def export_engines():
 
 @api.get("/v1/runs", tags=["Engine export"])
 def list_runs():
-    """Recent evolution runs that can be exported (best or any generation)."""
-    return {"runs": [
-        {"run_id": run_id, "best_score": run["learning"]["best_score"],
-         "generations": len(run["learning"]["history"])}
-        for run_id, run in reversed(sessions.RUNS.items())
-    ]}
+    """Recent evolution runs that can be exported (best or any generation), each with its engine's
+    id, name (None: unnamed) and label."""
+    known = engine_meta.names()
+    runs = []
+    for run_id, run in reversed(sessions.RUNS.items()):
+        engine_id = run.get("engine_id")
+        kept = sessions.ENGINES.get(engine_id) or {}
+        info = {"engine_id": engine_id, "created_at": kept.get("created_at"), "source": kept.get("source"),
+                "score": run["learning"]["best_score"],
+                "generations": len(run["learning"]["history"])}
+        runs.append({"run_id": run_id, "best_score": run["learning"]["best_score"],
+                     "generations": len(run["learning"]["history"]), "engine_id": engine_id,
+                     "name": known.get(engine_id) if engine_id else None,
+                     "label": engine_meta.label(info, known) if engine_id else None})
+    return {"runs": runs}
+
+
+class EngineName(BaseModel):
+    name: str | None = Field(default=None, description=f"The engine's name (at most {engine_meta.MAX_NAME} "
+                             "characters); empty or null removes it. The engine id does not change.")
+
+
+@api.get("/v1/engines/{engine_id}/card", tags=["Evolution and play"])
+def get_engine_card(engine_id: str):
+    """A completed engine's result card, recorded or kept with the saves (recording off): {engine_id,
+    run_id, name, label, default_label, created_at, kind, source, parent_id, world: {id, digest,
+    summary, current (trained on the active world)}, generations, trained_generations, settings:
+    {main, other} (what its training ran with), fitness: {training (the evolution's objective: the
+    story score on the run's benchmark), improvement, early_stopped, history}, judge_in_training (the
+    judge's engagement in the loop of evolution, when it ran), evaluations (judge benchmarks and
+    calibrations of this engine: the judge's 1–10 engagement, newest first), resumable}."""
+    try:
+        return export.engine_card(engine_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@api.put("/v1/engines/{engine_id}/name", tags=["Evolution and play"])
+def put_engine_name(engine_id: str, body: EngineName):
+    """Name a completed (or recorded) engine, or remove its name. Only what is shown changes: the
+    engine and run ids stay its identifiers. Kept with the saves, with recording on or off."""
+    if not export.known_engine(engine_id):
+        raise HTTPException(status_code=404, detail=f"Unknown engine `{engine_id}`.")
+    try:
+        name = engine_meta.set_name(engine_id, body.name)
+    except engine_meta.EngineNameError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    card = export.engine_card(engine_id)
+    return {"engine_id": engine_id, "name": name, "label": card["label"]}
 
 
 @api.get("/v1/learning", tags=["Evolution and play"])
@@ -1335,7 +1383,10 @@ def get_recorded_world(world_id: str, format: Literal["json", "yaml"] = "json"):
 
 @api.get("/v1/records/engines", tags=["Records"])
 def list_recorded_engines(run_id: str | None = None, source: str | None = None, limit: int = 200, offset: int = 0):
-    return {"engines": _records(records.list_engines, run_id=run_id, source=source, limit=limit, offset=offset)}
+    """The recorded engines, newest first, each with its name (None: unnamed) and label."""
+    known = engine_meta.names()
+    return {"engines": [engine_meta.annotate(row, known) for row in
+                        _records(records.list_engines, run_id=run_id, source=source, limit=limit, offset=offset)]}
 
 
 @api.get("/v1/records/engines/{engine_id}", tags=["Records"])
@@ -2041,8 +2092,11 @@ def submit_judge_benchmark(body: JudgeBenchmarkRequest):
         _evaluable_engine(body.engine_id)
 
     def work(progress):
-        return evaluation.benchmark(body.stories, body.seed, body.engine_id, body.variants or None, body.pairwise,
-                                    body.workers, progress=progress)
+        result = evaluation.benchmark(body.stories, body.seed, body.engine_id, body.variants or None, body.pairwise,
+                                      body.workers, progress=progress)
+        if body.engine_id and not body.pairwise and not body.variants:  # the engine as it is: on its card
+            engine_meta.record_evaluation(body.engine_id, "judge", result)
+        return result
     kind = "pairwise A/B" if body.pairwise else "judge benchmark"
     return sessions.submit_job("judge-benchmark", work, f"{kind} of {body.stories} stories")
 
@@ -2057,8 +2111,11 @@ def submit_calibration(body: CalibrationRequest):
         _evaluable_engine(body.engine_id)
 
     def work(progress):
-        return evaluation.calibrate(body.stories, body.seed, body.engine_id, body.alpha, body.apply, body.workers,
-                                    progress=progress)
+        result = evaluation.calibrate(body.stories, body.seed, body.engine_id, body.alpha, body.apply, body.workers,
+                                      progress=progress)
+        if body.engine_id:
+            engine_meta.record_evaluation(body.engine_id, "calibration", result)
+        return result
     return sessions.submit_job("calibrate-fitness", work, f"fit the fitness to the judge on {body.stories} stories")
 
 

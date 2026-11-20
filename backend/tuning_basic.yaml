@@ -3,6 +3,10 @@
 # value, the same value the Advanced view (the complete editor) shows; there are no presets and no
 # control that sets several parameters at once. Label, unit, default and bounds come from
 # tuning_parameters.yaml; `effect` says, in plain words, what raising or lowering it does in play.
+# `scaled_by`: the storyteller trait (core_engine/genome.py; learned in training, within genome_bounds) the
+# engine applies to the value: `factor` trait (value × trait), half_plus (value × (0.5 + trait)), drive
+# (value × trait × the quest's pacing, 0 to 1) or adds (the traits add their own amount, `with`: the
+# parameter giving each trait's share). The view says how far each storyteller moves the value.
 # Chosen from what the engine does with each parameter (the code in its metadata's `source`):
 #   difficulty  core_engine/combat.py (CombatSystem.difficulty, target), game_state.py (retry bonus),
 #               story_beats.py (alert);
@@ -43,6 +47,7 @@ areas:
         effect: >-
           Higher pulls the story toward places not visited yet, the more so the longer since the last new
           place.
+        scaled_by: {trait: voyage_bias, factor: half_plus}
       - path: director.boredom_weight
         effect: >-
           After turns in which nothing new happens, options that bring something new rank higher by this for
@@ -52,6 +57,7 @@ areas:
       - path: mission_settings.route_weight
         effect: >-
           Higher makes the story head for the mission more directly, once the storyteller pursues it.
+        scaled_by: {trait: goal_bias, factor: drive}
   - key: repetition
     title: Repetition
     summary: How strongly the story avoids doing, visiting and telling the same thing again.
@@ -60,6 +66,7 @@ areas:
         effect: >-
           Higher makes the storyteller avoid taking the same action again; each repeat weighs more than the
           last.
+        scaled_by: {trait: novelty_bias, factor: trait}
       - path: variation.repeat_check_penalty
         effect: Each earlier success at the same action makes its check harder by this, so a winning trick wears off.
       - path: variation.max_repeat_penalty
@@ -74,14 +81,20 @@ areas:
     title: Event frequency
     summary: >-
       How often things happen that the player did not choose. An unexpected event happens on a turn when
-      the event pressure reaches the threshold (there is no dice roll); the turns between two events and
-      the most events per story are set in Engine logic → unexpected_events.
+      the event pressure reaches the threshold (there is no dice roll), at least the set number of turns
+      after the last one, up to the most per story.
     controls:
       - path: unexpected_events.base_chance
         effect: >-
           The event pressure a story starts from (a level compared with the threshold, not a probability).
           Higher: events come sooner, and with more storytellers.
+        scaled_by: {trait: event_prob, factor: adds, with: {event_prob: unexpected_events.genome_weight,
+                                                             chaos_bias: unexpected_events.chaos_weight}}
       - path: unexpected_events.objective_threshold
         effect: The pressure needed for an event. Higher means fewer events; lower means more.
+      - path: unexpected_events.cooldown_steps
+        effect: The fewest turns between two unexpected events. Higher spaces them out; 0 allows one every turn.
+      - path: unexpected_events.max_per_story
+        effect: The most unexpected events a story has. Higher allows more in a long story.
       - path: travel.first_trip.chance
         effect: The probability (0–1) that a first trip to a place is told with a short scene on the way.

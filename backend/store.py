@@ -264,6 +264,8 @@ WEIGHT_KEYWORDS = (
     "weight", "bonus", "penalt", "threshold", "chance", "rate",
     "mitigation", "floor", "power",
 )
+# Numeric settings the Weights tab offers though their names hold none of the keywords (event frequency).
+WEIGHT_PATHS = ("unexpected_events.cooldown_steps", "unexpected_events.max_per_story")
 
 def _read_yaml(path: Path) -> dict:
     with CONFIG_LOCK:
@@ -313,7 +315,8 @@ def _weight_entries():
         elif (
             isinstance(value, Number)
             and not isinstance(value, bool)
-            and any(keyword in part.lower() for part in parts for keyword in WEIGHT_KEYWORDS)
+            and (any(keyword in part.lower() for part in parts for keyword in WEIGHT_KEYWORDS)
+                 or ".".join(parts) in WEIGHT_PATHS)
             and not tuning.retired(".".join(parts))
         ):
             entries.append((".".join(parts), value))

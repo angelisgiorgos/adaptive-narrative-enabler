@@ -48,6 +48,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .engine import NarrativeEngine, PatchError
 
 MAX_BODY = 8 * 1024 * 1024  # a save game is ~100 KB; a world patch rarely more
+DRAIN_TIMEOUT = 5.0  # seconds serve() waits, once stopped, for answers still being written (UNPs kill after ~10 s)
 
 
 class _HTTPError(Exception):
@@ -60,7 +61,7 @@ class RuntimeServer:
     """One engine served on 127.0.0.1 until it is shut down."""
 
     def __init__(self, engine, host="127.0.0.1", port=0, token=None, allow_origin=None, allow_evolve=False,
-                 max_body=MAX_BODY):
+                 max_body=MAX_BODY, drain_timeout=DRAIN_TIMEOUT):
         self.engine = engine
         self.token = token
         self.allow_origin = allow_origin
@@ -70,6 +71,9 @@ class RuntimeServer:
         self.stop_result = None
         self.stop_reason = None
         self._stop_lock = threading.Lock()
+        self.drain_timeout = drain_timeout
+        self._in_flight = 0
+        self._idle = threading.Condition()
         self.httpd = ThreadingHTTPServer((host, port), make_handler(self))
         self.httpd.daemon_threads = True
         self.host = host
@@ -91,11 +95,29 @@ class RuntimeServer:
         return info
 
     def serve(self):
-        """Serve until shut down (the calling thread blocks)."""
+        """Serve until shut down (the calling thread blocks). Before returning it waits (up to
+        ``drain_timeout``) for the requests still being answered: the process exits right after,
+        and the handler threads are daemons that would die mid-response."""
         try:
             self.httpd.serve_forever(poll_interval=0.2)
         finally:
+            self.drain(self.drain_timeout)
             self.httpd.server_close()
+
+    def request_started(self):
+        with self._idle:
+            self._in_flight += 1
+
+    def request_finished(self):
+        with self._idle:
+            self._in_flight -= 1
+            if not self._in_flight:
+                self._idle.notify_all()
+
+    def drain(self, timeout):
+        """Wait until no request is being answered; False if ``timeout`` ran out first."""
+        with self._idle:
+            return self._idle.wait_for(lambda: not self._in_flight, timeout=timeout)
 
     def shutdown(self, save=True, end_sessions=False, reason="request", stop_serving=True):
         """Save (or end) every session, deliver everything, then stop serving. Safe to call
@@ -253,13 +275,14 @@ def make_handler(server):
             return body
 
         def _route(self, method):
+            server.request_started()  # serve() waits for this answer before the process exits
             try:
                 self._dispatch(method)
             finally:
-                # A POST /shutdown stops serving only after its answer is written: the process
-                # exits as soon as serve() returns, taking this (daemon) thread with it.
+                # A POST /shutdown stops serving only after its answer is written.
                 if method == "POST" and server.stopping and self.path.split("?")[0].rstrip("/") == "/shutdown":
                     server.stop_serving()
+                server.request_finished()
 
         def _dispatch(self, method):
             from core_engine import resume, savegame, snapshot

@@ -612,6 +612,26 @@ unexpected_events.effect_repeat_penalty:
   source:
   - core_engine/game_state.py:3464
   requires: unexpected_events.enabled
+unexpected_events.cooldown_steps:
+  label: Turns between unexpected events
+  explanation: After an unexpected event (or the payoff of a mystery one planted), no other happens until this many
+    turns have passed, whatever the event pressure. Raising it spaces events out; 0 lets one come every turn.
+  unit: turns
+  type: integer
+  default: 2
+  source:
+  - core_engine/game_state.py:3385
+  requires: unexpected_events.enabled
+unexpected_events.max_per_story:
+  label: Most unexpected events per story
+  explanation: Once a story has had this many unexpected events, no new one starts (the payoff of a mystery planted
+    earlier is still told). Raising it allows more events in a long story.
+  unit: events per story
+  type: integer
+  default: 4
+  source:
+  - core_engine/game_state.py:3391
+  requires: unexpected_events.enabled
 outcome_resolution.probability_floor:
   label: Lowest success chance of unchecked outcomes
   explanation: The success probability of any outcome without a skill check is raised to at least this value. Because

@@ -412,6 +412,9 @@ def save_entity_ui(kind, selected_name, name, tags, descriptions, goals, unique,
         body["role"] = "" if role == INFERRED_ROLE else role
     if npc and secret is not None:
         body["secret"] = from_yaml(secret, "`Secret`") or {}  # {} removes it
+    if not selected_name and name in _entity_names(kind):  # PUT to a taken name would replace that entry
+        raise gr.Error(f"An entry named `{name}` already exists. Choose a unique name, or pick it from the list "
+                       "to edit it.")
     saved = API.put(_path(f"/v1/entities/{kind}", selected_name or name), body)
     return gr.Dropdown(choices=_entity_names(kind), value=saved["name"]), f"Saved **{saved['name']}**."
 
@@ -434,10 +437,19 @@ def load_entity_policy_yaml(kind, name):
     return API.get(_path(f"/v1/entities/{kind}", name, "policy", "yaml"))["yaml"] if name else "# Events and items only.\n"
 
 
+def policy_controls_ui(kind):
+    """Scheduling's Save and YAML editor: for events and items only (the API keeps no rules for others)."""
+    shown = kind in ("Events", "Items")
+    return gr.update(visible=shown), gr.update(visible=shown)
+
+
 @ui
 def save_entity_policy_ui(kind, name, yaml_text):
     if not name:
         raise gr.Error("Select an entry first.")
+    if kind not in ("Events", "Items"):
+        raise gr.Error("Only events and items have scheduling rules; a place's or a person's behaviour comes from "
+                       "its tags (Fields, and *Behaviour by tags*).")
     result = API.put(_path(f"/v1/entities/{kind}", name, "policy", "yaml"), {"yaml": yaml_text})
     return result["yaml"], result["message"]
 
@@ -550,6 +562,15 @@ def save_stored_values_yaml(profile, text):
     return save_document("stored_values", text, profile or None)
 
 
+def reset_question_ui(profile):
+    """*Reset profile*: what it does, asked before it is done (it cannot be undone)."""
+    name = (profile or "").strip() or "default"
+    return gr.update(visible=True), (
+        f"### ⚠ Reset the profile **{html.escape(name)}**?\n"
+        "It starts over as a new player: its stored values, playthroughs, goals achieved and session reports are "
+        "lost, and **this cannot be undone**. Unsaved changes in *Stored values* are lost too.")
+
+
 @ui
 def reset_stored_values_ui(profile):
     result = API.post("/v1/variables/reset/yaml", profile=profile or None)
@@ -602,9 +623,18 @@ def load_rules_ui():
     return tuple(rules[field] for field in REFERENCE["rule_fields"])
 
 
+RULE_NUMBERS = ("pursuit_start_step", "pursuit_full_step", "route_weight", "auto_travel_on_spawn_threshold")
+
+
 @ui
 def save_rules_ui(*values):
-    API.put("/v1/rules", dict(zip(REFERENCE["rule_fields"], values)))
+    rules = dict(zip(REFERENCE["rule_fields"], values))
+    # PUT /v1/rules keeps the stored value of a field sent as null: a cleared number would be kept silently.
+    empty = [field for field in RULE_NUMBERS if field in rules and rules[field] in (None, "")]
+    if empty:
+        raise gr.Error("Give a number for: " + ", ".join(f"`{field}`" for field in empty)
+                       + " (an empty field would keep its saved value).")
+    API.put("/v1/rules", rules)
     return "Saved the story rules."
 
 
@@ -615,6 +645,8 @@ def _number(value):
 def _weight_facts(info):
     """Unit, engine default, the engine's bounds and whole/decimal number, joined."""
     facts = [f"Unit: {info['unit']}"] if info.get("unit") else []
+    if info.get("shipped") is not None:
+        facts.append(f"shipped {_number(info['shipped'])}")
     if info.get("default") is not None:
         facts.append(f"engine default {_number(info['default'])}")
     low, high = info.get("minimum"), info.get("maximum")
@@ -668,17 +700,70 @@ def weight_field(info, basic=None):
 
 def basic_weight_field(info, control):
     """A Basic control (Weights → Basic): the same parameter as its Advanced field (same label, type and
-    bounds), explained by what raising or lowering it does in play, with its unit and path."""
-    help_text = f"{_inactive_note(info)}{control['effect']} {_weight_facts(info)}. Parameter: {info['path']}"
+    bounds), explained by what raising or lowering it does in play (and how far each storyteller's
+    learned traits move it), with its unit and path."""
+    scaling = f" {control['scaling']}" if control.get("scaling") else ""
+    help_text = (f"{_inactive_note(info)}{control['effect']}{scaling} {_weight_facts(info)}. "
+                 f"Parameter: {info['path']}")
     return _weight_number(info, info["label"], help_text, weight_elem_id("basic", info["path"]), ["weight-basic"])
 
 
-def weights_meta(parameters, basic_areas):
+def weights_meta(parameters, basic_areas, shipped=None):
     """What the weights draft needs to know, fixed when the tab is built: the parameters' paths (the
-    Advanced fields' order), their labels, the Basic controls' paths (their fields' order) and area."""
+    Advanced fields' order), their labels, the Basic controls' paths (their fields' order) and area, and
+    the values this release ships."""
     basic = {control["path"]: area["title"] for area in basic_areas for control in area["controls"]}
     return {"paths": [info["path"] for info in parameters], "labels": {i["path"]: i["label"] for i in parameters},
-            "basic_paths": list(basic), "basic": basic}
+            "basic_paths": list(basic), "basic": basic, "shipped": dict(shipped or {})}
+
+
+def shipped_changes(meta, saved):
+    """The saved values that differ from what this release ships: [(path, shipped, saved)]."""
+    shipped = meta.get("shipped") or {}
+    return [(path, shipped[path], (saved or {}).get(path)) for path in meta["paths"]
+            if path in shipped and not _same_number((saved or {}).get(path), shipped[path])]
+
+
+def weights_shipped_markup(meta, saved):
+    """Which saved values were changed from the shipped ones (this release's configuration), those
+    Basic shows and those only Advanced shows apart; shown above both views."""
+    if not meta.get("shipped"):
+        return ('<div class="weights-shipped" data-changed="">The shipped values are not known here (an older '
+                '<code>default_history.json</code>): run <code>python packaging/default_history.py</code>.</div>')
+    changes = shipped_changes(meta, saved)
+    if not changes:
+        return '<div class="weights-shipped" data-changed="0">Every saved value is the shipped one.</div>'
+
+    def listed(items):
+        return "".join(f"<li>{html.escape(meta['labels'].get(path, path))} <code>{html.escape(path)}</code>: shipped "
+                       f"{html.escape(_shown(old))}, saved {html.escape(_shown(new))}</li>" for path, old, new in items)
+
+    basic = [c for c in changes if c[0] in meta["basic"]]
+    advanced = [c for c in changes if c[0] not in meta["basic"]]
+    parts = [f"<summary>Changed from the shipped values ({len(changes)}): {len(basic)} in Basic, "
+             f"{len(advanced)} only in Advanced</summary>"]
+    if basic:
+        parts.append(f"<div>In Basic and Advanced ({len(basic)}):<ul>{listed(basic)}</ul></div>")
+    if advanced:
+        parts.append(f'<div class="weights-advanced-changes">⚠ Only in Advanced, not shown in Basic '
+                     f"({len(advanced)}):<ul>{listed(advanced)}</ul></div>")
+    return f'<details class="weights-shipped" data-changed="{len(changes)}">{"".join(parts)}</details>'
+
+
+def shipped_into_draft_ui(meta, saved, *values):
+    """↺ Shipped values: every parameter whose saved value differs from the shipped one gets its shipped
+    value in the draft (both views; each parameter its own value, nothing else changes). Nothing is
+    saved until *Save changes*. Returns (every Advanced field, every Basic field, the draft's status, a
+    message)."""
+    changes = {path: shipped for path, shipped, _ in shipped_changes(meta, saved)}
+    if not changes:
+        return (*[gr.skip()] * (len(meta["paths"]) + len(meta["basic_paths"])),
+                weights_draft_markup(meta, saved, *values), "Every saved value is already the shipped one.")
+    draft = [changes.get(path, value) for path, value in zip(meta["paths"], values)]
+    advanced = [changes[path] if path in changes else gr.skip() for path in meta["paths"]]
+    basic = [changes[path] if path in changes else gr.skip() for path in meta["basic_paths"]]
+    return (*advanced, *basic, weights_draft_markup(meta, saved, *draft),
+            f"The shipped values of {len(changes)} parameter(s) are in the draft: **Save changes** to keep them.")
 
 
 def _same_number(a, b):
@@ -754,6 +839,53 @@ def reload_weights_ui(meta):
     note = (f"The configuration now has parameters this page does not show ({', '.join(extra)}): reload the page."
             if extra else "")
     return (values, *advanced, *basic, weights_draft_markup(meta, values, *shown), note)
+
+
+def weights_dirty(meta, saved, dirty, values):
+    """drafts_dirty with the weights' unsaved parts: "Basic" and/or "Advanced only" (what the leave
+    guard asks about); no entry when nothing is unsaved."""
+    changes = weight_changes(meta, saved, values)
+    parts = (["Basic"] if any(path in meta["basic"] for path, _, _ in changes) else []) + (
+        ["Advanced only"] if any(path not in meta["basic"] for path, _, _ in changes) else [])
+    return {**{key: value for key, value in (dirty or {}).items() if key != "weights"},
+            **({"weights": parts} if parts else {})}
+
+
+def weights_draft_ui(meta, saved, dirty, *values):
+    """An edit in either view: the draft's status, and drafts_dirty (for the leave guard)."""
+    return weights_draft_markup(meta, saved, *values), weights_dirty(meta, saved, dirty, values)
+
+
+def weights_after_ui(meta, saved, dirty, *values):
+    """After a save, a reload or the shipped values: the draft's status, drafts_dirty and which saved
+    values differ from the shipped ones."""
+    return (*weights_draft_ui(meta, saved, dirty, *values), weights_shipped_markup(meta, saved))
+
+
+def weights_resolve_ui(choice, pending, meta, saved, dirty, *values):
+    """The weights' leave question answered: **save** the draft (a refusal keeps it, and asks again with
+    why), or **discard** it (the saved values come back), then go where the user was going; or **stay**.
+    Returns (the question's box, its text, the pending target, the navigation, the saved values, every
+    Advanced field, every Basic field, the draft's status, the message, the shipped panel, drafts_dirty)."""
+    fields = len(meta["paths"]) + len(meta["basic_paths"])
+    skip_nav = [gr.skip()] * len(navigate("world"))
+    if not pending or choice == "stay":
+        return (gr.update(visible=False), "", None, *skip_nav, gr.skip(), *[gr.skip()] * fields, gr.skip(), gr.skip(),
+                gr.skip(), gr.skip())
+    if choice == "save":
+        try:
+            message, saved_now, markup = save_weights(meta, saved, *values)
+        except gr.Error as exc:
+            return (gr.update(visible=True), f"⚠ **The weights could not be saved:** {_error_text(exc)}  \nNothing was "
+                    "discarded: correct it and **Save** again, **Stay**, or **Discard**.", pending, *skip_nav,
+                    gr.skip(), *[gr.skip()] * fields, gr.skip(), gr.skip(), gr.skip(), gr.skip())
+        fields_out = [gr.skip()] * fields
+    else:
+        saved_now, *reloaded = reload_weights_ui(meta)
+        fields_out, markup, message = reloaded[:fields], reloaded[fields], "The unsaved weights were discarded."
+    dirty_now = {key: value for key, value in (dirty or {}).items() if key != "weights"}
+    return (gr.update(visible=False), "", None, *navigate(pending["id"]), saved_now, *fields_out, markup, message,
+            weights_shipped_markup(meta, saved_now), dirty_now)
 
 
 def weights_view_ui(view):
@@ -894,14 +1026,32 @@ def session_markdown(game):
     if report:
         goal = report.get("goal") or {}
         player = report["player"]
-        delivered = (report.get("delivery") or {}).get("sent")
+        delivered = _report_delivery(report)
         lines += ["\n\n### Session report", f"**{(goal.get('title') or 'Free play')}: {report['outcome']}** "
                   f"({report['end_kind']}, {report['turns']} turns) · health {player['health']}/{player['max_health']} · "
                   f"coins {player['coins']} · inventory: {', '.join(player['inventory']) or 'empty'} · stats: "
                   + ", ".join(f"{k} {v}" for k, v in player["stats"].items())
                   + f" · goals achieved in this save game: {', '.join(report['progression']['goals_achieved']) or 'none'}"
-                  + (" · sent to the UNP" if delivered else "")]
+                  + delivered]
     return "\n".join(lines)
+
+
+def _report_delivery(report):
+    """Whether a session's report reached the UNP, as a suffix for its summary. The report is sent in the
+    background once the session ends, and its delivery is noted with the save game (GET /v1/progression),
+    never in the play state; nothing when no UNP is configured (nothing is sent)."""
+    try:
+        sessions = API.get("/v1/progression", profile=report.get("profile") or None)["sessions"]
+    except APIError as exc:
+        LOG.warning("Could not read the delivery of report %s: %s", report.get("report_id"), exc)
+        return ""
+    kept = next((r for r in sessions if r.get("report_id") == report.get("report_id")), None)
+    delivery = (kept or {}).get("delivery")
+    if not delivery:
+        return ""
+    if delivery.get("sent"):
+        return " · sent to the UNP"
+    return f" · not sent to the UNP ({delivery.get('error') or 'HTTP ' + str(delivery.get('status'))})"
 
 
 def map_markdown(known):
@@ -955,19 +1105,196 @@ def completed_engine(result, kind, check=""):
             "score": learning.get("best_score"), "generations": learning.get("generations_run"), "check": check}
 
 
+SETTING_NAMES = {"pop_size": "population", "generations": "generations", "episodes_per_genome": "stories per storyteller",
+                 "max_steps": "turns per story", "validation_episodes": "benchmark stories",
+                 "warm_start": "from the learning memory", "crossover_rate": "crossover", "mutation_rate": "mutation",
+                 "elitism_rate": "elitism", "player": "simulated player"}
+
+
+def _setting_text(key, value):
+    shown = ("yes" if value else "no") if isinstance(value, bool) else _number(value) if isinstance(value, (int, float)) \
+        else str(value)
+    return f"{SETTING_NAMES.get(key, key.replace('_', ' '))} {shown}"
+
+
+def _date(value):
+    return str(value or "")[:16].replace("T", " ") or "unknown date"
+
+
+def engine_card_markdown(card, heading=True):
+    """An engine's result card (GET /v1/engines/{id}/card) as Markdown: its name or label, ids, when it
+    was made, its world, its training and settings, then its training fitness and the judge's
+    engagement, kept apart (different measures on different scales)."""
+    title = card.get("name") or card.get("default_label") or card["engine_id"]
+    lines = [f"### 🏷 {title}" + ("" if card.get("name") else " *(unnamed)*")] if heading else []
+    ids = f"engine `{card['engine_id']}`" + (f" · run `{card['run_id']}`" if card.get("run_id") else "")
+    lines.append(f"{card.get('kind') or 'Engine'} made **{_date(card.get('created_at'))}** · {ids}")
+    world = card.get("world") or {}
+    summary = world.get("summary") or {}
+    counts = " · ".join(f"{summary[key]} {label}" for key, label in (
+        ("locations", "places"), ("npcs", "people"), ("items", "items"), ("events", "events"), ("missions", "quests"))
+        if key in summary)
+    where = {True: "✓ the active world", False: "⚠ not the active world (playing it makes its world active)"}.get(
+        world.get("current"), "")
+    world_id = f"world `{world['id'][:12]}`" if world.get("id") else ""
+    lines.append("- **World:** " + (" · ".join(part for part in (counts, world_id, where) if part) or "not recorded"))
+    generations = card.get("generations") if card.get("generations") is not None else card.get("generation")
+    training = []
+    if card.get("generation") is not None and card.get("generations") is None:
+        training.append(f"champion of generation {card['generation']}")
+    elif generations:
+        training.append(f"{generations} generation{'s' if generations != 1 else ''}")
+    if card.get("resumable"):
+        training.append("its training can be continued")
+    main = (card.get("settings") or {}).get("main") or {}
+    if main:
+        training.append(", ".join(_setting_text(key, value) for key, value in main.items()))
+    lines.append("- **Training:** " + (" · ".join(training) or "no training state (a loaded or recorded storyteller)"))
+    fitness = card.get("fitness") or {}
+    score = fitness.get("training")
+    if isinstance(score, (int, float)):
+        extra = []
+        if isinstance(fitness.get("improvement"), (int, float)):
+            extra.append(f"{fitness['improvement']:+.1f} over the run")
+        if fitness.get("early_stopped"):
+            extra.append("stopped early")
+        lines.append(f"- **Training fitness:** **{score:.2f}** (the evolution's objective: the story score on the "
+                     f"run's benchmark, on its own scale){' · ' + ', '.join(extra) if extra else ''}")
+    else:
+        lines.append("- **Training fitness:** not benchmarked")
+    judged = [e for e in card.get("evaluations") or [] if isinstance(e.get("engagement"), (int, float))]
+    if judged:
+        latest = judged[0]
+        what = "judge benchmark" if latest.get("kind") == "judge" else "stories judged to fit the fitness"
+        detail = f" (mean story fitness {latest['story_fitness']:.1f})" if isinstance(latest.get("story_fitness"),
+                                                                                  (int, float)) else ""
+        more = f"; {len(judged) - 1} earlier evaluation(s)" if len(judged) > 1 else ""
+        lines.append(f"- **Judge engagement:** **{latest['engagement']:.2f} / 10** (an LLM judge's rating of played "
+                     f"stories, not the fitness) over {latest.get('judged') or latest.get('stories')} stories, "
+                     f"{what} of {_date(latest.get('at'))}{detail}{more}")
+    else:
+        lines.append("- **Judge engagement:** not evaluated yet (⚖ Evaluate → *Play and judge*; it rates stories "
+                     "1–10, a different measure from the training fitness)")
+    if isinstance(card.get("judge_in_training"), (int, float)):
+        lines.append(f"- **Judge in training:** {card['judge_in_training']:.2f} / 10 (the judge's engagement in the "
+                     "loop of evolution, last generation)")
+    traits = card.get("scaling_traits") or {}
+    if traits:
+        lines.append("- **Storyteller traits that scale the Basic weights** (pacing, repetition, events): "
+                     + " · ".join(f"`{trait}` {value:g}" for trait, value in traits.items()))
+    other = (card.get("settings") or {}).get("other") or {}
+    if other:
+        lines.append("<details><summary>Every training setting</summary>\n\n"
+                     + ", ".join(_setting_text(key, value) for key, value in other.items()) + "\n</details>")
+    return "\n".join(lines)
+
+
+def engine_card(engine_id):
+    """An engine's card (GET /v1/engines/{id}/card), or None when there is none."""
+    try:
+        return API.get(_path("/v1/engines", engine_id, "card"))
+    except APIError as exc:
+        LOG.warning("The card of engine %s could not be read: %s", engine_id, exc)
+        return None
+
+
+def engine_card_ui(engine_id):
+    """The card of the engine chosen in a picker (Play, Evaluate, Train's finished engines)."""
+    if engine_id is None:
+        return "*Choose an engine to see its card.*"
+    if engine_id == "":
+        return "*The current settings with random storytellers: no trained engine, no card.*"
+    card = engine_card(engine_id)
+    return engine_card_markdown(card) if card else f"*No card for engine `{engine_id}`.*"
+
+
+def engine_cards_ui(engine_ids):
+    """The cards of the engines chosen in Export (several may be)."""
+    engine_ids = [engine_ids] if isinstance(engine_ids, str) else list(engine_ids or [])
+    if not engine_ids:
+        return "*Choose a finished run to see its card.*"
+    return "\n\n---\n\n".join(engine_card_ui(engine_id) for engine_id in engine_ids)
+
+
+def engine_name_ui(engine_id):
+    """The name box of an engine: its name (empty: unnamed)."""
+    card = engine_card(engine_id) if engine_id else None
+    return gr.Textbox(value=(card or {}).get("name") or "", interactive=bool(card),
+                      placeholder=(card or {}).get("default_label") or "Name this engine")
+
+
+def finished_engines_ui(chosen=None):
+    """Train's finished engines picker: every finished run and loaded engine, then the other recorded
+    engines (newest first), the chosen one kept (else the newest)."""
+    choices = [choice for choice in evaluation_engine_choices() if choice[1]]
+    ids = [value for _, value in choices]
+    return gr.Dropdown(choices=choices, value=chosen if chosen in ids else (ids[0] if ids else None))
+
+
+def engine_picker_updates():
+    """New choices (labels) for every engine picker after a name changed: Train's finished engines,
+    Play's trained AI, Evaluate's two storytellers, Export's finished runs, the recorded-engine pickers
+    of Train, Play and Export. Their values (engine ids) do not change."""
+    finished, evaluated, recorded = finished_run_choices(), evaluation_engine_choices(), recorded_engines()
+    named = [choice for choice in evaluated if choice[1]]
+    return (gr.Dropdown(choices=named), gr.Dropdown(choices=finished), gr.Dropdown(choices=evaluated),
+            gr.Dropdown(choices=evaluated), gr.Dropdown(choices=finished), gr.Dropdown(choices=recorded),
+            gr.Dropdown(choices=recorded), gr.Dropdown(choices=recorded))
+
+
+@ui
+def rename_engine_ui(engine_id, name, done=None):
+    """Name an engine (empty: no name): only what is shown changes, its id stays. Returns (a message,
+    its card, its name box, Train's result card (the completed engine's, if it is that one), then every
+    engine picker's new labels)."""
+    if not engine_id:
+        raise gr.Error("Choose an engine first.")
+    result = API.put(_path("/v1/engines", engine_id, "name"), {"name": name or None})
+    message = (f"Named **{result['name']}**; its id stays `{engine_id}`." if result["name"]
+               else f"Name removed: it is shown as *{result['label']}*.")
+    result_card = completed_view_ui(done)[0] if done and done.get("engine_id") == engine_id else gr.skip()
+    return (message, engine_card_ui(engine_id), engine_name_ui(engine_id), result_card, *engine_picker_updates())
+
+
+def rename_result_ui(done, name, browsed=None):
+    """Name the completed engine from Train's result card: as rename_engine_ui, with the finished
+    engines' card refreshed only when it shows this engine (``browsed``)."""
+    if not done or not done.get("engine_id"):
+        raise gr.Error("No training has finished in this session yet: run one in 🧠 Train first.")
+    message, card, box, result_card, *pickers = rename_engine_ui(done["engine_id"], name, done)
+    return (message, card if browsed == done["engine_id"] else gr.skip(), box, result_card, *pickers)
+
+
+def result_name_ui(done):
+    """Train's name box for the completed engine (empty and locked before one exists)."""
+    return engine_name_ui(done.get("engine_id") if done else None)
+
+
+def _label_of(engine_id, choices):
+    """An engine as a follow-up action names it: its label (its name, if named) and its exact id."""
+    label = next((label for label, value in choices if value == engine_id), None)
+    return f"{label} (engine `{engine_id}`)" if label else f"`{engine_id}`"
+
+
 def completed_view_ui(done):
     """Train's result card and its three actions (enabled once a training has completed)."""
     ready = bool(done and done.get("engine_id"))
     if not ready:
         text = NO_RESULT
     else:
-        score = f"{done['score']:.2f}" if isinstance(done.get("score"), (int, float)) else "not benchmarked"
-        text = (f"### ✅ Completed engine `{done['engine_id']}`\n"
-                f"{TRAINING_KINDS.get(done['kind'], done['kind'])} · run `{done['run_id']}` · best fitness on the "
-                f"benchmark **{score}** (the training objective) · **{done.get('generations') or 0}** generation(s)"
-                + (f"\n\n{done['check']}" if done.get("check") else "")
-                + "\n\nPlay, evaluate or export **this** engine: each button opens its destination with this exact "
-                "engine chosen. No game has been started.")
+        card = engine_card(done["engine_id"])
+        if card:
+            body = engine_card_markdown(card, heading=False)
+            title = card.get("name") or card.get("default_label")
+            text = f"### ✅ Completed engine: {title}\n{TRAINING_KINDS.get(done['kind'], done['kind'])}. {body}"
+        else:  # the card cannot be read: what the training answered
+            score = f"{done['score']:.2f}" if isinstance(done.get("score"), (int, float)) else "not benchmarked"
+            text = (f"### ✅ Completed engine `{done['engine_id']}`\n"
+                    f"{TRAINING_KINDS.get(done['kind'], done['kind'])} · run `{done['run_id']}` · training fitness "
+                    f"**{score}** (the evolution's objective) · **{done.get('generations') or 0}** generation(s)")
+        text += ((f"\n\n{done['check']}" if done.get("check") else "")
+                 + "\n\nPlay, evaluate or export **this** engine: each button opens its destination with this exact "
+                 "engine chosen. No game has been started.")
     return (text, *[gr.Button(interactive=ready) for _ in range(3)])
 
 
@@ -1015,7 +1342,7 @@ def play_result_ui(done, profile, mission, stats_choice, stats_points=None):
     _offered(engine_id, choices, "▶ Play")
     token, *game, status = play_new_game_ui(engine_id, profile, mission, stats_choice, stats_points)
     return (*navigate("play"), gr.Dropdown(choices=choices, value=engine_id), gr.Accordion(open=False), token,
-            *game, f"**Playing the engine just trained, `{engine_id}`.**  \n{status}")
+            *game, f"**Playing the engine just trained, {_label_of(engine_id, choices)}.**  \n{status}")
 
 
 def evaluation_engine_choices():
@@ -1037,7 +1364,7 @@ def evaluate_result_ui(done):
     _offered(engine_id, choices, "⚖ Evaluate")
     return (*navigate("evaluate"), gr.Dropdown(choices=choices, value=engine_id),
             gr.Dropdown(choices=choices, value=engine_id),
-            f"**Storyteller:** the engine just trained, `{engine_id}`. Press **Play and judge** (or *Play, judge "
+            f"**Storyteller:** the engine just trained, {_label_of(engine_id, choices)}. Press **Play and judge** (or *Play, judge "
             "and fit*) to evaluate it.")
 
 
@@ -1051,7 +1378,7 @@ def export_result_ui(done, platform):
     return (*navigate("export"), gr.Radio(value=FINISHED_RUNS, visible=platform not in ANE_AI_PLATFORMS),
             gr.Dropdown(visible=False),
             gr.Dropdown(choices=choices, value=[engine_id], multiselect=True, visible=True),
-            gr.Markdown(f"**Chosen:** the engine just trained, `{engine_id}`, with its own world, storyteller, "
+            gr.Markdown(f"**Chosen:** the engine just trained, {_label_of(engine_id, choices)}, with its own world, storyteller, "
                         "training state and tag vectors."), gr.Button(interactive=True))
 
 
@@ -1450,12 +1777,14 @@ def finished_run_choices():
         LOG.warning("The finished runs could not be read: %s", exc)
         return []
 
-    def label(e):
+    def label(e):  # the API's label (its name, or what it is, when and how it scored, with its short id)
+        if e.get("label"):
+            return e["label"]
         parts = [(e.get("created_at") or "")[:16].replace("T", " "), "loaded engine" if e.get("loaded") else "run"]
         if e.get("generations"):
             parts.append(f"{e['generations']} generation(s)")
         if isinstance(e.get("score"), (int, float)):
-            parts.append(f"best {e['score']:.1f}")
+            parts.append(f"fitness {e['score']:.1f}")
         return " · ".join(parts + [e["engine_id"][:8]])
 
     return [(label(e), e["engine_id"]) for e in engines]
@@ -1523,7 +1852,7 @@ def export_engine_ui(source_label, run_id, generation, token, include_memory, na
 
 # ---- ▶ Play: the world of a finished run, as a game ---------------------------------------------
 
-CHOICE_BUTTONS = 8
+CHOICE_BUTTONS = 12  # buttons for the offered choices (player_options.limit, 6 by default; beyond: said in the HUD)
 PLAY_STATS = [("Story default", "story default"), ("Random", "random"), ("Balanced", "balanced"),
               ("My own points", "defined")]
 # What the game screen shows, in the order _play_screen returns it (play_part picks one by name).
@@ -1781,7 +2110,11 @@ def _play_screen(state, journal=None):
     took_a_turn = any(line.startswith("> ") for line in turn.splitlines())  # not approaching or leaving someone
     card = turn_card_markdown(state.get("turn_summary"), turn) if state.get("turn_summary") and took_a_turn else \
         (f"### What happened\n{story_markdown(turn)}" if turn else "")
-    return (gr.Markdown(value=ending, visible=bool(ending)), gr.Markdown(value=_hud(state), visible=True),
+    hud = _hud(state)
+    if len(actions) > CHOICE_BUTTONS:  # never hidden silently: a raised player_options.limit
+        hud += (f"\n\n⚠ {len(actions) - CHOICE_BUTTONS} more choice(s) than this screen shows ({CHOICE_BUTTONS}): "
+                "lower `player_options.limit` (⚙ Advanced → Engine logic).")
+    return (gr.Markdown(value=ending, visible=bool(ending)), gr.Markdown(value=hud, visible=True),
             place_markdown(state), gr.Markdown(value=card, visible=bool(card)),
             *buttons, quest_markdown(state.get("quest"), journal), you_markdown(state), people_markdown(state),
             actions, journey_markdown(journal))
@@ -1849,6 +2182,22 @@ def play_engine_file_ui(uploaded_file, model_parameters_file, profile, mission, 
                                 stats=json.dumps(player["stats"]) if "stats" in player else None))
 
 
+def restore_game_ui(token, size):
+    """After a reload: the game this browser was playing (GET /v1/sessions/{id}), when the API still has it
+    (a restart forgets games: the kept id is then dropped). Returns (the session, the ``size`` outputs of the
+    game screen and the story, the id kept)."""
+    if not token:
+        return ("", *[gr.skip()] * size, "")
+    try:
+        state = API.get(_path("/v1/sessions", token))
+    except APIError as exc:
+        if exc.status == 404:  # the API no longer has it
+            return ("", *[gr.skip()] * size, "")
+        LOG.warning("Could not reopen the game %s: %s", token, exc)  # kept, to try again on the next load
+        return ("", *[gr.skip()] * size, gr.skip())
+    return (token, *_play_update(state, token), token)
+
+
 @ui
 def play_choose_ui(token, actions, index):
     """The player takes the choice of button ``index``."""
@@ -1914,9 +2263,14 @@ def records_status_text():
 
 @ui
 def recorded_engines():
-    return [(f"{e['created_at'][:16]} · {e['source']}" + (f" · gen {e['generation']}" if e["generation"] is not None else "")
-             + (f" · score {e['score']:.1f}" if e["score"] is not None else "") + (" · resumable" if e["resumable"] else "")
-             + f" · {e['id'][:8]}", e["id"]) for e in _recorded("/v1/records/engines", "engines")]
+    def label(e):  # the API's label: the same as in the finished runs' pickers
+        if e.get("label"):
+            return e["label"] + (" · resumable" if e["resumable"] else "")
+        return (f"{e['created_at'][:16]} · {e['source']}" + (f" · gen {e['generation']}" if e["generation"] is not None
+                else "") + (f" · fitness {e['score']:.1f}" if e["score"] is not None else "")
+                + (" · resumable" if e["resumable"] else "") + f" · {e['id'][:8]}")
+
+    return [(label(e), e["id"]) for e in _recorded("/v1/records/engines", "engines")]
 
 
 @ui
@@ -1995,6 +2349,7 @@ def active_config_ui():
     return f"Active now: **{source}**.", to_yaml(data["config"])
 
 
+@ui
 def import_folder_ui():
     """What waits in the server's import folder (GET /v1/records/import)."""
     found = API.get("/v1/records/import")
@@ -2016,6 +2371,7 @@ def import_records_ui(move, preview, progress=gr.Progress()):
                if failed else "") + ".")
 
 
+@ui
 def refresh_records_ui():
     """The records, listed again wherever they are used: the recorded engines (🧠 Train to continue or
     retrain, 📦 Export to download), the recorded stories (⚖ Evaluate), the runs (📦 Export) and
@@ -2238,6 +2594,26 @@ def _names_of(kind):
         return _entity_names(kind)
     except APIError:
         return []
+
+
+def fresh_choices_ui(source, extra, value):
+    """A dropdown's choices as the world has them now (asked when it is opened: entries made, renamed or deleted
+    since the page was built). Its value stays a choice, so a form that refers to an entry deleted meanwhile
+    still sends it (the API then says what is wrong)."""
+    if source == "stats":
+        names = _stat_names()
+    elif source == "profiles":
+        try:
+            names = list(API.get("/v1/variables/profiles")["profiles"])
+        except APIError:
+            names = []
+    else:
+        names = _names_of(source)
+    choices = list(dict.fromkeys([*extra, *names]))
+    for kept in (value if isinstance(value, list) else [value]):
+        if kept not in (None, "") and kept not in choices:
+            choices.append(kept)
+    return gr.update(choices=choices)
 
 
 def _stat_names():
@@ -2531,11 +2907,22 @@ def save_details_ui(kind, name, known_places, known_items, article, dialogue, di
     if kind not in ("NPCs", "Locations") or not name:
         raise gr.Error("Pick a person or a place.")
     if kind == "NPCs":
+        # A line with several variants (a list) is shown joined with " / ": it is saved as the list again, as it
+        # was (unchanged), or split at " / " (edited in its row), never as one string holding the separators.
+        stored = API.get(_path(f"/v1/entities/{kind}", name, "details"))["details"].get("dialogue") or []
+        variants = {" / ".join(line["text"]): list(line["text"]) for line in stored if isinstance(line.get("text"), list)}
+        rows = list((dialogue if dialogue is not None else pd.DataFrame()).iterrows())
         lines = []
-        for _, row in (dialogue if dialogue is not None else pd.DataFrame()).iterrows():
+        for number, (_, row) in enumerate(rows):
             condition, text = str(row.iloc[0] or "").strip(), str(row.iloc[1] or "").strip()
-            if text:
-                lines.append({"text": text, **({"enabled_if": _parse_flow(condition, "Said when")} if condition else {})})
+            if not text:
+                continue
+            said = variants.get(text)
+            if said is None and " / " in text and len(rows) == len(stored) \
+                    and isinstance(stored[number].get("text"), list):
+                said = [part.strip() for part in text.split(" / ") if part.strip()]
+            lines.append({"text": said or text,
+                          **({"enabled_if": _parse_flow(condition, "Said when")} if condition else {})})
         details = {"known_locations": list(known_places or []), "known_objects": list(known_items or []),
                    "article": article or None, "dialogue": lines}
     else:
@@ -2885,6 +3272,9 @@ def _dirty_of(dirty, editor):
 
 
 def _leave_question(editor, loaded, parts, target):
+    if editor == "weights":
+        return (f"### ● Unsaved changes\nThe weights have unsaved changes ({', '.join(parts)}). Save them before "
+                f"{_going(target)}? **Discard** drops them (the saved values come back); **Stay** keeps editing.")
     if editor == "entries":
         what, who = ", ".join(DRAFT_PARTS[p] for p in parts), _entry_label(loaded)
     else:
@@ -2916,6 +3306,12 @@ def nav_choice_ui(destination, now, now_section, loaded, dirty):
             target = {"type": "destination", "id": destination}
             return {"nav": navigate("world"), "section": EDITOR_SECTIONS[editor], "section_now": EDITOR_SECTIONS[editor],
                     "prompts": {editor: (True, _leave_question(editor, loaded, _dirty_of(dirty, editor), target), target)}}
+    if now == "advanced" and destination != "advanced" and _dirty_of(dirty, "weights"):
+        # Leaving ⚙ Advanced with an unsaved weights draft: asked in Weights (opened).
+        target = {"type": "destination", "id": destination}
+        return {"nav": navigate("advanced"), "advanced_section": "weights",
+                "prompts": {"weights": (True, _leave_question("weights", None, _dirty_of(dirty, "weights"), target),
+                                        target)}}
     return {"nav": navigate(destination)}
 
 
@@ -3252,19 +3648,41 @@ def confirm_delete_action_ui(pending, history, loaded, base, *values):
             *_pushed(history, result["undo"], f"🗑 Deleted the action **{index + 1}. {name}** of **{entry}** ({kind})."))
 
 
+MISSION_FORM_SIZE = 7  # the mission form's components (mission_form_ui's values, without its state)
+
+
 @ui
-def confirm_delete_mission_ui(pending, history=None):
-    """The confirmed deletion of exactly the mission asked about. Returns (the mission picker, the
-    message, missions.yaml, nothing pending, the question closed, Undo's state, bar and text)."""
+def confirm_delete_mission_ui(pending, history=None, state=None, base=None, dirty=None):
+    """The confirmed deletion of exactly the mission asked about. When it is the mission in the form, the
+    form no longer stands for it (Save would bring it back): it is cleared, or, with unsaved changes, kept
+    as a new mission. missions.yaml is reloaded unless it has unsaved changes. Returns (the mission picker,
+    the message, missions.yaml, nothing pending, the question closed, Undo's state, bar and text, the
+    mission form and its state, forms_base, drafts_dirty, the Missions indicator)."""
     if not pending or pending.get("type") != "mission":
         raise gr.Error("Nothing to delete: press *Delete mission* first.")
     key = pending["key"]
+    skip = gr.skip()
     try:
         result = API.delete(_path("/v1/missions", key))
     except APIError as exc:
-        return _refused(exc, (gr.skip(), gr.skip(), gr.skip()))
-    return (gr.Dropdown(choices=list(result["missions"]), value=None), result["message"], load_missions_yaml(), None,
-            *_closed(), *_pushed(history, result["undo"], f"🗑 Deleted the mission **{pending['title']}** (`{key}`)."))
+        return (*_refused(exc, (skip, skip, skip)), *[skip] * (MISSION_FORM_SIZE + 4))
+    unsaved = _dirty_of(dirty, "missions")
+    reload, context, message = {"values": {}}, skip, result["message"]
+    if (state or {}).get("key") == key:
+        if "mission" in unsaved:  # the edits stay, as a new mission: Save adds it under the key it then has
+            context = {**state, "key": None}
+            message += " Your unsaved changes to it stay in the form, as a new mission."
+        else:
+            *values, context = _mission_form(None)
+            reload["values"]["mission"] = tuple(values)
+    if "missions_yaml" not in unsaved:
+        reload["values"]["missions_yaml"] = (load_missions_yaml(),)
+    done = _form_captured("missions", reload, base, dirty, list(reload["values"]))
+    form = reload["values"].get("mission") or [skip] * MISSION_FORM_SIZE
+    return (gr.Dropdown(choices=list(result["missions"]), value=None), message,
+            reload["values"].get("missions_yaml", (skip,))[0], None, *_closed(),
+            *_pushed(history, result["undo"], f"🗑 Deleted the mission **{pending['title']}** (`{key}`)."),
+            *form, context, done["base"], done["dirty"], done["status"])
 
 
 def _restore(history):
@@ -3573,7 +3991,10 @@ def _form_load(editor, part, context):
     """A part as stored: (its values, other outputs: context, view)."""
     if editor == "missions":
         if part == "mission":
-            *values, state = mission_form_ui(_form_selected(editor, context))
+            key = _form_selected(editor, context)
+            if key and key not in _mission_keys():  # gone with the save that made it stale (missions.yaml)
+                key = None
+            *values, state = mission_form_ui(key)
             return tuple(values), {"context": state}
         return (load_missions_yaml(),), {}
     if editor == "rules":
@@ -3582,9 +4003,9 @@ def _form_load(editor, part, context):
         loader = {"messages": load_messages_yaml, "variables": load_variables_yaml, "stats": load_stats_yaml,
                   "values": lambda: stored_values_yaml(context)}[part]
         return (loader(),), {}
-    if part == "borders":
-        view, borders = map_place_ui(context)
-        return (borders,), {"view": view}
+    if part == "borders":  # the places as they are now: a place gone falls back to the first (context too)
+        view, picker, borders = map_form_ui(context)
+        return (borders,), {"view": view, "picker": picker, "context": _output_value(picker)[1]}
     return (load_document("map"),), {}
 
 
@@ -3776,6 +4197,21 @@ def propose_world_ui(progress=gr.Progress()):
             "press *Add the ticked ones*.")
 
 
+def sync_proposal_ui(proposal_text, ticked, offered):
+    """The proposal edited: the ticks follow its entries. Entries still there keep their tick; an entry new
+    to it (added, or renamed in the YAML) is ticked, as the proposal's entries are; YAML that does not read
+    leaves the ticks as they are. Returns (the ticks, the entries offered)."""
+    try:
+        proposal = yaml.safe_load(proposal_text or "") or {}
+    except yaml.YAMLError:
+        return gr.skip(), gr.skip()
+    if not isinstance(proposal, dict):
+        return gr.skip(), gr.skip()
+    choices = _proposal_choices(proposal)
+    ticked, offered = set(ticked or []), set(offered or [])
+    return gr.update(choices=choices, value=[c for c in choices if c in ticked or c not in offered]), choices
+
+
 @ui
 def add_proposal_ui(proposal_text, ticked):
     """Add the ticked entries of the (edited) proposal to the world; the world is checked first."""
@@ -3783,6 +4219,10 @@ def add_proposal_ui(proposal_text, ticked):
     if not isinstance(proposal, dict):
         raise gr.Error("The proposal must be a mapping with locations, characters and objects.")
     ticked = set(ticked or [])
+    missing = sorted(ticked - set(_proposal_choices(proposal)))
+    if missing:  # a tick for an entry renamed or removed in the YAML: never left out silently
+        raise gr.Error("Ticked but no longer in the proposal (renamed or removed in the YAML?): " + ", ".join(missing)
+                       + ". Tick the entries as they are named now.")
     body = {"locations": {name: entry for name, entry in (proposal.get("locations") or {}).items()
                           if f"Place: {name}" in ticked},
             "characters": [entry for entry in proposal.get("characters") or [] if f"Person: {entry.get('name')}" in ticked],
@@ -3829,16 +4269,20 @@ def _mission_keys():
     return list(API.get("/v1/missions")["missions"])
 
 
-@ui
-def mission_form_ui(key):
+def _mission_form(key):
+    """The mission form for ``key`` (None or "": empty) and its state; APIError as the API answers."""
     mission = API.get(_path("/v1/missions", key))["mission"] if key else {}
     stages = mission.get("stages") or ([{"title": mission.get("title", ""), "description": "",
                                          "goal": mission.get("goal") or {}, "rewards": []}] if mission else [])
     table = pd.DataFrame([[stage.get("title", ""), stage.get("description", ""), _pairs(stage.get("goal")),
                            _rewards_text(stage.get("rewards"))] for stage in stages], columns=STAGE_COLUMNS)
-    return (key or "", mission.get("title", ""), mission.get("description", ""), float(mission.get("weight") or 1.0),
+    weight = mission.get("weight")
+    return (key or "", mission.get("title", ""), mission.get("description", ""), 1.0 if weight is None else float(weight),
             _flow(mission.get("enabled_if")), _rewards_text(mission.get("rewards")), table,
-            {"key": key, "staged": bool(mission.get("stages")), "mission": mission})
+            {"key": key or None, "staged": bool(mission.get("stages")), "mission": mission})
+
+
+mission_form_ui = ui(_mission_form)
 
 
 def new_mission_ui():
@@ -3850,9 +4294,16 @@ def new_mission_ui():
 @ui
 def save_mission_form_ui(state, key, title, description, weight, enabled_if, rewards, table):
     state = dict(state or {})
+    old, new = state.get("key"), str(key or "").strip()
+    if not new:
+        raise gr.Error("Give the mission a key: letters, digits and _ (e.g. rid_the_market_of_the_thief).")
+    if new != old and new in _mission_keys():  # a new mission, or a rename, never replaces another mission
+        raise gr.Error(f"A mission `{new}` exists already: choose another key, or pick it from the list to edit it.")
     mission = dict(state.get("mission") or {})
+    stored_title = mission.get("title")
     mission.update(title=str(title or "").strip(), description=str(description or "").strip())
-    _set(mission, "weight", None if float(weight or 1.0) == 1.0 else float(weight))
+    weight = 1.0 if weight is None or weight == "" else float(weight)  # 0 is a weight (never drawn), not "unset"
+    _set(mission, "weight", None if weight == 1.0 else weight)
     _set(mission, "enabled_if", _parse_flow(enabled_if, "Offered only if"))
     _set(mission, "rewards", _parse_rewards(rewards))
     rows = [row for _, row in (table if table is not None else pd.DataFrame()).iterrows()
@@ -3863,13 +4314,17 @@ def save_mission_form_ui(state, key, title, description, weight, enabled_if, rew
                "goal": _parse_pairs(row.iloc[2], f"Step {number}: Goal"),
                **({"rewards": _parse_rewards(row.iloc[3])} if str(row.iloc[3] or "").strip() else {})}
               for number, (row) in enumerate(rows, start=1)]
-    if len(stages) > 1 or state.get("staged"):
+    # One step that carries nothing but its goal is a one-goal mission; a step with its own title (other than the
+    # mission's), a description or rewards is kept as a step, so nothing written in the table is lost.
+    first = stages[0]
+    goal_only = (len(stages) == 1 and not first["description"] and "rewards" not in first
+                 and first["title"] in ("Step 1", mission["title"], stored_title))
+    if state.get("staged") or not goal_only:
         mission["stages"] = stages
         mission.pop("goal", None)
     else:
-        mission["goal"] = stages[0]["goal"]
+        mission["goal"] = first["goal"]
         mission.pop("stages", None)
-    old, new = state.get("key"), str(key or "").strip()
     target = old or new
     result = API.put(_path("/v1/missions", target), {"mission": mission, "rename": new if old and new != old else None})
     return (gr.Dropdown(choices=list(result["missions"]), value=new), result["message"], load_missions_yaml())
@@ -3935,6 +4390,8 @@ def map_place_ui(place):
 def save_borders_ui(place, borders):
     if not place:
         raise gr.Error("Pick a place.")
+    if place not in (API.get("/v1/map").get("places") or []):
+        raise gr.Error(f"The place `{place}` is no longer in the world: pick a place from the list.")
     result = API.put(_path("/v1/map", place), {"borders": list(borders or [])})
     return (_map_svg(result.get("routes") or {}, result.get("places") or [], place), result["message"],
             load_document("map"))
@@ -3967,6 +4424,47 @@ def behaviour_tables_ui():
             str(npcs["default"].get("appearances", "always")),
             _rules_table("locations", places), str(places["default"].get("draws_in", "never")),
             str(places["default"].get("visits", "always")))
+
+
+BEHAVIOUR_GROUPS = {"npcs": "the people's rules", "locations": "the places' rules"}
+
+
+def behaviour_status_markup(dirty):
+    """The behaviour tables' unsaved changes (a draft-status: the browser asks before the page is left)."""
+    dirty = [group for group in BEHAVIOUR_GROUPS if group in (dirty or [])]
+    if dirty:
+        what = " and ".join(BEHAVIOUR_GROUPS[group] for group in dirty)
+        return f'<div class="draft-status dirty" data-dirty="1">● Unsaved changes: {html.escape(what)}</div>'
+    return '<div class="draft-status" data-dirty="0">✓ No unsaved changes</div>'
+
+
+def behaviour_load_ui():
+    """Both tables as stored, as the baseline of their drafts. Returns (the six table values, draft, status)."""
+    values = behaviour_tables_ui()
+    draft = {"base": {"npcs": _plain(list(values[:3])), "locations": _plain(list(values[3:]))}, "dirty": []}
+    return (*values, draft, behaviour_status_markup([]))
+
+
+def behaviour_edit_ui(group, draft, *values):
+    """An edit in one table: unsaved when it differs from the table as loaded or saved."""
+    draft = {"base": dict((draft or {}).get("base") or {}), "dirty": list((draft or {}).get("dirty") or [])}
+    known = draft["base"].get(group)
+    changed = known is not None and _plain(list(values)) != known
+    dirty = set(draft["dirty"])
+    (dirty.add if changed else dirty.discard)(group)
+    draft["dirty"] = [g for g in BEHAVIOUR_GROUPS if g in dirty]
+    return draft, behaviour_status_markup(draft["dirty"])
+
+
+def behaviour_reload_ui(group, draft):
+    """After ``group``'s save: only its table reloads (the other keeps its edits). Returns (its three values,
+    the draft, its status)."""
+    values = behaviour_tables_ui()
+    mine = values[:3] if group == "npcs" else values[3:]
+    draft = {"base": dict((draft or {}).get("base") or {}), "dirty": list((draft or {}).get("dirty") or [])}
+    draft["base"][group] = _plain(list(mine))
+    draft["dirty"] = [g for g in draft["dirty"] if g != group]
+    return (*mine, draft, behaviour_status_markup(draft["dirty"]))
 
 
 @ui
@@ -4098,6 +4596,8 @@ def build_app():
         # 🧠 Train's completed engine, kept in this browser so that a reload shows it again (restore_result_ui).
         # Defined here, outside the destinations: the browser restores it before the page's load events.
         saved_result = gr.BrowserState(None, storage_key="ane-train-result")
+        # ▶ Play's game (its session id), kept in this browser so that a reload goes on with it (restore_game_ui).
+        saved_game = gr.BrowserState("", storage_key="ane-play-session")
         # Each delete panel's Undo history, kept in this browser too (the API keeps the deletions on disk).
         saved_histories = {name: gr.BrowserState([], storage_key=f"ane-undo-{name}")
                            for name in ("entry", "action", "mission")}
@@ -4323,10 +4823,12 @@ def build_app():
                                         pol_unique = gr.Checkbox(label="Unique: one in each story")
                                         pol_location = gr.Dropdown([NONE, *places_now], value=NONE,
                                                                    label="Lies at (none: where it fits best)")
-                                with gr.Row():
+                                # Places and people have no scheduling rules (their behaviour comes from tags):
+                                # Save and the YAML editor are shown for events and items only (policy_controls_ui).
+                                with gr.Row(visible=False) as policy_actions:
                                     save_policy_form = gr.Button("Save", variant="primary")
                                 policy_status = gr.Markdown()
-                                with gr.Accordion("As YAML (advanced)", open=False):
+                                with gr.Accordion("As YAML (advanced)", open=False, visible=False) as policy_yaml_box:
                                     policy_editor = gr.Code(value=load_entity_policy_yaml("Locations", selected_name),
                                                             language="yaml", label="rules")
                                     with gr.Row():
@@ -4506,6 +5008,12 @@ def build_app():
                                 save_values_button = gr.Button("Save stored values", variant="primary")
                                 refresh_values_button = gr.Button("Refresh")
                                 reset_values_button = gr.Button("Reset profile (new player)", variant="stop")
+                            # Resetting cannot be undone: it is asked first (reset_question_ui).
+                            with gr.Group(visible=False) as reset_question:
+                                reset_question_text = gr.Markdown()
+                                with gr.Row():
+                                    reset_values_confirm = gr.Button("Reset this profile", variant="stop")
+                                    reset_values_cancel = gr.Button("Cancel")
                             values_status = gr.Markdown()
                         with gr.Accordion("Character stats", open=False):
                             gr.Markdown(
@@ -4572,6 +5080,8 @@ def build_app():
                                                            interactive=True, wrap=True)
                                 save_place_rules = gr.Button("Save the places' rules", variant="primary")
                         rules_status = gr.Markdown()
+                        behaviour_status = gr.HTML(behaviour_status_markup([]))
+                        behaviour_draft = gr.State({})
 
                     with gr.Tab(WORLD_SECTIONS["grow"], id="grow") as section_grow:
                         gr.Markdown("The language model proposes new **places, people and items** that fit this world (its places "
@@ -4583,6 +5093,7 @@ def build_app():
                                 grow_llm_status = gr.Markdown()
                                 propose_button = gr.Button("✨ Propose new entries", variant="primary")
                         proposal_pick = gr.CheckboxGroup([], label="Add these")
+                        proposal_offered = gr.State([])  # the entries the ticks were offered for (sync_proposal_ui)
                         proposal_text = gr.Code(language="yaml", label="The proposal (edit it before adding)", lines=12)
                         add_proposal = gr.Button("Add the ticked ones to the world", variant="primary")
                         grow_status = gr.Markdown()
@@ -4717,9 +5228,11 @@ def build_app():
                 mis_delete.click(ask_delete_mission_ui, mission_state, mission_question_outputs, show_progress="hidden")
                 mission_cancel.click(cancel_delete_ui, None, mission_question_outputs, show_progress="hidden")
                 history_events["mission"] += [
-                    mission_delete.click(confirm_delete_mission_ui, [mission_pending, mission_undo_state],
+                    mission_delete.click(confirm_delete_mission_ui,
+                                         [mission_pending, mission_undo_state, mission_state, forms_base, drafts_dirty],
                                          [mis_pick, missions_status, missions_editor, *mission_question_outputs,
-                                          mission_undo_state, mission_undo_bar, mission_undo_said]),
+                                          mission_undo_state, mission_undo_bar, mission_undo_said, *mission_fields,
+                                          mission_state, forms_base, drafts_dirty, missions_draft_status]),
                     mission_undo.click(undo_delete_mission_ui, [mission_undo_state, forms_base, drafts_dirty],
                                        [mis_pick, *mission_fields, mission_state, missions_status, missions_editor,
                                         mission_undo_state, mission_undo_bar, mission_undo_said, forms_base,
@@ -4822,7 +5335,13 @@ def build_app():
                         button.click(lambda context, base, dirty, editor=editor, part=part: form_emit(
                             editor, form_reload_ui(editor, part, context, base, dirty)),
                             [layout["context"], forms_base, drafts_dirty], form_outputs(editor, said))
-                reset_values_button.click(reset_stored_values_ui, values_profile, [stored_values, values_status]).success(
+                reset_values_button.click(reset_question_ui, values_profile, [reset_question, reset_question_text],
+                                          show_progress="hidden")
+                reset_values_cancel.click(lambda: (gr.update(visible=False), ""), None,
+                                          [reset_question, reset_question_text], show_progress="hidden")
+                reset_values_confirm.click(lambda: (gr.update(visible=False), ""), None,
+                                           [reset_question, reset_question_text], show_progress="hidden").then(
+                    reset_stored_values_ui, values_profile, [stored_values, values_status]).success(
                     lambda context, base, dirty: form_emit("rules", form_reload_ui("rules", "values", context, base, dirty)),
                     [rules_profile, forms_base, drafts_dirty], form_outputs("rules"))
                 # The map.
@@ -4831,6 +5350,8 @@ def build_app():
                 # choosing one sets it (an entry loaded, a tag typed: the choices follow).
                 behaviours = [behaviour_a, behaviour_b]
                 kind.change(behaviour_fields_ui, [kind, tags], behaviours)
+                kind.change(policy_controls_ui, kind, [policy_actions, policy_yaml_box], show_progress="hidden")
+                demo.load(policy_controls_ui, kind, [policy_actions, policy_yaml_box], show_progress="hidden")
                 tags.change(behaviour_fields_ui, [kind, tags], behaviours)
                 demo.load(behaviour_fields_ui, [kind, tags], behaviours)
                 behaviour_a.input(lambda k, c, t: apply_behaviour_ui(k, 0, c, t), [kind, behaviour_a, tags], tags).then(
@@ -4839,13 +5360,29 @@ def build_app():
                     **part_status["fields"])
                 behaviour_tables = [npc_table, npc_default_a, npc_default_b, place_table, place_default_a,
                                     place_default_b]
-                demo.load(behaviour_tables_ui, None, behaviour_tables)
-                save_npc_rules.click(lambda t, a, b: save_behaviour_table_ui("npcs", t, a, b),
-                                     [npc_table, npc_default_a, npc_default_b], rules_status).then(
-                    behaviour_fields_ui, [kind, tags], behaviours).then(behaviour_tables_ui, None, behaviour_tables)
-                save_place_rules.click(lambda t, a, b: save_behaviour_table_ui("locations", t, a, b),
-                                       [place_table, place_default_a, place_default_b], rules_status).then(
-                    behaviour_fields_ui, [kind, tags], behaviours).then(behaviour_tables_ui, None, behaviour_tables)
+                demo.load(behaviour_load_ui, None, [*behaviour_tables, behaviour_draft, behaviour_status])
+                # Dropdowns of the world's names: filled when the page was built, fresh whenever they are opened.
+                for dropdown, source, extra in (
+                        (act_stat, "stats", [NONE]), (act_event, "Events", [NONE]), (act_item, "Items", [NONE]),
+                        (act_collects, "Items", [NONE]), (out_move, "Locations", [NONE]),
+                        (out_send, "Locations", [NONE]), (out_place, "Locations", [NONE]),
+                        (out_person, "NPCs", [NONE]), (out_item, "Items", [NONE]),
+                        (out_remove, "NPCs", [NONE, ACTING]), (pol_location, "Locations", [NONE]),
+                        (det_places, "Locations", []), (det_items, "Items", []), (map_place, "Locations", []),
+                        (rule_arrest, "Locations", []), (values_profile, "profiles", [])):
+                    dropdown.focus(lambda value, source=source, extra=extra: fresh_choices_ui(source, extra, value),
+                                   dropdown, dropdown, show_progress="hidden")
+                # Each table is a draft of its own: an edit marks it unsaved; its save reloads it alone.
+                for group, parts, save_button in (("npcs", behaviour_tables[:3], save_npc_rules),
+                                                  ("locations", behaviour_tables[3:], save_place_rules)):
+                    gr.on([c.input for c in parts], lambda draft, *values, group=group: behaviour_edit_ui(
+                        group, draft, *values), [behaviour_draft, *parts], [behaviour_draft, behaviour_status],
+                          show_progress="hidden", trigger_mode="always_last")
+                    save_button.click(lambda t, a, b, group=group: save_behaviour_table_ui(group, t, a, b),
+                                      list(parts), rules_status).success(
+                        behaviour_fields_ui, [kind, tags], behaviours).then(
+                        lambda draft, group=group: behaviour_reload_ui(group, draft), behaviour_draft,
+                        [*parts, behaviour_draft, behaviour_status])
 
                 # The language model: suggestions for this entry, and new entries for the world.
                 suggest_button.click(suggest_ui, [kind, entity, suggest_field], [suggestions, suggest_status],
@@ -4859,6 +5396,8 @@ def build_app():
                 demo.load(judge_status_ui, None, grow_llm_status)
                 propose_button.click(propose_world_ui, None, [proposal_pick, proposal_text, grow_status],
                                      concurrency_limit=1, concurrency_id="language_model")
+                proposal_text.change(sync_proposal_ui, [proposal_text, proposal_pick, proposal_offered],
+                                     [proposal_pick, proposal_offered], show_progress="hidden")
                 add_proposal.click(add_proposal_ui, [proposal_text, proposal_pick], [grow_status, world_size]).success(
                     refresh_entry_names_ui, [kind, entity], entity).then(studio_status_ui, None, studio_status)
 
@@ -4930,6 +5469,13 @@ def build_app():
                             export_result = gr.Button("📦 Export this result", interactive=False,
                                                       elem_id="train-export-result")
                         result_buttons = [play_result, evaluate_result, export_result]
+                        with gr.Row(equal_height=True, elem_classes="result-name"):
+                            result_name = gr.Textbox(label="Name (optional)", scale=4, interactive=False,
+                                                     elem_id="train-result-name", max_length=80,
+                                                     info="Shown instead of its date in Train, Play, Evaluate and "
+                                                     "Export; its id stays the same. Empty: no name.")
+                            result_name_save = gr.Button("🏷 Save name", scale=1, elem_id="train-result-name-save")
+                        result_name_status = gr.Markdown()
                         gr.Markdown("#### 3 · Learning results")
                         with gr.Row():
                             learning_plot = gr.LinePlot(
@@ -4973,6 +5519,29 @@ def build_app():
                         retrain_summary = gr.Markdown("Choose a recorded engine to see what retraining it would run "
                                                       "with.", elem_classes="run-summary")
                         retrain_plan = gr.State(None)
+
+                    with gr.Tab("🏷 Finished engines", id="train-engines"):
+                        gr.Markdown("Every finished run and loaded engine (and, with the records, the other recorded "
+                                    "engines): its result card, and an optional name, shown instead of its date in "
+                                    "every picker. The engine and run ids stay what identifies it. Names are kept "
+                                    "with the saves, so they work with recording off too.")
+                        named_engines = [choice for choice in evaluation_engine_choices() if choice[1]]
+                        with gr.Row(equal_height=True):
+                            card_engine = gr.Dropdown(named_engines, value=named_engines[0][1] if named_engines else None,
+                                                      label="Engine", scale=4, elem_id="engines-picker")
+                            card_refresh = gr.Button("↻ Refresh", scale=1)
+                        with gr.Row(equal_height=True):
+                            card_name = gr.Textbox(label="Name (optional)", scale=4, max_length=80,
+                                                   elem_id="engines-name", interactive=False)
+                            card_name_save = gr.Button("🏷 Save name", scale=1, elem_id="engines-name-save")
+                        card_name_status = gr.Markdown()
+                        engine_card_view = gr.Markdown(elem_classes="result-card", elem_id="engines-card")
+                        card_engine.change(engine_card_ui, card_engine, engine_card_view, show_progress="hidden")
+                        card_engine.change(engine_name_ui, card_engine, card_name, show_progress="hidden")
+                        for listed in (card_refresh.click(finished_engines_ui, card_engine, card_engine),
+                                       demo.load(finished_engines_ui, card_engine, card_engine)):
+                            listed.then(engine_card_ui, card_engine, engine_card_view, show_progress="hidden").then(
+                                engine_name_ui, card_engine, card_name, show_progress="hidden")
 
                 train_outputs = [simulation_report, generated_config, generated_engine, learning_plot, learned_traits]
                 # Every training ends with its completed engine (the state the follow-up actions carry), shown
@@ -5029,6 +5598,10 @@ def build_app():
                         play_upload = gr.UploadButton("📂 Continue a save game", file_types=[".json"],
                                                       type="filepath", scale=2)
                         play_refresh = gr.Button("↻ Refresh", scale=1)
+                    with gr.Accordion("🏷 About this engine: its result card", open=False):
+                        play_card = gr.Markdown(elem_id="play-engine-card")
+                    play_run.change(engine_card_ui, play_run, play_card, show_progress="hidden")
+                    demo.load(engine_card_ui, play_run, play_card, show_progress="hidden")
                     with gr.Accordion("🎲 My own stat points", open=False):
                         gr.Markdown(
                             f"Spread **{allocation.get('total_points', 50)} points** over "
@@ -5137,6 +5710,12 @@ def build_app():
                 save_game_refresh.click(progression_ui, play_who, [save_game_text, save_game_table])
                 demo.load(judge_status_ui, None, game_judge_status)
                 judge_game_button.click(judge_session_ui, play_token, game_judgement)
+                # The game survives a reload: its session id is kept in this browser, and the game opens again
+                # while the API still has it.
+                play_token.change(lambda token: token or "", play_token, saved_game, show_progress="hidden")
+                demo.load(lambda token, size=len(play_screen) + 1: restore_game_ui(token, size), saved_game,
+                          [play_token, *play_screen, play_story, saved_game], show_progress="hidden").success(
+                    lambda token: gr.Accordion(open=not token), play_token, play_setup)
 
             with gr.Tab("⚖ Evaluate", id="evaluate", elem_id="dest-evaluate") as evaluate_tab:
                 gr.Markdown(
@@ -5158,6 +5737,9 @@ def build_app():
                     evaluation_engines = evaluation_engine_choices()
                     bench_engine = gr.Dropdown(evaluation_engines, value="", label="Storyteller",
                                                info="Finished runs (newest first), then other recorded engines.")
+                    with gr.Accordion("🏷 About this storyteller: its result card", open=False):
+                        bench_card = gr.Markdown(elem_id="evaluate-engine-card")
+                    bench_engine.change(engine_card_ui, bench_engine, bench_card, show_progress="hidden")
                     bench_pairwise = gr.Checkbox(
                         label="Compare with version B (pairwise A/B on the same seeds, each pair judged in both orders)")
                     bench_variants = gr.Code(value="# version B: dotted.path: value\nclimax.enabled: false\n",
@@ -5226,6 +5808,10 @@ def build_app():
                                             "Choose several to export each.")
                 export_generation.render()  # created above the destinations: a training (🧠 Train) fills it
                 export_engine_note = gr.Markdown()
+                with gr.Accordion("🏷 The chosen engines' result cards", open=False):
+                    export_cards = gr.Markdown(elem_id="export-engine-cards")
+                export_engine.change(engine_cards_ui, export_engine, export_cards, show_progress="hidden")
+                demo.load(engine_cards_ui, export_engine, export_cards, show_progress="hidden")
                 with gr.Row():
                     export_memory = gr.Checkbox(True, label="Include the learning memory (keep training offline)")
                     export_name = gr.Textbox(label="Name", placeholder="narrative-engine")
@@ -5265,8 +5851,8 @@ def build_app():
                 )
             with gr.Tab("⚙ Advanced", id="advanced", elem_id="dest-advanced") as advanced_tab:
                 gr.Markdown("Technical settings: the simulation, every weight, the engine's logic, the app and its background jobs. The story's own rules are in 🌍 World → 📜 Story rules.", elem_classes="lead")
-                with gr.Tabs():
-                    with gr.Tab("Simulation"):
+                with gr.Tabs() as advanced_sections:
+                    with gr.Tab("Simulation", id="simulation"):
                         gr.Markdown(
                             "### Complete configuration file\n"
                             "Upload one combined YAML file containing all sections from the four files in `config/`. "
@@ -5340,7 +5926,7 @@ def build_app():
                             active_config = gr.Code(language="yaml", label="active configuration", interactive=False)
                             show_config.click(active_config_ui, None, [config_source, active_config])
 
-                    with gr.Tab("Weights"):
+                    with gr.Tab("Weights", id="weights"):
                         gr.Markdown(
                             "The numeric weights, bonuses, penalties, thresholds, chances and rates of scoring and "
                             "the narrative engine. **Basic** shows a chosen set of common gameplay controls "
@@ -5356,7 +5942,7 @@ def build_app():
                         weight_infos = weights_data["parameters"]
                         weight_by_path = {info["path"]: info for info in weight_infos}
                         basic_areas = weights_data.get("basic") or []
-                        weights_meta_value = weights_meta(weight_infos, basic_areas)
+                        weights_meta_value = weights_meta(weight_infos, basic_areas, weights_data.get("shipped"))
                         weights_meta_state = gr.State(weights_meta_value)
                         weights_saved = gr.State(dict(weights_data["values"]))
                         weights_view = gr.Radio(["Basic", "Advanced"], value="Basic", label="View",
@@ -5366,6 +5952,16 @@ def build_app():
                             weights_meta_value, weights_data["values"],
                             *(weights_data["values"][path] for path in weights_meta_value["paths"])),
                             elem_id="weights-draft-status")
+                        weights_shipped = gr.HTML(weights_shipped_markup(weights_meta_value, weights_data["values"]),
+                                                  elem_id="weights-shipped")
+                        with gr.Group(visible=False, elem_id="weights-draft-prompt") as weights_prompt_group:
+                            weights_prompt_text = gr.Markdown()
+                            with gr.Row():
+                                weights_prompt_save = gr.Button("💾 Save", variant="primary",
+                                                                elem_id="weights-draft-save")
+                                weights_prompt_discard = gr.Button("Discard", elem_id="weights-draft-discard")
+                                weights_prompt_stay = gr.Button("Stay", elem_id="weights-draft-stay")
+                        weights_pending = gr.State(None)
                         with gr.Column(visible=True, elem_id="weights-basic") as weights_basic_box:
                             basic_components = []
                             for area in basic_areas:
@@ -5396,29 +5992,51 @@ def build_app():
                                                             elem_id="weights-save")
                             discard_weights_button = gr.Button("Discard changes (reload the saved values)",
                                                                elem_id="weights-discard")
+                            shipped_weights_button = gr.Button("↺ Shipped values into the draft",
+                                                               elem_id="weights-shipped-draft")
                         weights_status = gr.Markdown(elem_id="weights-message")
                         weights_view.change(weights_view_ui, weights_view, [weights_basic_box, weights_advanced_box])
                         # One draft: a Basic field and its parameter's Advanced field hold the same value; an
                         # edit in either is copied to the other in the browser (user edits only: .input), then
                         # the draft's status is worked out from the Advanced fields (every parameter).
                         draft_inputs = [weights_meta_state, weights_saved, *weight_components]
+                        dirty_inputs = [weights_meta_state, weights_saved, drafts_dirty, *weight_components]
                         advanced_of = dict(zip(weights_meta_value["paths"], weight_components))
                         for path, basic_field in zip(weights_meta_value["basic_paths"], basic_components):
                             twin = advanced_of[path]
                             for source, target in ((basic_field, twin), (twin, basic_field)):
                                 source.input(None, source, target, js="(value) => value", queue=False).then(
-                                    weights_draft_markup, draft_inputs, weights_draft, trigger_mode="always_last")
+                                    weights_draft_ui, dirty_inputs, [weights_draft, drafts_dirty],
+                                    trigger_mode="always_last")
                         advanced_only = [field for path, field in advanced_of.items()
                                          if path not in weights_meta_value["basic"]]
                         if advanced_only:
-                            gr.on([field.input for field in advanced_only], weights_draft_markup, draft_inputs,
-                                  weights_draft, trigger_mode="always_last")
+                            gr.on([field.input for field in advanced_only], weights_draft_ui, dirty_inputs,
+                                  [weights_draft, drafts_dirty], trigger_mode="always_last")
+                        after_outputs = [weights_draft, drafts_dirty, weights_shipped]
                         save_weights_button.click(save_weights, draft_inputs,
-                                                  [weights_status, weights_saved, weights_draft])
+                                                  [weights_status, weights_saved, weights_draft]).success(
+                            weights_after_ui, dirty_inputs, after_outputs, show_progress="hidden")
                         weights_reload_outputs = [weights_saved, *weight_components, *basic_components,
                                                   weights_draft, weights_status]
-                        discard_weights_button.click(reload_weights_ui, weights_meta_state, weights_reload_outputs)
-                        demo.load(reload_weights_ui, weights_meta_state, weights_reload_outputs)
+                        for reloaded in (discard_weights_button.click(reload_weights_ui, weights_meta_state,
+                                                                      weights_reload_outputs),
+                                         demo.load(reload_weights_ui, weights_meta_state, weights_reload_outputs)):
+                            reloaded.success(weights_after_ui, dirty_inputs, after_outputs, show_progress="hidden")
+                        shipped_weights_button.click(
+                            shipped_into_draft_ui, draft_inputs,
+                            [*weight_components, *basic_components, weights_draft, weights_status]).success(
+                            weights_after_ui, dirty_inputs, after_outputs, show_progress="hidden")
+                        # Leaving ⚙ Advanced with unsaved weights asks here (the navigation's guard, below).
+                        weights_resolve_outputs = [weights_prompt_group, weights_prompt_text, weights_pending,
+                                                   *nav_outputs, weights_saved, *weight_components, *basic_components,
+                                                   weights_draft, weights_status, weights_shipped, drafts_dirty]
+                        for button, choice in ((weights_prompt_save, "save"), (weights_prompt_discard, "discard"),
+                                               (weights_prompt_stay, "stay")):
+                            button.click(lambda pending, meta, saved, dirty, *values, choice=choice: weights_resolve_ui(
+                                choice, pending, meta, saved, dirty, *values),
+                                [weights_pending, weights_meta_state, weights_saved, drafts_dirty, *weight_components],
+                                weights_resolve_outputs, show_progress="hidden")
 
                     with gr.Tab("Engine logic"):
                         gr.Markdown(
@@ -5552,7 +6170,8 @@ def build_app():
         form_prompts = {editor: form_layouts[editor]["panels"] for editor in form_layouts}
         leave_outputs = [*nav_outputs, world_sections, section_now, draft_pending, draft_prompt, draft_message,
                          *[c for editor in form_prompts for c in (form_prompts[editor][6], form_prompts[editor][1],
-                                                                  form_prompts[editor][2])]]
+                                                                  form_prompts[editor][2])],
+                         advanced_sections, weights_pending, weights_prompt_group, weights_prompt_text]
 
         def leave_emit(result):
             skip = gr.skip()
@@ -5561,6 +6180,9 @@ def build_app():
             for editor in ("entries", *form_prompts):
                 asked = (result.get("prompts") or {}).get(editor)
                 out += [asked[2], gr.update(visible=True), asked[1]] if asked else [skip, skip, skip]
+            out.append(gr.Tabs(selected=result["advanced_section"]) if result.get("advanced_section") else skip)
+            asked = (result.get("prompts") or {}).get("weights")
+            out += [asked[2], gr.update(visible=True), asked[1]] if asked else [skip, skip, skip]
             return tuple(out)
 
         leave_inputs = [dest_now, section_now, draft_loaded, drafts_dirty]
@@ -5620,6 +6242,19 @@ def build_app():
                               show_progress="hidden")
         export_result.click(export_result_ui, [train_result, export_platform], [*nav_outputs, *export_form],
                             show_progress="hidden")
+        # Names: from Train's result card or its finished engines; every picker's labels follow (ids unchanged).
+        engine_pickers = [card_engine, play_run, bench_engine, calib_engine, export_engine, record_engine,
+                          play_record_engine, files_engine]
+        renamed = [result_name_save.click(rename_result_ui, [train_result, result_name, card_engine],
+                                          [result_name_status, engine_card_view, result_name, result_card,
+                                           *engine_pickers]),
+                   card_name_save.click(rename_engine_ui, [card_engine, card_name, train_result],
+                                        [card_name_status, engine_card_view, card_name, result_card, *engine_pickers])]
+        for event in renamed:  # the cards beside Play's, Evaluate's and Export's pickers show the new name too
+            event.success(engine_card_ui, play_run, play_card, show_progress="hidden").then(
+                engine_card_ui, bench_engine, bench_card, show_progress="hidden").then(
+                engine_cards_ui, export_engine, export_cards, show_progress="hidden")
+        train_result.change(result_name_ui, train_result, result_name, show_progress="hidden")
         # ⚙ Advanced → 🔌 Integration names the game it acts on: the one open in ▶ Play.
         for event in [*started, loaded, nav_events["advanced"], menu_event]:
             event.then(integration_session_text, play_token, integration_session, show_progress="hidden")
@@ -5638,8 +6273,38 @@ def build_app():
 demo = build_app() if __name__ != "__mp_main__" else None
 
 
+STARTUP_WAIT = float(os.getenv("ANE_UI_STARTUP_WAIT", "90"))  # seconds the page may take to answer at start
+
+
+def patient_startup_check(wait=STARTUP_WAIT):
+    """Gradio checks at launch that its page answers, giving it one 3-second try: on a busy host the
+    first render of this (large) page can take longer, and the studio then refuses to start ("When
+    localhost is not accessible, a shareable link must be created"). This check asks the same way, but
+    tries again (10 s each) for up to ``wait`` seconds before giving up."""
+    import httpx
+    from gradio import networking
+
+    def url_ok(url):
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                response = httpx.head(url, timeout=10, verify=False)
+                if response.status_code in (200, 401, 301, 302, 303, 307, 308):
+                    return True
+            except httpx.HTTPError:
+                pass
+            if time.monotonic() >= deadline:
+                LOG.warning("The studio's page did not answer within %.0f s of starting.", wait)
+                return False
+            time.sleep(0.5)
+
+    networking.url_ok = url_ok
+    return url_ok
+
+
 if __name__ == "__main__":
     launch = demo.launch_settings
+    patient_startup_check()
     demo.queue(default_concurrency_limit=launch["queue_concurrency"], max_size=launch["queue_max_size"]).launch(
         server_name=os.getenv("ANE_UI_HOST", launch["server_host"]),
         server_port=int(os.getenv("ANE_UI_PORT", str(launch["server_port"]))),

@@ -16,6 +16,7 @@ cutting it), and refuses a value outside bounds the engine defines.
 from __future__ import annotations
 
 import math
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -79,29 +80,117 @@ def basic_areas() -> tuple:
         controls = []
         for control in area.get("controls") or []:
             path = control.get("path")
-            if set(control) - {"path", "effect"} or not control.get("effect"):
-                raise ValueError(f"{BASIC_PATH.name}: {path} needs an effect (and nothing else but its path).")
+            if set(control) - {"path", "effect", "scaled_by"} or not control.get("effect"):
+                raise ValueError(f"{BASIC_PATH.name}: {path} needs an effect (and nothing else but its path and "
+                                 "scaled_by).")
+            scaled = control.get("scaled_by")
+            if scaled is not None and (not isinstance(scaled, dict) or scaled.get("factor") not in FACTORS
+                                       or not scaled.get("trait")):
+                raise ValueError(f"{BASIC_PATH.name}: {path}'s scaled_by needs a trait and a factor in {FACTORS}.")
             if path not in known or "*" in path:
                 raise ValueError(f"{BASIC_PATH.name}: {path} is not a described parameter.")
             if path in seen:
                 raise ValueError(f"{BASIC_PATH.name}: {path} is listed twice.")
             seen.add(path)
-            controls.append({"path": path, "effect": " ".join(str(control["effect"]).split())})
+            controls.append({"path": path, "effect": " ".join(str(control["effect"]).split()),
+                             **({"scaled_by": dict(control["scaled_by"])} if control.get("scaled_by") else {})})
         areas.append({"key": area["key"], "title": area["title"],
                       "summary": " ".join(str(area.get("summary") or "").split()), "controls": controls})
     return tuple(areas)
 
 
+FACTORS = ("trait", "half_plus", "drive", "adds")
+
+
+def _trait_range(trait):
+    """(low, high, meaning) of a storyteller trait: the bounds training keeps it in (genome_bounds)."""
+    from core_engine.evolution import TRAIT_MEANINGS
+    from core_engine.genome import TRAIT_BOUNDS
+    from utils.config_loader import config
+
+    bounds = (config.get("genome_bounds") or {}).get(trait) or TRAIT_BOUNDS.get(trait) or (0.0, 1.0)
+    return float(bounds[0]), float(bounds[1]), TRAIT_MEANINGS.get(trait, trait.replace("_", " "))
+
+
+def scaling_text(scaled):
+    """How far each storyteller moves a Basic control's value (``scaled_by``), from the trait bounds
+    training keeps (genome_bounds) and the parameters it names: e.g. *Each storyteller multiplies it by
+    its trait `novelty_bias` (avoiding repetition; learned between 0.2 and 0.9): it counts ×0.2 to ×0.9.*"""
+    from utils.config_loader import config
+
+    trait, factor = scaled["trait"], scaled["factor"]
+    low, high, meaning = _trait_range(trait)
+
+    def n(value):
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+
+    named = f"its trait `{trait}` ({meaning}; learned between {n(low)} and {n(high)})"
+    if factor == "trait":
+        return f"Each storyteller multiplies it by {named}: it counts ×{n(low)} to ×{n(high)}."
+    if factor == "half_plus":
+        return f"Each storyteller multiplies it by 0.5 + {named}: it counts ×{n(0.5 + low)} to ×{n(0.5 + high)}."
+    if factor == "drive":
+        start = config.get("mission_settings.pursuit_start_step", 12)
+        full = config.get("mission_settings.pursuit_full_step", 30)
+        return (f"Each storyteller multiplies it by {named}, times how far the quest is pursued: 0 until turn "
+                f"{start}, full from turn {full} (or once the quest has stalled): it counts ×0 early, up to "
+                f"×{n(low)} to ×{n(high)}.")
+    parts, least, most = [], 0.0, 0.0
+    for name, weight_path in (scaled.get("with") or {}).items():
+        weight = float(config.get(weight_path, 0.0) or 0.0)
+        t_low, t_high, t_meaning = _trait_range(name)
+        parts.append(f"its trait `{name}` ({t_meaning}; {n(t_low)}–{n(t_high)}) × {n(weight)} (`{weight_path}`)")
+        least, most = least + t_low * weight, most + t_high * weight
+    return (f"Each storyteller adds its own pressure to it: {' and '.join(parts)}, so {n(least)} to {n(most)} "
+            "more.")
+
+
 def basic_view(present) -> list[dict]:
     """The Basic view for a configuration holding the parameters ``present``: [{key, title, summary,
-    controls: [{path, effect}]}] (a control whose parameter the configuration lacks is left out)."""
+    controls: [{path, effect, scaled_by?, scaling?}]}] (a control whose parameter the configuration
+    lacks is left out; ``scaling``: how far the storyteller's learned traits move its value)."""
     present = set(present)
     view = []
     for area in basic_areas():
-        controls = [dict(control) for control in area["controls"] if control["path"] in present]
+        controls = []
+        for control in area["controls"]:
+            if control["path"] in present:
+                shown = dict(control)
+                if control.get("scaled_by"):
+                    shown["scaling"] = scaling_text(control["scaled_by"])
+                controls.append(shown)
         if controls:
             view.append({**area, "controls": controls})
     return view
+
+
+def defaults_dir() -> Path:
+    """The release's own configuration folder: ANE_CONFIG_DEFAULTS, else the image's pristine copy next
+    to the config folder (config.defaults, Docker), else the project's config folder."""
+    folder = Path(__file__).resolve().parent.parent / "config"
+    for candidate in (os.environ.get("ANE_CONFIG_DEFAULTS"), folder.with_name("config.defaults")):
+        if candidate and (Path(candidate) / "default_history.json").is_file():
+            return Path(candidate)
+    return folder
+
+
+@lru_cache(maxsize=4)
+def _shipped(path, modified):
+    import json
+
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return dict(((data.get("shipped") or {}).get("hyperparameters.yaml")) or {})
+
+
+def shipped_values() -> dict:
+    """{path: value} of hyperparameters.yaml as this release ships it (default_history.json, written by
+    packaging/default_history.py from the configuration being released): what "changed from the
+    shipped value" compares with. Empty when the file has no such record (an older one)."""
+    path = defaults_dir() / "default_history.json"
+    try:
+        return _shipped(str(path), path.stat().st_mtime_ns)
+    except (OSError, ValueError):
+        return {}
 
 
 def _matches(pattern: str, path: str) -> bool:

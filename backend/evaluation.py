@@ -259,4 +259,6 @@ def calibrate(stories=30, seed=0, engine_id=None, alpha=None, apply=False, worke
         applied = True
     return {"term_weights": weights, "terms": result["terms"], "spearman": result["spearman"],
             "cv_spearman": result["cv_spearman"], "alpha": result["alpha"], "n": result["n"],
+            "stories": len(played),
+            "engagement": round(statistics.mean(engagement for _, engagement in samples), 2),
             "yaml": to_yaml(result), "applied": applied}
