@@ -656,6 +656,7 @@
 "2b42fbfadc762782",
 "48b7b2314bdd9749",
 "b21bd628b8e5e5f1",
+"be2de918f802c3e6",
 "c29233aab20f0e81",
 "c4b3907dc55b915a",
 "cf8dbbcf8db57734"
@@ -1001,7 +1002,8 @@
 "19581e27de7ced00"
 ],
 "fitness.setup_payoff": [
-"268db7dcd1ed5c03"
+"268db7dcd1ed5c03",
+"d2f0deafbf341306"
 ],
 "fitness.setup_payoff.clue_variants": [
 "4e07408562bedb8b"
@@ -1891,7 +1893,8 @@
 "b4af4e0d40391d3a"
 ],
 "simulation": [
-"01ad2bf736535439"
+"01ad2bf736535439",
+"c2e2ef36fc30a04b"
 ],
 "simulation.interactive": [
 "b5bea41b6c623f7c"
@@ -1941,7 +1944,8 @@
 "spawn_selection": [
 "6f37d97d35a97d7e",
 "82bff39f41378859",
-"853c3c9a4b58aaeb"
+"853c3c9a4b58aaeb",
+"ff14faf6643e88fc"
 ],
 "spawn_selection.character_alignment_weight": [
 "d84bdb34d4eeef40"
@@ -2129,6 +2133,7 @@
 "14be4b45f18e0d8c"
 ],
 "transition_objective": [
+"294b138eea0262b2",
 "8b939df377dabe5b",
 "ff5e19fd98589803"
 ],

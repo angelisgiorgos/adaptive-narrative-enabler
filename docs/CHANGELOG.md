@@ -7,6 +7,38 @@ that introduces them.
 
 ## [Unreleased]
 
+### Drafts everywhere, undo histories, references, and the engine's parameters cleaned up
+
+#### Added
+- 🎯 Missions, 📜 Story rules and 🗺 Map track their drafts like the entry editor: an indicator, their
+  pickers (mission, profile, place, *New mission*) guarded, and Save / Discard / Stay when leaving them.
+- An entry draft is kept in the browser: after the page is closed or reloaded, *Unsaved changes from your
+  last visit* offers Restore or Discard.
+- Undo keeps a history per panel (newest first), kept in the browser across reloads; the API keeps the
+  deletions with the saves (`deletions.json`), so an undo survives its restart.
+- Deleting an entry says first what refers to it and would no longer work (`GET
+  /v1/entities/{kind}/{name}/references`).
+- Weights: parameters that need `outcome_resolution.hidden_adjustments` are marked inactive while it is off.
+
+#### Changed
+- Draft baselines are set from the loaded values in the same step (no second round trip); an edit sends
+  only its own part, and leaving checks only which parts are unsaved.
+- Saving weights rewrites only the numbers that changed: `hyperparameters.yaml` keeps its comments.
+- The tuning metadata's units are short (≤ 45 characters) and its code references point at the reading
+  line; a test fails when a reference no longer reads its parameter.
+- `spawn_selection.immediate_repeat_penalty` now applies, to the place just left (it compared with the
+  current place, never a candidate): discoveries rarely lead straight back.
+- Every training run uses `evolution.crossover_rate`; the app parameter `crossover_probability` is retired
+  (ignored in a saved file).
+- A negative `action_selection.stay_penalty_power` or `fitness.objective_losses.scenario_duplication.power`
+  is refused when the world is built (it would divide by zero mid-story).
+
+#### Removed
+- Parameters that changed nothing: `outcome_scoring.*`, `fitness.setup_payoff.early_setup_bonus`,
+  `simulation.mutation_rate`, `transition_objective.character_goal_weight` and `known_location_bonus`,
+  `spawn_selection.character_alignment_weight` (and the code paths no caller could reach). An older config
+  folder keeping them still loads; they are ignored and not offered.
+
 ### Training defaults, Train's result, and the records by purpose
 
 #### Changed

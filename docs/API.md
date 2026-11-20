@@ -435,7 +435,10 @@ one); `tests/test_studio_coverage.py` checks it.
   is gone (an action): nothing newer is overwritten; `400` when it would now be invalid (it is
   checked as a save checks it, only against problems the world did not already have when it was
   deleted); `404` when it was undone already or the API restarted since (deletions are kept in
-  memory, the most recent 200). `GET /v1/map`: `{routes: {place: [borders]} or null,
+  memory, the most recent 200) — now kept with the saves (`deletions.json` in `ANE_SAVE_DIR`, the most recent
+  200), so `404` means it was undone already or is older than that.
+  `GET /v1/entities/{kind}/{name}/references` lists what refers to an entry and would no longer work
+  without it (`{references: [...]}`, the engine's own check messages); deleting stays allowed. `GET /v1/map`: `{routes: {place: [borders]} or null,
   places}`; `PUT /v1/map/{place}` `{borders}` sets a place's borders, both ways; `PUT /v1/map`
   `{routes}` the whole map (null: every story draws its own).
 - `GET /v1/behaviours/rules` and `PUT /v1/behaviours/rules/{npcs|locations}` `{default, rules}`:

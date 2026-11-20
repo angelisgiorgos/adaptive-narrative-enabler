@@ -250,6 +250,10 @@ button[role="tab"] {font-size: .88rem !important; padding: .3rem .75rem !importa
 .draft-prompt h3 {font-size: 1rem; margin: .2rem 0}
 /* ⚙ Advanced → Weights: a parameter that has no effect while the setting it needs is off. */
 .weight-inactive {opacity: .6}
+.weights-draft ul {margin: .15rem 0 .3rem 1.2rem; font-weight: 400}
+.weights-advanced-changes {margin-top: .25rem; padding: .3rem .5rem; border-left: 3px solid #b45309;
+                           background: color-mix(in srgb, #b45309 10%, transparent)}
+.weights-basic-area {padding: .4rem .6rem}
 .weight-inactive input {background: var(--background-fill-secondary)}
 /* Deleting: the question first (naming what goes), then the Undo bar. */
 .delete-confirm {border: 2px solid #ef4444 !important; border-radius: 12px; padding: .2rem .6rem}
@@ -608,13 +612,8 @@ def _number(value):
     return f"{value:g}" if isinstance(value, float) else str(value)
 
 
-def weight_help(info):
-    """A tuning parameter's help, under its label: what the engine does with it, its unit, the engine's
-    default, the bounds the engine defines and whether it is a whole number, then its path (a
-    parameter without a description says so, with its path)."""
-    kind = "whole number" if info["type"] == "integer" else "decimal number"
-    if not info["described"]:
-        return f"No description yet ({kind}, as written). Parameter: {info['path']}"
+def _weight_facts(info):
+    """Unit, engine default, the engine's bounds and whole/decimal number, joined."""
     facts = [f"Unit: {info['unit']}"] if info.get("unit") else []
     if info.get("default") is not None:
         facts.append(f"engine default {_number(info['default'])}")
@@ -625,27 +624,141 @@ def weight_help(info):
         facts.append(f"at least {_number(low)}")
     elif high is not None:
         facts.append(f"at most {_number(high)}")
-    facts.append(kind)
-    text = f"{info.get('explanation') or ''} {' · '.join(facts)}. Parameter: {info['path']}".strip()
-    if info.get("inactive"):  # it has no effect while the setting it needs is off
-        text = f"Inactive now: {info['requires']} is off (it takes effect when that is on). {text}"
-    return text
+    facts.append("whole number" if info["type"] == "integer" else "decimal number")
+    return " · ".join(facts)
 
 
-def weight_field(info):
-    """A tuning parameter's input (⚙ Advanced → Weights): its readable label and help; an integer
-    parameter takes whole numbers only; the engine's bounds, where it defines them."""
+def _inactive_note(info):
+    return (f"Inactive now: {info['requires']} is off (it takes effect when that is on). "
+            if info.get("inactive") else "")
+
+
+def weight_help(info, basic=None):
+    """A tuning parameter's help, under its label (Advanced view): what the engine does with it, its
+    unit, the engine's default, the bounds the engine defines and whether it is a whole number, then
+    its path (a parameter without a description says so, with its path). ``basic``: the Basic view's
+    area that also shows it."""
+    kind = "whole number" if info["type"] == "integer" else "decimal number"
+    if not info["described"]:
+        return f"No description yet ({kind}, as written). Parameter: {info['path']}"
+    text = f"{info.get('explanation') or ''} {_weight_facts(info)}. Parameter: {info['path']}".strip()
+    if basic:
+        text = f"Also in Basic → {basic}. {text}"
+    return _inactive_note(info) + text  # inactive: no effect while the setting it needs is off
+
+
+def _weight_number(info, label, help_text, elem_id, classes):
     integer = info["type"] == "integer"
-    return gr.Number(value=info["value"], label=info["label"], info=weight_help(info), precision=0 if integer else None,
-                     minimum=info.get("minimum"), maximum=info.get("maximum"),
-                     elem_classes=["weight", "weight-described" if info["described"] else "weight-plain",
-                                   *(["weight-inactive"] if info.get("inactive") else [])])
+    return gr.Number(value=info["value"], label=label, info=help_text, precision=0 if integer else None,
+                     minimum=info.get("minimum"), maximum=info.get("maximum"), elem_id=elem_id,
+                     elem_classes=["weight", *classes, *(["weight-inactive"] if info.get("inactive") else [])])
+
+
+def weight_elem_id(view, path):
+    """The element id of a parameter's field in a view (basic | advanced)."""
+    return f"weight-{view}-" + re.sub(r"[^A-Za-z0-9_-]", "-", path)
+
+
+def weight_field(info, basic=None):
+    """A tuning parameter's input (Weights → Advanced): its readable label and help; an integer
+    parameter takes whole numbers only; the engine's bounds, where it defines them."""
+    return _weight_number(info, info["label"], weight_help(info, basic), weight_elem_id("advanced", info["path"]),
+                          ["weight-described" if info["described"] else "weight-plain"])
+
+
+def basic_weight_field(info, control):
+    """A Basic control (Weights → Basic): the same parameter as its Advanced field (same label, type and
+    bounds), explained by what raising or lowering it does in play, with its unit and path."""
+    help_text = f"{_inactive_note(info)}{control['effect']} {_weight_facts(info)}. Parameter: {info['path']}"
+    return _weight_number(info, info["label"], help_text, weight_elem_id("basic", info["path"]), ["weight-basic"])
+
+
+def weights_meta(parameters, basic_areas):
+    """What the weights draft needs to know, fixed when the tab is built: the parameters' paths (the
+    Advanced fields' order), their labels, the Basic controls' paths (their fields' order) and area."""
+    basic = {control["path"]: area["title"] for area in basic_areas for control in area["controls"]}
+    return {"paths": [info["path"] for info in parameters], "labels": {i["path"]: i["label"] for i in parameters},
+            "basic_paths": list(basic), "basic": basic}
+
+
+def _same_number(a, b):
+    if a is None and b is None:
+        return True
+    try:
+        return a is not None and b is not None and float(a) == float(b)
+    except (TypeError, ValueError):
+        return False
+
+
+def weight_changes(meta, saved, values):
+    """The draft's changes: [(path, saved value, draft value)] in the Advanced fields' order. ``values``:
+    the Advanced fields (every parameter; Basic edits are copied into them)."""
+    return [(path, (saved or {}).get(path), value) for path, value in zip(meta["paths"], values)
+            if not _same_number(value, (saved or {}).get(path))]
+
+
+def weights_draft_markup(meta, saved, *values):
+    """The weights draft's status, shown above both views: no unsaved changes, or every change, those
+    made in Advanced to parameters Basic does not show listed apart (so a Basic user sees them)."""
+    changes = weight_changes(meta, saved, values)
+    if not changes:
+        return ('<div class="draft-status weights-draft" data-dirty="0" data-advanced="0">✓ No unsaved changes: '
+                'Basic and Advanced show the saved values.</div>')
+
+    def listed(items):
+        return "".join(f"<li>{html.escape(meta['labels'].get(path, path))} <code>{html.escape(path)}</code>: "
+                       f"{html.escape(_shown(old))} → {html.escape(_shown(new))}</li>" for path, old, new in items)
+
+    basic = [c for c in changes if c[0] in meta["basic"]]
+    advanced = [c for c in changes if c[0] not in meta["basic"]]
+    parts = [f"● Unsaved changes ({len(changes)}), one draft for both views; Save saves them all."]
+    if basic:
+        parts.append(f"<div>In Basic and Advanced ({len(basic)}):<ul>{listed(basic)}</ul></div>")
+    if advanced:
+        parts.append(f'<div class="weights-advanced-changes">⚠ Advanced only, not shown in Basic ({len(advanced)}):'
+                     f"<ul>{listed(advanced)}</ul></div>")
+    return (f'<div class="draft-status dirty weights-draft" data-dirty="1" data-advanced="{len(advanced)}">'
+            + "".join(parts) + "</div>")
+
+
+def _shown(value):
+    return "(empty)" if value is None else _number(value)
 
 
 @ui
-def save_weights(paths, *values):
-    result = API.put("/v1/weights", {"values": dict(zip(paths, values))})
-    return result["message"]
+def save_weights(meta, saved, *values):
+    """Save the weights draft: only the parameters it changed, each with the value it had when loaded
+    (a parameter changed since by someone else is refused, not overwritten). Returns (message, the
+    saved values, the draft's status). A refused save keeps the draft."""
+    changes = weight_changes(meta, saved, values)
+    if not changes:
+        return "Nothing to save: every value is the saved one.", saved, weights_draft_markup(meta, saved, *values)
+    empty = [meta["labels"].get(path, path) for path, _, new in changes if new is None]
+    if empty:
+        raise gr.Error("Nothing was saved: give a number to " + ", ".join(empty) + ".")
+    result = API.put("/v1/weights", {"values": {path: new for path, _, new in changes},
+                                     "expected": {path: old for path, old, _ in changes if old is not None}})
+    saved = dict(result["values"])
+    return result["message"], saved, weights_draft_markup(meta, saved, *values)
+
+
+@ui
+def reload_weights_ui(meta):
+    """The saved values into both views (on loading the page, and Discard). Returns (saved values, every
+    Advanced field, every Basic field, the draft's status, a note)."""
+    values = API.get("/v1/weights")["values"]
+    advanced = [values[path] if path in values else gr.skip() for path in meta["paths"]]
+    basic = [values[path] if path in values else gr.skip() for path in meta["basic_paths"]]
+    shown = [values[path] if path in values else None for path in meta["paths"]]
+    extra = sorted(set(values) - set(meta["paths"]))
+    note = (f"The configuration now has parameters this page does not show ({', '.join(extra)}): reload the page."
+            if extra else "")
+    return (values, *advanced, *basic, weights_draft_markup(meta, values, *shown), note)
+
+
+def weights_view_ui(view):
+    """Basic or Advanced: only which fields are shown changes, never their values (one draft)."""
+    return gr.update(visible=view == "Basic"), gr.update(visible=view != "Basic")
 
 
 # ---- tab 4 · evolution and play (/v1/jobs, /v1/sessions, /v1/engines, /v1/exports, /v1/records) -
@@ -2832,7 +2945,7 @@ def _save_part(part, kind, name, split):
 
 
 def _prop_value(component):
-    return component["value"] if isinstance(component, dict) else getattr(component, "value", None)
+    return _output_value(component)[1]
 
 
 def _error_text(exc):
@@ -3252,8 +3365,9 @@ def _output_value(update):
     """(whether an output sets a value, the value): a skip or an update without a value sets none."""
     if isinstance(update, dict) and update.get("__type__") == "update":
         return ("value" in update), update.get("value")
-    if hasattr(update, "get_config") and hasattr(update, "value"):
-        return True, update.value
+    if isinstance(update, gr.blocks.Block):  # a component returned as an update: the arguments it was given
+        given = update.constructor_args  # (as Gradio applies it: a value only if one was passed)
+        return ("value" in given), given.get("value")
     return True, update
 
 
@@ -3344,7 +3458,7 @@ def offer_kept_draft_ui(saved):
         return None, gr.update(visible=False), ""
     what = ", ".join(DRAFT_PARTS[p] for p in parts)
     return saved, gr.update(visible=True), (
-        f"### ↺ Unsaved changes from your last visit\\n**{html.escape(str(saved.get('entity') or 'A new entry'))}** "
+        f"### ↺ Unsaved changes from your last visit\n**{html.escape(str(saved.get('entity') or 'A new entry'))}** "
         f"({html.escape(str(saved.get('kind')))}) had unsaved changes in **{what}** when the page was closed. "
         "**Restore** opens it with them (still unsaved); **Discard** drops them.")
 
@@ -3552,7 +3666,7 @@ def form_pick_ui(editor, target, context, base, dirty):
     if scope in _dirty_of(dirty, editor):
         pending = {"type": "pick", "value": target}
         what = "starting a new mission" if target == NEW_MISSION else f"opening {target}"
-        text = (f"### ● Unsaved changes\\n{FORM_EDITORS[editor]['title']} has unsaved changes in "
+        text = (f"### ● Unsaved changes\n{FORM_EDITORS[editor]['title']} has unsaved changes in "
                 f"**{_form_parts(editor)[scope][0]}**. Save them before {what}? **Discard** drops them; "
                 "**Stay** keeps editing.")
         revert = {} if target == NEW_MISSION else {"picker": gr.update(value=_form_selected(editor, context))}
@@ -3604,7 +3718,7 @@ def form_resolve_ui(editor, choice, pending, context, base, dirty, *values):
                 done = {p: split[p] for p in saved}
                 partial = _form_captured(editor, {"values": done}, base, dirty, saved) if saved else {}
                 return {**partial, "values": {}, "prompt": True, "prompt_text":
-                        f"⚠ **{_form_parts(editor)[part][0]} could not be saved:** {_error_text(exc)}  \\nNothing was "
+                        f"⚠ **{_form_parts(editor)[part][0]} could not be saved:** {_error_text(exc)}  \nNothing was "
                         "discarded: correct it and **Save** again, **Stay**, or **Discard**."}
             context = extras.get("context", context)
             result.update({k: v for k, v in extras.items() if k != "context"})
@@ -5228,30 +5342,83 @@ def build_app():
 
                     with gr.Tab("Weights"):
                         gr.Markdown(
-                            "Every numeric weight, bonus, penalty, threshold, chance, rate, mitigation, floor and "
-                            "power used by scoring and the narrative engine. Each says what the engine does with it, "
-                            "its unit (chances have different scales: a percentage of the 1–100 roll is not a "
-                            "probability), the engine's default and the bounds the engine sets, then its parameter "
-                            "path. Whole-number parameters take whole numbers only; values you do not change are "
-                            "saved exactly as they were."
+                            "The numeric weights, bonuses, penalties, thresholds, chances and rates of scoring and "
+                            "the narrative engine. **Basic** shows a chosen set of common gameplay controls "
+                            "(difficulty, pacing, repetition, event frequency), each one parameter, explained by "
+                            "what it does in play; **Advanced** shows every parameter. Both edit one draft: a "
+                            "value changed in one view is the same value in the other, and switching views "
+                            "changes nothing. Each field gives its unit (chances have different scales: a "
+                            "percentage of the 1–100 roll is not a probability), the engine's default and bounds "
+                            "and its parameter path. Whole-number parameters take whole numbers only; only the "
+                            "values you change are saved, and the others stay exactly as they are written."
                         )
-                        weight_infos = API.get("/v1/weights")["parameters"]
-                        weight_paths = [info["path"] for info in weight_infos]
-                        weight_components = []
-                        grouped_weights = {}
-                        for info in weight_infos:
-                            grouped_weights.setdefault(info["section"], []).append(info)
-                        for section, weight_group in grouped_weights.items():
-                            described = sum(info["described"] for info in weight_group)
-                            with gr.Accordion(f"{section} ({described} of {len(weight_group)} described)",
-                                              open=False):
-                                for index in range(0, len(weight_group), 3):
-                                    with gr.Row():
-                                        for info in weight_group[index:index + 3]:
-                                            weight_components.append(weight_field(info))
-                        save_weights_button = gr.Button("Save all weights", variant="primary")
-                        weights_status = gr.Markdown()
-                        save_weights_button.click(save_weights, [gr.State(weight_paths), *weight_components], weights_status)
+                        weights_data = API.get("/v1/weights")
+                        weight_infos = weights_data["parameters"]
+                        weight_by_path = {info["path"]: info for info in weight_infos}
+                        basic_areas = weights_data.get("basic") or []
+                        weights_meta_value = weights_meta(weight_infos, basic_areas)
+                        weights_meta_state = gr.State(weights_meta_value)
+                        weights_saved = gr.State(dict(weights_data["values"]))
+                        weights_view = gr.Radio(["Basic", "Advanced"], value="Basic", label="View",
+                                                elem_id="weights-view",
+                                                info="Basic: common gameplay controls. Advanced: every parameter.")
+                        weights_draft = gr.HTML(weights_draft_markup(
+                            weights_meta_value, weights_data["values"],
+                            *(weights_data["values"][path] for path in weights_meta_value["paths"])),
+                            elem_id="weights-draft-status")
+                        with gr.Column(visible=True, elem_id="weights-basic") as weights_basic_box:
+                            basic_components = []
+                            for area in basic_areas:
+                                with gr.Group(elem_classes="weights-basic-area"):
+                                    gr.Markdown(f"#### {area['title']}\n{area['summary']}")
+                                    controls = area["controls"]
+                                    for index in range(0, len(controls), 3):
+                                        with gr.Row():
+                                            for control in controls[index:index + 3]:
+                                                basic_components.append(
+                                                    basic_weight_field(weight_by_path[control["path"]], control))
+                        with gr.Column(visible=False, elem_id="weights-advanced") as weights_advanced_box:
+                            weight_components = []
+                            grouped_weights = {}
+                            for info in weight_infos:
+                                grouped_weights.setdefault(info["section"], []).append(info)
+                            for section, weight_group in grouped_weights.items():
+                                described = sum(info["described"] for info in weight_group)
+                                with gr.Accordion(f"{section} ({described} of {len(weight_group)} described)",
+                                                  open=False):
+                                    for index in range(0, len(weight_group), 3):
+                                        with gr.Row():
+                                            for info in weight_group[index:index + 3]:
+                                                weight_components.append(weight_field(
+                                                    info, weights_meta_value["basic"].get(info["path"])))
+                        with gr.Row():
+                            save_weights_button = gr.Button("Save changes", variant="primary",
+                                                            elem_id="weights-save")
+                            discard_weights_button = gr.Button("Discard changes (reload the saved values)",
+                                                               elem_id="weights-discard")
+                        weights_status = gr.Markdown(elem_id="weights-message")
+                        weights_view.change(weights_view_ui, weights_view, [weights_basic_box, weights_advanced_box])
+                        # One draft: a Basic field and its parameter's Advanced field hold the same value; an
+                        # edit in either is copied to the other in the browser (user edits only: .input), then
+                        # the draft's status is worked out from the Advanced fields (every parameter).
+                        draft_inputs = [weights_meta_state, weights_saved, *weight_components]
+                        advanced_of = dict(zip(weights_meta_value["paths"], weight_components))
+                        for path, basic_field in zip(weights_meta_value["basic_paths"], basic_components):
+                            twin = advanced_of[path]
+                            for source, target in ((basic_field, twin), (twin, basic_field)):
+                                source.input(None, source, target, js="(value) => value", queue=False).then(
+                                    weights_draft_markup, draft_inputs, weights_draft, trigger_mode="always_last")
+                        advanced_only = [field for path, field in advanced_of.items()
+                                         if path not in weights_meta_value["basic"]]
+                        if advanced_only:
+                            gr.on([field.input for field in advanced_only], weights_draft_markup, draft_inputs,
+                                  weights_draft, trigger_mode="always_last")
+                        save_weights_button.click(save_weights, draft_inputs,
+                                                  [weights_status, weights_saved, weights_draft])
+                        weights_reload_outputs = [weights_saved, *weight_components, *basic_components,
+                                                  weights_draft, weights_status]
+                        discard_weights_button.click(reload_weights_ui, weights_meta_state, weights_reload_outputs)
+                        demo.load(reload_weights_ui, weights_meta_state, weights_reload_outputs)
 
                     with gr.Tab("Engine logic"):
                         gr.Markdown(

@@ -1229,8 +1229,11 @@ def _applied(update, current):
     value keeps what it held; a component returned as an update, or a plain value, replaces it."""
     if isinstance(update, dict) and update.get("__type__") == "update":
         return update.get("value", current)
-    if hasattr(update, "get_config") and hasattr(update, "value"):
-        return update.value
+    import gradio as gr
+
+    if isinstance(update, gr.blocks.Block):  # as Gradio applies it: the value only if one was passed
+        given = update.constructor_args
+        return given["value"] if "value" in given else current
     return update
 
 
@@ -1880,26 +1883,33 @@ class TuningParameterTests(_Sandbox):
         # Chances on their own scales: a percentage of the 1-100 roll, a probability, a pressure.
         self.assertIn("percent of the roll", info["skill_check_resolution.min_chance"]["unit"])
         self.assertIn("probability", info["travel.first_trip.chance"]["unit"])
-        self.assertIn("(0-1)", info["travel.first_trip.chance"]["unit"])
-        self.assertIn("not a random chance", info["unexpected_events.base_chance"]["unit"])
+        self.assertRegex(info["travel.first_trip.chance"]["unit"], r"\(0[–-]1\)")
+        self.assertIn("not a probability", info["unexpected_events.base_chance"]["unit"])
         # Bounds only where the engine sets them (rules.validate_settings; fitness clamps floor_steps).
         bounded = {path: (p["minimum"], p["maximum"]) for path, p in info.items()
                    if p["minimum"] is not None or p["maximum"] is not None}
         self.assertEqual(bounded, {"story_rules.repetition_power": (1, None), "story_rules.backtrack_penalty": (0, None),
                                    "story_rules.collect_weight": (0, None), "story_rules.payoff_weight": (0, None),
                                    "story_rules.payoff_route_weight": (0, None),
-                                   "fitness.length_normalization.floor_steps": (1, None)})
+                                   "fitness.length_normalization.floor_steps": (1, None),
+                                   "action_selection.stay_penalty_power": (0, None),
+                                   "fitness.objective_losses.scenario_duplication.power": (0, None)})
         for path, p in info.items():
             with self.subTest(path=path):
                 self.assertTrue(p["described"] and p["label"] and p["unit"] and p["explanation"])
                 self.assertIn(p["type"], ("integer", "float"))
                 if p["type"] == "integer":
                     self.assertEqual(float(p["value"]), int(p["value"]))
-                for reference in p["source"]:  # where the engine reads it: still there
+                for reference in p["source"]:  # where the engine reads it: that line still reads it
                     file, _, line = reference.partition(":")
-                    lines = (store.PROJECT_ROOT / file).read_text(encoding="utf-8").count("\n") + 1
-                    first = int(line.split("-")[0]) if line else 1
-                    self.assertLessEqual(first, lines, reference)
+                    text = (store.PROJECT_ROOT / file).read_text(encoding="utf-8").splitlines()
+                    first, _, last = line.partition("-")
+                    first = int(first)
+                    last = int(last or first)
+                    near = "\n".join(text[max(0, first - 3):last + 2])  # ±2 lines around a single line
+                    # A world's own names (a location's penalties) are read by looping over their mapping.
+                    name = path.split(".")[-1] if ".location_penalties." not in path else path.split(".")[-2]
+                    self.assertIn(name, near, f"{path}: {reference} does not read it (the code moved?)")
         # A world's own names (a new tag, another location) are described by a pattern; known ones by their own.
         from backend import tuning
 
@@ -1999,10 +2009,155 @@ class TuningParameterTests(_Sandbox):
         self.assertNotIn("skill_check_resolution.difficulty_rate_per_step", labels)  # the path is help, not the label
         # The form's own save, with what its fields hold, leaves the file as it was.
         before = self._file()
-        paths = list(info)
+        weights = self._weights()
+        meta = app.weights_meta(weights["parameters"], weights["basic"])
         values = [int(p["value"]) if p["type"] == "integer" else float(p["value"]) for p in info.values()]
-        self.assertIn("(0 changed)", app.save_weights(paths, *values))
+        self.assertIn("Nothing to save", app.save_weights(meta, weights["values"], *values)[0])
         self.assertEqual(self._file(), before)
+
+
+class BasicTuningTests(_Sandbox):
+    """Weights → Basic: a chosen set of common gameplay controls (difficulty, pacing, repetition, event
+    frequency), each ONE tuning parameter (no presets), explained by what it does in play; Advanced keeps
+    every parameter. Both views edit one draft: a Basic field and its parameter's Advanced field hold the
+    same value, switching views touches no value, the draft's status lists the changes made in Advanced
+    to parameters Basic does not show, and a save sends only the changes (refused if one moved since)."""
+
+    BASIC = ("difficulty", "pacing", "repetition", "events")
+    _weights, _file, _value = TuningParameterTests._weights, TuningParameterTests._file, TuningParameterTests._value
+
+    def _app(self):
+        import gradio as gr
+
+        import app
+
+        demo = app.build_app()
+        by = {b.elem_id: b for b in demo.blocks.values() if getattr(b, "elem_id", None)}
+        return app, gr, demo, by
+
+    def test_each_basic_control_is_one_described_parameter(self):
+        weights = self._weights()
+        info = {p["path"]: p for p in weights["parameters"]}
+        areas = weights["basic"]
+        self.assertEqual([area["key"] for area in areas], list(self.BASIC))
+        paths = [control["path"] for area in areas for control in area["controls"]]
+        self.assertEqual(len(paths), len(set(paths)))                     # each parameter in one place
+        self.assertGreaterEqual(len(paths), 12)
+        for area in areas:
+            self.assertTrue(area["title"] and area["summary"])
+            for control in area["controls"]:
+                with self.subTest(path=control["path"]):
+                    self.assertEqual(set(control), {"path", "effect"})     # one parameter, nothing set besides
+                    self.assertIn(control["path"], info)                   # a parameter of the configuration
+                    self.assertTrue(info[control["path"]]["described"])    # from the engine's code
+                    self.assertTrue(info[control["path"]]["source"])
+                    self.assertGreater(len(control["effect"]), 20)
+        self.assertIn("skill_check_resolution.difficulty_rate_per_step", paths)
+        self.assertIn("unexpected_events.base_chance", paths)
+        # A control behind a switch says so (the director, variation, events, first trips, the alert).
+        self.assertEqual(info["director.retry_bonus"]["requires"], "director.enabled")
+        self.assertEqual(info["unexpected_events.base_chance"]["requires"], "unexpected_events.enabled")
+        self.assertEqual(info["travel.first_trip.chance"]["requires"], "travel.first_trip.enabled")
+        # A configuration without one of the parameters: its control is left out, nothing invented.
+        text = self._file().replace("  ping_pong_penalty:", "  ping_pong_retired:", 1)
+        (self.dir / "hyperparameters.yaml").write_text(text, encoding="utf-8")
+        left = [c["path"] for area in self._weights()["basic"] for c in area["controls"]]
+        self.assertNotIn("director.ping_pong_penalty", left)
+        self.assertEqual(len(left), len(paths) - 1)
+
+    def test_basic_and_advanced_fields_are_one_draft(self):
+        app, gr, demo, by = self._app()
+        weights = self._weights()
+        basic = [c["path"] for area in weights["basic"] for c in area["controls"]]
+        info = {p["path"]: p for p in weights["parameters"]}
+
+        def listeners(component, event):
+            return [fn for fn in demo.fns.values() if (component._id, event) in fn.targets]
+
+        for path in basic:
+            with self.subTest(path=path):
+                simple = by[app.weight_elem_id("basic", path)]
+                full = by[app.weight_elem_id("advanced", path)]
+                self.assertEqual((simple.value, simple.label, simple.precision, simple.minimum, simple.maximum),
+                                 (full.value, full.label, full.precision, full.minimum, full.maximum))
+                self.assertEqual(simple.value, info[path]["value"])
+                for source, target in ((simple, full), (full, simple)):
+                    (mirror,) = listeners(source, "input")                # a user's edit only (not .change)
+                    self.assertEqual(([i._id for i in mirror.inputs], [o._id for o in mirror.outputs], mirror.js),
+                                     ([source._id], [target._id], "(value) => value"))
+                    (status,) = [fn for fn in demo.fns.values() if fn.trigger_after == mirror._id]
+                    self.assertIs(status.fn, app.weights_draft_markup)
+                self.assertIn("Also in Basic", full.info)
+        self.assertEqual(sum(1 for key in by if key.startswith("weight-basic-")), len(basic))
+        self.assertEqual(sum(1 for key in by if key.startswith("weight-advanced-")), len(info))
+        # Switching views only shows and hides the two boxes: no field is an output, so no value can change.
+        (switch,) = listeners(by["weights-view"], "change")
+        self.assertEqual({o._id for o in switch.outputs}, {by["weights-basic"]._id, by["weights-advanced"]._id})
+        self.assertEqual(by["weights-view"].value, "Basic")
+        shown, hidden = app.weights_view_ui("Advanced")
+        self.assertEqual((shown["visible"], hidden["visible"]), (False, True))
+        self.assertEqual(set(shown) | set(hidden), {"__type__", "visible"})
+        # An edit to a parameter Basic does not show updates the draft's status too.
+        other = next(p for p in info if p not in basic)
+        (status,) = listeners(by[app.weight_elem_id("advanced", other)], "input")
+        self.assertIs(status.fn, app.weights_draft_markup)
+
+    def test_advanced_changes_are_shown_and_a_save_sends_only_the_changes(self):
+        import gradio as gr
+
+        import app
+
+        weights = self._weights()
+        meta = app.weights_meta(weights["parameters"], weights["basic"])
+        saved = dict(weights["values"])
+        values = [saved[path] for path in meta["paths"]]
+        clean = app.weights_draft_markup(meta, saved, *values)
+        self.assertIn('data-dirty="0"', clean)
+        # A Basic edit (copied to its Advanced field) and an edit only Advanced shows.
+        draft = dict(zip(meta["paths"], values))
+        draft["skill_check_resolution.difficulty_penalty"] = 5
+        draft["fitness.base.mission_win_bonus"] = 70
+        status = app.weights_draft_markup(meta, saved, *draft.values())
+        self.assertIn('data-dirty="1"', status)
+        self.assertIn('data-advanced="1"', status)
+        basic_part, advanced_part = status.split("Advanced only, not shown in Basic (1)")
+        self.assertIn("skill_check_resolution.difficulty_penalty", basic_part)
+        self.assertIn(f"fitness.base.mission_win_bonus</code>: {saved['fitness.base.mission_win_bonus']} → 70",
+                      advanced_part)
+        # The save sends those two only: nothing else in the file changes, and the draft is clean after.
+        before = yaml.safe_load(self._file())
+        message, now, after = app.save_weights(meta, saved, *draft.values())
+        self.assertIn("(2 changed)", message)
+        self.assertEqual((now["skill_check_resolution.difficulty_penalty"], now["fitness.base.mission_win_bonus"]),
+                         (5, 70))
+        self.assertIn('data-dirty="0"', after)
+        written = yaml.safe_load(self._file())
+        before["skill_check_resolution"]["difficulty_penalty"] = 5
+        before["fitness"]["base"]["mission_win_bonus"] = 70
+        self.assertEqual(written, before)
+        # Reloaded (the page opens, or Discard): both views get the saved values, in their fields' order.
+        reloaded = app.reload_weights_ui(meta)
+        values_now, advanced = reloaded[0], reloaded[1:1 + len(meta["paths"])]
+        basic = reloaded[1 + len(meta["paths"]):1 + len(meta["paths"]) + len(meta["basic_paths"])]
+        self.assertEqual(list(advanced), [values_now[p] for p in meta["paths"]])
+        self.assertEqual(list(basic), [values_now[p] for p in meta["basic_paths"]])
+        self.assertIn('data-dirty="0"', reloaded[-2])
+        # Someone else changes a value after the form was loaded: the stale draft does not overwrite it.
+        moved = self.client.put("/v1/weights", json={"values": {"director.retry_bonus": 20}})
+        self.assertEqual(moved.status_code, 200, moved.text)
+        draft = dict(zip(meta["paths"], [now[p] for p in meta["paths"]]))
+        draft["director.retry_bonus"] = 10
+        file_before = self._file()
+        with self.assertRaises(gr.Error) as refused:
+            app.save_weights(meta, now, *draft.values())
+        self.assertIn("Changed since it was loaded", str(refused.exception))
+        self.assertEqual(self._file(), file_before)
+        self.assertEqual(self._value("director.retry_bonus"), 20)
+        # An emptied field is not saved as anything.
+        draft["director.retry_bonus"] = None
+        with self.assertRaises(gr.Error):
+            app.save_weights(meta, now, *draft.values())
+        self.assertEqual(self._file(), file_before)
 
 
 class TrainFollowUpTests(_Sandbox):
@@ -2051,6 +2206,219 @@ class TrainFollowUpTests(_Sandbox):
         self.assertIn("no longer among the finished runs", card)
         self.assertFalse(any(_prop(b, "interactive") for b in buttons))
         self.assertIsNone(app.restore_result_ui(None)[0])
+
+
+class DraftEverywhereTests(_Sandbox):
+    """Every World editor tracks its draft: the entry editor with baselines set from the values it loads
+    (no second round trip), each edit sending only its part, its unsaved parts kept in the browser and
+    offered back; 🎯 Missions, 📜 Story rules and 🗺 Map with their own indicators and questions; leaving
+    any of them with unsaved changes asks first, from which parts are unsaved (not the drafts)."""
+
+    def test_the_baseline_set_from_a_load_is_what_the_loaded_values_compare_to(self):
+        import app
+
+        for kind, name in (("Locations", "Harbor"), ("NPCs", "Smuggler"), ("Events", "tavern_brawl"),
+                           ("Items", "Ancient Map")):
+            with self.subTest(kind=kind):
+                editor = _Editor(app, kind, name)  # the values as the browser holds them after the load
+                entry = app._entry_load(kind, name)
+                base, dirty, indicator, kept = app.entry_baselined(entry, list(app.DRAFT_PARTS), {}, {}, {},
+                                                                   {"kind": kind, "entity": name})
+                self.assertEqual(base, app.draft_parts(*editor.values))  # the same baseline, in one step
+                self.assertEqual((dirty, kept), ({"entries": []}, {}))
+                self.assertIn('data-dirty="0"', indicator)
+
+    def test_an_edit_sends_its_part_and_the_draft_is_kept_and_offered_back(self):
+        import app
+
+        editor = _Editor(app, "Locations", "Harbor")
+        fields = editor.values[editor.at("fields"):editor.at("fields") + 14]
+        fields[2] = "Masts and gulls."
+        dirty, indicator, kept = app.entry_part_status_ui("fields", editor.base, {}, editor.loaded, {}, *fields)
+        self.assertEqual(dirty, {"entries": ["fields"]})
+        self.assertIn("Unsaved changes in Harbor: Fields", indicator)
+        self.assertEqual((kept["kind"], kept["entity"], list(kept["parts"])), ("Locations", "Harbor", ["fields"]))
+        json.dumps(kept)  # it can be kept in the browser
+        # Typed back: clean, and nothing kept.
+        clean = app.entry_part_status_ui("fields", editor.base, dirty, editor.loaded, kept,
+                                         *editor.values[editor.at("fields"):editor.at("fields") + 14])
+        self.assertEqual((clean[0], clean[2]), ({"entries": []}, {}))
+        # The page reopened: offered, then restored over the stored entry (still unsaved).
+        offered, panel, text = app.offer_kept_draft_ui(kept)
+        self.assertTrue(panel["visible"])
+        self.assertIn("**Harbor** (Locations) had unsaved changes in **Fields**", text)
+        fresh = _Editor(app, "Items", "Ancient Map")
+        out = app.restore_kept_draft_ui(offered, fresh.base, {}, fresh.loaded, *fresh.values)
+        n = app.ENTRY_OUTPUTS
+        fresh._entry(out[:n])
+        fresh.base, dirty = out[n], out[n + 1]
+        self.assertEqual((fresh.entity, fresh.value("fields", 2), dirty), ("Harbor", "Masts and gulls.",
+                                                                          {"entries": ["fields"]}))
+        self.assertEqual(fresh.unsaved, ["fields"])
+        self.assertEqual(app.discard_kept_draft_ui()[0], {})
+
+    def test_missions_story_rules_and_the_map_track_their_drafts(self):
+        import app
+
+        missions = app.form_load_all_ui("missions", {})
+        self.assertEqual(set(missions["base"]["missions"]), {"mission", "missions_yaml"})
+        base, dirty = missions["base"], missions["dirty"]
+        # Pick a mission, edit its title: unsaved; another mission is asked about, the picker goes back.
+        opened = app.form_pick_ui("missions", "shield_bearer", {}, base, dirty)
+        base, context = opened["base"], opened["context"]
+        form = list(opened["values"]["mission"])
+        form[1] = "Find a heavier shield"
+        dirty, indicator = app.form_part_status_ui("missions", "mission", base, dirty, *form)
+        self.assertEqual(dirty["missions"], ["mission"])
+        self.assertIn("Mission form", indicator)
+        asked = app.form_pick_ui("missions", "royal_audience", context, base, dirty)
+        self.assertTrue(asked["prompt"])
+        self.assertEqual(_prop(asked["picker"], "value"), "shield_bearer")
+        self.assertNotIn("values", asked)                                   # nothing replaced
+        # Leaving the World asks in 🎯 Missions.
+        leave = app.nav_choice_ui("train", "world", "missions", None, dirty)
+        self.assertEqual((leave["section"], list(leave["prompts"])), ("missions", ["missions"]))
+        self.assertEqual(app.section_choice_ui("map", "missions", None, dirty)["prompts"]["missions"][2]["id"], "map")
+        self.assertEqual(app.section_choice_ui("map", "entries", None, dirty), {"section_now": "map"})
+        # Save from the question: saved, then the other mission opens, clean.
+        values = [*form, opened.get("missions_yaml_value", app.load_missions_yaml())]
+        done = app.form_resolve_ui("missions", "save", asked["pending"], context, base, dirty, *values)
+        self.assertEqual(done["dirty"]["missions"], [])
+        self.assertEqual(done["values"]["mission"][0], "royal_audience")
+        stored = yaml.safe_load((self.dir / "missions.yaml").read_text())["world_definition"]["missions"]
+        self.assertEqual(stored["shield_bearer"]["title"], "Find a heavier shield")
+        # A mission undo keeps unsaved mission edits.
+        edited = list(done["values"]["mission"])
+        edited[1] = "An audience, edited"
+        dirty, _ = app.form_part_status_ui("missions", "mission", done["base"], done["dirty"], *edited)
+        history = app.confirm_delete_mission_ui({"type": "mission", "key": "shield_bearer", "title": "x"}, [])[7]
+        undone = app.undo_delete_mission_ui(history, done["base"], dirty)
+        self.assertEqual(undone[1:8], (gr_skip(),) * 7)                    # the form is not replaced
+        self.assertIn("unsaved mission changes were kept", undone[9])
+        self.assertIn("shield_bearer", yaml.safe_load((self.dir / "missions.yaml").read_text())["world_definition"]
+                      ["missions"])
+        # Story rules: a profile's stored values guarded; the map's borders guarded.
+        rules = app.form_load_all_ui("rules", "default")
+        dirty, _ = app.form_part_status_ui("rules", "values", rules["base"], {}, "playthroughs: 7\n")
+        self.assertTrue(app.form_pick_ui("rules", "someone", "default", rules["base"], dirty)["prompt"])
+        dirty, _ = app.form_part_status_ui("rules", "messages", rules["base"], {}, "messages: {}\n")
+        self.assertEqual(dirty["rules"], ["messages"])
+        self.assertIn("rules", app.nav_choice_ui("play", "world", "story-rules", None, dirty)["prompts"])
+        maps = app.form_load_all_ui("map", "Harbor")
+        borders = list(app._output_value(maps["values"]["borders"][0])[1])
+        dirty, _ = app.form_part_status_ui("map", "borders", maps["base"], {}, borders[:-1])
+        self.assertEqual(dirty["map"], ["borders"])
+        self.assertTrue(app.form_pick_ui("map", "Market", "Harbor", maps["base"], dirty)["prompt"])
+
+    def test_the_studio_wires_every_editor_to_its_draft(self):
+        import gradio as gr
+
+        import app
+
+        demo = app.build_app()
+        by = {b.elem_id: b for b in demo.blocks.values() if getattr(b, "elem_id", None)}
+        for prefix in ("missions", "rules", "map"):
+            self.assertIn(f"{prefix}-draft-status", by)
+            self.assertFalse(by[f"{prefix}-draft-prompt"].visible)
+        self.assertFalse(by["draft-offer"].visible)
+        self.assertIn('.draft-status[data-dirty="1"]', app.DRAFT_HEAD)  # any editor's draft holds the page
+        stored = [b for b in demo.blocks.values() if isinstance(b, gr.BrowserState)]
+        self.assertIn("ane-entry-draft", {b.storage_key for b in stored})
+
+
+def gr_skip():
+    import gradio as gr
+
+    return gr.skip()
+
+
+class FollowUpFixTests(_Sandbox):
+    """Undo histories that survive a restart and a reload; what refers to an entry, said before it goes;
+    comments kept when weights are saved; the engine's parameters cleaned up."""
+
+    def test_undo_survives_a_restart_and_has_a_history(self):
+        import app
+        from backend import content
+
+        first = self.client.delete("/v1/missions/shield_bearer").json()["undo"]
+        second = self.client.delete("/v1/missions/royal_audience").json()["undo"]
+        self.assertTrue(content.deletions_path().exists())
+        content.DELETIONS.clear()             # the API restarted: read back from deletions.json
+        content._DELETIONS_LOADED.clear()
+        history = [{"undo": first, "said": "first"}, {"undo": second, "said": "second"}]
+        restored = app.undo_delete_mission_ui(history)
+        self.assertEqual(_prop(restored[0], "value"), "royal_audience")   # the newest first
+        left = restored[11]
+        self.assertEqual([item["said"] for item in left], ["first"])
+        self.assertIn("first", restored[13])                             # the next one offered
+        again = app.undo_delete_mission_ui(left)
+        self.assertEqual((_prop(again[0], "value"), again[11]), ("shield_bearer", []))
+        stored = list(yaml.safe_load((self.dir / "missions.yaml").read_text())["world_definition"]["missions"])
+        self.assertEqual(stored[2:4], ["shield_bearer", "royal_audience"])
+        self.assertEqual(app.restore_history_ui(history)[0], history)    # kept in the browser, shown again
+
+    def test_what_refers_to_an_entry_is_said_before_it_goes(self):
+        import app
+
+        found = self.client.get("/v1/entities/NPCs/Thief/references").json()["references"]
+        self.assertTrue(any("rid_the_market_of_the_thief" in problem for problem in found), found)
+        self.assertEqual(self.client.get("/v1/entities/NPCs/Nobody/references").status_code, 404)
+        editor = _Editor(app, "NPCs", "Thief")
+        question = app.ask_delete_entry_ui(*editor.guard)[2]
+        self.assertIn("thing(s) refer to it", question)
+        self.assertIn("rid_the_market_of_the_thief", question)
+
+    def test_saving_weights_keeps_the_file_s_comments(self):
+        before = (self.dir / "hyperparameters.yaml").read_text()
+        self.assertEqual(self.client.put("/v1/weights", json={"values": {"stakes.alert.check_penalty": 5}}).status_code,
+                         200)
+        after = (self.dir / "hyperparameters.yaml").read_text()
+        changed = [(a, b) for a, b in zip(before.splitlines(), after.splitlines()) if a != b]
+        self.assertEqual(len(changed), 1)
+        self.assertIn("check_penalty: 5", changed[0][1])
+        self.assertIn("# per level", changed[0][1])                     # its comment stays
+        self.assertEqual(before.count("#"), after.count("#"))
+
+    def test_the_engine_s_parameters_are_cleaned_up(self):
+        from backend import tuning
+        from core_engine import builder
+
+        values = self.client.get("/v1/weights").json()
+        for gone in ("outcome_scoring.spawn_bonus", "simulation.mutation_rate", "fitness.setup_payoff.early_setup_bonus",
+                     "transition_objective.character_goal_weight", "spawn_selection.character_alignment_weight"):
+            self.assertNotIn(gone, values["values"])
+            self.assertTrue(tuning.retired(gone))
+        info = {p["path"]: p for p in values["parameters"]}
+        gated = info["outcome_resolution.success_bias_weight"]
+        self.assertEqual(gated["requires"], "outcome_resolution.hidden_adjustments")
+        self.assertIn("inactive", gated["inactive"])                     # off in the shipped configuration
+        self.assertIsNone(info["outcome_resolution.probability_floor"]["inactive"])
+        for unit in (p["unit"] for p in info.values()):
+            self.assertLessEqual(len(unit), 45, unit)
+        # Negative exponents are refused when the world is built (they would divide by zero).
+        world = store.config.as_dict()
+        world["action_selection"]["stay_penalty_power"] = -1
+        store.config.use_override(world)
+        self.addCleanup(lambda: (setattr(store.config, "_override", None), type(store.config).reload(store.config)))
+        self.assertIn("stay_penalty_power", " ".join(builder.exponent_errors()))
+        # Every run uses evolution.crossover_rate; the old app parameter is ignored.
+        self.assertNotIn("crossover_probability", store.APP_DEFAULTS)
+        self.assertIn("crossover_probability", store.RETIRED_APP_SETTINGS)
+
+    def test_a_discovery_does_not_lead_straight_back(self):
+        from core_engine import Genome
+        from core_engine.game_state import GameState
+        from core_engine.world import WorldGraph  # noqa: F401  (the world the engine builds)
+        import main as engine
+
+        state = GameState(engine.build_world(Genome()), Genome(), store=None)
+        world, current = state.world, state.current
+        other = next(loc for name, loc in world.locations.items() if name != current.name)
+        state.path = [other.name, current.name]
+        with_back = world._score_spawn_candidate(current, other, state=state)
+        state.path = [current.name]
+        without = world._score_spawn_candidate(current, other, state=state)
+        self.assertAlmostEqual(without - with_back, store.config.get("spawn_selection.immediate_repeat_penalty", 10.0))
 
 
 class StudioServiceTests(_Sandbox):

@@ -353,6 +353,7 @@ variation.repeat_check_penalty:
   default: 0
   source:
   - core_engine/story_beats.py:273
+  requires: variation.enabled
 variation.max_repeat_penalty:
   label: Cap on repeat difficulty
   explanation: The extra difficulty from repeated successes never exceeds this.
@@ -361,6 +362,7 @@ variation.max_repeat_penalty:
   default: 20
   source:
   - core_engine/story_beats.py:273
+  requires: variation.enabled
 travel.first_trip.chance:
   label: Chance of a scene on a first trip
   explanation: The first time the player travels to a place, a short scene on the way (chosen by the destination's
@@ -370,6 +372,7 @@ travel.first_trip.chance:
   default: 0.5
   source:
   - core_engine/story_beats.py:357
+  requires: travel.first_trip.enabled
 stakes.alert.check_penalty:
   label: Guard check penalty per alert level
   explanation: Checks against guards (a guard NPC, 'guard' in the action, or a guards tag) are harder by this per
@@ -379,6 +382,7 @@ stakes.alert.check_penalty:
   default: 0
   source:
   - core_engine/story_beats.py:436
+  requires: stakes.alert.enabled
 session_scope.relevance_weight:
   label: 'Session cast: fit with the goal'
   explanation: Optional places, people, items and random events get a value = this x tag fit with the goal's places
@@ -526,6 +530,7 @@ unexpected_events.objective.low_health_healing_weight:
   default: 2.0
   source:
   - core_engine/game_state.py:3436
+  requires: unexpected_events.enabled
 unexpected_events.objective.healing_weight:
   label: Event healing preference
   explanation: While the player's health is not low, each point of health a candidate event effect would really
@@ -535,6 +540,7 @@ unexpected_events.objective.healing_weight:
   default: 0.5
   source:
   - core_engine/game_state.py:3437
+  requires: unexpected_events.enabled
 unexpected_events.objective.coin_weight:
   label: Event coin preference
   explanation: Each coin a candidate event effect gives adds this much to its score (coin losses subtract), making
@@ -544,6 +550,7 @@ unexpected_events.objective.coin_weight:
   default: 0.1
   source:
   - core_engine/game_state.py:3439
+  requires: unexpected_events.enabled
 unexpected_events.objective.low_health_threat_penalty:
   label: Avoid threatening events at low health
   explanation: While the player's health is low, event effects tagged threat lose this much score, so a weakened
@@ -553,6 +560,7 @@ unexpected_events.objective.low_health_threat_penalty:
   default: 2.0
   source:
   - core_engine/game_state.py:3445
+  requires: unexpected_events.enabled
 unexpected_events.base_chance:
   label: Base unexpected-event pressure
   explanation: Starting level of the 'event pressure' that is compared each turn with the trigger threshold; a random
@@ -563,6 +571,7 @@ unexpected_events.base_chance:
   default: 0.12
   source:
   - core_engine/game_state.py:3394
+  requires: unexpected_events.enabled
 unexpected_events.genome_weight:
   label: Event pressure from the storyteller's event trait
   explanation: The storyteller's event trait (about 0.08–0.4) times this is added to the event pressure, so event-loving
@@ -572,6 +581,7 @@ unexpected_events.genome_weight:
   default: 0.35
   source:
   - core_engine/game_state.py:3396
+  requires: unexpected_events.enabled
 unexpected_events.chaos_weight:
   label: Event pressure from the storyteller's chaos trait
   explanation: The storyteller's chaos trait (about 0.1–0.75) times this is added to the event pressure, so chaotic
@@ -581,6 +591,7 @@ unexpected_events.chaos_weight:
   default: 0.2
   source:
   - core_engine/game_state.py:3398
+  requires: unexpected_events.enabled
 unexpected_events.objective_threshold:
   label: Unexpected-event trigger threshold
   explanation: A random event fires only on turns when the event pressure is at least this value; raising it means
@@ -590,6 +601,7 @@ unexpected_events.objective_threshold:
   default: 0.24
   source:
   - core_engine/game_state.py:3407
+  requires: unexpected_events.enabled
 unexpected_events.effect_repeat_penalty:
   label: Penalty for repeating an event effect
   explanation: Each earlier use of an event effect in the story lowers its score by this much when the next event
@@ -599,6 +611,7 @@ unexpected_events.effect_repeat_penalty:
   default: 1.0
   source:
   - core_engine/game_state.py:3464
+  requires: unexpected_events.enabled
 outcome_resolution.probability_floor:
   label: Lowest success chance of unchecked outcomes
   explanation: The success probability of any outcome without a skill check is raised to at least this value. Because
@@ -815,6 +828,7 @@ director.threat_weight:
   default: 0.0
   source:
   - core_engine/game_state.py:2352
+  requires: director.enabled
 director.escape_bonus:
   label: Escape check bonus per failed escape
   explanation: Each failed escape attempt adds this to the skill-check modifier of the next escape attempt, so a
@@ -824,6 +838,7 @@ director.escape_bonus:
   default: 15
   source:
   - core_engine/game_state.py:2220
+  requires: director.enabled
 director.boredom_weight:
   label: Pull toward novelty when the story is dull
   explanation: After director.boredom_turns turns with nothing new, options that bring something new rank higher
@@ -833,6 +848,7 @@ director.boredom_weight:
   default: 0.0
   source:
   - core_engine/game_state.py:2416
+  requires: director.enabled
 director.payoff_due_weight:
   label: Pull toward overdue clue payoffs
   explanation: When clues have been open for director.payoff_delay turns or more, options that pay one off (or travel
@@ -842,6 +858,7 @@ director.payoff_due_weight:
   default: 0.0
   source:
   - core_engine/game_state.py:2419
+  requires: director.enabled
 director.explore_weight:
   label: Pull toward unvisited places
   explanation: Travel to a place not yet visited ranks higher by this × (0.5 + the storyteller's travel trait),
@@ -851,6 +868,7 @@ director.explore_weight:
   default: 0.0
   source:
   - core_engine/game_state.py:2426
+  requires: director.enabled
 director.dead_end_penalty:
   label: Penalty for revisiting exhausted places
   explanation: Travel back to an already visited place with nothing left (no quest step, clue payoff, untold outcome
@@ -860,6 +878,7 @@ director.dead_end_penalty:
   default: 0.0
   source:
   - core_engine/game_state.py:2423
+  requires: director.enabled
 director.retry_bonus:
   label: Check bonus per failed retry
   explanation: Each earlier failed attempt at the same action adds this to its next skill-check modifier, so persistence
@@ -869,6 +888,7 @@ director.retry_bonus:
   default: 15
   source:
   - core_engine/game_state.py:2223
+  requires: director.enabled
 director.retry_cooldown_penalty:
   label: Penalty for retrying a just-failed action
   explanation: For director.retry_cooldown turns after an action fails, it ranks lower by this (only when there
@@ -878,6 +898,7 @@ director.retry_cooldown_penalty:
   default: 3.0
   source:
   - core_engine/game_state.py:2406
+  requires: director.enabled
 director.ping_pong_penalty:
   label: Penalty for going straight back
   explanation: Travelling straight back to the place left on the previous turn (A → B → A, right after a travel
@@ -887,6 +908,7 @@ director.ping_pong_penalty:
   default: 2.5
   source:
   - core_engine/game_state.py:2410
+  requires: director.enabled
 transition_objective.intent_similarity_weight:
   label: Pull of destinations matching the move's purpose
   explanation: When the storyteller chooses a destination, each candidate place scores tag similarity (0–1) between

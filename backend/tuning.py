@@ -23,6 +23,7 @@ import yaml
 
 
 METADATA_PATH = Path(__file__).with_name("tuning_parameters.yaml")
+BASIC_PATH = Path(__file__).with_name("tuning_basic.yaml")  # the Basic view's controls (one parameter each)
 FIELDS = ("label", "explanation", "unit", "type", "minimum", "maximum", "default", "source", "requires")
 # Parameters the engine no longer has (an older config folder may still hold them: they have no effect
 # and are not offered). `*`: any one path segment.
@@ -61,6 +62,46 @@ def metadata() -> dict:
         if low is not None and high is not None and low > high:
             raise ValueError(f"{METADATA_PATH.name}: {path} has its minimum above its maximum.")
     return data
+
+
+@lru_cache(maxsize=1)
+def basic_areas() -> tuple:
+    """The Basic view's areas (``tuning_basic.yaml``), checked: each control is one described
+    parameter (no pattern), listed once, with an ``effect``. A broken file is an error of this release."""
+    if not BASIC_PATH.exists():
+        return ()
+    data = yaml.safe_load(BASIC_PATH.read_text(encoding="utf-8")) or {}
+    known, seen, areas = metadata(), set(), []
+    for area in data.get("areas") or []:
+        if set(area) - {"key", "title", "summary", "controls"} or not area.get("key") or not area.get("title"):
+            raise ValueError(f"{BASIC_PATH.name}: an area needs a key and a title (and nothing else but a summary "
+                             f"and controls): {area}")
+        controls = []
+        for control in area.get("controls") or []:
+            path = control.get("path")
+            if set(control) - {"path", "effect"} or not control.get("effect"):
+                raise ValueError(f"{BASIC_PATH.name}: {path} needs an effect (and nothing else but its path).")
+            if path not in known or "*" in path:
+                raise ValueError(f"{BASIC_PATH.name}: {path} is not a described parameter.")
+            if path in seen:
+                raise ValueError(f"{BASIC_PATH.name}: {path} is listed twice.")
+            seen.add(path)
+            controls.append({"path": path, "effect": " ".join(str(control["effect"]).split())})
+        areas.append({"key": area["key"], "title": area["title"],
+                      "summary": " ".join(str(area.get("summary") or "").split()), "controls": controls})
+    return tuple(areas)
+
+
+def basic_view(present) -> list[dict]:
+    """The Basic view for a configuration holding the parameters ``present``: [{key, title, summary,
+    controls: [{path, effect}]}] (a control whose parameter the configuration lacks is left out)."""
+    present = set(present)
+    view = []
+    for area in basic_areas():
+        controls = [dict(control) for control in area["controls"] if control["path"] in present]
+        if controls:
+            view.append({**area, "controls": controls})
+    return view
 
 
 def _matches(pattern: str, path: str) -> bool:

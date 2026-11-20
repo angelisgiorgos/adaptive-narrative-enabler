@@ -191,6 +191,9 @@ class ActionRequest(BaseModel):
 
 class WeightUpdate(BaseModel):
     values: dict[str, float]
+    expected: dict[str, float] | None = Field(
+        default=None, description="Optional: the value each changed parameter had when the form was loaded; a "
+        "parameter changed since (by someone else) is refused (409) instead of overwritten.")
 
 
 class YAMLDocument(BaseModel):
@@ -566,7 +569,8 @@ def put_hyperparameters(body: YAMLDocument):
 
 def _weights():
     entries = store._weight_entries()
-    return {"values": dict(entries), "parameters": [tuning.describe(path, value) for path, value in entries]}
+    return {"values": dict(entries), "parameters": [tuning.describe(path, value) for path, value in entries],
+            "basic": tuning.basic_view(path for path, _ in entries)}
 
 
 @api.get("/v1/weights", tags=["Configuration"])
@@ -576,7 +580,10 @@ def get_weights():
     [{path, value, section, label, explanation, unit, type: integer | float, minimum, maximum, default
     (the engine's, when the parameter is left out), source (the code reading it), described}]. Units,
     bounds and defaults come from the engine's code; a parameter without metadata (``described``
-    false) has a label from its name and the type it is written with, nothing more."""
+    false) has a label from its name and the type it is written with, nothing more. ``requires``: the
+    true/false setting a parameter needs, ``inactive``: why it has no effect now (that setting is off).
+    ``basic``: the Basic view, a chosen set of common gameplay controls, each ONE of these parameters
+    (no presets): [{key, title, summary, controls: [{path, effect}]}]."""
     return _weights()
 
 
@@ -585,11 +592,18 @@ def put_weights(body: WeightUpdate):
     """Change tuning parameters (paths left out keep their value). Every value is checked first: a
     finite number, a whole number for an integer parameter (a fraction is refused, not cut down),
     within the bounds the engine defines; one wrong value saves nothing (400, each problem named). A
-    value that did not change is kept exactly as it is written."""
+    value that did not change is kept exactly as it is written. With ``expected`` (the values the form
+    was loaded with), a changed parameter whose stored value moved since is refused (409)."""
     known = dict(store._weight_entries())
     unknown = sorted(set(body.values) - set(known))
     if unknown:
         raise HTTPException(status_code=400, detail="Unknown weight paths: " + ", ".join(unknown))
+    moved = [f"`{path}` is now {known[path]:g} (it was {body.expected[path]:g} when loaded)"
+             for path in body.values if body.expected and path in body.expected
+             and float(known[path]) != float(body.expected[path])]
+    if moved:
+        raise HTTPException(status_code=409, detail="Changed since it was loaded, so nothing was saved; reload "
+                            "to see the newer values: " + "; ".join(moved) + ".")
     merged = {**known, **body.values}
     paths = list(known)
     try:
