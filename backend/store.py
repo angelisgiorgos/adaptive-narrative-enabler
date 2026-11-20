@@ -1,7 +1,6 @@
 """Configuration storage and validation: settings, weights, hyperparameters, story rules."""
 from __future__ import annotations
 
-import math
 import os
 import re
 import tempfile
@@ -19,6 +18,7 @@ from core_engine.narration import validate_messages
 from core_engine.variables import PROFILE_PATTERN, validate_definitions
 from utils.config_loader import config
 
+from . import tuning
 from .errors import AuthoringError
 
 
@@ -315,27 +315,40 @@ def _weight_entries():
         ):
             entries.append((".".join(parts), value))
 
-    visit(_read_yaml(CONFIG_DIR / "hyperparameters.yaml"))
+    visit(_read_yaml(HYPERPARAMETERS_PATH))
     return entries
 
 def save_weights(paths, *values):
+    """Save the tuning parameters (⚙ Advanced → Weights). Every value is checked first (a finite number;
+    a whole number for an integer parameter, never cut down; within the bounds the engine defines:
+    backend/tuning.py), and nothing is written if one is wrong. A value that did not change is kept
+    exactly as it is written."""
     if len(paths) != len(values):
         raise AuthoringError("The weights form is out of sync; reload the app and try again.")
-    path = CONFIG_DIR / "hyperparameters.yaml"
+    path = HYPERPARAMETERS_PATH
     data = _read_yaml(path)
+    places, found = [], []
     for dotted_path, value in zip(paths, values):
-        if value is None or not math.isfinite(float(value)):
-            raise AuthoringError(f"`{dotted_path}` must be a finite number.")
         keys = dotted_path.split(".")
         target = data
         for key in keys[:-1]:
             target = target[key]
-        old_value = target[keys[-1]]
-        target[keys[-1]] = int(value) if isinstance(old_value, int) else float(value)
+        stored = target[keys[-1]]
+        if value is None:
+            found.append(f"`{dotted_path}` must be a finite number.")
+            continue
+        found.extend(tuning.problems(dotted_path, value, stored))
+        places.append((target, keys[-1], dotted_path, value, stored))
+    if found:
+        raise AuthoringError("Nothing was saved:\n" + "\n".join(f"- {problem}" for problem in found))
+    changed = 0
+    for target, key, dotted_path, value, stored in places:
+        target[key] = tuning.stored_value(dotted_path, value, stored)
+        changed += target[key] is not stored
     _write_yaml(path, data)
     config.clear_override()
     engine.refresh_runtime_settings()
-    return f"Saved {len(paths)} configured weights and scoring controls."
+    return f"Saved {len(paths)} configured weights and scoring controls ({changed} changed)."
 
 # Mappings whose keys are chosen by the writer (location names, stat names, ...).
 FREE_FORM_PATHS = {

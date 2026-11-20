@@ -1832,6 +1832,164 @@ class DeletionUndoTests(_Sandbox):
                 self.assertEqual(handler(by[f"{prefix}-undo-button"]), undone)
 
 
+class TuningParameterTests(_Sandbox):
+    """⚙ Advanced → Weights presents each tuning parameter from the engine's own code (backend/tuning.py,
+    tuning_parameters.yaml): a readable label, what the engine does with it, its unit on its own scale,
+    the engine's default, its numeric type and bounds only where the engine sets them, with its path as
+    secondary help; a parameter without metadata falls back to its name. Saving keeps unchanged values as
+    written, keeps integers integers (a fraction is refused, not cut down) and enforces the bounds."""
+
+    def _weights(self):
+        answer = self.client.get("/v1/weights")
+        self.assertEqual(answer.status_code, 200, answer.text)
+        return answer.json()
+
+    def _file(self):
+        return (self.dir / "hyperparameters.yaml").read_text(encoding="utf-8")
+
+    def _value(self, path):
+        node = yaml.safe_load(self._file())
+        for key in path.split("."):
+            node = node[key]
+        return node
+
+    def test_each_parameter_is_presented_from_the_engine_s_code(self):
+        weights = self._weights()
+        info = {p["path"]: p for p in weights["parameters"]}
+        self.assertEqual(list(info), list(weights["values"]))   # the same parameters, in the same order
+        rate = info["skill_check_resolution.difficulty_rate_per_step"]
+        self.assertEqual((rate["label"], rate["type"], rate["default"], rate["described"]),
+                         ("Difficulty increase per turn", "float", 0.0, True))
+        self.assertIn("per turn", rate["unit"])
+        self.assertIn("core_engine/combat.py:82", rate["source"])
+        # Chances on their own scales: a percentage of the 1-100 roll, a probability, a pressure.
+        self.assertIn("percent of the roll", info["skill_check_resolution.min_chance"]["unit"])
+        self.assertIn("probability", info["travel.first_trip.chance"]["unit"])
+        self.assertIn("(0-1)", info["travel.first_trip.chance"]["unit"])
+        self.assertIn("not a random chance", info["unexpected_events.base_chance"]["unit"])
+        # Bounds only where the engine sets them (rules.validate_settings; fitness clamps floor_steps).
+        bounded = {path: (p["minimum"], p["maximum"]) for path, p in info.items()
+                   if p["minimum"] is not None or p["maximum"] is not None}
+        self.assertEqual(bounded, {"story_rules.repetition_power": (1, None), "story_rules.backtrack_penalty": (0, None),
+                                   "story_rules.collect_weight": (0, None), "story_rules.payoff_weight": (0, None),
+                                   "story_rules.payoff_route_weight": (0, None),
+                                   "fitness.length_normalization.floor_steps": (1, None)})
+        for path, p in info.items():
+            with self.subTest(path=path):
+                self.assertTrue(p["described"] and p["label"] and p["unit"] and p["explanation"])
+                self.assertIn(p["type"], ("integer", "float"))
+                if p["type"] == "integer":
+                    self.assertEqual(float(p["value"]), int(p["value"]))
+                for reference in p["source"]:  # where the engine reads it: still there
+                    file, _, line = reference.partition(":")
+                    lines = (store.PROJECT_ROOT / file).read_text(encoding="utf-8").count("\n") + 1
+                    first = int(line.split("-")[0]) if line else 1
+                    self.assertLessEqual(first, lines, reference)
+        # A world's own names (a new tag, another location) are described by a pattern; known ones by their own.
+        from backend import tuning
+
+        self.assertNotEqual(info["outcome_resolution.tag_weights.threat"]["label"],
+                            info["outcome_resolution.tag_weights.urban"]["label"])
+        self.assertIs(tuning.find("outcome_resolution.tag_weights.harbour"),
+                      tuning.metadata()["outcome_resolution.tag_weights.*"])
+        self.assertIs(tuning.find("action_selection.location_penalties.Vault.destination_tags.gold"),
+                      tuning.metadata()["action_selection.location_penalties.*.destination_tags.*"])
+        self.assertIsNone(tuning.find("outcome_resolution.tag_weights.harbour.extra"))  # one segment per *
+
+    def test_a_parameter_without_metadata_falls_back_to_its_name(self):
+        import app
+
+        text = self._file().replace("fitness:\n", "fitness:\n  ferry_bonus: 3\n", 1)
+        (self.dir / "hyperparameters.yaml").write_text(text, encoding="utf-8")
+        found = next(p for p in self._weights()["parameters"] if p["path"] == "fitness.ferry_bonus")
+        self.assertEqual((found["described"], found["label"], found["type"], found["unit"], found["explanation"],
+                          found["minimum"], found["default"]), (False, "Ferry bonus", "integer", None, None, None, None))
+        help_text = app.weight_help(found)
+        self.assertIn("No description yet", help_text)
+        self.assertTrue(help_text.endswith("Parameter: fitness.ferry_bonus"))
+        refused = self.client.put("/v1/weights", json={"values": {"fitness.ferry_bonus": 3.5}})
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("is a whole number (as it is written)", refused.json()["detail"])
+        self.assertEqual(self.client.put("/v1/weights", json={"values": {"fitness.ferry_bonus": 4}}).status_code, 200)
+        self.assertEqual(self._value("fitness.ferry_bonus"), 4)
+
+    def test_integers_stay_integers_fractions_are_refused_and_unchanged_values_are_kept(self):
+        before = self._file()
+        values = self._weights()["values"]
+        # Saved unchanged (as the form sends them: decimals as floats): the file is not rewritten.
+        same = self.client.put("/v1/weights", json={"values": {p: float(v) for p, v in values.items()}})
+        self.assertEqual(same.status_code, 200, same.text)
+        self.assertIn("(0 changed)", same.json()["message"])
+        self.assertEqual(self._file(), before)
+        # An integer parameter: a whole number is stored as an integer; a fraction is refused, not cut down.
+        saved = self.client.put("/v1/weights", json={"values": {"stakes.alert.check_penalty": 4.0}})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertIs(type(self._value("stakes.alert.check_penalty")), int)
+        self.assertEqual(self._value("stakes.alert.check_penalty"), 4)
+        after = yaml.safe_load(self._file())
+        original = yaml.safe_load(before)
+
+        def leaves(node, prefix=()):
+            for key, value in node.items():
+                if isinstance(value, dict):
+                    yield from leaves(value, prefix + (key,))
+                else:
+                    yield ".".join(prefix + (key,)), value
+
+        changed = {path: (old, type(old)) for path, old in leaves(original)}
+        now = {path: (new, type(new)) for path, new in leaves(after)}
+        self.assertEqual({p for p in changed if changed[p] != now[p]}, {"stakes.alert.check_penalty"})  # nothing else
+        written = self._file()
+        for value, problem in ((4.5, "is a whole number"),):
+            refused = self.client.put("/v1/weights", json={"values": {"stakes.alert.check_penalty": value}})
+            self.assertEqual(refused.status_code, 400)
+            self.assertIn(problem, refused.json()["detail"])
+            self.assertIn("Nothing was saved", refused.json()["detail"])
+        self.assertEqual(self._file(), written)
+        # A decimal parameter written as a whole number (40) takes a fraction, and stays a number.
+        self.assertIs(type(values["evolution.alternatives_weight"]), int)
+        self.client.put("/v1/weights", json={"values": {"evolution.alternatives_weight": 40.5}})
+        self.assertEqual(self._value("evolution.alternatives_weight"), 40.5)
+        self.client.put("/v1/weights", json={"values": {"skill_check_resolution.min_chance": 6.0}})
+        self.assertIs(type(self._value("skill_check_resolution.min_chance")), int)  # written whole, kept whole
+        # The engine's bounds: below them nothing is saved.
+        for path, value in (("story_rules.repetition_power", 0.5), ("story_rules.payoff_weight", -1),
+                            ("fitness.length_normalization.floor_steps", 0)):
+            with self.subTest(path=path):
+                written = self._file()
+                refused = self.client.put("/v1/weights", json={"values": {path: value}})
+                self.assertEqual(refused.status_code, 400)
+                self.assertIn("must be at least", refused.json()["detail"])
+                self.assertEqual(self._file(), written)
+
+    def test_the_weights_tab_shows_labels_help_and_whole_numbers(self):
+        import gradio as gr
+
+        import app
+
+        info = {p["path"]: p for p in self._weights()["parameters"]}
+        rate = app.weight_field(info["skill_check_resolution.difficulty_rate_per_step"])
+        self.assertEqual((rate.label, rate.precision), ("Difficulty increase per turn", None))
+        self.assertIn("engine default 0", rate.info)
+        self.assertTrue(rate.info.endswith("Parameter: skill_check_resolution.difficulty_rate_per_step"))
+        start = app.weight_field(info["skill_check_resolution.difficulty_rate_start_step"])
+        self.assertEqual(start.precision, 0)  # whole numbers only
+        self.assertIn("whole number", start.info)
+        power = app.weight_field(info["story_rules.repetition_power"])
+        self.assertEqual(power.minimum, 1)
+        self.assertIn("at least 1", power.info)
+        demo = app.build_app()
+        labels = {b.label for b in demo.blocks.values() if isinstance(b, gr.Number)}
+        self.assertIn("Difficulty increase per turn", labels)
+        self.assertNotIn("skill_check_resolution.difficulty_rate_per_step", labels)  # the path is help, not the label
+        # The form's own save, with what its fields hold, leaves the file as it was.
+        before = self._file()
+        paths = list(info)
+        values = [int(p["value"]) if p["type"] == "integer" else float(p["value"]) for p in info.values()]
+        self.assertIn("(0 changed)", app.save_weights(paths, *values))
+        self.assertEqual(self._file(), before)
+
+
 class StudioServiceTests(_Sandbox):
     """The endpoints the studio is built on: every studio tab works through the API."""
 

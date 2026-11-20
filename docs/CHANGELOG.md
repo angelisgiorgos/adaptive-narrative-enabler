@@ -7,6 +7,28 @@ that introduces them.
 
 ## [Unreleased]
 
+### Tuning parameters: labels, units, defaults and bounds from the engine
+
+#### Added
+- Every tuning parameter in *⚙ Advanced → Weights* (236) has presentation metadata derived from the
+  engine's code (`backend/tuning_parameters.yaml`, read by `backend/tuning.py`): a readable label (e.g.
+  `skill_check_resolution.difficulty_rate_per_step` is *Difficulty increase per turn*), what the engine
+  does with it, its unit on its own scale (a percentage of the 1–100 roll, a probability per first trip,
+  an event pressure compared with a threshold, score points per ...), the engine's default, its numeric
+  type, bounds where the engine sets them (`story_rules`, `fitness.length_normalization.floor_steps`) and
+  the code that reads it. The parameter's path stays under it. The parameters the engine does not use at
+  present (all of `outcome_scoring`, `fitness.setup_payoff.early_setup_bonus`) or only in branches that
+  never run say so; those of `outcome_resolution` that need `hidden_adjustments` say that.
+- `GET /v1/weights` gains `parameters` (that metadata, per parameter); a parameter without metadata keeps
+  a fallback (a label from its name, its type as written).
+
+#### Fixed
+- Saving the weights cut a fraction typed for a parameter written as a whole number down (40.5 became 40,
+  even for decimal parameters like `evolution.alternatives_weight`): an integer parameter now refuses a
+  fraction, a decimal one takes it. Values that did not change are kept exactly as written (40 stays 40),
+  and a value outside the engine's bounds saves nothing (it used to be written, and `story_rules` then
+  stopped the world from building).
+
 ### Deleting in the World editor: asked first, with Undo
 
 #### Added

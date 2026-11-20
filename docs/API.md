@@ -357,7 +357,16 @@ one); `tests/test_studio_coverage.py` checks it.
   `simulate_with`), and the event fallback (`fallback_action`,
   `fallback_description`). Fields left out of a `PUT` keep their value.
 - `GET|PUT /v1/hyperparameters` reads or validates the complete hyperparameter
-  YAML; `GET|PUT /v1/weights` reads or updates every weight.
+  YAML; `GET|PUT /v1/weights` reads or updates every weight. `GET` answers `values`
+  `{path: value}` and `parameters`, how each is presented: `[{path, value, section, label,
+  explanation, unit, type: integer | float, minimum, maximum, default, source, described}]`.
+  These come from the engine's code (`backend/tuning_parameters.yaml`): the unit on the
+  parameter's own scale, `default` the value the engine uses when the parameter is left out,
+  `minimum`/`maximum` only where the engine clamps or rejects values, `source` the code that
+  reads it; `described: false` (a parameter without metadata) gives a label from its name and the
+  type it is written with. A `PUT` (paths left out keep their value) is checked whole first: a
+  fraction for an integer parameter is `400` (never cut down), as is a value outside the engine's
+  bounds, and nothing is saved; values that do not change are kept exactly as written.
 - `GET /v1/logic` lists the parameter sections of the engine's logic, with what
   each controls. `GET|PUT /v1/logic/{section}` reads or changes one section as
   YAML text (`{"parameters": "evolution:\n  ..."}`). It must keep the same

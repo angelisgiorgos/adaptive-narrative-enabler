@@ -601,6 +601,40 @@ def save_rules_ui(*values):
     return "Saved the story rules."
 
 
+def _number(value):
+    return f"{value:g}" if isinstance(value, float) else str(value)
+
+
+def weight_help(info):
+    """A tuning parameter's help, under its label: what the engine does with it, its unit, the engine's
+    default, the bounds the engine defines and whether it is a whole number, then its path (a
+    parameter without a description says so, with its path)."""
+    kind = "whole number" if info["type"] == "integer" else "decimal number"
+    if not info["described"]:
+        return f"No description yet ({kind}, as written). Parameter: {info['path']}"
+    facts = [f"Unit: {info['unit']}"] if info.get("unit") else []
+    if info.get("default") is not None:
+        facts.append(f"engine default {_number(info['default'])}")
+    low, high = info.get("minimum"), info.get("maximum")
+    if low is not None and high is not None:
+        facts.append(f"from {_number(low)} to {_number(high)}")
+    elif low is not None:
+        facts.append(f"at least {_number(low)}")
+    elif high is not None:
+        facts.append(f"at most {_number(high)}")
+    facts.append(kind)
+    return f"{info.get('explanation') or ''} {' · '.join(facts)}. Parameter: {info['path']}".strip()
+
+
+def weight_field(info):
+    """A tuning parameter's input (⚙ Advanced → Weights): its readable label and help; an integer
+    parameter takes whole numbers only; the engine's bounds, where it defines them."""
+    integer = info["type"] == "integer"
+    return gr.Number(value=info["value"], label=info["label"], info=weight_help(info), precision=0 if integer else None,
+                     minimum=info.get("minimum"), maximum=info.get("maximum"),
+                     elem_classes=["weight", "weight-described" if info["described"] else "weight-plain"])
+
+
 @ui
 def save_weights(paths, *values):
     result = API.put("/v1/weights", {"values": dict(zip(paths, values))})
@@ -4582,21 +4616,27 @@ def build_app():
 
                     with gr.Tab("Weights"):
                         gr.Markdown(
-                            "Configure every numeric weight, bonus, penalty, threshold, chance, rate, "
-                            "mitigation, floor, and power control used by scoring and the narrative engine."
+                            "Every numeric weight, bonus, penalty, threshold, chance, rate, mitigation, floor and "
+                            "power used by scoring and the narrative engine. Each says what the engine does with it, "
+                            "its unit (chances have different scales: a percentage of the 1–100 roll is not a "
+                            "probability), the engine's default and the bounds the engine sets, then its parameter "
+                            "path. Whole-number parameters take whole numbers only; values you do not change are "
+                            "saved exactly as they were."
                         )
-                        weight_entries = list(API.get("/v1/weights")["values"].items())
-                        weight_paths = [path for path, _ in weight_entries]
+                        weight_infos = API.get("/v1/weights")["parameters"]
+                        weight_paths = [info["path"] for info in weight_infos]
                         weight_components = []
                         grouped_weights = {}
-                        for weight_path, value in weight_entries:
-                            grouped_weights.setdefault(weight_path.split(".")[0], []).append((weight_path, value))
+                        for info in weight_infos:
+                            grouped_weights.setdefault(info["section"], []).append(info)
                         for section, section_entries in grouped_weights.items():
-                            with gr.Accordion(section.replace("_", " ").title(), open=False):
+                            described = sum(info["described"] for info in section_entries)
+                            with gr.Accordion(f"{section} ({described} of {len(section_entries)} described)",
+                                              open=False):
                                 for index in range(0, len(section_entries), 3):
                                     with gr.Row():
-                                        for weight_path, value in section_entries[index:index + 3]:
-                                            weight_components.append(gr.Number(value=value, label=weight_path))
+                                        for info in section_entries[index:index + 3]:
+                                            weight_components.append(weight_field(info))
                         save_weights_button = gr.Button("Save all weights", variant="primary")
                         weights_status = gr.Markdown()
                         save_weights_button.click(save_weights, [gr.State(weight_paths), *weight_components], weights_status)

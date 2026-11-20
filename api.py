@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 import yaml
 
-from backend import content, evaluation, export, records, sessions, store
+from backend import content, evaluation, export, records, sessions, store, tuning
 from backend.errors import ConflictError
 from core_engine import Mission
 from core_engine.actions import REPEAT_RULES
@@ -564,13 +564,28 @@ def put_hyperparameters(body: YAMLDocument):
         _fail(exc)
 
 
+def _weights():
+    entries = store._weight_entries()
+    return {"values": dict(entries), "parameters": [tuning.describe(path, value) for path, value in entries]}
+
+
 @api.get("/v1/weights", tags=["Configuration"])
 def get_weights():
-    return {"values": dict(store._weight_entries())}
+    """The tuning parameters (every weight, bonus, penalty, threshold, chance, rate, ... of
+    hyperparameters.yaml): ``values`` {path: value}, and ``parameters``, how each is presented:
+    [{path, value, section, label, explanation, unit, type: integer | float, minimum, maximum, default
+    (the engine's, when the parameter is left out), source (the code reading it), described}]. Units,
+    bounds and defaults come from the engine's code; a parameter without metadata (``described``
+    false) has a label from its name and the type it is written with, nothing more."""
+    return _weights()
 
 
 @api.put("/v1/weights", tags=["Configuration"])
 def put_weights(body: WeightUpdate):
+    """Change tuning parameters (paths left out keep their value). Every value is checked first: a
+    finite number, a whole number for an integer parameter (a fraction is refused, not cut down),
+    within the bounds the engine defines; one wrong value saves nothing (400, each problem named). A
+    value that did not change is kept exactly as it is written."""
     known = dict(store._weight_entries())
     unknown = sorted(set(body.values) - set(known))
     if unknown:
@@ -579,7 +594,7 @@ def put_weights(body: WeightUpdate):
     paths = list(known)
     try:
         message = store.save_weights(paths, *(merged[path] for path in paths))
-        return {"message": message, "values": dict(store._weight_entries())}
+        return {"message": message, **_weights()}
     except Exception as exc:
         _fail(exc)
 
