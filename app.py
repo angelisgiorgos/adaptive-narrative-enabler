@@ -1369,17 +1369,17 @@ def evaluate_result_ui(done):
 
 
 @ui
-def export_result_ui(done, platform):
+def export_result_ui(done, platform, name=""):
     """📦 Export this result: Export opens with the completed engine as the one finished run chosen
-    (for any platform). Returns the navigation and the export form."""
+    (the platform kept; Export enabled only if that platform is available here). Returns the navigation
+    and the export form (export_form_ui's outputs)."""
     engine_id = _result_engine(done)
     choices = finished_run_choices()
     _offered(engine_id, choices, "📦 Export")
-    return (*navigate("export"), gr.Radio(value=FINISHED_RUNS, visible=platform not in ANE_AI_PLATFORMS),
-            gr.Dropdown(visible=False),
-            gr.Dropdown(choices=choices, value=[engine_id], multiselect=True, visible=True),
-            gr.Markdown(f"**Chosen:** the engine just trained, {_label_of(engine_id, choices)}, with its own world, storyteller, "
-                        "training state and tag vectors."), gr.Button(interactive=True))
+    form = list(export_form_ui(platform or "python", FINISHED_RUNS, [engine_id], name=name))
+    form[3] = gr.Markdown(f"**Chosen:** the engine just trained, {_label_of(engine_id, choices)}, with its own world, "
+                          "storyteller, training state and tag vectors.")
+    return (*navigate("export"), *form)
 
 
 def integration_session_text(token):
@@ -1748,24 +1748,15 @@ EXPORT_SOURCES = {  # what the Python version can be made from; the ANE AI only 
     "Best remembered storyteller": "memory",
     "This game's storyteller": "game",
 }
-
-
-def export_platform_choices():
-    """(label, platform) of what an export can run on (GET /v1/exports/platforms)."""
-    try:
-        listed = API.get("/v1/exports/platforms")["platforms"]
-    except APIError:
-        return [("Python (3.10+ with pyyaml and numpy)", "python")]
-    names = {"python": "Python (3.10+ with pyyaml and numpy)", "unity": "Unity (.unitypackage: library and runtimes)"}
-    return [((names.get(p["platform"], f"Standalone {p['platform']}")
-              + ("" if p["available"] else " (not available here)")), p["platform"]) for p in listed]
-
-
+GENERATION_SOURCE = "A generation of this run"
+EXPORT_PLATFORM_NAMES = {"python": "Python", "windows-x64": "Windows (x64)", "linux-x64": "Linux (x64)",
+                         "macos-arm64": "macOS (Apple silicon)", "macos-x64": "macOS (Intel)", "unity": "Unity package"}
+PYTHON_PLATFORM = {"platform": "python", "available": True, "description": "Python 3.10+ with pyyaml and numpy"}
 # What an ANE AI (a standalone program or the Unity package) is made from: a finished run (its engine).
 ANE_AI_PLATFORMS = ("windows-x64", "linux-x64", "macos-arm64", "macos-x64", "unity")
 NO_COMPLETE_ENGINE = ("**No finished run yet.** An export is made from a finished run (its engine: world, "
-                      "storyteller, training state): run a training (*Evolve storytellers & start game*), or load an "
-                      "engine, then export it here.")
+                      "storyteller, training state): run a training in 🧠 Train, or load an engine in ▶ Play, then "
+                      "export it here.")
 
 
 def finished_run_choices():
@@ -1790,22 +1781,176 @@ def finished_run_choices():
     return [(label(e), e["engine_id"]) for e in engines]
 
 
-def export_form_ui(platform, source_label=FINISHED_RUNS, chosen=None):
-    """The export form: the ANE AI is made from finished runs (the latest is chosen; several can
-    be); the Python version also from a generation's champion, the remembered storyteller or this
-    game's storyteller. It cannot be exported from a finished run before one exists."""
-    ane_ai = platform in ANE_AI_PLATFORMS
-    from_runs = ane_ai or source_label == FINISHED_RUNS
+def export_platform_list():
+    """What an export can run on here (GET /v1/exports/platforms): [{platform, available, reason?,
+    description?, code_version?, built_at?, includes?}]; Python alone when the API cannot be asked."""
+    try:
+        return API.get("/v1/exports/platforms")["platforms"]
+    except APIError as exc:
+        LOG.warning("The export platforms could not be read: %s", exc)
+        return [PYTHON_PLATFORM]
+
+
+def _platform_name(platform):
+    return EXPORT_PLATFORM_NAMES.get(platform, f"Standalone {platform}")
+
+
+def export_platform_choices(listed=None):
+    """(label, platform) of what an export can run on, each saying whether it is available here."""
+    listed = listed if listed is not None else export_platform_list()
+    return [(_platform_name(p["platform"]) + ("" if p["available"] else " (not available here)"), p["platform"])
+            for p in listed]
+
+
+def _platform_entry(platform, listed):
+    return next((p for p in listed if p["platform"] == platform), None)
+
+
+def export_platform_note(platform, listed=None):
+    """Step 2's note: what the chosen platform is and, when it is not available here, why (the API's
+    own reason) and what to do."""
+    listed = listed if listed is not None else export_platform_list()
+    entry = _platform_entry(platform, listed)
+    name = _platform_name(platform)
+    if entry is None:
+        return f"⛔ **{name}** is not offered by this API. Choose another system."
+    if not entry["available"]:
+        others = [_platform_name(p["platform"]) for p in listed if p["available"]]
+        return (f"⛔ **{name} is not available here:** {entry.get('reason') or 'no reason given'}. "
+                f"Available now: {', '.join(others) or 'none'}.")
+    if platform == "python":
+        return ("**Python**: the engine as Python code (3.10+ with pyyaml and numpy), for developers: play it in a "
+                "terminal, serve it over HTTP, embed it, keep training it.")
+    if platform == "unity":
+        return (f"**Unity package**: {entry.get('description') or 'the C# library and the standalone runtimes'}. "
+                "Import it into a Unity project; the library starts and stops the ANE AI for you.")
+    built = (entry.get("built_at") or "")[:10]
+    return (f"**{name}**: the ANE AI as a standalone program, no Python needed (runtime "
+            f"`{entry.get('code_version')}`{', built ' + built if built else ''}). A UNP launches it, drives it "
+            "over HTTP and stops it.")
+
+
+def _chosen_ids(chosen):
+    return [chosen] if isinstance(chosen, str) and chosen else list(chosen or [])
+
+
+def export_problems(platform, source_label, chosen=None, generation=None, run_id=None, token=None, listed=None,
+                    choices=None):
+    """Why this export cannot be made as chosen, each with how to resolve it: [(problem, fix)]. Empty:
+    it can. Checks the platform (offered and available here), the combination (the ANE AI is made from
+    finished runs only) and that the chosen source exists (a finished run chosen, a run and one of its
+    generations, a remembered storyteller, a game open in ▶ Play)."""
+    listed = listed if listed is not None else export_platform_list()
+    found = []
+    entry = _platform_entry(platform, listed)
+    if entry is None or not entry["available"]:
+        reason = (entry or {}).get("reason") or "this API does not offer it"
+        found.append((f"{_platform_name(platform)} is not available here ({reason}).",
+                      "Choose Python, or another system marked available in step 2."))
+    if platform in ANE_AI_PLATFORMS and source_label != FINISHED_RUNS:
+        found.append((f"The ANE AI ({_platform_name(platform)}) is made from a complete engine, and *{source_label}* "
+                      "is a storyteller without one (no world, training state or tag vectors of its own).",
+                      "Choose *finished runs* in step 1, or *Python* in step 2."))
+    if source_label == FINISHED_RUNS:
+        choices = choices if choices is not None else finished_run_choices()
+        offered = {value for _, value in choices}
+        ids = _chosen_ids(chosen)
+        if not choices:
+            found.append(("There is no finished run yet.", "Run a training in 🧠 Train, or load an engine in ▶ Play."))
+        elif not ids:
+            found.append(("No finished run is chosen.", "Choose one or more finished runs in step 1."))
+        elif any(engine not in offered for engine in ids):
+            found.append(("A chosen finished run is no longer offered (finished runs are kept up to a limit).",
+                          "Press ↻ Refresh in step 1 and choose again."))
+    elif source_label == GENERATION_SOURCE:
+        if not run_id:
+            found.append(("No run was trained in this session: a generation's champion comes from the run 🧠 Train "
+                          "has just made.", "Run a training in 🧠 Train, or export *finished runs*."))
+        elif generation in (None, ""):
+            found.append(("No generation is chosen.", "Choose a generation in step 1."))
+    elif source_label == "This game's storyteller" and not token:
+        found.append(("No game is open in ▶ Play.", "Start or continue a game in ▶ Play, then come back."))
+    elif source_label == "Best remembered storyteller":
+        try:
+            remembered = API.get("/v1/learning").get("size", 0)
+        except APIError:
+            remembered = None
+        if remembered == 0:
+            found.append(("The AI remembers no storyteller yet.",
+                          "Run a training with warm start in 🧠 Train, or export *finished runs*."))
+    return found
+
+
+def export_options_note(platform, source_label, chosen=None, name=""):
+    """Step 3's note: what the options do for this export."""
+    lines = ["- **Learning memory**: the storytellers remembered from training, so the export can keep training "
+             "offline" + (" (`python run.py evolve`)." if platform == "python" else ".")]
+    ids = _chosen_ids(chosen)
+    if source_label == FINISHED_RUNS and len(ids) > 1:
+        lines.append(f"- **Name**: {len(ids)} downloads, one per finished run: "
+                     + (f"`{name}-<engine id>`." if name else "each named after its engine (its name, if it has one)."))
+    else:
+        lines.append("- **Name**: the download's folder name"
+                     + (" (empty: the engine's name, if it has one, else a dated name)." if not name else "."))
+    return "\n".join(lines)
+
+
+def export_check_markdown(problems, platform, source_label, chosen=None):
+    """Step 4's summary: what Export will make, or why it cannot, with how to resolve it."""
+    if problems:
+        return "⛔ **Export is not possible as chosen:**\n" + "\n".join(
+            f"- {problem} **To resolve:** {fix}" for problem, fix in problems)
+    count = len(_chosen_ids(chosen)) if source_label == FINISHED_RUNS else 1
+    what = {FINISHED_RUNS: "finished run", GENERATION_SOURCE: "generation's champion",
+            "Best remembered storyteller": "remembered storyteller",
+            "This game's storyteller": "game's storyteller"}.get(source_label, "storyteller")
+    return (f"✅ **Ready:** {count} download{'s' if count != 1 else ''} for {_platform_name(platform)}, from the "
+            f"{what}{'s' if count != 1 else ''} chosen.")
+
+
+def export_check_ui(platform, source_label, chosen=None, generation=None, run_id=None, token=None, name=""):
+    """After a choice in steps 1 or 3: Export enabled only for a valid combination, the options' note and
+    the summary. Returns (the Export button, the options' note, the summary)."""
+    problems = export_problems(platform, source_label, chosen, generation, run_id, token)
+    return (gr.Button(interactive=not problems), export_options_note(platform, source_label, chosen, name),
+            export_check_markdown(problems, platform, source_label, chosen))
+
+
+def export_form_ui(platform, source_label=FINISHED_RUNS, chosen=None, generation=None, run_id=None, token=None,
+                   name=""):
+    """The whole Export form for a platform and a source: what to export (finished runs, the newest
+    chosen unless others are; several can be; a generation, the remembered storyteller or this game's
+    storyteller), what the platform is or why it is unavailable, the options, and Export enabled only
+    for a valid combination, with why not and how to resolve it. Returns (the source, the generation,
+    the finished runs, step 1's note, the Export button, step 2's note, step 3's note, the summary)."""
+    listed = export_platform_list()
+    source_label = source_label if source_label in EXPORT_SOURCES else FINISHED_RUNS
     choices = finished_run_choices()
     ids = [value for _, value in choices]
-    kept = [engine for engine in (chosen or []) if engine in ids]
-    note = (NO_COMPLETE_ENGINE if from_runs and not choices else
-            f"{len(kept or ids[:1])} finished run(s) chosen: each is exported with its own world, storyteller, "
-            "training state and tag vectors." if from_runs else "")
-    return (gr.Radio(visible=not ane_ai),
-            gr.Dropdown(visible=not ane_ai and source_label == "A generation of this run"),
-            gr.Dropdown(choices=choices, value=kept or ids[:1], visible=from_runs),
-            gr.Markdown(note), gr.Button(interactive=not from_runs or bool(choices)))
+    kept = [engine for engine in _chosen_ids(chosen) if engine in ids] or ids[:1]
+    from_runs = source_label == FINISHED_RUNS
+    if from_runs:
+        note = (NO_COMPLETE_ENGINE if not choices else
+                f"{len(kept)} finished run(s) chosen: each is exported with its own world, storyteller, training "
+                "state and tag vectors.")
+    else:
+        note = {GENERATION_SOURCE: "The champion of one generation of the run 🧠 Train made in this session.",
+                "Best remembered storyteller": "The best storyteller the AI remembers, with the active world.",
+                "This game's storyteller": "The storyteller of the game open in ▶ Play, with its world."}[source_label] \
+            + " (Python only.)"
+    problems = export_problems(platform, source_label, kept, generation, run_id, token, listed, choices)
+    return (gr.Radio(value=source_label), gr.Dropdown(visible=source_label == GENERATION_SOURCE),
+            gr.Dropdown(choices=choices, value=kept, visible=from_runs), gr.Markdown(note),
+            gr.Button(interactive=not problems), export_platform_note(platform, listed),
+            export_options_note(platform, source_label, kept, name),
+            export_check_markdown(problems, platform, source_label, kept))
+
+
+def export_refresh_ui(platform, source_label, chosen=None, generation=None, run_id=None, token=None, name=""):
+    """↻ Refresh: the platforms (availability may have changed) and the whole form again."""
+    listed = export_platform_list()
+    return (gr.Radio(choices=export_platform_choices(listed), value=platform),
+            *export_form_ui(platform, source_label, chosen, generation, run_id, token, name))
 
 
 def _export_status(result):
@@ -1814,24 +1959,54 @@ def _export_status(result):
         score += f", engine `{result['engine_id'][:8]}`"
     return (f"Exported **{result['name']}**: {result['source']} (fitness {score}, the training objective). "
             f"World: {result['world']['locations']} locations, {result['world']['npcs']} NPCs, "
-            f"{result['world']['missions']} missions. "
-            + ("Unzip it and run `python run.py play` or `python run.py serve`." if result.get("platform", "python") == "python"
-               else "Import it in Unity (Assets > Import Package > Custom Package), then Tools > ANE AI > Add the ANE AI "
-                    "to the scene." if result.get("platform") == "unity"
-               else f"Unzip it on {result['platform']} and start `ane-ai serve` (no Python needed); the README explains "
-                    "how a UNP launches, drives and stops it."))
+            f"{result['world']['missions']} missions.")
+
+
+def export_usage_markdown(platform):
+    """Step 5: how to use what was downloaded, for its platform (each download's README says more)."""
+    if platform == "python":
+        return ("#### How to use it (Python)\n"
+                "1. Unzip it, then `pip install -r requirements.txt` (Python 3.10+).\n"
+                "2. `python run.py info` says what is inside; `python run.py play` plays in the terminal.\n"
+                "3. `python run.py serve` is a JSON server on `http://127.0.0.1:8765` for any game engine (the token "
+                "is in its ready line); `python run.py evolve` keeps training offline.\n"
+                "4. In Python: `from narrative_runtime import NarrativeEngine`, then "
+                "`NarrativeEngine(\"path/to/folder\").new_game(...)`.\n\nIts README.md has the details.")
+    if platform == "unity":
+        return ("#### How to use it (Unity)\n"
+                "1. In Unity: *Assets → Import Package → Custom Package…*, choose the `.unitypackage`.\n"
+                "2. *Tools → ANE AI → Add the ANE AI to the scene*: the library starts the runtime for the player's "
+                "system, drives it and stops it with the game.\n\n`Assets/ANE-AI/README.md` has the details.")
+    executable = "ane-ai.exe" if platform.startswith("windows") else "./ane-ai"
+    notes = {"macos-arm64": "macOS quarantines an unsigned program downloaded with a browser: run "
+                            "`xattr -dr com.apple.quarantine <folder>` once, or let the UNP download it.",
+             "macos-x64": "macOS quarantines an unsigned program downloaded with a browser: run "
+                          "`xattr -dr com.apple.quarantine <folder>` once, or let the UNP download it.",
+             "windows-x64": "Windows may warn about an unsigned program (SmartScreen); start it with "
+                            "`CREATE_NO_WINDOW` in a Job Object with `KILL_ON_JOB_CLOSE`."}
+    return (f"#### How to use it ({_platform_name(platform)}, no Python needed)\n"
+            f"1. Unzip it on {_platform_name(platform)}.\n"
+            f"2. The UNP starts `{executable} serve --port 0 --ready-file ready.json --parent-pid <UNP pid> "
+            "--exit-on-stdin-eof` (token in `ANE_RUNTIME_TOKEN`) and reads the ready line for its URL.\n"
+            "3. It sends requests with `Authorization: Bearer <token>`: `POST /games`, `POST /games/<id>/choose`, "
+            "`POST /games/<id>/save`, …\n"
+            "4. `POST /shutdown {\"save\": true}` stops it (sessions saved).\n"
+            + (f"\n{notes[platform]}\n" if platform in notes else "")
+            + "\nIts README.md and docs/UNP.md have the whole protocol.")
 
 
 @ui
 def export_engine_ui(source_label, run_id, generation, token, include_memory, name, platform="python", engine_ids=None):
     """Export: from the chosen finished runs (one download each), or, for the Python version, from a
-    generation's champion, the remembered storyteller or this game's storyteller. Returns
-    ([downloaded files], status)."""
+    generation's champion, the remembered storyteller or this game's storyteller. An invalid combination
+    is refused before anything is asked (with how to resolve it). Returns ([downloaded files], status)."""
     platform = platform or "python"
-    if platform in ANE_AI_PLATFORMS or source_label == FINISHED_RUNS:
-        engine_ids = [engine_ids] if isinstance(engine_ids, str) else list(engine_ids or [])
-        if not engine_ids:
-            raise gr.Error(NO_COMPLETE_ENGINE.replace("**", ""))
+    source_label = FINISHED_RUNS if platform in ANE_AI_PLATFORMS and source_label not in EXPORT_SOURCES else source_label
+    problems = export_problems(platform, source_label, engine_ids, generation, run_id, token)
+    if problems:
+        raise gr.Error("Nothing was exported: " + " ".join(f"{problem} {fix}" for problem, fix in problems))
+    if source_label == FINISHED_RUNS:
+        engine_ids = _chosen_ids(engine_ids)
         files, lines = [], []
         for engine_id in engine_ids:
             label = f"{name}-{engine_id[:8]}" if name and len(engine_ids) > 1 else (name or None)
@@ -1843,7 +2018,7 @@ def export_engine_ui(source_label, run_id, generation, token, include_memory, na
     source = EXPORT_SOURCES.get(source_label, "run")
     result = API.post("/v1/exports", {
         "source": source, "run_id": run_id or None,
-        "generation": int(generation) if source_label == "A generation of this run" and generation not in (None, "") else None,
+        "generation": int(generation) if source_label == GENERATION_SOURCE and generation not in (None, "") else None,
         "session_id": token or None, "include_memory": bool(include_memory), "name": name or None,
         "platform": platform,
     })
@@ -5786,39 +5961,49 @@ def build_app():
 
             with gr.Tab("📦 Export", id="export", elem_id="dest-export") as export_tab:
                 gr.Markdown(
-                    "Download the engine to run offline in a game. **The ANE AI** (*Runs on* Windows, macOS, "
-                    "Linux or Unity) is a standalone program that a UNP launches, drives over HTTP and stops, "
-                    "no Python needed. An export is made from a **finished run**: its engine (world, "
-                    "storyteller, training state, tag vectors). The latest is chosen; choose several to export "
-                    "each. Finished runs are kept (in the records, or with the saves) and can be exported later. "
-                    "**The Python version** (for developers: embed it with `NarrativeEngine`, `python run.py "
-                    "serve`, `play`, `evolve`) can also be made from a generation's champion, the remembered "
-                    "storyteller or this game's storyteller. Each download's README explains how to use it."
-                )
-                with gr.Row():
-                    export_platform = gr.Dropdown(
-                        export_platform_choices(), value="python", label="Runs on",
-                        info="A standalone program for that system (the ANE AI, no Python needed), the Unity "
-                        "package, or Python.")
-                    export_source = gr.Radio(list(EXPORT_SOURCES), value=FINISHED_RUNS, label="What to export",
-                                             info="The Python version only; the ANE AI is made from finished runs.")
+                    "Download a trained result to run offline in a game, in five steps. **The ANE AI** (Windows, "
+                    "macOS, Linux or Unity) is a standalone program that a UNP launches, drives over HTTP and stops, "
+                    "no Python needed; it is made from **finished runs**. **The Python version** (for developers) "
+                    "can also be made from a generation's champion, the remembered storyteller or this game's "
+                    "storyteller.", elem_classes="lead")
+                export_listed = export_platform_list()
+                gr.Markdown("#### 1 · Choose what to export")
+                export_source = gr.Radio(list(EXPORT_SOURCES), value=FINISHED_RUNS, label="What to export",
+                                         elem_id="export-source",
+                                         info="The ANE AI is made from finished runs only; the other three export the "
+                                         "Python version.")
                 finished = finished_run_choices()
-                export_engine = gr.Dropdown(finished, value=[v for _, v in finished[:1]], multiselect=True,
-                                            label="Finished runs", info="Newest first: the latest is chosen. "
-                                            "Choose several to export each.")
+                with gr.Row(equal_height=True):
+                    export_engine = gr.Dropdown(finished, value=[v for _, v in finished[:1]], multiselect=True,
+                                                label="Finished runs", scale=5, elem_id="export-engines",
+                                                info="Newest first: the latest is chosen. Choose several to export "
+                                                "each (one download per run).")
+                    export_refresh = gr.Button("↻ Refresh", scale=1, elem_id="export-refresh")
                 export_generation.render()  # created above the destinations: a training (🧠 Train) fills it
-                export_engine_note = gr.Markdown()
+                export_engine_note = gr.Markdown(elem_id="export-source-note")
                 with gr.Accordion("🏷 The chosen engines' result cards", open=False):
                     export_cards = gr.Markdown(elem_id="export-engine-cards")
-                export_engine.change(engine_cards_ui, export_engine, export_cards, show_progress="hidden")
-                demo.load(engine_cards_ui, export_engine, export_cards, show_progress="hidden")
+                gr.Markdown("#### 2 · Choose where it runs")
+                export_platform = gr.Radio(export_platform_choices(export_listed), value="python", label="Runs on",
+                                           elem_id="export-platform",
+                                           info="Systems this API has no runtime for are marked; their reason shows "
+                                           "below.")
+                export_platform_info = gr.Markdown(export_platform_note("python", export_listed),
+                                                   elem_id="export-platform-note")
+                gr.Markdown("#### 3 · Options")
                 with gr.Row():
                     export_memory = gr.Checkbox(True, label="Include the learning memory (keep training offline)")
-                    export_name = gr.Textbox(label="Name", placeholder="narrative-engine")
-                export_button = gr.Button("Export", variant="primary")
+                    export_name = gr.Textbox(label="Name", placeholder="the engine's name, or narrative-engine-<date>",
+                                             elem_id="export-name")
+                export_options = gr.Markdown(elem_id="export-options-note")
+                gr.Markdown("#### 4 · Export")
+                export_check = gr.Markdown(elem_id="export-check")
+                export_button = gr.Button("Export", variant="primary", elem_id="export-button")
+                gr.Markdown("#### 5 · Download and use it")
                 export_file = gr.File(label="Downloads (ZIP, or .unitypackage for Unity)", interactive=False,
-                                      file_count="multiple")
-                export_status = gr.Markdown()
+                                      file_count="multiple", elem_id="export-files")
+                export_status = gr.Markdown(elem_id="export-status")
+                export_usage = gr.Markdown(elem_id="export-usage")
                 gr.Markdown("Which systems this API has runtimes for, and the world as a UNP receives it: "
                             "⚙ Advanced → 🔌 Integration.", elem_classes="lead")
                 with gr.Accordion("Recorded engines, runs and worlds: their files", open=False):
@@ -5839,16 +6024,32 @@ def build_app():
                         record_world = gr.Dropdown(recorded_world_choices(), label="Recorded world")
                         download_world = gr.Button("Download it as a configuration to upload")
                     record_world_download = gr.File(label="World and tuning (YAML)", interactive=False)
-                export_form = [export_source, export_generation, export_engine, export_engine_note, export_button]
+                # One form: a choice of source or platform lays it out again; a choice of runs, generation or
+                # name re-checks it. Export is enabled only for a valid combination (why not, and how to resolve
+                # it, in step 4).
+                export_form = [export_source, export_generation, export_engine, export_engine_note, export_button,
+                               export_platform_info, export_options, export_check]
+                export_inputs = [export_platform, export_source, export_engine, export_generation, run_state,
+                                 session_token, export_name]
+                export_checked = [export_button, export_options, export_check]
                 for control in (export_platform, export_source):
-                    control.change(export_form_ui, [export_platform, export_source, export_engine], export_form)
-                demo.load(export_form_ui, [export_platform, export_source, export_engine], export_form)
+                    control.input(export_form_ui, export_inputs, export_form, show_progress="hidden")
+                export_engine.change(export_check_ui, export_inputs, export_checked, show_progress="hidden")
+                export_generation.change(export_check_ui, export_inputs, export_checked, show_progress="hidden")
+                export_name.input(export_check_ui, export_inputs, export_checked, show_progress="hidden")
+                export_engine.change(engine_cards_ui, export_engine, export_cards, show_progress="hidden")
+                export_refresh.click(export_refresh_ui, export_inputs, [export_platform, *export_form],
+                                     show_progress="hidden")
+                demo.load(export_refresh_ui, export_inputs, [export_platform, *export_form], show_progress="hidden")
+                demo.load(engine_cards_ui, export_engine, export_cards, show_progress="hidden")
                 export_button.click(
+                    lambda: (None, "", ""), None, [export_file, export_status, export_usage], show_progress="hidden"
+                ).then(
                     export_engine_ui,
                     [export_source, run_state, export_generation, session_token, export_memory, export_name,
                      export_platform, export_engine],
                     [export_file, export_status],
-                )
+                ).success(export_usage_markdown, export_platform, export_usage, show_progress="hidden")
             with gr.Tab("⚙ Advanced", id="advanced", elem_id="dest-advanced") as advanced_tab:
                 gr.Markdown("Technical settings: the simulation, every weight, the engine's logic, the app and its background jobs. The story's own rules are in 🌍 World → 📜 Story rules.", elem_classes="lead")
                 with gr.Tabs() as advanced_sections:
@@ -6159,8 +6360,10 @@ def build_app():
 
         # Across destinations: a finished run or a loaded engine is the newest to export.
         for event in [*engine_events, loaded]:
-            event.success(lambda platform, source: export_form_ui(platform, source), [export_platform, export_source],
-                          export_form)
+            event.success(lambda platform, source, generation, run_id, token, name: export_form_ui(
+                platform, source, None, generation, run_id, token, name),
+                [export_platform, export_source, export_generation, run_state, session_token, export_name],
+                export_form)
 
         # Navigation: the banner, the menu, the address (?section=<id>) and the links inside a destination all
         # select the destination's tab; nothing is re-rendered, so every form, game and run keeps its state.
@@ -6240,8 +6443,8 @@ def build_app():
             integration_session_text, play_token, integration_session, show_progress="hidden")
         evaluate_result.click(evaluate_result_ui, train_result, [*nav_outputs, bench_engine, calib_engine, evaluate_note],
                               show_progress="hidden")
-        export_result.click(export_result_ui, [train_result, export_platform], [*nav_outputs, *export_form],
-                            show_progress="hidden")
+        export_result.click(export_result_ui, [train_result, export_platform, export_name],
+                            [*nav_outputs, *export_form], show_progress="hidden")
         # Names: from Train's result card or its finished engines; every picker's labels follow (ids unchanged).
         engine_pickers = [card_engine, play_run, bench_engine, calib_engine, export_engine, record_engine,
                           play_record_engine, files_engine]

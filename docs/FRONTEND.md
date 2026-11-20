@@ -308,7 +308,7 @@ reimplement), and where its buttons navigate.
   - Body not JSON → `"{status}: {first 500 chars of the body}"`.
   - A failed job → its `error` (or `The job failed.`).
   - Bad YAML parsed on the client → `"{what} is not valid YAML: {parser error}"`.
-- **`ui` decorator.** Every handler marked `@ui` catches the API error and re-raises it as a UI error with the same message: the error notification is shown, **none of the action's outputs change**, and chained follow-up steps that run only on success (e.g. "then show the session parameters") do not run. Client-side guards inside handlers raise the same kind of UI error with their own text (listed per action below as "error: …"). Handlers **not** marked `@ui` (`import_folder_ui`, `refresh_records_ui` as a whole, `integration_session_text`, `studio_status_ui`, `export_platforms_table`) either catch errors themselves (status line, platforms table: log and show less) or, if an API error escapes, Gradio shows a generic "Error" without the API's message (unclear: intended; a rebuild should show the message).
+- **`ui` decorator.** Every handler marked `@ui` catches the API error and re-raises it as a UI error with the same message: the error notification is shown, **none of the action's outputs change**, and chained follow-up steps that run only on success (e.g. "then show the session parameters") do not run. Client-side guards inside handlers raise the same kind of UI error with their own text (listed per action below as "error: …"). Handlers **not** marked `@ui` (`integration_session_text`, `studio_status_ui`, `export_platforms_table`) catch errors themselves (log, and show less). A rebuild should show the API's message wherever an error reaches the user.
 - `_recorded(path, key)` (record lists): any API error → empty list; a 404 is silent (no records yet), others are only logged.
 
 **Navigation.** —
@@ -391,6 +391,7 @@ Cross-view refreshes run on navigation (all after the tab switch):
 |---|---|---|
 | `ane-entry-draft` | the 🌍 World entry editor's unsaved draft | World → Entries |
 | `ane-train-result` | 🧠 Train's completed engine (restored on reload) | Train → Run |
+| `ane-play-session` | ▶ Play's game (its `session_id`; reopened on reload while the API has it) | Play → game |
 | `ane-undo-entry`, `ane-undo-action`, `ane-undo-mission` | each delete panel's Undo history (deletion tokens) | World |
 
 **Browser leave prompt.** On `beforeunload`, if the page contains any element matching `.draft-status[data-dirty="1"]` the browser's "Leave site?" prompt is shown. Two producers: the World entry draft indicator and ⚙ Advanced → Weights draft status. (Navigating between destinations inside the app does not ask for Weights; only World editors are guarded in-app.)
@@ -400,6 +401,8 @@ Cross-view refreshes run on navigation (all after the tab switch):
 ## 🌍 World
 
 The 🌍 World destination (`view: world`, the default destination) authors the world. It has seven sections, as tabs, in this order (ids → labels, hard-coded `WORLD_SECTIONS`): `entries` "📝 Entries", `missions` "🎯 Missions", `story-rules` "📜 Story rules", `map` "🗺 Map", `behaviour` "🏷 Behaviour by tags", `grow` "✨ Grow the world", `checks` "🔍 Checks". `entries` is open first. Four sections are **editors with a draft** (unsaved-change tracking): `entries` (editor key `entries`), `missions` (`missions`), `story-rules` (`rules`), `map` (`map`). The client keeps one shared map `drafts_dirty = {editor: [unsaved part ids]}` (e.g. `{"entries": ["fields","scheduling"], "map": []}`) and the id of the open section (`section_now`). Leaving a section, or leaving 🌍 World through the banner/menu, with unsaved parts asks first (Save / Discard / Stay) inside the editor being left; closing or reloading the browser tab with any unsaved draft triggers the browser's native "leave page?" dialog. This file documents the section switching/leave guard and everything in 📝 Entries; the other sections' own forms are documented elsewhere (they reuse the same guard).
+
+**Dropdowns of the world's names are fetched when opened** (`fresh_choices_ui`, on each dropdown's focus): the action editor's skill check, event, item and place/person/item pickers, Scheduling's "Lies at", More details' known places and items, 🗺 Map's Place, 📜 Story rules' Arrest location and Persistent variables' Player profile. Each asks `GET /v1/entities/{kind}?fields=names` (`/v1/stats`, `/v1/variables/profiles`) and keeps its current value among the choices, so a form that refers to an entry deleted meanwhile still sends it and the API says what is wrong.
 
 Global, not part of this view: the one-line **studio status** above all destinations (`studio_status_ui`): on app load `GET /v1/world/catalogue` → `"🌍 **World:** {len(locations)} places · {len(npcs)} people · {len(items)} items · {len(events)} events · {len(missions)} quests"`, `GET /v1/exports/engines` → `"🧠 **Trained AIs:** {len(engines)}"` (+ `" (train one in 🧠 Train)"` when 0), `GET /v1/records` → `"🗂 Recording on|off"` from `enabled`; parts joined with `" · "`, a failing request just drops its part. It is re-fetched after ✨ Grow adds entries (and after Play events), **not** after entry saves/deletes in 📝 Entries.
 
@@ -537,7 +540,7 @@ Cross-view refreshes into this view:
 
 | Trigger | Request | Body / params | On success | Errors & guards |
 |---|---|---|---|---|
-| "Save entry" (`save_entity_ui` via `save_part_ui("fields")`) | `PUT /v1/entities/{kind}/{path name}` where path name = loaded `entity`, or the typed name for a new entry; then `GET /v1/entities/{kind}?fields=names` | `Entity` JSON (below) | Response `Entity` (`name`); message `Saved **{name}**.`; reload Fields + `entry_yaml` (stale) or, on create/rename, every clean part under the new name (see 📝 Entries) | Client: empty name → "Name is required."; unparsable YAML → "`Enabled if` is not valid YAML: …" (same for `Stat bonus`, `Secret`). API 400 (e.g. "An entry named `X` already exists. Choose a unique name." on rename), 404, 422. Caution: for a new entry the PUT goes to the typed name, so a name that already exists silently updates that entry (no "already exists" check) |
+| "Save entry" (`save_entity_ui` via `save_part_ui("fields")`) | `PUT /v1/entities/{kind}/{path name}` where path name = loaded `entity`, or the typed name for a new entry; then `GET /v1/entities/{kind}?fields=names` | `Entity` JSON (below) | Response `Entity` (`name`); message `Saved **{name}**.`; reload Fields + `entry_yaml` (stale) or, on create/rename, every clean part under the new name (see 📝 Entries) | Client: empty name → "Name is required."; unparsable YAML → "`Enabled if` is not valid YAML: …" (same for `Stat bonus`, `Secret`). API 400 (e.g. "An entry named `X` already exists. Choose a unique name." on rename), 404, 422. New entry: the typed name is checked against `GET /v1/entities/{kind}?fields=names` first; a taken name → "An entry named `X` already exists. Choose a unique name, or pick it from the list to edit it." (the PUT itself would update that entry) |
 | Pick a "Behaviour" (`apply_behaviour_ui`) | none (choices from `GET /v1/behaviours`) | chosen tag | Tags := tags minus every tag offered by that behaviour (case-insensitive) + the chosen tag (if not "none"); then Fields part re-checked | Kept only after Save entry |
 | "Delete entry" (`ask_delete_entry_ui`) | `GET /v1/entities/{kind}?fields=names`, `GET /v1/entities/{kind}/{name}/actions`, `GET /v1/entities/{kind}/{name}/references` | loaded kind/entity | Question shown (text below); pending `{type:"entity", kind, name}` | New entry → "Choose an entry to delete (a new entry is not saved: there is nothing to delete)."; name not in names → "`{name}` is no longer in {kind}: choose it again from the list." |
 | Question "🗑 Delete" (`confirm_delete_entry_ui`) | `DELETE /v1/entities/{kind}/{name}` (pending's kind/name, even if the form moved on) | — | Response `{message, entities: [names], undo: {token, type, name, kind, entry, position, of}}`. If the deleted entry is the loaded one: load `entities[0]` (or a blank new entry) fully; else if same kind: Entry dropdown choices := `entities` (value kept). Status `Deleted the {word} **{name}** ({kind}).` (`word`: place / person / item / event). Question closed, pending cleared; push to Undo history `{undo, said: "🗑 Deleted the {word} **{name}** ({kind}, {ordinal(undo.position)} of {undo.of})."}` | API refusal (400 "At least one location must remain in the configuration.", 404): question stays with `⚠ **Not deleted:** {error}` and its Delete button hidden; nothing else changes |
@@ -654,14 +657,14 @@ Cross-view refreshes into this view:
 | "Lies at (none: where it fits best)" | dropdown | `["(none)", *Locations names]`; `policy.location` | "(none)" | Items |
 | "Save" | button | — | — | Visible for every kind |
 | Status | markdown | messages | — | |
-| Accordion "As YAML (advanced)" | yaml-editor "rules" + "Validate & save rules", "Reload from disk" | `GET .../policy/yaml` | collapsed | Draft part `policy_yaml` |
+| Accordion "As YAML (advanced)" | yaml-editor "rules" + "Validate & save rules", "Reload from disk" | `GET .../policy/yaml` | collapsed | Draft part `policy_yaml`. Shown, with the Save button, for Events and Items only (`policy_controls_ui` on the content type) |
 
 **Actions.**
 
 | Trigger | Request | Body / params | On success | Errors & guards |
 |---|---|---|---|---|
 | "Save" (`save_policy_form_ui` via `save_part_ui("scheduling")`) | `PUT /v1/entities/{kind}/{name}/policy` | Events: `{policy: {trigger, repeat, chance?, weight?, cooldown?, max_occurrences?}}` — `chance` (float) and `weight` (float, empty → 1.0) only when trigger is `random`; `cooldown`/`max_occurrences` (int) only when > 0. Items: `{policy: {unique, location?}}` — `location` only when unique and not "(none)" | Response `{policy}`; message `Saved when **{name}** happens.` (Events) / `Saved **{name}**'s uniqueness.` (Items); reload Scheduling + `policy_yaml` + `entry_yaml` unless unsaved | Client: not Events/Items or no name → "Pick an event or an item."; API 400 |
-| "Validate & save rules" (`save_entity_policy_ui` via `save_part_ui("policy_yaml")`) | `PUT /v1/entities/{kind}/{name}/policy/yaml` | `{yaml}` | Response `{yaml, message}`; status `message`; reload `policy_yaml` + Scheduling + `entry_yaml` unless unsaved | New entry → "Select an entry first."; for Locations/NPCs the route's `kind` only accepts `Events`/`Items` → 422 |
+| "Validate & save rules" (`save_entity_policy_ui` via `save_part_ui("policy_yaml")`) | `PUT /v1/entities/{kind}/{name}/policy/yaml` | `{yaml}` | Response `{yaml, message}`; status `message`; reload `policy_yaml` + Scheduling + `entry_yaml` unless unsaved | New entry → "Select an entry first."; Locations/NPCs (the route's `kind` accepts only `Events`/`Items`) → refused client-side: "Only events and items have scheduling rules; …" |
 | "Reload from disk" (`reload_part_ui("policy_yaml")`) | `GET /v1/entities/{kind}/{name}/policy/yaml` | — | Editor := `yaml`; baseline | — |
 
 **Client-side logic to reimplement.** Form defaults and the conditional body building above; draft parts `scheduling` (8 values in the order trigger, chance, weight, cooldown, at most, how often, unique, lies at) and `policy_yaml` (conflict pair: both unsaved → prompt Save refuses).
@@ -696,7 +699,7 @@ Cross-view refreshes into this view:
 |---|---|---|---|---|
 | "Save the details" (`save_details_ui` via `save_part_ui("details")`) | `PUT /v1/entities/{kind}/{name}/details` | NPCs: `{details: {known_locations, known_objects, article: (value or null), dialogue: [{text, enabled_if?}]}}` — a dialogue row is sent when its "Says" is non-empty; `enabled_if` only when the condition cell is non-empty (flow-YAML parsed, braces optional). Locations: `{details: {distant_descriptions, entered_descriptions, interact_prompts (non-empty trimmed lines), exit_locked, interaction_points}}` — each row → object of its non-empty trimmed cells (cells `"nan"` ignored), empty rows dropped | Response `{details, message}` (message ignored); status `Saved the details of **{name}**.`; reload More details + `entry_yaml` unless unsaved | Client: not NPCs/Locations or no name → "Pick a person or a place."; bad condition → "Said when: could not read …". API 400 "The details are invalid:\n- …" (unknown place/item, bad article, line without text, point without label or prompt, unknown linked place/person/item) |
 
-**Client-side logic to reimplement.** Table ↔ list conversions above; article mapping (`"none"` is sent as `"none"`, the API stores it as `""`). Note: dialogue lines whose stored `text` is a list of variants are shown joined with `" / "` and saved back as one string (variants collapse).
+**Client-side logic to reimplement.** Table ↔ list conversions above; article mapping (`"none"` is sent as `"none"`, the API stores it as `""`). Dialogue lines whose stored `text` is a list of variants are shown joined with `" / "`. On save (which first re-reads `GET .../details`), a row equal to a stored variants line is sent as that list; a row containing `" / "` whose stored line at the same position was a list (and the row count is unchanged) is split at `" / "` into a list; anything else is one string.
 
 **Navigation.** None.
 
@@ -797,10 +800,10 @@ Cross-view refreshes into this view:
 |---|---|---|---|---|
 | Pick a Mission `(form_pick_ui → mission_form_ui)` | `GET /v1/missions/{key}` | key = the picked one | Fills the form from `mission` (see mapping below). State becomes `{key, staged: bool(mission.stages), mission}`. The baseline of `mission` is reset | If the Mission form has unsaved changes: no request, the picker goes back to the current key, and the prompt asks "…Save them before opening <key>?". 404 → toast |
 | ➕ New mission `(form_pick_ui → new_mission_ui)` | none | — | Picker cleared. Form becomes Key `new_mission`, Title `A new quest`, Weight 1.0, Steps one row `["First step", "", "location: Market", ""]`. State `{key: null, staged: true, mission: {}}`. The baseline is reset to these values | Guarded like a pick, but the picker is not reverted. Prompt says "…before starting a new mission?" |
-| Save mission `(form_save_ui → save_mission_form_ui)` | `PUT /v1/missions/{target}`, where target = state.key if set, else the typed Key | `{mission, rename}`. `mission` is built as described below. `rename` = typed Key when state.key is set and differs from it, else `null` | Response `missions` (object) and `message`. Picker choices become `keys(missions)`, value = new key. State key = new key. Then `GET /v1/missions/{key}` reloads the form and resets its baseline. `GET /v1/documents/missions` reloads the YAML unless the YAML has unsaved changes. Status = `message` | Client: no row with a non-empty Goal → "A mission needs a goal: at least one step with a Goal.". A `k: v` part without `:` → "<what>: write `key: value` …". Unparsable YAML in a value → error. API 400 (bad key, key taken on rename, invalid mission) → toast; nothing changes. A new mission whose Key already exists overwrites that mission (no client or API check). An empty Key with no picked mission sends `PUT /v1/missions/` (unclear: probably 404/405/422) |
+| Save mission `(form_save_ui → save_mission_form_ui)` | `PUT /v1/missions/{target}`, where target = state.key if set, else the typed Key | `{mission, rename}`. `mission` is built as described below. `rename` = typed Key when state.key is set and differs from it, else `null` | Response `missions` (object) and `message`. Picker choices become `keys(missions)`, value = new key. State key = new key. Then `GET /v1/missions/{key}` reloads the form and resets its baseline. `GET /v1/documents/missions` reloads the YAML unless the YAML has unsaved changes. Status = `message` | Client: no row with a non-empty Goal → "A mission needs a goal: at least one step with a Goal.". A `k: v` part without `:` → "<what>: write `key: value` …". Unparsable YAML in a value → error. API 400 (bad key, key taken on rename, invalid mission) → toast; nothing changes. Client, before any request: empty Key → "Give the mission a key: …"; a Key (new mission or rename) that is already a mission (`GET /v1/missions`) → "A mission `k` exists already: …" (`PUT /v1/missions/{key}` itself adds or replaces) |
 | 🗑 Delete mission `(ask_delete_mission_ui)` | `GET /v1/missions` | — | Shows the question "### 🗑 Delete the mission **<title or key>** (`<key>`)?" followed by "<Nth> of <count>: its <n> step(s) / its goal, rewards and conditions. **Undo** brings it back, where it was, in this session." Pending = `{type: "mission", key, title}` | No state.key → "Pick a mission first.". Key not in `missions` → "The mission `<key>` is no longer there: pick it again from the list." |
 | Delete question › Cancel `(cancel_delete_ui)` | none | — | Hides the question; pending = null | — |
-| Delete question › 🗑 Delete `(confirm_delete_mission_ui)` | `DELETE /v1/missions/{key}` | key = pending.key (not the form's current key) | Response `missions`, `message`, `undo{token,type,name,kind,entry,position,of}`. Picker choices = `keys(missions)`, value cleared. Status = `message`. YAML reloaded with `GET /v1/documents/missions`. The question is hidden. `{undo, said: "🗑 Deleted the mission **<title>** (`<key>`)."}` is pushed onto the history and saved to localStorage. The Undo bar is shown | No pending → "Nothing to delete: press *Delete mission* first.". API error → the question stays open with "⚠ **Not deleted:** <detail>" and its Delete button is hidden. Note: the form is not cleared and state.key still holds the deleted key, so Save mission would recreate it |
+| Delete question › 🗑 Delete `(confirm_delete_mission_ui)` | `DELETE /v1/missions/{key}` | key = pending.key (not the form's current key) | Response `missions`, `message`, `undo{token,type,name,kind,entry,position,of}`. Picker choices = `keys(missions)`, value cleared. Status = `message`. YAML reloaded with `GET /v1/documents/missions`. The question is hidden. `{undo, said: "🗑 Deleted the mission **<title>** (`<key>`)."}` is pushed onto the history and saved to localStorage. The Undo bar is shown | No pending → "Nothing to delete: press *Delete mission* first.". API error → the question stays open with "⚠ **Not deleted:** <detail>" and its Delete button is hidden. When the deleted mission is the one in the form: without unsaved form changes the form is cleared (state `{key: null}`, baseline reset); with them, they stay and the state's key becomes `null`, so Save adds a new mission (message: "Your unsaved changes to it stay in the form, as a new mission."). The YAML is reloaded only when it has no unsaved changes |
 | ↶ Undo `(undo_delete_mission_ui)` | `POST /v1/deletions/{token}/restore` | token = newest history item's `undo.token` | Response `name` (key) and `message`. Pops the history (saved to localStorage). If the Mission form has no unsaved changes: `GET /v1/missions/{name}` loads it, the picker selects it, and the baseline is reset. Otherwise only the picker choices are refreshed (`GET /v1/missions`) and the message gets " Your unsaved mission changes were kept: pick it to edit.". The YAML is reloaded (`GET /v1/documents/missions`) unless it is dirty. Status = message | Empty history → "Nothing to undo.". 404 → item dropped, bar shows "⚠ **Not restored:** <detail>". 409/400 → item kept (try again), same note |
 | Validate & save missions `(form_save_ui → save_document)` | `PUT /v1/documents/missions` | `{yaml}` from the editor | Response `yaml` and `message`. Picker choices refreshed (`GET /v1/missions`; the value is kept). The YAML is reloaded (`GET /v1/documents/missions`) and its baseline reset. The Mission form is reloaded (`GET /v1/missions/{state.key}`) unless it is dirty. Status = message | 400 (invalid YAML / missions) → toast; nothing changes. If the YAML removed or renamed the mission open in a clean form, the reload's `GET /v1/missions/{key}` returns 404. The save has already happened, but the step fails with a toast and the view is not updated |
 | Reload from disk `(form_reload_ui)` | `GET /v1/documents/missions` | — | The YAML replaces the draft; its baseline is reset | — |
@@ -813,17 +816,17 @@ Cross-view refreshes into this view:
     - Otherwise, if the mission exists, there is one row `[mission.title, "", pairs(mission.goal), ""]`.
     - `pairs(obj)` = `"; ".join("k: v")`. A dict or list value is written as one-line YAML flow.
     - The rewards text is the pairs of each effect dict, joined by `"; "`.
-    - `weight` shows `mission.weight or 1.0`.
+    - `weight` shows `mission.weight`, or 1.0 when it is not set (0 shows as 0).
   - **Save.**
     - Start from a copy of `state.mission`, so fields the form does not show are kept.
     - Set `title` and `description` (trimmed).
-    - Set `weight`, but omit it when it equals 1.0. A typed `0` becomes 1.0 (`weight or 1.0`) and is omitted, so weight 0 cannot be saved from the form.
+    - Set `weight`, but omit it when it equals 1.0 (empty counts as 1.0). `0` is kept: a mission that is never drawn.
     - Set `enabled_if` = the text parsed as YAML, wrapped in `{…}` unless it starts with `{` or `[`. Omit it when empty.
     - Set `rewards` = the text split on `;`. Each `k: v` (v parsed as YAML) becomes `{k: v}`. Omit it when empty.
     - Rows with an empty Goal are dropped.
     - Each kept row becomes `{title: cell or "Step N", description, goal: parse(cell), rewards?}`. `rewards` is included only when non-empty.
     - If there is more than one row or `state.staged` is true: set `mission.stages` and delete `goal`.
-    - Otherwise: set `mission.goal` = the row's goal and delete `stages`. In this case the row's title, description and Rewards cell are silently dropped.
+    - Otherwise, when the one row holds nothing but its goal (no description, no Rewards, and a title that is empty, `Step 1` or the mission's title): set `mission.goal` = the row's goal and delete `stages`. A single row with anything more is saved as `stages`, so nothing in the table is dropped.
 - **Undo history.**
   - The history is a list of `{undo, said}`, newest last, saved to localStorage key `ane-undo-mission` after every delete or undo, and restored at load.
   - The bar text is the newest item's `said`, plus "  \n*N earlier deletion(s) can be undone after it.*" when N > 0, after any note from the last Undo.
@@ -951,7 +954,7 @@ Cross-view refreshes into this view:
 | Stored values | yaml-editor | `GET /v1/documents/stored_values?profile=` → `yaml` | — | — |
 | Save stored values | button (primary) | — | — | — |
 | Refresh | button | — | — | — |
-| Reset profile (new player) | button (danger) | — | — | No confirmation |
+| Reset profile (new player) | button (danger) | — | — | Asks first: a panel with the question, "Reset this profile" (danger) and "Cancel" |
 | Status (values) | status-line | — | — | — |
 
 **Actions.**
@@ -961,7 +964,7 @@ Cross-view refreshes into this view:
 | Pick or type a Player profile `(form_pick_ui)` | `GET /v1/documents/stored_values` | `profile` = the chosen value | Stored values replaced; context = profile; baseline reset | If Stored values are dirty: the picker reverts and the prompt asks "…before opening <profile>?". An invalid profile name → 400 toast |
 | Save stored values `(form_save_ui → save_document)` | `PUT /v1/documents/stored_values` | query `profile` = context (empty → omitted → the API's default profile); body `{yaml}` | Status = "Saved the stored values of profile `<p>`.". Then the GET reloads the editor and resets the baseline | 400: unknown keys (only `playthroughs` and `values` are allowed), invalid values, or playthroughs < 0 |
 | Refresh `(form_reload_ui)` | `GET /v1/documents/stored_values?profile=<context>` | — | Editor replaced; baseline reset | — |
-| Reset profile (new player) `(reset_stored_values_ui, then form_reload_ui)` | `POST /v1/variables/reset/yaml` | query `profile` = the dropdown's value | Response `yaml` and `message` ("Profile `<p>` starts over as a new player.") shown. Then `GET /v1/documents/stored_values?profile=<context>` resets the baseline | Irreversible; no confirmation; discards any unsaved Stored values without asking |
+| Reset profile (new player) `(reset_question_ui)`, then "Reset this profile" `(reset_stored_values_ui, then form_reload_ui)` | none; then `POST /v1/variables/reset/yaml` | query `profile` = the dropdown's value | The question: "### ⚠ Reset the profile **p**? It starts over as a new player: its stored values, playthroughs, goals achieved and session reports are lost, and **this cannot be undone**. Unsaved changes in *Stored values* are lost too." On confirm: response `yaml` and `message` ("Profile `<p>` starts over as a new player.") shown; then `GET /v1/documents/stored_values?profile=<context>` resets the baseline | Irreversible (the API removes the whole profile); Cancel closes the question |
 
 **Client-side logic to reimplement.** The draft model, parts `variables` and `values`. The profile dropdown is the editor's picker, and the current profile is the `rules` editor's context.
 
@@ -1026,7 +1029,7 @@ Cross-view refreshes into this view:
 | Trigger | Request | Body / params | On success | Errors & guards |
 |---|---|---|---|---|
 | Pick a Place `(form_pick_ui → map_place_ui)` | `GET /v1/map` | — | Borders and SVG for that place; context = place; baseline reset | If Borders are dirty: the picker reverts and the prompt asks "…before opening <place>?" |
-| Save the borders `(form_save_ui → save_borders_ui)` | `PUT /v1/map/{place}` | `{borders: [ticked names]}`; place = context | Response `routes`, `places` and `message`. The SVG is redrawn and Status = `message`. Then `GET /v1/map` reloads Borders and the SVG and resets the baseline. The YAML is reloaded (`GET /v1/documents/map`) unless dirty | No place → "Pick a place.". 400 (not a location / unknown borders) → toast |
+| Save the borders `(form_save_ui → save_borders_ui)` | `PUT /v1/map/{place}` | `{borders: [ticked names]}`; place = context | Response `routes`, `places` and `message`. The SVG is redrawn and Status = `message`. Then `GET /v1/map` reloads Borders and the SVG and resets the baseline. The YAML is reloaded (`GET /v1/documents/map`) unless dirty | No place → "Pick a place."; a place no longer in `GET /v1/map` `places` → "The place `X` is no longer in the world: pick a place from the list.". 400 (unknown borders) → toast. Whenever Borders reload, the Place list is refreshed and a place that is gone falls back to the first one (picker and context) |
 | Validate & save the map `(form_save_ui → save_document)` | `PUT /v1/documents/map` | `{yaml}` | Status = `message`. The YAML is reloaded (`GET /v1/documents/map`). Borders and the SVG are reloaded (`GET /v1/map`) unless Borders are dirty; in that case the SVG is not redrawn either | 400 → toast |
 | Reload from disk `(form_reload_ui)` | `GET /v1/documents/map` | — | YAML replaced; baseline reset | — |
 | Prompt buttons `(form_resolve_ui)` | — | — | Draft model. Conflict pair: `borders` + `map_yaml` | — |
@@ -1060,7 +1063,7 @@ Cross-view refreshes into this view:
   - For npcs the keys are `starts_conversation` and `appearances`; for locations they are `draws_in` and `visits`.
   - Each table row = `[tags.join(", "), str(rule[key1] ?? ""), str(rule[key2] ?? "")]`.
   - The default dropdowns = `str(default.starts_conversation ?? "never")`, `str(default.appearances ?? "always")`, `str(default.draws_in ?? "never")`, `str(default.visits ?? "always")`.
-- These tables have no draft guard and no indicator.
+- Each table (with its two defaults) is a draft of its own: an edit compares it with the table as loaded or saved, and an indicator says which have unsaved changes (`behaviour_status_markup`, a `.draft-status` element, so closing or reloading the page asks first). There is no in-app Save/Discard prompt for these tables.
 
 **Components.**
 | Component | Kind | Value / choices from | Default | Constraints & notes |
@@ -1079,7 +1082,7 @@ Cross-view refreshes into this view:
 **Actions.**
 | Trigger | Request | Body / params | On success | Errors & guards |
 |---|---|---|---|---|
-| Save the people's rules `(save_behaviour_table_ui("npcs"))` | `PUT /v1/behaviours/rules/npcs` | `{default: {starts_conversation, appearances}, rules: [...]}` (building rules below) | Status = `message`. Then the 📝 Entries behaviour dropdowns are recomputed (`GET /v1/behaviours`, see below). Then both tables and defaults are reloaded (`GET /v1/behaviours/rules`) | 400 (invalid rule) → toast; the follow-up refreshes do not run |
+| Save the people's rules `(save_behaviour_table_ui("npcs"))` | `PUT /v1/behaviours/rules/npcs` | `{default: {starts_conversation, appearances}, rules: [...]}` (building rules below) | Status = `message`. Then the 📝 Entries behaviour dropdowns are recomputed (`GET /v1/behaviours`, see below). Then only this table and its defaults are reloaded (`GET /v1/behaviours/rules`), as its new baseline; the other table keeps its edits | 400 (invalid rule) → toast; the follow-up refreshes do not run, the edits stay |
 | Save the places' rules `(save_behaviour_table_ui("locations"))` | `PUT /v1/behaviours/rules/locations` | `{default: {draws_in, visits}, rules}` | Same | Same |
 
 **Client-side logic to reimplement.**
@@ -1132,10 +1135,10 @@ Cross-view refreshes into this view:
 | Add the ticked ones to the world `(add_proposal_ui)` | `POST /v1/world/additions` | `{locations: {name: entry} for ticked "Place: name", characters: [entry for ticked "Person: entry.name"], objects: [entry for ticked "Item: entry.name"]}`, taken from the edited YAML | Status = `message` ("Added A, B, …."). The size table is refreshed (`GET /v1/world/size`). Then the 📝 Entries entry dropdown is refreshed (`GET /v1/entities/{current kind}?fields=names`, keeping the current entry). Then the studio status line is refreshed (`GET /v1/world/catalogue`, `GET /v1/exports/engines`, `GET /v1/records`). The proposal and ticks are not cleared | Client checks: invalid YAML → "The proposal is not valid YAML: …"; not a mapping → "The proposal must be a mapping with locations, characters and objects."; nothing matched → "Tick at least one entry to add.". 400 (already exists / world invalid) → toast; nothing written |
 
 **Client-side logic to reimplement.**
-- Ticks are matched against the edited YAML by label. If an entry is renamed in the YAML, its tick no longer matches and it is silently left out; the choices are not re-derived from the edited text.
+- The ticks follow the YAML (`sync_proposal_ui`, on every change of the proposal text, with the entries last offered kept client-side): an entry still there keeps its tick; an entry new to the text (added, or renamed) is offered ticked; YAML that does not parse leaves the ticks as they are. On *Add the ticked ones*, a tick whose entry is no longer in the YAML is refused: "Ticked but no longer in the proposal (renamed or removed in the YAML?): …".
 - The size table formula is given above.
 
-**Navigation.** None. Added entries appear in 📝 Entries through the refreshed dropdown. The 🗺 Map Place list and the Story rules Arrest location list are not refreshed.
+**Navigation.** None. Added entries appear in 📝 Entries through the refreshed dropdown; every World dropdown of names refreshes its choices when it is opened (see [🌍 World](#-world)).
 
 ### 🌍 World › 🔍 Checks
 <a id="checks"></a>`view: checks`
@@ -1366,7 +1369,7 @@ Job result = `SimulationResponse` fields used: `report` (markdown string), `run_
 
 ## ▶ Play
 
-Top tab `id="play"` (banner `#nav-play`, address `?section=play`). The play session id (`session_id`, "token") is kept in page memory only (not in browser storage): after a reload no game is open (the API session still exists; a rebuild may keep it and re-read it with `GET /v1/sessions/{session_id}`, which the studio itself never calls). The same token is what ⚙ Advanced → 🔌 Integration and 📦 Export ("This game's storyteller") act on.
+Top tab `id="play"` (banner `#nav-play`, address `?section=play`). The play session id (`session_id`, "token") is kept in page memory and in browser storage (localStorage key `ane-play-session`, written whenever it changes). On page load (`restore_game_ui`) a kept id is reopened with `GET /v1/sessions/{session_id}` (the game screen and the story are drawn, the New game panel folds); a `404` (the API restarted) clears the kept id, any other error keeps it for the next load. The same token is what ⚙ Advanced → 🔌 Integration and 📦 Export ("This game's storyteller") act on.
 
 ### ▶ Play › 🎮 New game
 <a id="play-setup"></a>`view: play-setup` (accordion "🎮 New game", open; folds after any successful game start)
@@ -1514,7 +1517,7 @@ Response of `/v1/stats/allocate`: `{mode, points: {stat:int}, values: {stat:int 
 | HUD | markdown | `_hud(state)` | hidden | visible once a game exists |
 | Scene card | markdown | `place_markdown(state)` | placeholder | |
 | Turn card ("What happened") | markdown | `turn_summary`, `last_turn` | hidden | visible when non-empty |
-| Choice buttons ×8 | button | `actions[i]` + check from `choices[]` | hidden | only the first 8 actions get a button (server offers ≤ `player_options.limit`, default 6) |
+| Choice buttons ×12 | button | `actions[i]` + check from `choices[]` | hidden | the server offers ≤ `player_options.limit` (default 6); beyond 12 the HUD says "⚠ N more choice(s) than this screen shows (12): lower `player_options.limit` …". A rebuild should render every item of `actions` |
 | "💾 Save game" | button (small) | — | | |
 | "End the game" | button (small, danger) | — | | no confirmation |
 | "Save game (JSON)" | file-download | `GET /v1/sessions/{session_id}/savegame` | hidden | shown after a save |
@@ -1562,7 +1565,7 @@ Response of `/v1/stats/allocate`: `{mode, points: {stat:int}, values: {stat:int 
 - "### Map": build adjacency from `map.paths` (both ways) and `map.one_way` (from → "to (one way)"); per `map.places[]`: "- " + "📍 " if name == `map.current` + "**{name}**" + " 🔒" if locked + " *(not visited)*" if not visited + " → {sorted neighbours joined ', ' or 'no known way on'}".
 - "### This session's cast": if any non-empty `cast.left_out[kind]`: "Not in this session (its goal does not need them): {kind}: a, b; …."
 - "### One-time actions": per `unique_actions[]`: "- {action} ({where}, turn {turn}): done | failed, still on offer (`kept`) | failed, used up".
-- "### Session report" (when `session_report`): "**{goal.title or 'Free play'}: {outcome}** ({end_kind}, {turns} turns) · health {player.health}/{player.max_health} · coins {player.coins} · inventory: {… or 'empty'} · stats: {k v, …} · goals achieved in this save game: {progression.goals_achieved or 'none'}" + " · sent to the UNP" if `delivery.sent`.
+- "### Session report" (when `session_report`): "**{goal.title or 'Free play'}: {outcome}** ({end_kind}, {turns} turns) · health {player.health}/{player.max_health} · coins {player.coins} · inventory: {… or 'empty'} · stats: {k v, …} · goals achieved in this save game: {progression.goals_achieved or 'none'}" + the delivery, read from the save game (`GET /v1/progression?profile=<report.profile>`, the session whose `report_id` matches; the play state never carries it): " · sent to the UNP" when `delivery.sent`, " · not sent to the UNP (<error or HTTP status>)" when it failed, nothing when there is no delivery (no UNP configured, or still being sent).
 
 **Navigation.** None.
 
@@ -2355,50 +2358,36 @@ Related actions living in ▶ Play (documented there; listed because the Integra
 
 # Known gaps in today's studio
 
-These came up while writing this guide, from reading `app.py` against `api.py`. Most are not yet
-reproduced in a running studio. A new frontend should **not** copy them. The API already supports
-the right behaviour in each case.
+These came up while writing this guide, from reading `app.py` against `api.py`. A new frontend should
+**not** copy them; the API already supports the right behaviour.
 
-**Stale choices.** The studio fetches several lists once, when its server starts, and never again.
-A new frontend should fetch them when the view opens, and again after anything that changes them:
+**Stale choices.** Some lists are still fetched once, when the studio's server starts. Fetch them
+when the view opens, and again after anything that changes them:
 
-- the place, person, item, event and stat dropdowns of the action editor, and "Lies at"
-- Map › Place, Story rules › Arrest location, and Persistent variables › Player profile
 - the Simulation form, the hyperparameters YAML, the app parameters and the first Engine logic section
 - the export platforms, the record lists, and the storyteller and engine pickers in Evaluate and Export
 - the engine card after a judge benchmark or a calibration adds an evaluation
 
-**Creating can overwrite.** Saving an entry or a mission sends `PUT` to the new name or key, and
-the API answers by updating whatever already has that name. Before creating, check the name
-against `GET /v1/entities/{kind}?fields=names` or against `GET /v1/missions`.
+(The World tab's dropdowns of names now refresh when opened: see [🌍 World](#-world).)
 
-**Controls that cannot work.**
-- Scheduling's YAML save for Locations and NPCs: `PUT /v1/entities/{kind}/{name}/policy/yaml`
-  accepts only `Events` and `Items`. Show the Scheduling editor only for those two kinds.
-- Mission weight `0` is sent as `1.0`.
-- A cleared number in Story rules is sent as `null`, which `PUT /v1/rules` takes as "keep the
-  stored value".
+**Cross-view refreshes missing in ⚙ Advanced.** Uploading or resetting the configuration, or saving
+settings, Weights or Engine logic, does not reload the hyperparameters YAML; saving every
+hyperparameter does not reload Weights or Engine logic.
 
-**Lost data.**
-- Dialogue lines with several variants are joined with " / " and saved back as one string.
-- A one-goal mission's step title, description and rewards are dropped on save.
-- After a mission is deleted, the form still holds it, so Save brings it back.
-- Grow matches the proposals the user ticked by name. An entry renamed in the YAML is left out.
+**Smaller items.** Import progress is drawn at a fixed 50% (the job reports `{generation: 0, total: 1,
+label}`); the Integration tab's game note is not refreshed when a game ends; the pairwise benchmark's
+summary always calls side A "current settings", even with an engine chosen.
 
-**Missing guards.**
-- Reset profile (new player) can't be undone, yet it asks for no confirmation.
-- The behaviour tables have no unsaved-changes guard.
-- Mission delete and undo reload the missions YAML over unsaved edits.
-
-**Messages lost.** A few handlers (`import_folder_ui`, `refresh_records_ui`) are not wrapped in
-`@ui`, so an API error there appears as a generic error. The play screen's "sent to the UNP" line
-reads `session_report.delivery`, but the play state never carries `delivery`. Use
-`GET /v1/progression` for it.
-
-**Sessions.** The studio keeps the play `session_id` only in page memory, so a reload loses the
-game although the API still holds it. Keep the id in the URL or in storage, and restore it with
-`GET /v1/sessions/{session_id}`. The studio shows at most 8 choice buttons. An event offers all
-its choices, which can be more than 8, so render every item of `actions`.
+**Fixed in the studio** (the views above describe the new behaviour): a new entry or mission could
+replace one with the same name or key; an empty mission key; mission weight 0 saved as 1; a one-goal
+mission's step text and rewards dropped; a deleted mission recreated by Save; mission delete reloading
+the missions YAML over unsaved edits; Scheduling's Save and YAML editor offered for places and people;
+dialogue variants collapsed into one string; a cleared Story rules number kept silently; Grow dropping
+entries renamed in the YAML; Map saving to a place that is gone; the behaviour tables' unsaved edits
+lost (one table's save reloaded both) and unguarded; Reset profile without a confirmation; at most 8
+choice buttons; the game lost on reload; "sent to the UNP" never shown; two handlers that lost the
+API's error message (`import_folder_ui`, `refresh_records_ui`). The World dropdowns of names went stale
+too.
 
 **Unused endpoints.** The studio saves an action's repetition inside the action's own `PUT`, so
 `GET|PUT /v1/entities/{kind}/{name}/actions/{index}/repetition` remain only in unused helpers.

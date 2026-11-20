@@ -7,6 +7,52 @@ that introduces them.
 
 ## [Unreleased]
 
+### 📦 Export in five steps
+
+#### Changed
+- 📦 Export is laid out as the steps of an export: choose what to export, where it runs and the options,
+  then export, download and read how to use it on that platform (Python, Unity, or the standalone
+  program, with the macOS and Windows notes). Multi-run exports and the Python-only sources stay.
+- Systems without a runtime here are marked *not available here*, with the API's reason
+  (`GET /v1/exports/platforms`). Export is enabled only for a valid combination; otherwise step 4 says
+  why and how to resolve it. An invalid export is also refused before the API is asked.
+- *Export this result* keeps its engine chosen: only the user's own choice of source or platform lays
+  out the form again.
+
+### Studio: edits that were lost, overwritten or could not work
+
+#### Fixed
+- 🎯 Missions:
+  - A new or renamed mission whose key another mission already has is refused. It used to replace that
+    mission. An empty key is refused too.
+  - Weight 0 is kept; it used to be saved as 1.
+  - A single step with its own text or rewards stays a step; these used to be dropped.
+  - After the mission in the form is deleted, Save no longer brings it back.
+  - Deleting a mission no longer reloads the missions YAML over unsaved edits.
+  - A YAML save that removes or renames the open mission no longer reports an error.
+- 📝 Entries:
+  - A new entry named like an existing one is refused; it used to update that entry.
+  - Scheduling's Save and YAML editor are shown for events and items only. For places and people
+    the API refuses scheduling rules.
+  - Dialogue lines with several variants stay variants; they used to be saved as one string.
+  - Dropdowns of the world's names (the action editor's pickers, Lies at, known places and items,
+    the map's places, the arrest location, the player profile) fetch their choices when opened.
+    Entries made, renamed or deleted since the page loaded now appear.
+- 📜 Story rules:
+  - A cleared number is refused with why; it used to keep its old value silently.
+  - Reset profile (new player) asks first, because it cannot be undone.
+- 🗺 Map: a place deleted meanwhile is no longer saved to, and the place list follows the world.
+- 🏷 Behaviour by tags:
+  - Saving one table reloads only that table; it used to reload both, losing the other's edits.
+  - A failed save keeps the edits.
+  - An indicator shows unsaved changes, and closing the page with them asks first.
+- ✨ Grow: the ticks follow the proposal's YAML, so an entry renamed there is no longer left out.
+- ▶ Play:
+  - The game survives a page reload (`ane-play-session`, while the API still has it).
+  - Up to 12 choices get buttons (it was 8), and more are said in the status bar, not hidden.
+  - "Sent to the UNP" is read from the save game, where the delivery is noted.
+- The records import note and the records refresh show the API's error message.
+
 ### Engine names and result cards; the weights' shipped values, leave question and trait scaling
 
 #### Added

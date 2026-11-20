@@ -1207,7 +1207,8 @@ class TrainResultTests(_Sandbox):
 
         # 📦 Export this result: the one finished run chosen is this engine; the export is made from it.
         opened = app.export_result_ui(done, "python")
-        source, generation, engines, note, export_button = opened[-5:]
+        form_at = len(app.DESTINATIONS) + 3
+        source, generation, engines, note, export_button = opened[form_at:form_at + 5]
         self.assertEqual(_prop(opened[0], "selected"), "export")
         self.assertEqual((_prop(source, "value"), _prop(engines, "value")), (app.FINISHED_RUNS, [engine_id]))
         self.assertTrue(_prop(export_button, "interactive"))
@@ -1216,7 +1217,11 @@ class TrainResultTests(_Sandbox):
         self.assertEqual(len(files), 1)
         self.assertIn(f"engine `{engine_id[:8]}`", status)
         self.assertNotIn(newest[:8], status)
-        self.assertEqual(_prop(app.export_result_ui(done, "linux-x64")[-5], "visible"), False)  # ANE AI: runs only
+        # A system without a runtime here: the engine is still the one chosen; Export waits, saying why.
+        opened = app.export_result_ui(done, "linux-x64")
+        self.assertEqual(_prop(opened[form_at + 2], "value"), [engine_id])
+        self.assertFalse(_prop(opened[form_at + 4], "interactive"))
+        self.assertIn("not available here", opened[-1])
 
         # Without a completed engine, or with one no longer offered, nothing is chosen in its place.
         for action in (lambda d: app.play_result_ui(d, "result-test", "", "story default"), app.evaluate_result_ui,
@@ -1592,7 +1597,9 @@ class EntryDraftTests(_Sandbox):
         self.assertEqual(listeners(entity, "change"), [])
         self.assertEqual([fn.fn.__name__ for fn in listeners(entity, "input")], ["entry_choice_ui"])
         self.assertEqual([fn.fn.__name__ for fn in listeners(kind, "input")], ["entry_choice_ui"])
-        self.assertTrue(all(fn.fn.__name__ == "behaviour_fields_ui" for fn in listeners(kind, "change")))
+        # What follows the content type only shows or hides fields (nothing loads: the draft stays).
+        self.assertTrue(all(fn.fn.__name__ in ("behaviour_fields_ui", "policy_controls_ui")
+                            for fn in listeners(kind, "change")))
         prompt = [b.value for b in self._inside(by["draft-prompt"], gr.Button)]
         self.assertEqual(sorted(prompt), sorted(["💾 Save", "Discard", "Stay"]))
         self.assertIn("draft-status", by)
@@ -1818,9 +1825,11 @@ class DeletionUndoTests(_Sandbox):
         def stored():  # missions.yaml (the sandbox does not reload the active configuration)
             return list(yaml.safe_load((self.dir / "missions.yaml").read_text())["world_definition"]["missions"])
 
-        out = app.confirm_delete_mission_ui(pending)
+        out = app.confirm_delete_mission_ui(pending, None, state, {}, {})
         self.assertNotIn("shield_bearer", stored())
-        self.assertIn("Deleted the mission **Find a shield** (`shield_bearer`)", out[-1])
+        self.assertIn("Deleted the mission **Find a shield** (`shield_bearer`)", out[9])
+        # The form no longer stands for the deleted mission: its Save cannot bring it back.
+        self.assertIsNone(out[10 + app.MISSION_FORM_SIZE]["key"])
         out = app.undo_delete_mission_ui(out[7])
         self.assertEqual((_prop(out[0], "value"), out[1]), ("shield_bearer", "shield_bearer"))
         self.assertEqual(stored(), missions)
@@ -2270,7 +2279,7 @@ class EngineNamesTests(_Sandbox):
         self.assertIn(f"engine `{engine_id}` · run `{run_id}`", app.completed_view_ui(done)[0])
         played = app.play_result_ui(done, "player", "", "balanced")
         self.assertIn("Harbor tales v1", played[-1])
-        self.assertIn("Harbor tales v1", _prop(app.export_result_ui(done, "python")[-2], "value"))
+        self.assertIn("Harbor tales v1", _prop(app.export_result_ui(done, "python")[len(app.DESTINATIONS) + 6], "value"))
         # The studio's rename refreshes every picker's labels (values unchanged).
         message, card_text, box, result_card, *pickers = app.rename_engine_ui(engine_id, "Second name", done)
         self.assertIn("its id stays", message)
