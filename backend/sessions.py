@@ -278,17 +278,32 @@ def failure_lint():
     return lint(world)
 
 
-def playable_missions(profile=None):
-    """The missions of the current world as a player may choose them: [{key, title,
-    description, stages, available}] where ``available`` says whether the mission is
-    open to this profile now (its enabled_if, read with the profile's stored variables)."""
+class ConfigView:
+    """A configuration snapshot (a mapping, e.g. an engine's saved world and tuning) read the way the
+    active configuration is (dotted ``get``), without making it active: nothing global changes."""
+
+    def __init__(self, data):
+        self._config = data or {}
+
+    def get(self, key, default=None):
+        return type(config).get(self, key, default)
+
+
+def playable_missions(profile=None, cfg=None):
+    """The missions of a world as a player may choose them: [{key, title, description, stages,
+    available, achieved}] where ``available`` says whether the mission is open to this profile now
+    (its enabled_if, read with the profile's stored variables of that world's variable definitions;
+    each goal once per save game when that world's progression says so). ``cfg``: the world (and
+    tuning) to read, e.g. an engine's saved configuration (read only, never made active); None: the
+    active configuration."""
+    view = ConfigView(cfg) if cfg is not None else config
     profile = _profile(profile)
-    specs = persistent.definitions()
+    specs = persistent.definitions(view)
     store = VariableStore()
     values = store.load(profile, specs)
-    achieved = set(store.completed_goals(profile)) if (config.get("progression") or {}).get("goals_once", True) else set()
+    achieved = set(store.completed_goals(profile)) if (view.get("progression") or {}).get("goals_once", True) else set()
     missions = []
-    for key, entry in (config.get("world_definition.missions") or {}).items():
+    for key, entry in (view.get("world_definition.missions") or {}).items():
         entry = entry or {}
         condition = entry.get("enabled_if")
         try:

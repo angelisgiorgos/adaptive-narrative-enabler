@@ -954,11 +954,22 @@ def get_missions():
 
 
 @api.get("/v1/missions/playable", tags=["Evolution and play"])
-def get_playable_missions(profile: str | None = None):
+def get_playable_missions(profile: str | None = None, engine_id: str | None = None):
     """The missions a player may choose when starting a game (``mission`` in the play requests):
-    [{key, title, description, stages, available}], ``available`` for this profile now."""
+    [{key, title, description, stages, available, achieved}], ``available`` for this profile now.
+    ``engine_id`` (a finished run or recorded engine; ``latest``: the newest): the missions of the
+    world that engine was trained on, read from its saved configuration (the active configuration is
+    not changed); without it, the active world's. ``world`` says which world was read: {source,
+    engine_id, digest, id, summary, current}. 404 for an unknown engine."""
     try:
-        return {"missions": sessions.playable_missions(profile)}
+        if engine_id:
+            engine_id, cfg = export.engine_world_config(engine_id)
+        else:
+            cfg = config.as_dict()
+        return {"missions": sessions.playable_missions(profile, cfg if engine_id else None),
+                "engine_id": engine_id or None, "world": export.world_identity(cfg, engine_id or None)}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         _fail(exc)
 

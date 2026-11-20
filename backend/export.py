@@ -124,6 +124,40 @@ def _engine_row(engine_id):
         return None
 
 
+def engine_world_config(engine_id):
+    """The world and tuning an engine was trained on (its saved configuration), read only: from its
+    model file (recorded, or kept with the saves when recording is off), or, for a recorded
+    generation's champion, its run's recorded world. ``latest``: the newest complete engine. Returns
+    (engine id, configuration); LookupError for an unknown engine."""
+    if engine_id in (None, "", "latest"):
+        newest = complete_engines(limit=1)
+        if not newest:
+            raise LookupError("No finished run yet: train the AI first.")
+        engine_id = newest[0]["engine_id"]
+    kept = _kept_engine(engine_id)
+    row = _engine_row(engine_id)
+    path = kept["model_path"] if kept else None
+    if path is None and row and row.get("model_path") and records.model_readable(row["model_path"]):
+        path = row["model_path"]
+    if path:
+        return engine_id, engine_meta.model_config(path)
+    if row and row.get("world_id"):
+        return engine_id, dict(records.get_world(row["world_id"])["config"])
+    raise LookupError(f"Unknown engine `{engine_id}`: GET /v1/exports/engines lists the finished runs.")
+
+
+def world_identity(cfg, engine_id=None):
+    """What identifies a world: {source (engine | active), engine_id, digest (its world alone, without
+    the tuning), id (world and tuning, as an engine's manifest has it), summary, current (the active
+    configuration's world is the same)}."""
+    from core_engine.model import config_id, world_summary
+
+    digest = engine_meta.world_digest(cfg)
+    return {"source": "engine" if engine_id else "active", "engine_id": engine_id, "digest": digest,
+            "id": config_id(cfg), "summary": world_summary(cfg),
+            "current": digest == engine_meta.world_digest(config.as_dict())}
+
+
 def known_engine(engine_id) -> bool:
     """Whether an engine is a complete engine here or a recorded one (a generation's champion too)."""
     return _kept_engine(engine_id) is not None or _engine_row(engine_id) is not None

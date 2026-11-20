@@ -7,6 +7,16 @@ that introduces them.
 
 ## [Unreleased]
 
+### ▶ Play: quests from the chosen engine's own world
+
+#### Changed
+- ▶ Play's quest choices depend on the chosen trained AI and the player profile. They are read from
+  that engine's saved world, without making it active, with the profile's save game, and refreshed
+  when either changes. A quest chosen before that no longer fits is cleared, saying why. A note
+  beside the pickers names the engine and its world.
+- `GET /v1/missions/playable` takes an optional `engine_id` and answers `engine_id` and `world`
+  (its identity); the existing fields are unchanged.
+
 ### 📦 Export in five steps
 
 #### Changed

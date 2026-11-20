@@ -224,6 +224,24 @@ def _model_facts(path, modified, size):
     return manifest, settings, world
 
 
+@lru_cache(maxsize=16)
+def _model_config(path, modified, size):
+    import yaml
+
+    with zipfile.ZipFile(path) as archive:
+        data = yaml.safe_load(archive.read("config.yaml")) or {}
+    return {key: value for key, value in data.items() if key != "generated_run"}
+
+
+def model_config(path) -> dict:
+    """The world and tuning saved in an engine's model file (its config.yaml), read only: a copy, so
+    the caller cannot change the cached one, and nothing is made active."""
+    import copy
+
+    stat = Path(path).stat()
+    return copy.deepcopy(_model_config(str(path), stat.st_mtime_ns, stat.st_size))
+
+
 def world_digest(cfg) -> str:
     """A digest of a configuration's world (places, people, items, events, missions, ...), without
     the tuning: two configurations with this digest have the same world."""

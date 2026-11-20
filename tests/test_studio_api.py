@@ -5,6 +5,7 @@ try:  # recording goes to a temporary folder, not the real records database
 except ImportError:  # run as tests.<module>
     from tests import records_sandbox  # noqa: F401
 import ast
+import copy
 import json
 import os
 import re
@@ -2369,6 +2370,138 @@ class EngineNamesTests(_Sandbox):
         self.assertEqual(stored["engines"]["old-engine"], {"name": "From before"})
         path.write_text("not json", encoding="utf-8")                  # unreadable: shown unnamed, no failure
         self.assertEqual(engine_meta.names(), {})
+
+
+class EngineQuestsTests(_Sandbox):
+    """▶ Play's quests follow the chosen engine and the profile: read from that engine's saved world (not
+    the active configuration, which is not changed), with the profile's save game; a quest chosen before
+    that is no longer offered is cleared, saying why. Two engines trained on worlds with different
+    missions, and an active configuration different from both."""
+
+    # Each world has the shared missions and one of its own (a copy of *Find a shield* under its own key).
+    A, B, C = "harbor_errand", "vault_errand", "palace_errand"
+
+    def _world(self, own):
+        world = copy.deepcopy(self.base)
+        missions = world["world_definition"]["missions"]
+        missions[own] = {**copy.deepcopy(missions["shield_bearer"]), "title": own.replace("_", " ").title()}
+        world["evolution"]["full_length_stories"] = False
+        return world
+
+    def _keys(self, own):
+        return [*self.base["world_definition"]["missions"], own]
+
+    def _use(self, world):
+        store.config.use_override(world)
+
+    def setUp(self):
+        super().setUp()
+        from backend import export
+
+        for patcher in (patch.dict(os.environ, {"ANE_RECORDS": "off", "ANE_SAVE_DIR": str(self.dir / "quests")}),
+                        patch.dict(export.ENGINES, {}, clear=True), patch.dict(export.RUNS, {}, clear=True)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.addCleanup(lambda: (setattr(store.config, "_override", None), type(store.config).reload(store.config)))
+        self.base = store.config.as_dict()
+        self.engines = {}
+        for name, own in (("A", self.A), ("B", self.B)):
+            self._use(self._world(own))
+            trained = self.client.post("/v1/simulations", json={"candidate_count": 1, "generations": 1,
+                                                                 "simulation_steps": 2, "deterministic": False})
+            self.assertEqual(trained.status_code, 200, trained.text)
+            self.engines[name] = trained.json()["engine_id"]
+        self.current = self._world(self.C)  # the active configuration: neither engine's world
+        self._use(self.current)
+
+    def _playable(self, **params):
+        answer = self.client.get("/v1/missions/playable", params=params)
+        self.assertEqual(answer.status_code, 200, answer.text)
+        return answer.json()
+
+    def test_each_engine_s_saved_world_gives_its_own_quests(self):
+        from backend import engine_meta
+
+        before = store.config.as_dict()
+        for name, own in (("A", self.A), ("B", self.B)):
+            with self.subTest(engine=name):
+                data = self._playable(engine_id=self.engines[name], profile="player")
+                self.assertEqual([m["key"] for m in data["missions"]], self._keys(own))   # its own, not C's
+                self.assertEqual((data["engine_id"], data["world"]["source"]), (self.engines[name], "engine"))
+                self.assertEqual(data["world"]["digest"], engine_meta.world_digest(self._world(own)))
+                self.assertFalse(data["world"]["current"])             # not the active world
+                self.assertEqual(data["world"]["summary"]["missions"], len(self._keys(own)))
+        active = self._playable(profile="player")
+        self.assertEqual([m["key"] for m in active["missions"]], self._keys(self.C))
+        self.assertEqual((active["engine_id"], active["world"]["source"], active["world"]["current"]),
+                         (None, "active", True))
+        self.assertEqual(self._playable(engine_id="latest")["engine_id"], self.engines["B"])
+        self.assertEqual(store.config.as_dict(), before)               # nothing was made active
+        self.assertEqual(self.client.get("/v1/missions/playable", params={"engine_id": "0" * 32}).status_code, 404)
+        # The profile's save game: a goal achieved there is not offered again in that engine's world.
+        from core_engine.variables import VariableStore
+
+        VariableStore().complete_goal("dora", self.A)
+        quests = {m["key"]: m for m in self._playable(engine_id=self.engines["A"], profile="dora")["missions"]}
+        self.assertEqual((quests[self.A]["available"], quests[self.A]["achieved"]), (False, True))
+        self.assertTrue(quests["shield_bearer"]["available"])
+        self.assertTrue({m["key"]: m for m in self._playable(engine_id=self.engines["A"], profile="player")[
+            "missions"]}[self.A]["available"])                         # another profile: still open
+
+    def test_the_picker_follows_engine_and_profile_and_clears_what_no_longer_fits(self):
+        import app
+        from core_engine.variables import VariableStore
+
+        before = store.config.as_dict()
+        offered = lambda picker: [v for _, v in _prop(picker, "choices")]  # noqa: E731
+        picker, overview, note = app.play_quests_ui(self.engines["A"], "player", "")
+        self.assertIn(self.A, offered(picker))
+        self.assertNotIn(self.B, offered(picker))
+        self.assertNotIn(self.C, offered(picker))
+        self.assertIn("Quests from the saved world of", note)
+        self.assertIn(f"engine `{self.engines['A'][:8]}`", note)
+        self.assertIn("not the active world", note)
+        # Another engine: the quest of A's world is not in B's; cleared, saying why.
+        picker, overview, note = app.play_quests_ui(self.engines["B"], "player", self.A)
+        self.assertIn(self.B, offered(picker))
+        self.assertNotIn(self.A, offered(picker))
+        self.assertEqual(_prop(picker, "value"), "")
+        self.assertIn(f"**{self.A}**, is not in this engine's world: it was cleared", note)
+        # A quest still offered stays chosen.
+        picker, _, note = app.play_quests_ui(self.engines["B"], "player", self.B)
+        self.assertEqual(_prop(picker, "value"), self.B)
+        self.assertNotIn("cleared", note)
+        # Another profile, whose save game has achieved it: cleared, saying so.
+        VariableStore().complete_goal("dora", self.B)
+        picker, _, note = app.play_quests_ui(self.engines["B"], "dora", self.B)
+        self.assertEqual(_prop(picker, "value"), "")
+        self.assertIn("already achieved in profile `dora`'s save game", note)
+        # No engine: the active world's quests, said so.
+        picker, _, note = app.play_quests_ui(None, "player", "")
+        self.assertIn(self.C, offered(picker))
+        self.assertNotIn(self.A, offered(picker))
+        self.assertIn("Quests from the active world", note)
+        self.assertEqual(store.config.as_dict(), before)
+        # ▶ Play this result with a quest of another world: it is not passed on; the story draws one.
+        done = {"engine_id": self.engines["A"], "run_id": None, "kind": "run"}
+        opened = app.play_result_ui(done, "player", self.B, "story default")
+        self.assertIn("is not offered in this engine's world", opened[-1])
+        # Wired: the engine, the profile and the page's load each refresh the quests.
+        demo = app.build_app()
+        by = {b.elem_id: b for b in demo.blocks.values() if getattr(b, "elem_id", None)}
+        engine_picker = next(b for b in demo.blocks.values() if getattr(b, "label", None) == "Trained AI")
+        def in_play(block):
+            node = getattr(block, "parent", None)
+            while node is not None and node is not by["dest-play"]:
+                node = getattr(node, "parent", None)
+            return node is not None
+
+        profile_picker = next(b for b in demo.blocks.values() if getattr(b, "label", None) == "Player profile"
+                              and in_play(b))
+        for trigger in (engine_picker, profile_picker):
+            names = [fn.fn.__name__ for fn in demo.fns.values() if (trigger._id, "change") in fn.targets]
+            self.assertIn("play_quests_ui", names)
+        self.assertIn("play-quest-world", by)
 
 
 class WeightsFollowUpTests(_Sandbox):
