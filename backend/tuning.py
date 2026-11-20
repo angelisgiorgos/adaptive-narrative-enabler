@@ -23,12 +23,17 @@ import yaml
 
 
 METADATA_PATH = Path(__file__).with_name("tuning_parameters.yaml")
-FIELDS = ("label", "explanation", "unit", "type", "minimum", "maximum", "default", "source")
+FIELDS = ("label", "explanation", "unit", "type", "minimum", "maximum", "default", "source", "requires")
+# Parameters the engine no longer has (an older config folder may still hold them: they have no effect
+# and are not offered). `*`: any one path segment.
+RETIRED = ("outcome_scoring.*", "simulation.mutation_rate", "fitness.setup_payoff.early_setup_bonus",
+           "transition_objective.character_goal_weight", "transition_objective.known_location_bonus",
+           "spawn_selection.character_alignment_weight")
 TYPES = ("integer", "float")
 # The sections of hyperparameters.yaml, as the Weights tab titles them (others: from their name).
 SECTION_TITLES = {
     "skill_check_resolution": "Skill checks", "outcome_resolution": "Outcome chances",
-    "outcome_scoring": "Outcome choice (storyteller)", "outcome_objective": "Outcome objective (storyteller)",
+    "outcome_objective": "Outcome objective (storyteller)",
     "transition_objective": "Travel choice (storyteller)", "action_selection": "Action choice (storyteller)",
     "spawn_selection": "New places (storyteller)", "unexpected_events": "Unexpected events",
     "power_model": "Player power", "game_state": "Game state", "story_rules": "Story rules", "scene": "Scenes",
@@ -63,6 +68,11 @@ def _matches(pattern: str, path: str) -> bool:
     return len(wanted) == len(parts) and all(w == "*" or w == p for w, p in zip(wanted, parts))
 
 
+def retired(path: str) -> bool:
+    """A parameter the engine no longer has (kept by an older config folder)."""
+    return any(_matches(pattern, path) for pattern in RETIRED)
+
+
 def find(path: str) -> dict | None:
     """The metadata of ``path``: its own, else the first pattern that matches it, else None."""
     known = metadata()
@@ -87,7 +97,8 @@ def written_type(value) -> str:
 
 def describe(path: str, value) -> dict:
     """How a parameter is presented: {path, value, section, label, explanation, unit, type, minimum,
-    maximum, default, source, described}. Without metadata (``described`` false): a label made from its
+    maximum, default, source, described, requires, inactive} (``requires``: the true/false setting it
+    needs; ``inactive``: why it has no effect now, when that setting is off). Without metadata (``described`` false): a label made from its
     name (with its parent's when that says more), the type it is written with, nothing invented."""
     meta = find(path)
     if meta is None:
@@ -95,11 +106,20 @@ def describe(path: str, value) -> dict:
         label = _readable(parts[-1]) if len(parts) <= 2 else f"{_readable(parts[-1])} ({parts[-2].replace('_', ' ')})"
         return {"path": path, "value": value, "section": section_title(path), "label": label, "explanation": None,
                 "unit": None, "type": written_type(value), "minimum": None, "maximum": None, "default": None,
-                "source": [], "described": False}
+                "source": [], "described": False, "requires": None, "inactive": None}
+    requires = meta.get("requires")
     return {"path": path, "value": value, "section": section_title(path), "label": meta["label"],
             "explanation": meta.get("explanation"), "unit": meta.get("unit"), "type": meta["type"],
             "minimum": meta.get("minimum"), "maximum": meta.get("maximum"), "default": meta.get("default"),
-            "source": list(meta.get("source") or []), "described": True}
+            "source": list(meta.get("source") or []), "described": True, "requires": requires,
+            "inactive": (f"inactive: `{requires}` is off" if requires and not _switch_on(requires) else None)}
+
+
+def _switch_on(path: str) -> bool:
+    """Whether the true/false setting a parameter needs is on, in the active configuration."""
+    from utils.config_loader import config
+
+    return bool(config.get(path, False))
 
 
 def problems(path: str, value, stored) -> list[str]:

@@ -5,9 +5,11 @@ import collections
 import copy
 import hashlib
 import json
+import os
 import random
 import re
 import uuid
+from pathlib import Path
 from numbers import Number
 import yaml
 import main as engine
@@ -272,6 +274,25 @@ def delete_entity(kind: str, selected_name: str):
     result = remove_entity(kind, selected_name)
     choices = result["entities"]
     return choices, (choices[0] if choices else None), result["message"]
+
+
+def entity_references(kind: str, name: str) -> list[str]:
+    """What refers to an entry and would break without it (missions, actions, conditions, dialogue,
+    routes, ...): the world's problems without the entry that it does not have with it, as the
+    engine's own checks (logic_errors, the mission rules) word them."""
+    key = ENTITY_FILES[kind][1]
+    world = copy.deepcopy(config.get("world_definition") or {})
+
+    def problems(candidate):
+        return set(logic_errors(candidate)) | set(content_rules.mission_errors(candidate, candidate.get("missions") or {}))
+
+    before = problems(world)
+    entries = world.get(key)
+    if isinstance(entries, dict):
+        entries.pop(name, None)
+    elif isinstance(entries, list):
+        world[key] = [entry for entry in entries if entry.get("name") != name]
+    return sorted(problem for problem in problems(world) if problem not in before)
 
 
 def remove_entity(kind: str, selected_name: str) -> dict:
@@ -1198,10 +1219,43 @@ def add_world_entries(additions: dict) -> dict:
 # its neighbours, and the list it left. Undo (restore_deletion) puts back that record only, never a
 # whole file or configuration: where it was when the list is as the deletion left it, else next to its
 # old neighbour. A name taken again, or an entry no longer there for its action, is a conflict:
-# nothing newer is overwritten. Kept in this process, for its most recent deletions.
+# nothing newer is overwritten. Kept with the saves (deletions.json: the most recent ones), so an undo
+# survives a restart of the API.
 
 DELETIONS: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
 MAX_DELETIONS = 200
+_DELETIONS_LOADED: list = []  # the file the deletions were read from (read once per file)
+
+
+def deletions_path() -> Path:
+    """Where deletions are kept: with the saves (ANE_SAVE_DIR, a volume in Docker)."""
+    base = os.environ.get("ANE_SAVE_DIR") or (Path(__file__).resolve().parent.parent / "saves")
+    return Path(base) / "deletions.json"
+
+
+def _deletions() -> "collections.OrderedDict[str, dict]":
+    """The deletions kept to undo, read from deletions.json the first time (and again if the save
+    folder changed)."""
+    path = deletions_path()
+    if _DELETIONS_LOADED != [path]:
+        DELETIONS.clear()
+        try:
+            DELETIONS.update(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            pass
+        _DELETIONS_LOADED[:] = [path]
+    return DELETIONS
+
+
+def _store_deletions() -> None:
+    path = deletions_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(f".{path.name}.tmp")
+        temp.write_text(json.dumps(DELETIONS, ensure_ascii=False, default=str), encoding="utf-8")
+        os.replace(temp, path)
+    except OSError:  # not kept on disk: undo still works until the API restarts
+        pass
 
 
 def _names_in(records, shape) -> list:
@@ -1234,9 +1288,11 @@ def _keep_deletion(deletion: dict, items: list, index: int, remaining: list) -> 
             "after": copy.deepcopy(items[index + 1]) if index + 1 < len(items) else None,
             "context": _fingerprint(remaining)}
     with CONFIG_LOCK:
-        DELETIONS[token] = kept
-        while len(DELETIONS) > MAX_DELETIONS:
-            DELETIONS.popitem(last=False)
+        deletions = _deletions()
+        deletions[token] = kept
+        while len(deletions) > MAX_DELETIONS:
+            deletions.popitem(last=False)
+        _store_deletions()
     return {"token": token, "type": kept["type"], "name": kept["name"], "kind": kept.get("kind"),
             "entry": kept.get("entry"), "position": index + 1, "of": len(items)}
 
@@ -1352,10 +1408,10 @@ def restore_deletion(token: str) -> dict:
     taken again, or its entry is gone (nothing is overwritten); AuthoringError: it would now be invalid.
     Returns {type, name, kind, entry, position, was, moved, changed_since, message}."""
     with CONFIG_LOCK:
-        deletion = DELETIONS.get(token)
+        deletion = _deletions().get(token)
         if deletion is None:
-            raise LookupError("This deletion can no longer be undone here: it was undone already, or the server "
-                              "restarted since (undo is kept for its recent deletions).")
+            raise LookupError("This deletion can no longer be undone: it was undone already, or it is older than "
+                              f"the {MAX_DELETIONS} most recent deletions kept.")
         restore = {"entity": _restore_entity, "action": _restore_action, "mission": _restore_mission}[deletion["type"]]
         context = {"entity": lambda: _names_in(*_entity_records(deletion["kind"])[2:]),
                    "action": lambda: load_entity_actions(deletion["kind"], deletion["entry"]),
@@ -1366,6 +1422,7 @@ def restore_deletion(token: str) -> dict:
             changed = True
         index, anchor = restore(deletion)
         DELETIONS.pop(token, None)
+        _store_deletions()
     what = {"entity": f"**{deletion['name']}** to {deletion.get('kind')}",
             "action": f"the action **{deletion['name']}** to `{deletion.get('entry')}`",
             "mission": f"the mission **{deletion['name']}**"}[deletion["type"]]

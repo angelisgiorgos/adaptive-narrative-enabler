@@ -1,7 +1,7 @@
 evolution:
-  pop_size: 400
-  generations: 200
-  episodes_per_genome: 6
+  pop_size: 40
+  generations: 25
+  episodes_per_genome: 2
   max_steps: 100             # steps per evaluated story (narrative_end.max_actions: whole stories)
   evaluation_threads: auto
   max_evaluation_processes: 16
@@ -65,7 +65,6 @@ story_rules:
 simulation:
   verbose: true
   interactive: true
-  mutation_rate: 0.2
 reproducibility:
   deterministic: true
   seed: 42
@@ -138,8 +137,6 @@ transition_objective:
   story_phase_weight: 0.8
   voyage_weight: 1.0
   discovery_weight: 0.8
-  character_goal_weight: 2.0
-  known_location_bonus: 3.0
 outcome_objective:
   success_threshold: 0.5
   health_weight: 1.5
@@ -389,7 +386,6 @@ spawn_selection:
   fallback_similarity_threshold: 0.2   # when no spawn rule applies: similar places only...
   fallback_candidates: 5               # ...and at most this many
   contrast_weight: 2.5
-  character_alignment_weight: 2.0
   repeat_visit_penalty: 3.0
   immediate_repeat_penalty: 10.0
 action_selection:
@@ -416,14 +412,6 @@ action_selection:
         palace: 10.0
         luxury: 6.0
         grand: 4.0
-outcome_scoring:
-  spawn_bonus: 1.7
-  movement_bonus: 1.7
-  discovery_bonus: 1.4
-  lead_bonus: 1.4
-  recovery_bonus: 1.2
-  setup_bonus: 1.1
-  payoff_bonus: 1.2
 outcome_resolution:
   # Checks are explicit: an outcome without a skill check succeeds by its own success_prob.
   # true: the storyteller's traits and the story's state also tip it, unseen (the old rule).
@@ -617,7 +605,6 @@ fitness:
   setup_payoff:
     target_count: 2
     pair_bonus: 15
-    early_setup_bonus: 10
     late_payoff_bonus: 10
     clue_variants: 3
     min_gap_fraction: 0.33

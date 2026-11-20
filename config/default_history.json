@@ -524,6 +524,7 @@
 "33822f8e96831ec1",
 "462f46c68f163232",
 "7814196313568ef6",
+"8ab152d985cb8912",
 "b1e4634f51eb9e5d",
 "c03c323b1f8fb5a9",
 "dd8527d254fdbbd1"
@@ -553,6 +554,7 @@
 "36819111cffb9e1e"
 ],
 "evolution.episodes_per_genome": [
+"d4735e3a265e16ee",
 "e7f6c011776e8db7"
 ],
 "evolution.evaluation_threads": [
@@ -563,7 +565,8 @@
 "b5bea41b6c623f7c"
 ],
 "evolution.generations": [
-"27badc983df1780b"
+"27badc983df1780b",
+"b7a56873cd771f2c"
 ],
 "evolution.hall_of_fame_size": [
 "6b51d431df5d7f14"
@@ -624,7 +627,8 @@
 "6b86b273ff34fce1"
 ],
 "evolution.pop_size": [
-"26d228663f13a885"
+"26d228663f13a885",
+"d59eced1ded07f84"
 ],
 "evolution.random_immigrant_rate": [
 "36819111cffb9e1e"
