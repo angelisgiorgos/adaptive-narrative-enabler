@@ -510,21 +510,20 @@ def _yaml_value(text, what):
         raise AuthoringError(f"{what} is not valid YAML: {exc}") from exc
 
 
-def save_entry_draft(kind: str, name: str | None, draft: dict) -> dict:
-    """Save an entry's whole draft at once: its sections (``draft``: fields {the entry form, as PUT
-    /v1/entities/{kind}/{name} takes it, its name a rename}, entry_yaml, actions (the whole list, or
-    YAML), action {index, action} (one action; index = their number: a new one), policy (an event's
-    or an item's rules, a mapping or YAML), details) are applied, in order, to a copy of the stored
-    entry (every field no section touches stays as it is), then the entry and the world with it are
-    checked as each section's own save checks them, and the entry is written once. When anything is
-    wrong nothing is written, and every problem is named with its section. ``name`` None: a new
-    entry, made from its fields. Returns {name, saved (the sections), message}."""
+def compose_entry_draft(kind: str, name: str | None, draft: dict) -> dict:
+    """An entry as its draft makes it, checked, never written (save_entry_draft writes it; the preview
+    shows it): its sections (``draft``: fields {the entry form, as PUT /v1/entities/{kind}/{name} takes
+    it, its name a rename}, entry_yaml, actions (the whole list, or YAML), action {index, action} (one
+    action; index = their number: a new one), policy (an event's or an item's rules, a mapping or YAML),
+    details; none: the stored entry) are applied, in order, to a copy of the stored entry (every field
+    no section touches stays as it is), then the entry and the world with it are checked as each
+    section's own save checks them. ``name`` None: a new entry, made from its fields. Returns {name (after a rename), selected (the stored
+    name), record (the entry as the draft makes it), problems (each with its section; empty: it can be
+    saved), world (world_definition with it in place), path, data, records, shape, sections}."""
     draft = {section: value for section, value in (draft or {}).items() if value is not None}
     unknown = sorted(set(draft) - set(DRAFT_SECTIONS))
     if unknown:
         raise AuthoringError(f"No section {', '.join(unknown)}; use {', '.join(DRAFT_SECTIONS)}.")
-    if not draft:
-        raise AuthoringError("Nothing to save: the draft has no section.")
     clash = next(((a, b) for a, b in DRAFT_CONFLICTS if a in draft and b in draft), None)
     if clash:
         raise AuthoringError(f"Nothing was saved: {DRAFT_SECTION_NAMES[clash[0]]} and {DRAFT_SECTION_NAMES[clash[1]]} "
@@ -540,93 +539,107 @@ def save_entry_draft(kind: str, name: str | None, draft: dict) -> dict:
             problems.extend(f"{DRAFT_SECTION_NAMES[section]}: {line.lstrip('- ')}" for line in str(exc).splitlines()
                             if line.strip() and not line.rstrip().endswith(":"))
 
-    with CONFIG_LOCK:
-        path, data, records, shape = _entity_records(kind)
-        names = _names_in(records, shape)
-        if name is not None and name not in names:
-            raise AuthoringError(f"`{name}` does not exist in {kind}: it was renamed or deleted. Reload it.")
-        if shape == "mapping":
-            record = copy.deepcopy(records.get(name, {})) if name is not None else {}
-        else:
-            record = copy.deepcopy(next((e for e in records if e.get("name") == name), {})) if name is not None else {}
-        final = name
-        for section in DRAFT_SECTIONS:
-            if section not in draft:
+    path, data, records, shape = _entity_records(kind)
+    names = _names_in(records, shape)
+    if name is not None and name not in names:
+        raise AuthoringError(f"`{name}` does not exist in {kind}: it was renamed or deleted. Reload it.")
+    if shape == "mapping":
+        record = copy.deepcopy(records.get(name, {})) if name is not None else {}
+    else:
+        record = copy.deepcopy(next((e for e in records if e.get("name") == name), {})) if name is not None else {}
+    final = name
+    for section in DRAFT_SECTIONS:
+        if section not in draft:
+            continue
+        value = draft[section]
+        if section == "action":
+            def apply_action(value=value):
+                index, action = (value or {}).get("index"), (value or {}).get("action")
+                if not isinstance(action, dict) or not str(action.get("name", "")).strip():
+                    raise AuthoringError("An action needs a name.")
+                actions = list(record.get("actions") or [])
+                if not isinstance(index, int) or not 0 <= index <= len(actions):
+                    raise AuthoringError(f"There is no action {index}: the entry has {len(actions)}.")
+                actions[index:index + 1] = [action]
+                record["actions"] = actions
+            attempt(section, apply_action)
+        elif section == "actions":
+            def apply_actions(value=value):
+                actions = _yaml_value(value, "The actions") or []
+                if not isinstance(actions, list):
+                    raise AuthoringError("The actions must be a list.")
+                record["actions"] = actions
+            attempt(section, apply_actions)
+        elif section == "policy":
+            attempt(section, lambda value=value: _apply_policy(kind, record, _checked_policy(kind, final or "", value)))
+        elif section == "details":
+            def apply_details(value=value):
+                errors = _detail_errors(kind, value or {})
+                if errors:
+                    raise AuthoringError("\n".join(errors))
+                _apply_details(record, value or {})
+            attempt(section, apply_details)
+        elif section == "entry_yaml":
+            def apply_yaml(value=value):
+                replaced = _yaml_value(value, "The entry")
+                if not isinstance(replaced, dict):
+                    raise AuthoringError("The entry must be a YAML mapping of its fields.")
+                if shape == "list":
+                    if replaced.setdefault("name", final) != final:
+                        raise AuthoringError("Rename an entry with the entry form (Name), not here.")
+                else:
+                    replaced.pop("name", None)
+                record.clear()
+                record.update(replaced)
+            attempt(section, apply_yaml)
+        elif section == "fields":
+            fields = dict(value or {})
+            new_name = str(fields.get("name") or "").strip()
+            if not new_name:
+                problems.append("Fields: Name is required.")
                 continue
-            value = draft[section]
-            if section == "action":
-                def apply_action(value=value):
-                    index, action = (value or {}).get("index"), (value or {}).get("action")
-                    if not isinstance(action, dict) or not str(action.get("name", "")).strip():
-                        raise AuthoringError("An action needs a name.")
-                    actions = list(record.get("actions") or [])
-                    if not isinstance(index, int) or not 0 <= index <= len(actions):
-                        raise AuthoringError(f"There is no action {index}: the entry has {len(actions)}.")
-                    actions[index:index + 1] = [action]
-                    record["actions"] = actions
-                attempt(section, apply_action)
-            elif section == "actions":
-                def apply_actions(value=value):
-                    actions = _yaml_value(value, "The actions") or []
-                    if not isinstance(actions, list):
-                        raise AuthoringError("The actions must be a list.")
-                    record["actions"] = actions
-                attempt(section, apply_actions)
-            elif section == "policy":
-                attempt(section, lambda value=value: _apply_policy(kind, record, _checked_policy(kind, final or "", value)))
-            elif section == "details":
-                def apply_details(value=value):
-                    errors = _detail_errors(kind, value or {})
-                    if errors:
-                        raise AuthoringError("\n".join(errors))
-                    _apply_details(record, value or {})
-                attempt(section, apply_details)
-            elif section == "entry_yaml":
-                def apply_yaml(value=value):
-                    replaced = _yaml_value(value, "The entry")
-                    if not isinstance(replaced, dict):
-                        raise AuthoringError("The entry must be a YAML mapping of its fields.")
-                    if shape == "list":
-                        if replaced.setdefault("name", final) != final:
-                            raise AuthoringError("Rename an entry with the entry form (Name), not here.")
-                    else:
-                        replaced.pop("name", None)
-                    record.clear()
-                    record.update(replaced)
-                attempt(section, apply_yaml)
-            elif section == "fields":
-                fields = dict(value or {})
-                new_name = str(fields.get("name") or "").strip()
-                if not new_name:
-                    problems.append("Fields: Name is required.")
-                    continue
-                if new_name != name and new_name in names:
-                    problems.append(f"Fields: An entry named `{new_name}` already exists. Choose a unique name.")
-                    continue
+            if new_name != name and new_name in names:
+                problems.append(f"Fields: An entry named `{new_name}` already exists. Choose a unique name.")
+                continue
 
-                def apply_fields(fields=fields, new_name=new_name):
-                    _apply_fields(kind, record, new_name, fields.get("tags"), "\n".join(fields.get("descriptions") or []),
-                                  "\n".join(fields.get("goals") or []), fields.get("unique"),
-                                  fields.get("encounter_event"), fields.get("encounter_repeat"),
-                                  fields.get("enabled_if"), fields.get("title"), fields.get("stat_bonus"),
-                                  fields.get("start_eligible"), fields.get("start_weight"), fields.get("role"),
-                                  fields.get("secret"))
-                attempt(section, apply_fields)
-                final = new_name
-        # The entry whole, then the world with it, as every save checks them.
-        problems.extend(f"The entry: {e}" for e in _entry_errors(kind, record))
-        key = ENTITY_FILES[kind][1]
-        world = copy.deepcopy(config.get("world_definition") or {})
-        entries = world.setdefault(key, {} if shape == "mapping" else [])
-        _place_record(entries, shape, name, final, copy.deepcopy(record))
-        from .store import _validate_complete_config
+            def apply_fields(fields=fields, new_name=new_name):
+                _apply_fields(kind, record, new_name, fields.get("tags"), "\n".join(fields.get("descriptions") or []),
+                              "\n".join(fields.get("goals") or []), fields.get("unique"),
+                              fields.get("encounter_event"), fields.get("encounter_repeat"),
+                              fields.get("enabled_if"), fields.get("title"), fields.get("stat_bonus"),
+                              fields.get("start_eligible"), fields.get("start_weight"), fields.get("role"),
+                              fields.get("secret"))
+            attempt(section, apply_fields)
+            final = new_name
+    # The entry whole, then the world with it, as every save checks them.
+    problems.extend(f"The entry: {e}" for e in _entry_errors(kind, record))
+    key = ENTITY_FILES[kind][1]
+    world = copy.deepcopy(config.get("world_definition") or {})
+    entries = world.setdefault(key, {} if shape == "mapping" else [])
+    _place_record(entries, shape, name, final, copy.deepcopy(record))
+    from .store import _validate_complete_config
 
-        problems.extend(f"The entry: {e}" for e in _validate_complete_config(entries, None, f"world_definition.{key}"))
-        earlier = list(dict.fromkeys(logic_errors(config.get("world_definition") or {})))
-        problems.extend(f"The world: {e}" for e in logic_errors(world) if e not in earlier)
+    problems.extend(f"The entry: {e}" for e in _validate_complete_config(entries, None, f"world_definition.{key}"))
+    earlier = list(dict.fromkeys(logic_errors(config.get("world_definition") or {})))
+    problems.extend(f"The world: {e}" for e in logic_errors(world) if e not in earlier)
+    return {"name": final, "selected": name, "record": record, "problems": list(dict.fromkeys(problems)),
+            "world": world, "path": path, "data": data, "records": records, "shape": shape,
+            "sections": [section for section in DRAFT_SECTIONS if section in draft]}
+
+
+def save_entry_draft(kind: str, name: str | None, draft: dict) -> dict:
+    """Save an entry's whole draft at once (compose_entry_draft, then one write): written once, or, when
+    anything is wrong, not at all, with every problem named with its section. Returns {name, saved (the
+    sections), message}."""
+    if not any(value is not None for value in (draft or {}).values()):
+        raise AuthoringError("Nothing to save: the draft has no section.")
+    with CONFIG_LOCK:
+        composed = compose_entry_draft(kind, name, draft)
+        problems, final, record = composed["problems"], composed["name"], composed["record"]
+        path, data, records, shape = composed["path"], composed["data"], composed["records"], composed["shape"]
         if problems:
             raise AuthoringError("Nothing was saved; the entry is invalid:\n"
-                                 + "\n".join(f"- {p}" for p in dict.fromkeys(problems)))
+                                 + "\n".join(f"- {p}" for p in problems))
         _place_record(records, shape, name, final, record)
         _write_yaml(path, data)
         config.clear_override()
@@ -634,6 +647,8 @@ def save_entry_draft(kind: str, name: str | None, draft: dict) -> dict:
     saved = [DRAFT_SECTION_NAMES[section] for section in DRAFT_SECTIONS if section in draft]
     return {"name": final, "saved": [section for section in DRAFT_SECTIONS if section in draft],
             "message": f"Saved **{final}** ({', '.join(saved)}) to `{path.name}` at once."}
+
+
 
 
 MAP_PATH = CONFIG_DIR / "locations.yaml"   # the map lives with the locations (world_definition.routes)

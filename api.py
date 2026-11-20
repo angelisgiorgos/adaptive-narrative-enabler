@@ -687,6 +687,17 @@ def put_entry_draft(kind: Literal["Locations", "NPCs", "Items", "Events"], name:
     Fields and Every field (YAML), or Actions as YAML and one action, change the same data: 400.
     ``create``: a new entry named ``name`` (its fields required). Returns {name, saved, message,
     entity}."""
+    draft = _draft_sections(kind, name, body, create)
+    try:
+        result = content.save_entry_draft(kind, None if create else name, draft)
+        return {**result, "entity": get_entity(kind, result["name"])}
+    except Exception as exc:
+        _fail(exc)
+
+
+def _draft_sections(kind, name, body: EntryDraft, create: bool) -> dict:
+    """An entry draft's sections as content.compose_entry_draft takes them (404: no such entry; a new one:
+    its fields, named as in the path)."""
     if not create:
         _known_entity(kind, name)
     elif body.fields is None or body.fields.name.strip() != name:
@@ -696,9 +707,25 @@ def put_entry_draft(kind: Literal["Locations", "NPCs", "Items", "Events"], name:
         fields = body.fields.model_dump()
         draft["fields"] = {key: value for key, value in fields.items()
                            if key not in ("role", "secret") or key in body.fields.model_fields_set}
+    return draft
+
+
+@api.post("/v1/entities/{kind}/{name}/preview", tags=["World authoring"])
+def preview_entry_draft(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str,
+                        body: EntryDraft | None = None, create: bool = False, simulate: bool = False,
+                        seed: int = 0):
+    """Preview an entry as its unsaved draft makes it (the body of PUT .../draft; empty: the stored entry).
+    Read only: nothing is written, no progression changes, nothing is recorded, no session advances.
+    {name, sections, problems (what a save would refuse; shown, not raised), static (the content as
+    written: texts, facts, actions with what they need, outcomes' text and what each changes), simulated
+    (with ``simulate``: a sample scene the engine plays in a separate process, its ``assumptions`` said:
+    the start, the storyteller, the character, the variables at their defaults; the entry's actions
+    each tried on a copy of that state), simulated_error, saved: false}."""
+    from backend import preview
+
+    draft = _draft_sections(kind, name, body or EntryDraft(), create)
     try:
-        result = content.save_entry_draft(kind, None if create else name, draft)
-        return {**result, "entity": get_entity(kind, result["name"])}
+        return preview.preview(kind, None if create else name, draft, simulate_scene=simulate, seed=max(0, seed))
     except Exception as exc:
         _fail(exc)
 

@@ -325,6 +325,16 @@ one); `tests/test_studio_coverage.py` checks it.
   (`retry_on_failure`). The whole action list is validated before it is
   written; an unknown index is `404`.
 - `GET /v1/entities/{kind}?fields=names` returns only the names.
+- `POST /v1/entities/{kind}/{name}/preview` (the body of `PUT …/draft`; an empty body previews the
+  stored entry; `?create`, `?simulate`, `?seed`) previews an entry as its unsaved draft makes it. It is
+  read only: no configuration is written, no progression changes, nothing is recorded, no session
+  advances. It returns `{name, sections, problems, static, simulated, simulated_error, saved: false}`.
+  - `problems` lists what a save would refuse; the preview is still shown.
+  - `static` is the content as written: `texts`, `facts`, `dialogue`, and `actions` with their
+    `requirements` and outcomes (`text`, `effects`, `variants`).
+  - `simulated` (with `simulate`) is a sample scene the engine plays in a separate process: `start`,
+    `present`, `description`, `choices`, the entry's `actions` (each tried on its own copy of the
+    state: `text`, `check`, `changes`), and `assumptions`, which spell out the sample state.
 - `PUT /v1/entities/{kind}/{name}/draft` saves an entry's whole draft at once, as the studio's
   *Save changes* does. The sections are `fields` (as `PUT /v1/entities/{kind}/{name}` takes them; their
   `name` renames the entry), `entry_yaml`, `actions` (a list or YAML), `action` (`{index, action}`, where

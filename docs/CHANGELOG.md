@@ -7,6 +7,17 @@ that introduces them.
 
 ## [Unreleased]
 
+### 🌍 World → Entries: preview the unsaved draft
+
+#### Added
+- **👁 Preview the draft**, below the entry editor, shows the entry as its unsaved draft makes it.
+  *Content (static)* gives the texts, actions, outcome text and what each outcome changes, and what a save
+  would refuse. *Simulated scene* is a sample scene the engine plays with the draft, with its sample state
+  listed: start, seed, storyteller, character, variables at their defaults, quest. Each of the entry's
+  actions is tried on a copy of that state.
+- `POST /v1/entities/{kind}/{name}/preview`, read only: it writes no configuration, changes no
+  progression, records nothing and advances no session.
+
 ### 🌍 World → Entries: Save changes at once, and the library's next pages
 
 #### Added

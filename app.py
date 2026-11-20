@@ -3937,6 +3937,110 @@ def _save_draft(dirty, loaded, values):
     return {"kind": kind, "entity": result["name"]}, order
 
 
+# ---- the preview of an entry's draft (POST /v1/entities/{kind}/{name}/preview: read only) ---------------
+
+PREVIEW_NOTE = ("*Preview of the unsaved draft: nothing is saved, no player's progression changes, nothing is "
+                "recorded, no game advances.*")
+
+
+def _preview_request(loaded, base, values):
+    """(kind, entry, body, params, unsaved parts) of the preview of the editor's draft: the parts with
+    unsaved changes, as *Save changes* would send them (none: the stored entry)."""
+    loaded = dict(loaded or {})
+    kind, name = loaded.get("kind"), loaded.get("entity")
+    dirty = unsaved_parts(base, *values)
+    body = _draft_body([part for part in DRAFT_PARTS if part in dirty], kind, name, _split_draft(values))
+    if name is None:
+        if "fields" not in body:
+            raise gr.Error("A new entry is previewed from its fields: give it a name first.")
+        return kind, body["fields"]["name"], body, {"create": True}, dirty
+    return kind, name, body, {}, dirty
+
+
+def entry_preview_markdown(result, dirty=()):
+    """The static preview: the content as the draft writes it (no engine)."""
+    static = result["static"]
+    lines = [f"### 👁 {static['name']}" + (f" — *{static['title']}*" if static.get("title") else "")
+             + f" ({static['kind']})", PREVIEW_NOTE,
+             ("Unsaved sections shown: " + ", ".join(DRAFT_PARTS[p] for p in dirty) if dirty
+              else "No unsaved changes: the entry as stored.")]
+    if result.get("problems"):
+        lines.append("**⚠ A save would refuse this draft:**\n" + "\n".join(f"- {p}" for p in result["problems"]))
+    if static.get("tags"):
+        lines.append("**Tags:** " + ", ".join(static["tags"]))
+    if static.get("facts"):
+        lines.append("**About it:** " + " · ".join(static["facts"]))
+    for text in static.get("texts") or []:
+        lines.append(f"**{text['label']}:**\n" + "\n".join(f"> {line}  " for line in text["lines"]))  # a line each
+    if static.get("dialogue"):
+        lines.append("**What they say:**\n" + "\n".join(
+            f"- “{d['text']}”" + (f" *(when {d['when']})*" if d.get("when") else "") for d in static["dialogue"]))
+    if static.get("actions"):
+        lines.append("**Actions:**")
+        for action in static["actions"]:
+            needs = f" — {'; '.join(action['requirements'])}" if action["requirements"] else ""
+            lines.append(f"- **{action['name']}**{needs}")
+            for number, outcome in enumerate(action["outcomes"], start=1):
+                effects = f" *({'; '.join(outcome['effects'])})*" if outcome["effects"] else ""
+                variants = f" (+{outcome['variants']} other wording(s))" if outcome.get("variants") else ""
+                lines.append(f"    {number}. {outcome['text'] or '*(no text)*'}{effects}{variants}")
+    else:
+        lines.append("*No actions.*")
+    return "\n\n".join(lines)
+
+
+def simulated_preview_markdown(result):
+    """The simulated preview: a sample scene the engine plays, with its assumptions said first."""
+    if result.get("simulated_error"):
+        return f"⚠ {result['simulated_error']}"
+    sim = result.get("simulated")
+    if not sim:
+        return "*Press **Simulate a sample scene** to see what the engine makes of the draft.*"
+    lines = ["### 🎲 Simulated sample scene", PREVIEW_NOTE,
+             "**Sample state (assumptions):**\n" + "\n".join(f"- {a}" for a in sim["assumptions"])]
+    if not sim.get("present"):
+        lines.append(f"⚠ **{result['name']}** is not in this sample scene: its actions below can be unavailable.")
+    lines.append(f"**At {sim['start']}:**\n> " + "  \n> ".join((sim.get("description") or "").splitlines() or ["…"]))
+    if sim.get("choices"):
+        lines.append("**Choices the player sees:** " + " · ".join(
+            (f"**{c['name']}**" if c.get("entry") else c["name"]) + (f" ({c['check']})" if c.get("check") else "")
+            for c in sim["choices"]))
+    for action in sim.get("actions") or []:
+        if not action["offered"]:
+            lines.append(f"- **{action['name']}**: not available in this sample state (its requirements, or the "
+                         "entry is not here).")
+            continue
+        check = action.get("check") or {}
+        rolled = (f" Check: {check.get('stat')} rolled {check.get('roll')} (needed {check.get('needed')}): "
+                  f"{'passed' if check.get('passed') else 'failed'}." if check.get("stat") else "")
+        shown = "" if action.get("shown") else " *(not among the choices shown: ranked lower)*"
+        changes = f"  \n  Changes: {'; '.join(action['changes'])}" if action.get("changes") else "  \n  Changes: none"
+        lines.append(f"- **{action['name']}**{shown}:{rolled}  \n  " + (action.get("text") or "*(nothing told)*")
+                     .replace("\n", "  \n  ") + changes)
+    return "\n\n".join(lines)
+
+
+@ui
+def preview_entry_ui(loaded, base, *values):
+    """👁 Preview the draft: the content as the unsaved draft writes it (read only)."""
+    try:
+        kind, entry, body, params, dirty = _preview_request(loaded, base, values)
+    except gr.Error as exc:
+        return f"⚠ The draft cannot be previewed yet: {_error_text(exc)}"
+    return entry_preview_markdown(API.post(_path(f"/v1/entities/{kind}", entry, "preview"), body, **params), dirty)
+
+
+@ui
+def simulate_entry_ui(loaded, base, seed, *values):
+    """🎲 Simulate a sample scene with the unsaved draft (read only; it takes a few seconds)."""
+    try:
+        kind, entry, body, params, _ = _preview_request(loaded, base, values)
+    except gr.Error as exc:
+        return f"⚠ The draft cannot be previewed yet: {_error_text(exc)}"
+    return simulated_preview_markdown(API.post(_path(f"/v1/entities/{kind}", entry, "preview"), body, simulate=True,
+                                               seed=int(seed or 0), **params))
+
+
 @ui
 def save_changes_ui(loaded, base, *values):
     """💾 Save changes: every section with unsaved changes saved at once, checked whole (an invalid action,
@@ -5494,6 +5598,21 @@ def build_app():
                                     save_entity_yaml_button = gr.Button("Validate & save the entry", variant="primary")
                                     reload_entity_yaml_button = gr.Button("Reload from disk")
                                 entity_yaml_status = gr.Markdown()
+                        # The preview of the draft (read only): the content as written, and a simulated scene.
+                        with gr.Accordion("👁 Preview the draft (nothing is saved)", open=False, elem_id="entry-preview"):
+                            with gr.Tabs():
+                                with gr.Tab("Content (static)"):
+                                    preview_button = gr.Button("👁 Preview the draft", elem_id="entry-preview-button")
+                                    preview_static = gr.Markdown(elem_id="entry-preview-static")
+                                with gr.Tab("Simulated scene"):
+                                    gr.Markdown("The engine plays a sample scene with the draft, in a separate process: "
+                                                "its sample state (start, storyteller, character, variables) is listed "
+                                                "with the result. It takes a few seconds.", elem_classes="lead")
+                                    with gr.Row(equal_height=True):
+                                        preview_seed = gr.Number(value=0, precision=0, minimum=0, label="Seed", scale=1)
+                                        simulate_button = gr.Button("🎲 Simulate a sample scene", scale=3,
+                                                                    elem_id="entry-simulate-button")
+                                    preview_simulated = gr.Markdown(elem_id="entry-preview-simulated")
 
                     with gr.Tab(WORLD_SECTIONS["missions"], id="missions") as section_missions:
                         gr.Markdown("Each story draws one mission (by weight) among those it may have. A mission is a "
@@ -5794,6 +5913,10 @@ def build_app():
                 for button, choice in ((draft_save, "save"), (draft_discard, "discard"), (draft_stay, "stay")):
                     button.click(*tracked(lambda pending, *rest, choice=choice: resolve_draft_ui(choice, pending, *rest),
                                           [draft_pending, *guard_inputs], draft_outputs))
+                # The preview: the editor's draft as it is now (read only).
+                preview_button.click(preview_entry_ui, guard_inputs, preview_static)
+                simulate_button.click(simulate_entry_ui, [draft_loaded, draft_base, preview_seed, *draft_inputs],
+                                      preview_simulated, concurrency_limit=2)
                 # 💾 Save changes: every section with unsaved changes, checked whole and written at once (or
                 # not at all), then the whole entry reloaded as stored.
                 save_changes.click(*tracked(save_changes_ui, guard_inputs,

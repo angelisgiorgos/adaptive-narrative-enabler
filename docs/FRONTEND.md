@@ -2506,6 +2506,7 @@ the API disagree, or when this guide names a request the API does not have.
 | `GET` | `/v1/entities/{kind}/{name}/details` | [entries](#entries), [entries-details](#entries-details) | The fields of an entry the entry form does not show: |
 | `PUT` | `/v1/entities/{kind}/{name}/details` | [entries-details](#entries-details) |  |
 | `PUT` | `/v1/entities/{kind}/{name}/draft` | [entries](#entries) | Save an entry's whole draft at once (every section checked whole, written once or not at all). |
+| `POST` | `/v1/entities/{kind}/{name}/preview` | [entries](#entries) | Preview an entry as its unsaved draft makes it (static, and a simulated sample scene); read only. |
 | `GET` | `/v1/missions/{key}` | [missions](#missions), [play-quests-savegame](#play-quests-savegame), [play-setup](#play-setup) |  |
 | `PUT` | `/v1/missions/{key}` | [missions](#missions) | Add or replace one mission (``rename``: |
 | `DELETE` | `/v1/missions/{key}` | [missions](#missions) | Delete a mission (the others are checked as a save checks them). |

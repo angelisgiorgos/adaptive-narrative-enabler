@@ -2950,6 +2950,110 @@ class EntrySaveChangesTests(_Sandbox):
         self.assertEqual(fn.fn.__name__, "save_changes_ui")
 
 
+class EntryPreviewTests(_Sandbox):
+    """👁 Preview: the entry as its unsaved draft makes it, static (the content as written) and simulated (a
+    sample scene the engine plays in a separate process, its assumptions said), with no persistent side
+    effect: no configuration written, no player's progression changed, nothing recorded, no session
+    advanced."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch.dict(os.environ, {"ANE_RECORDS_DIR": str(self.dir / "records")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(lambda: (setattr(store.config, "_override", None), type(store.config).reload(store.config)))
+
+    def _draft(self):
+        harbor = self.client.get("/v1/entities/Locations/Harbor").json()
+        return {"fields": {**harbor, "descriptions": ["A gull-loud quay under a bruised sky."]},
+                "action": {"index": 0, "action": {"name": "Feed the gulls", "outcomes": [
+                    {"desc": "The gulls mob you for the bread.", "health_change": -1}]}}}
+
+    def _everything(self, token):
+        """What a preview must not change: the config files, the active configuration, the profiles' saved
+        progression, the records' stories, and the game in progress."""
+        from core_engine.variables import VariableStore
+
+        files = {name: (self.dir / name).read_bytes() for name in sorted(os.listdir(self.dir)) if name.endswith(".yaml")}
+        progress = Path(VariableStore().path)
+        state = sessions.SESSIONS[token]
+        return {"files": files, "config": store.config.as_dict(),
+                "progression": progress.read_bytes() if progress.exists() else None,
+                "stories": len(records.list_stories()), "session": (state.actions_taken, len(state.history))}
+
+    def test_the_draft_is_previewed_static_and_simulated_without_side_effects(self):
+        game = self.client.post("/v1/simulations", json={"candidate_count": 1, "generations": 1,
+                                                         "simulation_steps": 2, "deterministic": False}).json()
+        token = game["session_id"]
+        before = self._everything(token)
+        stored = self.client.get("/v1/entities/Locations/Harbor").json()
+        static = self.client.post("/v1/entities/Locations/Harbor/preview", json=self._draft())
+        self.assertEqual(static.status_code, 200, static.text)
+        result = static.json()
+        self.assertEqual((result["saved"], result["problems"], result["simulated"]), (False, [], None))
+        self.assertEqual(result["sections"], ["action", "fields"])
+        arrival = next(t for t in result["static"]["texts"] if t["label"] == "On arrival")
+        self.assertEqual(arrival["lines"], ["A gull-loud quay under a bruised sky."])
+        gulls = result["static"]["actions"][0]
+        self.assertEqual(gulls["name"], "Feed the gulls")
+        self.assertEqual(gulls["outcomes"][0], {"text": "The gulls mob you for the bread.", "effects": ["health -1"],
+                                                "variants": 0})
+        # The engine's sample scene, with the draft, and what it assumes.
+        simulated = self.client.post("/v1/entities/Locations/Harbor/preview", params={"simulate": "true", "seed": 2},
+                                     json=self._draft()).json()
+        self.assertIsNone(simulated["simulated_error"])
+        sim = simulated["simulated"]
+        self.assertEqual((sim["start"], sim["present"]), ("Harbor", True))
+        self.assertIn("A gull-loud quay under a bruised sky.", sim["description"])
+        fed = next(a for a in sim["actions"] if a["name"] == "Feed the gulls")
+        self.assertTrue(fed["offered"])
+        self.assertIn("The gulls mob you for the bread.", fed["text"])
+        self.assertTrue(any(change.startswith("health") for change in fed["changes"]))
+        self.assertTrue(any("defaults, not any profile's stored values" in a for a in sim["assumptions"]))
+        self.assertTrue(any("seed 2" in a for a in sim["assumptions"]))
+        # Nothing persisted: files, configuration, progression, records, the game in progress.
+        self.assertEqual(self._everything(token), before)
+        self.assertEqual(self.client.get("/v1/entities/Locations/Harbor").json(), stored)
+        # A draft a save would refuse is still previewed, its problems listed.
+        bad = self._draft()
+        bad["action"]["action"]["required_object"] = "No Such Thing"
+        refused = self.client.post("/v1/entities/Locations/Harbor/preview", json=bad).json()
+        self.assertTrue(any("unknown item `No Such Thing`" in p for p in refused["problems"]))
+        self.assertIn("needs No Such Thing", refused["static"]["actions"][0]["requirements"])
+        self.assertEqual(self._everything(token), before)
+        # No draft: the stored entry; an unknown entry: 404.
+        self.assertEqual(self.client.post("/v1/entities/Locations/Harbor/preview").json()["sections"], [])
+        self.assertEqual(self.client.post("/v1/entities/Locations/Nowhere/preview").status_code, 404)
+
+    def test_the_studio_previews_the_editor_s_unsaved_draft(self):
+        import app
+
+        before = {name: (self.dir / name).read_bytes() for name in ("locations.yaml", "npcs.yaml")}
+        editor = _Editor(app, "Locations", "Harbor")
+        editor.type("fields", 2, "A gull-loud quay under a bruised sky.")
+        text = app.preview_entry_ui(*editor.guard)
+        self.assertIn("A gull-loud quay under a bruised sky.", text)
+        self.assertIn("Unsaved sections shown: Fields", text)
+        self.assertIn("nothing is saved", text)
+        self.assertIn("**Actions:**", text)
+        scene = app.simulate_entry_ui(editor.loaded, editor.base, 1, *editor.values)
+        self.assertIn("**Sample state (assumptions):**", scene)
+        self.assertIn("A gull-loud quay under a bruised sky.", scene)
+        self.assertIn("seed 1", scene)
+        self.assertEqual(editor.unsaved, ["fields"])                            # the draft stays a draft
+        self.assertEqual({name: (self.dir / name).read_bytes() for name in before}, before)
+        # An NPC is brought into its sample scene, and says so.
+        editor = _Editor(app, "NPCs", "Priest")
+        scene = app.simulate_entry_ui(editor.loaded, editor.base, 0, *editor.values)
+        self.assertIn("Priest is brought into the scene", scene)
+        # Wired: the preview reads the editor's draft.
+        demo = app.build_app()
+        by = {b.elem_id: b for b in demo.blocks.values() if getattr(b, "elem_id", None)}
+        for elem, name in (("entry-preview-button", "preview_entry_ui"), ("entry-simulate-button", "simulate_entry_ui")):
+            (fn,) = [fn for fn in demo.fns.values() if (by[elem]._id, "click") in fn.targets]
+            self.assertEqual(fn.fn.__name__, name)
+
+
 class WeightsFollowUpTests(_Sandbox):
     """Weights: saved values changed from the shipped ones are listed (and the shipped values can be put
     in the draft); leaving ⚙ Advanced with an unsaved weights draft asks Save, Discard or Stay; the Basic
