@@ -369,11 +369,15 @@ one); `tests/test_studio_coverage.py` checks it.
   **Evaluation**) run the judge in the background; their `progress` is
   `{generation: stories judged so far, total, label}`.
 - `GET /v1/jobs/{id}`: `status` (`queued`, `running`, `finished`, `failed`),
-  `progress` (`generation`, `total`, `best`, `mean`, `validation`, `improved`),
+  `progress` (`generation`, `total`, `label`: what is counted, `generation` or
+  `stories judged`, plus a training's `best`, `mean`, `validation`, `improved`),
+  `queue_ahead` (for a queued job, how many jobs run before it; null otherwise),
   and, when finished, `result` (what the synchronous endpoint returns: the
   playable game) or `error`. `GET /v1/jobs` lists the latest jobs without their
-  results. Jobs run one at a time in the order they arrive; the latest 100 are
-  kept (in memory).
+  results (`has_result` says whether there is one). Jobs run one at a time in the
+  order they arrive; the latest 100 are kept (in memory). A submission identical
+  to a job still queued or running (the same body, user and origin) is not queued
+  again: it returns that job with `reused: true` (otherwise `reused: false`).
 
 **Configuration**
 - `GET /v1/config` returns the complete merged active configuration.

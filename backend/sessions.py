@@ -4,6 +4,7 @@ from __future__ import annotations
 import collections
 import copy
 import datetime
+import hashlib
 import json
 import logging
 import math
@@ -1407,13 +1408,23 @@ def _now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
 
-def submit_job(kind: str, work, description: str = "", meta: dict | None = None) -> dict:
+def submit_job(kind: str, work, description: str = "", meta: dict | None = None, request=None) -> dict:
     """Queue ``work(progress)``; ``progress(generation, total, stats)`` records how far
     it got and ``work`` returns the job's result (JSON data). ``meta``: more fields of the job
-    (e.g. an evaluation's ``target``). Returns the job."""
+    (e.g. an evaluation's ``target``). ``request``: what was asked (JSON data): the same request
+    while an identical job is still queued or running is not queued again; that job is returned,
+    with ``reused`` true. Returns the job."""
+    key = None
+    if request is not None:
+        key = hashlib.sha256(json.dumps([kind, request], sort_keys=True, default=str).encode()).hexdigest()[:16]
+        with _JOBS_LOCK:
+            same = next((j for j in JOBS.values() if j.get("request_key") == key
+                         and j["status"] in ("queued", "running")), None)
+        if same is not None:
+            return {**get_job(same["id"]), "reused": True}
     job = {"id": uuid.uuid4().hex, "kind": kind, "description": description, "status": "queued",
            "created_at": _now(), "started_at": None, "finished_at": None, "progress": None,
-           "result": None, "error": None, **(meta or {})}
+           "result": None, "error": None, "request_key": key, **(meta or {})}
     with _JOBS_LOCK:
         JOBS[job["id"]] = job
         while len(JOBS) > MAX_JOBS:
@@ -1427,8 +1438,8 @@ def submit_job(kind: str, work, description: str = "", meta: dict | None = None)
             if isinstance(stats, str):  # a job counting its own steps (stories judged): step n of total
                 job["progress"] = {"generation": generation, "total": total, "label": stats}
                 return
-            job["progress"] = {"generation": generation + 1, "total": total, "best": stats.best, "mean": stats.mean,
-                               "validation": stats.validation, "improved": bool(stats.improved)}
+            job["progress"] = {"generation": generation + 1, "total": total, "label": "generation", "best": stats.best,
+                               "mean": stats.mean, "validation": stats.validation, "improved": bool(stats.improved)}
 
     def run():
         with _JOBS_LOCK:
@@ -1445,16 +1456,34 @@ def submit_job(kind: str, work, description: str = "", meta: dict | None = None)
                 job["finished_at"] = _now()
 
     _JOB_EXECUTOR.submit(run)
-    return get_job(job["id"])
+    return {**get_job(job["id"]), "reused": False}
+
+
+def _queue_ahead(job) -> int | None:
+    """How many jobs run before a queued one (jobs run one at a time, in the order they came: those
+    queued or running before it); None once it runs or ended. Call with _JOBS_LOCK held."""
+    if job["status"] != "queued":
+        return None
+    ahead = 0
+    for other in JOBS.values():
+        if other is job:
+            return ahead
+        ahead += other["status"] in ("queued", "running")
+    return ahead
 
 
 def get_job(job_id: str) -> dict | None:
+    """A job: {id, kind, description, status (queued | running | finished | failed), created_at,
+    started_at, finished_at, progress ({generation, total, label (what is counted: generation, stories
+    judged, ...), best, mean, validation, improved}), queue_ahead (queued: how many jobs run first),
+    result, error, ...}."""
     with _JOBS_LOCK:
         job = JOBS.get(job_id)
-        return copy.deepcopy(job) if job is not None else None
+        return {**copy.deepcopy(job), "queue_ahead": _queue_ahead(job)} if job is not None else None
 
 
 def list_jobs() -> list[dict]:
-    """The kept jobs, newest first, without their results."""
+    """The kept jobs, newest first, without their results (each with ``queue_ahead``)."""
     with _JOBS_LOCK:
-        return [{k: v for k, v in job.items() if k != "result"} for job in reversed(JOBS.values())]
+        return [{**{k: v for k, v in job.items() if k != "result"}, "queue_ahead": _queue_ahead(job),
+                 "has_result": job.get("result") is not None} for job in reversed(JOBS.values())]

@@ -538,7 +538,7 @@ class StudioFixesTests(_CoverageSandbox):
         import app
         token, _ = sessions._start_game(Genome(rng=random.Random(7)), "studio-reload", None, None)
         self.addCleanup(sessions.SESSIONS.pop, token, None)
-        size = 4 + app.CHOICE_BUTTONS + 5 + 1  # the game screen and the story
+        size = len(app.PLAY_PARTS) + 1  # the game screen and the story
         restored = app.restore_game_ui(token, size)
         self.assertEqual((restored[0], restored[-1], len(restored)), (token, token, size + 2))
         gone = app.restore_game_ui("no-such-game", size)

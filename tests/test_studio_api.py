@@ -3307,6 +3307,162 @@ class WorldSubnavigationTests(_Sandbox):
         self.assertIn("authoring map (🌍 World → 🗺 Map)", text)
 
 
+class JobPanelTests(_Sandbox):
+    """⏱ The active-job panel (🧠 Train, ⚖ Evaluate), from GET /v1/jobs: each job's state, its progress
+    counted as the job counts it (generations, stories judged), its scores, how long it queued, runs or
+    took, how many jobs run before a queued one (one at a time, in order), a failure with what to do, and a
+    finished job's result opened where it belongs. An identical submission while one is queued or running
+    is not queued again. And ▶ Play's discovered map, drawn."""
+
+    def _blocking_benchmark(self, release):
+        def benchmark(stories, seed, engine_id, variants, pairwise, workers, progress=None, **kwargs):
+            progress(1, stories, "stories judged")
+            release.wait(30)
+            return {"target": api.evaluation.describe_target(None), "seeds": [seed, seed + stories - 1],
+                    "variants": {}, "stories": stories, "judged": stories, "engagement": 6.5,
+                    "criteria": {"surprise": 6.0}, "rows": [{"seed": seed, "engagement": 6.5, "scores": {},
+                                                              "fitness": 1.0, "turns": 3, "won": False,
+                                                              "verdict": "ok"}]}
+        return benchmark
+
+    def test_duplicates_are_not_queued_and_the_queue_is_told(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+        with patch.object(api.evaluation, "benchmark", side_effect=self._blocking_benchmark(release)):
+            body = {"stories": 3, "seed": 4}
+            first = self.client.post("/v1/jobs/judge-benchmark", json=body).json()
+            self.assertFalse(first["reused"])
+            for _ in range(100):  # until it runs
+                if self.client.get(f"/v1/jobs/{first['id']}").json()["status"] == "running":
+                    break
+                time.sleep(0.05)
+            again = self.client.post("/v1/jobs/judge-benchmark", json=body).json()
+            self.assertEqual((again["id"], again["reused"]), (first["id"], True))     # the same job, not a second
+            other = self.client.post("/v1/jobs/judge-benchmark", json={**body, "seed": 5}).json()
+            self.assertNotEqual(other["id"], first["id"])
+            self.assertEqual(self.client.get(f"/v1/jobs/{other['id']}").json()["queue_ahead"], 1)  # one runs first
+            running = self.client.get(f"/v1/jobs/{first['id']}").json()
+            self.assertEqual(running["progress"], {"generation": 1, "total": 3, "label": "stories judged"})
+            self.assertIsNone(running["queue_ahead"])
+            listed = {job["id"]: job for job in self.client.get("/v1/jobs").json()["jobs"]}
+            self.assertEqual(listed[other["id"]]["queue_ahead"], 1)
+            release.set()
+            self.assertEqual(_finished(self.client, other["id"])["status"], "finished")
+            self.assertTrue({job["id"]: job for job in self.client.get("/v1/jobs").json()["jobs"]}[first["id"]]["has_result"])
+            # Finished: the same request is a new job again.
+            third = self.client.post("/v1/jobs/judge-benchmark", json=body).json()
+            self.assertFalse(third["reused"])
+            _finished(self.client, third["id"])
+
+    def test_the_panel_shows_states_progress_scores_times_and_what_to_do(self):
+        import datetime
+
+        import app
+
+        now = datetime.datetime(2026, 11, 20, 12, 0, 0, tzinfo=datetime.timezone.utc)
+        at = lambda minutes: (now - datetime.timedelta(minutes=minutes)).isoformat(timespec="seconds")  # noqa: E731
+        jobs = [
+            {"id": "a" * 32, "kind": "simulation", "status": "running", "description": "25 generation(s) of 40",
+             "created_at": at(5), "started_at": at(4), "progress": {"generation": 3, "total": 25,
+             "label": "generation", "best": 812.4, "mean": 640.0, "validation": 790.2, "improved": True}},
+            {"id": "b" * 32, "kind": "simulation", "status": "queued", "description": "a second run",
+             "created_at": at(2), "queue_ahead": 2},
+            {"id": "c" * 32, "kind": "judge-benchmark", "status": "running", "description": "judge benchmark",
+             "created_at": at(1), "started_at": at(1), "progress": {"generation": 4, "total": 10,
+                                                                    "label": "stories judged"}},
+            {"id": "d" * 32, "kind": "simulation", "status": "failed", "description": "too big",
+             "created_at": at(30), "started_at": at(30), "finished_at": at(29),
+             "error": "The run is too much work for this server (max_simulation_work 4000)."},
+            {"id": "e" * 32, "kind": "simulation", "status": "finished", "description": "a done run",
+             "created_at": at(60), "started_at": at(60), "finished_at": at(52), "has_result": True},
+        ]
+        text, active, results = app.jobs_panel(jobs, app.TRAIN_JOBS, now)
+        self.assertTrue(active)
+        self.assertIn("▶ running", text)
+        self.assertIn("Generation 3/25 · best 812.4 · mean 640.0 · benchmark 790.2 · improved", text)
+        self.assertIn("running for 4m 00s", text)
+        self.assertIn("2 job(s) run before it (one at a time, in order) · waiting 2m 00s", text)
+        self.assertIn("1 other job(s) of the studio queued or running", text)       # the evaluation
+        self.assertIn("**What to do:** Lower the population", text)
+        self.assertIn("took 8m 00s", text)
+        self.assertEqual([value for _, value in results], ["e" * 32])                # a finished result to open
+        evaluate_text, _, _ = app.jobs_panel(jobs, app.EVALUATE_JOBS, now)
+        self.assertIn("Stories judged 4/10", evaluate_text)                          # not "Generation"
+        self.assertNotIn("Generation 4/10", evaluate_text)
+        self.assertIn("first in line", app.job_line({**jobs[1], "queue_ahead": 1}, now))
+        self.assertIn("check it with *Check the judge again*", app.job_failure_hint("The judge (vllm) is unavailable"))
+        # The progress bar counts as the job counts.
+        said = []
+        app._job_progress(lambda value, desc=None: said.append(desc), "Judged")(
+            {"generation": 3, "total": 10, "label": "stories judged"})
+        app._job_progress(lambda value, desc=None: said.append(desc))({"generation": 2, "total": 5, "label": "generation",
+                                                                      "validation": 700.0})
+        self.assertEqual(said, ["Stories judged 3/10", "Generation 2/5: benchmark 700"])
+
+    def test_finished_results_open_where_they_belong_and_the_panel_is_wired(self):
+        import app
+
+        trained = self.client.post("/v1/jobs/simulations", json={"candidate_count": 1, "generations": 1,
+                                                                 "simulation_steps": 2, "deterministic": False,
+                                                                 "start_game": False}).json()
+        done = _finished(self.client, trained["id"])
+        self.assertEqual(done["status"], "finished", done.get("error"))
+        self.assertEqual(done["progress"]["label"], "generation")
+        text, timer, finished = app.jobs_panel_ui("train")
+        self.assertIn(trained["id"][:8], text)
+        self.assertFalse(_prop(timer, "active"))                                     # nothing left to poll
+        self.assertEqual(_prop(finished, "value"), trained["id"])
+        engine, card, *buttons = app.open_train_job_ui(trained["id"])
+        self.assertEqual(engine["engine_id"], done["result"]["engine_id"])
+        self.assertIn("Completed engine", card)
+        self.assertTrue(all(_prop(b, "interactive") for b in buttons))
+        release = threading.Event()
+        release.set()
+        with patch.object(api.evaluation, "benchmark", side_effect=self._blocking_benchmark(release)):
+            judged = self.client.post("/v1/jobs/judge-benchmark", json={"stories": 2, "seed": 1}).json()
+            _finished(self.client, judged["id"])
+        summary, table, calib, weights = app.open_evaluate_job_ui(judged["id"])
+        self.assertIn("Engagement 6.50/10", summary)
+        self.assertIn("**Baseline:**", summary)
+        self.assertEqual((calib, weights), (app.gr.skip(), app.gr.skip()))
+        failed = api.sessions.submit_job("judge-benchmark", lambda progress: (_ for _ in ()).throw(ValueError("nope")))
+        _finished(self.client, failed["id"])
+        with self.assertRaises(app.gr.Error):
+            app.open_evaluate_job_ui(failed["id"])
+        # Wired: a timer per panel (off until a job is submitted), the submissions ignore repeated clicks.
+        demo = app.build_app()
+        by = {b.elem_id: b for b in demo.blocks.values() if getattr(b, "elem_id", None)}
+        timers = [b for b in demo.blocks.values() if isinstance(b, app.gr.Timer)]
+        self.assertGreaterEqual(len(timers), 2)
+        for elem, name in (("train-run-button", "run_simulation_ui"), ("evaluate-run", "judge_benchmark_ui")):
+            runs = [fn for fn in demo.fns.values() if (by[elem]._id, "click") in fn.targets
+                    and getattr(fn.fn, "__name__", "") == name]
+            self.assertEqual([fn.trigger_mode for fn in runs], ["once"])
+        for key in ("train", "evaluate"):
+            (opened,) = [fn for fn in demo.fns.values() if (by[f"{key}-jobs-open"]._id, "click") in fn.targets]
+            self.assertEqual(opened.fn.__name__, f"open_{key}_job_ui")
+
+    def test_the_discovered_map_is_drawn(self):
+        import app
+
+        known = {"current": "Market", "previous": "Harbor",
+                 "places": [{"name": "Harbor", "visited": True, "locked": False},
+                            {"name": "Market", "visited": True, "locked": False},
+                            {"name": "Vault", "visited": False, "locked": True}],
+                 "paths": [["Harbor", "Market"]], "one_way": [["Market", "Vault"]]}
+        svg = app.discovered_map_svg(known)
+        self.assertIn("<svg", svg)
+        self.assertIn("Discovered map (this game)", svg)
+        self.assertEqual(svg.count("<circle"), 3)                                    # only the places known
+        self.assertIn("Market 📍", svg)
+        self.assertIn("Harbor ↩", svg)
+        self.assertIn("Vault 🔒", svg)
+        self.assertIn('marker-end="url(#dm-arrow)"', svg)                            # the one-way path
+        self.assertIn("starts with your first step", app.discovered_map_svg(None))
+        screen = app._play_screen({"actions": [], "map": known})
+        self.assertEqual(app.play_part(screen, "map"), svg)
+
+
 class WeightsFollowUpTests(_Sandbox):
     """Weights: saved values changed from the shipped ones are listed (and the shipped values can be put
     in the draft); leaving ⚙ Advanced with an unsaved weights draft asks Save, Discard or Stay; the Basic

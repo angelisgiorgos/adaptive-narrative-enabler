@@ -7,6 +7,17 @@ that introduces them.
 
 ## [Unreleased]
 
+### Job panels in Train and Evaluate; the discovered map drawn
+
+#### Added
+- **⏱ Jobs** in 🧠 Train and ⚖ Evaluate shows the jobs queued, running and recent. Each shows its state,
+  its progress counted as the job counts it (generations, or stories judged), scores, elapsed time and
+  queue position, and a failure's error with what to do. A finished job's result can be opened there.
+  The panel polls only while a job is active, without holding up the rest of the studio.
+- Jobs report a `label` with their progress and a `queue_ahead`. An identical submission while a job is
+  queued or running returns that job (`reused`) instead of queuing it again.
+- ▶ Play draws the discovered map of the game (only what the player has found).
+
 ### 🌍 World: Content, Missions and Map
 
 #### Changed

@@ -2088,7 +2088,8 @@ def submit_simulation(body: SimulationRequest, origin: str = Depends(_origin), u
         return _game_response(game).model_dump()
     run = sessions.resolve_training(_overrides(body))["effective"]
     return sessions.submit_job("simulation", work,
-                               f"{run['generations']} generation(s) of {run['population']} storytellers")
+                               f"{run['generations']} generation(s) of {run['population']} storytellers",
+                               request={"body": body.model_dump(), "origin": origin, "user": user_id})
 
 
 @api.post("/v1/jobs/engines/{engine_id}/continue", status_code=202, tags=["Jobs"])
@@ -2100,7 +2101,9 @@ def submit_continue(engine_id: str, body: EngineContinueRequest, origin: str = D
         return _game_response(sessions.continue_engine(engine_id, body.generations, origin=origin, progress=progress,
                                                        user_id=user_id, start_game=body.start_game,
                                                        **_player(body))).model_dump()
-    return sessions.submit_job("continue", work, f"{body.generations} more generation(s) of engine {engine_id}")
+    return sessions.submit_job("continue", work, f"{body.generations} more generation(s) of engine {engine_id}",
+                               request={"engine": engine_id, "body": body.model_dump(), "origin": origin,
+                                        "user": user_id})
 
 
 @api.post("/v1/jobs/engines/{engine_id}/retrain", status_code=202, tags=["Jobs"])
@@ -2114,7 +2117,9 @@ def submit_retrain(engine_id: str, body: EngineRetrainRequest, origin: str = Dep
             body.deterministic, origin=origin, progress=progress, user_id=user_id, seed=body.seed,
             start_game=body.start_game, **_player(body))).model_dump()
     return sessions.submit_job("retrain", work, f"{body.generations or 'the default'} generation(s) from engine "
-                                                f"{engine_id}")
+                                                f"{engine_id}",
+                               request={"engine": engine_id, "body": body.model_dump(), "origin": origin,
+                                        "user": user_id})
 
 
 class StoryRef(BaseModel):
@@ -2206,7 +2211,7 @@ def submit_judge_benchmark(body: JudgeBenchmarkRequest):
         return result
     kind = "pairwise A/B" if body.pairwise else "judge benchmark"
     return sessions.submit_job("judge-benchmark", work, f"{kind} of {body.stories} stories · {target['label']}",
-                               meta={"target": target})
+                               meta={"target": target}, request=body.model_dump())
 
 
 @api.post("/v1/jobs/calibrate-fitness", status_code=202, tags=["Jobs", "Evaluation"])
@@ -2226,7 +2231,7 @@ def submit_calibration(body: CalibrationRequest):
             engine_meta.record_evaluation(body.engine_id, "calibration", result)
         return result
     return sessions.submit_job("calibrate-fitness", work, f"fit the fitness to the judge on {body.stories} stories · "
-                               f"{target['label']}", meta={"target": target})
+                               f"{target['label']}", meta={"target": target}, request=body.model_dump())
 
 
 @api.get("/v1/evaluation/target", tags=["Evaluation"])
@@ -2288,13 +2293,18 @@ def submit_records_import(body: RecordsImport):
 
 @api.get("/v1/jobs", tags=["Jobs"])
 def list_jobs():
+    """The jobs this API keeps, newest first, without their results (has_result says whether one is
+    there; GET /v1/jobs/{id} has it), each with its progress and queue_ahead."""
     return {"jobs": sessions.list_jobs()}
 
 
 @api.get("/v1/jobs/{job_id}", tags=["Jobs"])
 def get_job(job_id: str):
-    """status (queued, running, finished, failed), progress (generation, total, best, mean,
-    validation), and the result (as the synchronous endpoint returns it) or the error."""
+    """status (queued, running, finished, failed), progress (generation, total, label: what is counted
+    (generation, stories judged, ...), best, mean, validation), queue_ahead (a queued job: how many
+    jobs run before it; jobs run one at a time, in the order they came), and the result (as the
+    synchronous endpoint returns it) or the error. A submission identical to a job still queued or
+    running returns that job (``reused``: true) instead of queuing it again."""
     return _job_or_404(job_id)
 
 

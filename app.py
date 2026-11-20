@@ -1094,6 +1094,57 @@ def map_markdown(known):
     return "\n".join(lines)
 
 
+def discovered_map_svg(known):
+    """The discovered map drawn (▶ Play): only the places this player knows, on a ring; where they are
+    stands out, places visited are filled, places only seen are hollow, a locked one is marked; a line for
+    each path both ways, an arrow for a one-way path. Not the authoring map (🌍 World → 🗺 Map)."""
+    import math
+
+    known = known or {}
+    places = [place["name"] for place in known.get("places") or []]
+    if not places:
+        return '<p class="discovered-map-empty">The discovered map starts with your first step.</p>'
+    info = {place["name"]: place for place in known.get("places") or []}
+    current, previous = known.get("current"), known.get("previous")
+    size = min(520, 200 + 50 * len(places))  # a few places: a small drawing, its labels readable
+    radius = 0 if len(places) == 1 else size * 0.36
+    spots = {place: (size / 2 + radius * math.cos(2 * math.pi * i / len(places) - math.pi / 2),
+                     size / 2 + radius * math.sin(2 * math.pi * i / len(places) - math.pi / 2))
+             for i, place in enumerate(places)}
+    parts = ['<defs><marker id="dm-arrow" viewBox="0 0 10 10" refX="16" refY="5" markerWidth="7" markerHeight="7" '
+             'orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker></defs>']
+    for a, b in known.get("paths") or []:
+        if a in spots and b in spots:
+            (x1, y1), (x2, y2) = spots[a], spots[b]
+            lit = current in (a, b)
+            parts.append(f'<line x1="{x1:.0f}" y1="{y1:.0f}" x2="{x2:.0f}" y2="{y2:.0f}" stroke="{"#0d9488" if lit else "#94a3b8"}" '
+                         f'stroke-width="{3 if lit else 1.5}"/>')
+    for a, b in known.get("one_way") or []:
+        if a in spots and b in spots:
+            (x1, y1), (x2, y2) = spots[a], spots[b]
+            parts.append(f'<line x1="{x1:.0f}" y1="{y1:.0f}" x2="{x2:.0f}" y2="{y2:.0f}" stroke="#64748b" '
+                         'stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#dm-arrow)"/>')
+    for place, (x, y) in spots.items():
+        visited = info[place].get("visited")
+        here = place == current
+        fill = "#0d9488" if here else "#99f6e4" if visited else "none"
+        anchor = "start" if x > size / 2 + 5 else "end" if x < size / 2 - 5 else "middle"
+        dx = 12 if anchor == "start" else -12 if anchor == "end" else 0
+        dy = 20 if y > size / 2 + radius * .9 else -12 if y < size / 2 - radius * .9 else 4
+        label = place.replace("&", "&amp;").replace("<", "&lt;")
+        marks = (" 📍" if here else "") + (" 🔒" if info[place].get("locked") else "") + (" ↩" if place == previous else "")
+        weight = ' font-weight="bold"' if here else ""
+        parts.append(f'<circle cx="{x:.0f}" cy="{y:.0f}" r="{10 if here else 8}" fill="{fill}" stroke="#0f766e" '
+                     f'stroke-width="1.5"{" stroke-dasharray=" + chr(34) + "3 2" + chr(34) if not visited else ""}/>'
+                     f'<text x="{x + dx:.0f}" y="{y + dy:.0f}" text-anchor="{anchor}" font-size="13" fill="currentColor"'
+                     f'{weight}>{label}{marks}</text>')
+    legend = ('<p class="discovered-map-legend">🧭 <b>Discovered map (this game)</b>: filled, visited · hollow, seen '
+              'but not visited · 📍 here · ↩ where you came from · 🔒 locked · dashed arrow, one way. Not the whole '
+              'world: that is the authoring map (🌍 World → 🗺 Map).</p>')
+    return (f'{legend}<svg viewBox="-100 0 {size + 200} {size}" style="width:100%;max-width:{size + 200}px;height:auto" '
+            f'xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Discovered map">{"".join(parts)}</svg>')
+
+
 def _training_outputs(result):
     """What 🧠 Train shows of a finished training (an evolution, a continued or retrained
     engine): the report, its files, the learning curve, what the storyteller learned, the run and its
@@ -1512,11 +1563,171 @@ def integration_session_text(token):
 
 
 def _job_progress(progress, label="Generation"):
+    """A job's progress on the studio's progress bar, counted as the job counts it (its ``label``: a
+    generation, stories judged, ...; ``label`` here: when the job does not say)."""
     def report(state):
         benchmark = state.get("validation")
-        progress((state["generation"], state["total"]), desc=f"{label} {state['generation']}/{state['total']}"
+        counted = str(state.get("label") or label)
+        progress((state["generation"], state["total"]),
+                 desc=f"{counted[:1].upper()}{counted[1:]} {state['generation']}/{state['total']}"
                  + (f": benchmark {benchmark:.0f}" if isinstance(benchmark, (int, float)) else ""))
     return report
+
+
+# ---- the active-job panel (🧠 Train, ⚖ Evaluate): GET /v1/jobs, GET /v1/jobs/{id} -----------------------
+
+TRAIN_JOBS = {"simulation": "🧠 Run", "continue": "🧠 Training continued", "retrain": "🧠 Retrained"}
+EVALUATE_JOBS = {"judge-benchmark": "⚖ Judge benchmark", "calibrate-fitness": "⚖ Fitness calibration"}
+JOB_STATES = {"queued": "⏳ queued", "running": "▶ running", "finished": "✅ finished", "failed": "❌ failed"}
+JOB_HINTS = (  # (what the error says, what to do), first match
+    (r"judge|vllm|language model|gemma", "The judge (the language model) is not available or failed: check it with "
+                                         "*Check the judge again* in ⚖ Evaluate; its settings are `vllm` in ⚙ Advanced → "
+                                         "Engine logic."),
+    (r"max_simulation_work|work limit|too much work", "Lower the population, generations, stories or steps of the "
+                                                       "run, or raise `max_simulation_work` (⚙ Advanced → App & jobs)."),
+    (r"seed", "Give a seed (*Set the seed for this run*), or turn reproducibility off."),
+    (r"unknown engine|not found|no longer", "The engine is gone (finished runs are kept up to a limit): ↻ Refresh "
+                                            "the engine list and choose another."),
+    (r"invalid|cannot be played|not valid", "The world or the settings are invalid: correct what the message names "
+                                            "(🌍 World → 🔍 Checks lists the world's problems), then submit again."),
+)
+
+
+def _parse_time(text):
+    import datetime
+
+    try:
+        return datetime.datetime.fromisoformat(str(text))
+    except (TypeError, ValueError):
+        return None
+
+
+def _duration(seconds):
+    seconds = max(0, int(seconds))
+    return f"{seconds // 3600}h {seconds // 60 % 60:02d}m" if seconds >= 3600 else \
+        f"{seconds // 60}m {seconds % 60:02d}s" if seconds >= 60 else f"{seconds}s"
+
+
+def job_failure_hint(error):
+    """What to do about a job's error (the error itself is shown as it is)."""
+    for pattern, hint in JOB_HINTS:
+        if re.search(pattern, str(error or ""), re.I):
+            return hint
+    return "Correct what the error names, then submit again: the form keeps its settings."
+
+
+def job_line(job, now=None):
+    """One job as the panel shows it: its kind, state, description; where it is (queued: how many jobs run
+    first; running: its progress, counted as the job counts it, and the scores so far); how long it has
+    queued, run or took; a failure's error with what to do."""
+    import datetime
+
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    name = {**TRAIN_JOBS, **EVALUATE_JOBS}.get(job.get("kind"), job.get("kind"))
+    state = JOB_STATES.get(job.get("status"), job.get("status"))
+    created, started, finished = (_parse_time(job.get(k)) for k in ("created_at", "started_at", "finished_at"))
+    parts = [f"**{name}** · {state} · {job.get('description') or ''} · `{str(job.get('id'))[:8]}`"]
+    progress = job.get("progress") or {}
+    if job.get("status") == "queued":
+        ahead = job.get("queue_ahead")
+        parts.append(("first in line: it starts when the job running now ends" if ahead == 1 else
+                      f"{ahead} job(s) run before it (one at a time, in order)" if ahead else "about to start")
+                     + (f" · waiting {_duration((now - created).total_seconds())}" if created else ""))
+    if progress:
+        counted = str(progress.get("label") or "step")
+        line = f"{counted[:1].upper()}{counted[1:]} {progress.get('generation')}/{progress.get('total')}"
+        scores = [f"{label} {progress[key]:.1f}" for key, label in (("best", "best"), ("mean", "mean"),
+                                                                    ("validation", "benchmark"))
+                  if isinstance(progress.get(key), (int, float))]
+        parts.append(line + (" · " + " · ".join(scores) if scores else "")
+                     + (" · improved" if progress.get("improved") else ""))
+    if job.get("status") == "running" and started:
+        parts.append(f"running for {_duration((now - started).total_seconds())}")
+    elif job.get("status") in ("finished", "failed") and started and finished:
+        parts.append(f"took {_duration((finished - started).total_seconds())}")
+    if job.get("status") == "failed":
+        parts.append(f"**Error:** {job.get('error') or 'no message'}  \n**What to do:** {job_failure_hint(job.get('error'))}")
+    return "  \n".join(parts)
+
+
+def jobs_panel(jobs, kinds, now=None, recent=5):
+    """(the panel's text, whether a job of these kinds is still queued or running, the finished jobs with a
+    result to open: (label, id))."""
+    mine = [job for job in jobs if job.get("kind") in kinds]
+    active = [job for job in mine if job.get("status") in ("queued", "running")]
+    done = [job for job in mine if job.get("status") in ("finished", "failed")][:recent]
+    others = [job for job in jobs if job.get("kind") not in kinds and job.get("status") in ("queued", "running")]
+    lines = []
+    if active:
+        lines += ["#### Now"] + [f"- {job_line(job, now)}" for job in active]
+    if others:
+        lines.append(f"*{len(others)} other job(s) of the studio queued or running (one runs at a time): "
+                     + ", ".join(sorted({str(job.get('kind')) for job in others})) + ".*")
+    if done:
+        lines += ["#### Recent"] + [f"- {job_line(job, now)}" for job in done]
+    if not lines:
+        lines = ["*No job yet: a run (or an evaluation) shows here while it is queued and runs, then its result.*"]
+    names = {**TRAIN_JOBS, **EVALUATE_JOBS}
+    results = [(f"{names.get(job['kind'], job['kind'])} · {job.get('description') or ''} · "
+                f"{str(job.get('finished_at') or '')[11:16]} UTC · {job['id'][:8]}", job["id"])
+               for job in done if job.get("status") == "finished" and job.get("has_result", True)]
+    return "\n".join(lines), bool(active), results
+
+
+@ui
+def jobs_panel_ui(kinds_key, chosen=None):
+    """The panel's refresh (on a timer while a job runs): its text, the timer (on only while one of its jobs
+    is queued or running), the finished jobs to open (the chosen one kept)."""
+    kinds = TRAIN_JOBS if kinds_key == "train" else EVALUATE_JOBS
+    try:
+        jobs = API.get("/v1/jobs")["jobs"]
+    except APIError as exc:
+        return f"⚠ The jobs could not be read: {exc}", gr.Timer(active=False), gr.skip()
+    text, active, results = jobs_panel(jobs, kinds)
+    ids = [value for _, value in results]
+    return (text, gr.Timer(active=active),
+            gr.Dropdown(choices=results, value=chosen if chosen in ids else (ids[0] if ids else None)))
+
+
+@ui
+def open_train_job_ui(job_id):
+    """A finished training job's result on Train's result card, with its Play/Evaluate/Export actions (its
+    exact engine). Returns (the completed engine, the card, its three actions)."""
+    if not job_id:
+        raise gr.Error("Choose a finished job.")
+    job = API.get(_path("/v1/jobs", job_id))
+    if job.get("status") != "finished" or not job.get("result"):
+        raise gr.Error(f"That job has no result ({job.get('status')}): {job.get('error') or 'it has not finished'}.")
+    kind = {"simulation": "run", "continue": "continue", "retrain": "retrain"}.get(job["kind"], "run")
+    done = completed_engine(job["result"], kind)
+    return (done, *completed_view_ui(done))
+
+
+@ui
+def open_evaluate_job_ui(job_id):
+    """A finished evaluation job's result where it belongs: a judge benchmark's summary and table, or a
+    calibration's summary and suggested weights. Returns (benchmark summary, its table, calibration
+    summary, the term weights)."""
+    if not job_id:
+        raise gr.Error("Choose a finished job.")
+    job = API.get(_path("/v1/jobs", job_id))
+    if job.get("status") != "finished" or not job.get("result"):
+        raise gr.Error(f"That job has no result ({job.get('status')}): {job.get('error') or 'it has not finished'}.")
+    if job["kind"] == "judge-benchmark":
+        return (*benchmark_view(job["result"]), gr.skip(), gr.skip())
+    return (gr.skip(), gr.skip(), *calibration_view(job["result"]))
+
+
+def jobs_panel_block(kinds_key, title):
+    """The active-job panel (its components), polled by a timer while a job is queued or running."""
+    with gr.Accordion(title, open=True, elem_id=f"{kinds_key}-jobs"):
+        text = gr.Markdown(elem_id=f"{kinds_key}-jobs-text")
+        with gr.Row(equal_height=True):
+            finished = gr.Dropdown([], label="A finished job", scale=4, elem_id=f"{kinds_key}-jobs-finished")
+            open_button = gr.Button("Open its result", scale=1, elem_id=f"{kinds_key}-jobs-open")
+            refresh = gr.Button("↻", scale=0, min_width=48, elem_id=f"{kinds_key}-jobs-refresh")
+        timer = gr.Timer(2.0, active=False)
+    return {"text": text, "finished": finished, "open": open_button, "refresh": refresh, "timer": timer}
 
 
 @ui
@@ -2204,7 +2415,7 @@ PLAY_STATS = [("Story default", "story default"), ("Random", "random"), ("Balanc
               ("My own points", "defined")]
 # What the game screen shows, in the order _play_screen returns it (play_part picks one by name).
 PLAY_PARTS = ("ending", "hud", "place", "turn", *(f"choice {i + 1}" for i in range(CHOICE_BUTTONS)), "quest", "you",
-              "people", "actions", "journey")
+              "people", "map", "actions", "journey")
 
 
 def play_part(outputs, name, offset=0):
@@ -2464,7 +2675,7 @@ def _play_screen(state, journal=None):
     return (gr.Markdown(value=ending, visible=bool(ending)), gr.Markdown(value=hud, visible=True),
             place_markdown(state), gr.Markdown(value=card, visible=bool(card)),
             *buttons, quest_markdown(state.get("quest"), journal), you_markdown(state), people_markdown(state),
-            actions, journey_markdown(journal))
+            discovered_map_svg(state.get("map")), actions, journey_markdown(journal))
 
 
 def _story_so_far(token):
@@ -2896,8 +3107,16 @@ def judge_benchmark_ui(stories, seed, engine_id, pairwise, variants_text, worker
         "variants": variants, "workers": int(workers),
     })
     result = API.wait(job, _job_progress(progress, "Judged"))
+    return benchmark_view(result, engine_id)
+
+
+def benchmark_view(result, engine_id=None):
+    """A judge benchmark's result (absolute, or pairwise A/B): (its summary naming what was evaluated, the
+    table of stories or pairs)."""
+    target = result.get("target") or {}
+    engine_id = engine_id if engine_id is not None else target.get("engine_id")
     evaluated = _evaluated(result, engine_id)
-    if pairwise:
+    if "a_wins" in result:
         rate = result.get("b_win_rate")
         low, high = result["wilson_95"]
         a_rate = None if rate is None else 1 - rate
@@ -2930,6 +3149,12 @@ def calibrate_fitness_ui(stories, seed, engine_id, apply, target=None, progress=
     job = API.post("/v1/jobs/calibrate-fitness", {"stories": int(stories), "seed": int(seed or 0),
                                                   "engine_id": engine_id, "apply": bool(apply)})
     result = API.wait(job, _job_progress(progress, "Judged"))
+    return calibration_view(result, engine_id)
+
+
+def calibration_view(result, engine_id=None):
+    """A calibration's result: (its summary naming what was evaluated, the suggested term weights as YAML)."""
+    engine_id = engine_id if engine_id is not None else (result.get("target") or {}).get("engine_id")
     cv = result.get("cv_spearman")
     summary = (f"### Fitted on {result['n']} judged stories\nAgreement with the judge (Spearman): "
                f"{result['spearman']:+.2f} on the stories fitted, "
@@ -6705,6 +6930,7 @@ def build_app():
                         for control in run_controls:  # what the user sets (the form's own look is an output)
                             control.input(run_form_ui, run_controls, run_form, show_progress="hidden")
                         run_button = gr.Button("🧠 Evolve storytellers", variant="primary", elem_id="train-run-button")
+                        train_jobs = jobs_panel_block("train", "⏱ Jobs: queued, running and recent trainings")
                         # Its progress (generation by generation) shows here while it runs, then the engine it made.
                         gr.Markdown("#### 2 · Progress and the completed engine")
                         result_card = gr.Markdown(NO_RESULT, elem_classes="result-card", elem_id="train-result")
@@ -6798,15 +7024,29 @@ def build_app():
                     run_simulation_ui, [*run_controls, run_plan],
                     [*train_outputs, memory_status, run_state, export_generation, *result_outputs],
                     concurrency_limit=1,
-                    concurrency_id="narrative_evolution",
+                    concurrency_id="narrative_evolution", trigger_mode="once",
                 )]
                 record_outputs = [*train_outputs, run_state, export_generation, *result_outputs]
                 engine_events.append(continue_record.click(
                     continue_recorded_ui, [record_engine, more_generations],
-                    record_outputs, concurrency_limit=1, concurrency_id="narrative_evolution"))
+                    record_outputs, concurrency_limit=1, concurrency_id="narrative_evolution", trigger_mode="once"))
                 engine_events.append(retrain_record.click(
                     retrain_recorded_ui, [record_engine, more_generations, *run_controls, retrain_plan],
-                    record_outputs, concurrency_limit=1, concurrency_id="narrative_evolution"))
+                    record_outputs, concurrency_limit=1, concurrency_id="narrative_evolution", trigger_mode="once"))
+                # The jobs panel: polled while a training is queued or running (a submission starts the polling;
+                # it stops by itself); a finished training's result opens on the card, with its actions.
+                train_job_outputs = [train_jobs["text"], train_jobs["timer"], train_jobs["finished"]]
+                for event in (train_jobs["timer"].tick, train_jobs["refresh"].click, demo.load):
+                    event(lambda chosen: jobs_panel_ui("train", chosen), train_jobs["finished"], train_job_outputs,
+                          show_progress="hidden")
+                for button in (run_button, continue_record, retrain_record):
+                    button.click(lambda: gr.Timer(active=True), None, train_jobs["timer"], show_progress="hidden")
+                for event in engine_events:
+                    event.then(lambda chosen: jobs_panel_ui("train", chosen), train_jobs["finished"], train_job_outputs,
+                               show_progress="hidden")
+                train_jobs["open"].click(open_train_job_ui, train_jobs["finished"], result_outputs,
+                                         show_progress="hidden").success(lambda done: done, train_result, saved_result,
+                                                                         show_progress="hidden")
                 for event in engine_events[1:]:  # continued or retrained: Run shows its completed engine
                     event.success(lambda: gr.Tabs(selected="train-run"), None, train_sections, show_progress="hidden")
                 for event in engine_events:  # remembered in this browser, across reloads
@@ -6914,6 +7154,7 @@ def build_app():
                         play_you = gr.Markdown("### 🧍 You\nStart a game to see your character.", elem_classes="you-card")
                         with gr.Accordion("👥 People met & the discovered map", open=False):
                             play_people = gr.Markdown("### People met\nNobody yet.", elem_classes="people-card")
+                            play_map = gr.HTML(discovered_map_svg(None), elem_id="play-discovered-map")
                 with gr.Accordion("🧭 Your journey: every choice and what came of it", open=False):
                     play_journey = gr.Markdown("*Your journey starts with your first choice.*", elem_classes="journey")
                 with gr.Accordion("📖 The story so far", open=False):
@@ -6924,7 +7165,7 @@ def build_app():
                     game_judgement = gr.Markdown()
 
                 play_screen = [play_ending, play_hud, play_scene, play_turn, *play_buttons, play_quest_log, play_you,
-                               play_people, play_actions, play_journey]
+                               play_people, play_map, play_actions, play_journey]
                 new_game_outputs = [play_token, *play_screen, play_story, play_status]
                 player_inputs = [play_who, play_quest, play_stats, stats_points]
                 started = [
@@ -6983,6 +7224,7 @@ def build_app():
                     judge_status_button = gr.Button("Check the judge again", size="sm", scale=0)
                 demo.load(judge_status_ui, None, judge_status)
                 judge_status_button.click(judge_status_ui, None, judge_status)
+                evaluate_jobs = jobs_panel_block("evaluate", "⏱ Jobs: queued, running and recent evaluations")
                 gr.Markdown("#### What is evaluated")
                 evaluation_choices = evaluation_engines()
                 eval_target = gr.Radio(list(EVALUATION_TARGETS),
@@ -7017,7 +7259,8 @@ def build_app():
                     bench_table = gr.Dataframe(label="Stories", interactive=False, wrap=True)
                     bench_button.click(judge_benchmark_ui, [bench_stories, bench_seed, eval_engine, bench_pairwise,
                                                             bench_variants, bench_workers, eval_target],
-                                       [bench_summary, bench_table], concurrency_limit=1, concurrency_id="judge")
+                                       [bench_summary, bench_table], concurrency_limit=1, concurrency_id="judge",
+                                       trigger_mode="once")
                 with gr.Accordion("Fit the fitness to the judge", open=False):
                     gr.Markdown(
                         "Plays and judges stories of the target above, fits the judged engagement on the fitness "
@@ -7039,7 +7282,18 @@ def build_app():
                     term_weights_status = gr.Markdown()
                     calib_button.click(calibrate_fitness_ui, [calib_stories, calib_seed, eval_engine, calib_apply,
                                                               eval_target],
-                                       [calib_summary, term_weights_editor], concurrency_limit=1, concurrency_id="judge")
+                                       [calib_summary, term_weights_editor], concurrency_limit=1, concurrency_id="judge",
+                                       trigger_mode="once")
+                    # The jobs panel: polled while an evaluation is queued or running; a finished one opens its result.
+                    evaluate_job_outputs = [evaluate_jobs["text"], evaluate_jobs["timer"], evaluate_jobs["finished"]]
+                    for event in (evaluate_jobs["timer"].tick, evaluate_jobs["refresh"].click, demo.load):
+                        event(lambda chosen: jobs_panel_ui("evaluate", chosen), evaluate_jobs["finished"],
+                              evaluate_job_outputs, show_progress="hidden")
+                    for button in (bench_button, calib_button):
+                        button.click(lambda: gr.Timer(active=True), None, evaluate_jobs["timer"], show_progress="hidden")
+                    evaluate_jobs["open"].click(open_evaluate_job_ui, evaluate_jobs["finished"],
+                                                [bench_summary, bench_table, calib_summary, term_weights_editor],
+                                                show_progress="hidden")
                     save_weights_terms.click(save_term_weights_ui, term_weights_editor,
                                              [term_weights_editor, term_weights_status])
                     reload_weights_terms.click(load_term_weights_ui, None, term_weights_editor)
