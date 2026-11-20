@@ -2524,6 +2524,7 @@ the API disagree, or when this guide names a request the API does not have.
 | `GET` | `/v1/judge/status` | [evaluate](#evaluate), [grow](#grow), [play-judge](#play-judge), [play-setup](#play-setup) | Whether the language model judge (Gemma 4 through vLLM) can be used: |
 | `POST` | `/v1/judge/compare` | [evaluate-stories](#evaluate-stories) | Gemma 4 as a game critic on two stories (each a game in progress or a recorded story): |
 | `POST` | `/v1/jobs/judge-benchmark` | [evaluate-benchmark](#evaluate-benchmark) | The judge on the engine's stories, in the background (poll GET /v1/jobs/{id}). |
+| `GET` | `/v1/evaluation/target` | [evaluate-benchmark](#evaluate-benchmark) | What a judge benchmark or calibration with this engine_id plays, before it is submitted. |
 | `POST` | `/v1/jobs/calibrate-fitness` | [evaluate-calibration](#evaluate-calibration) | Fit the fitness to the judge in the background: |
 | `GET` | `/v1/fitness/term-weights` | [evaluate-calibration](#evaluate-calibration) | fitness.term_weights: |
 | `PUT` | `/v1/fitness/term-weights` | [evaluate-calibration](#evaluate-calibration) | Save fitness.term_weights (e.g. |

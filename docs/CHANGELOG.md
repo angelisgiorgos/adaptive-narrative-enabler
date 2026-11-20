@@ -7,6 +7,21 @@ that introduces them.
 
 ## [Unreleased]
 
+### ⚖ Evaluate: a selected trained engine, or the baseline, said before and after
+
+#### Changed
+- ⚖ Evaluate has one target for the judge benchmark and the calibration: a **selected trained engine**
+  or the explicit **baseline** (the current configuration with random storytellers). *Evaluate this
+  result* selects the completed engine; a training or a loaded engine is offered (the newest selected)
+  without a reload. An engine target without an engine is refused, never replaced by the baseline.
+- The target is shown before submission, with each section's plan (seeds; in A/B: A and B are both the
+  target, B with version B's settings, same seeds, both orders). It is also shown in the results.
+  A/B results no longer call side A "the current settings" when an engine was selected.
+
+#### Added
+- `GET /v1/evaluation/target`; judge-benchmark and calibrate-fitness results and jobs carry `target`
+  (and `seeds`; pairwise results also carry `a` and `b`).
+
 ### ▶ Play: quests from the chosen engine's own world
 
 #### Changed

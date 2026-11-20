@@ -1407,12 +1407,13 @@ def _now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
 
-def submit_job(kind: str, work, description: str = "") -> dict:
+def submit_job(kind: str, work, description: str = "", meta: dict | None = None) -> dict:
     """Queue ``work(progress)``; ``progress(generation, total, stats)`` records how far
-    it got and ``work`` returns the job's result (JSON data). Returns the job."""
+    it got and ``work`` returns the job's result (JSON data). ``meta``: more fields of the job
+    (e.g. an evaluation's ``target``). Returns the job."""
     job = {"id": uuid.uuid4().hex, "kind": kind, "description": description, "status": "queued",
            "created_at": _now(), "started_at": None, "finished_at": None, "progress": None,
-           "result": None, "error": None}
+           "result": None, "error": None, **(meta or {})}
     with _JOBS_LOCK:
         JOBS[job["id"]] = job
         while len(JOBS) > MAX_JOBS:

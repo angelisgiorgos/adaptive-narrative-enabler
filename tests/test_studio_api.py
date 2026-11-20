@@ -1168,11 +1168,12 @@ class TrainResultTests(_Sandbox):
         (story,) = records.list_stories(session_id=token)
         self.assertEqual(story["engine_id"], engine_id)
 
-        # ⚖ Evaluate this result: both storyteller pickers hold this engine, and that is what is submitted.
+        # ⚖ Evaluate this result: the selected trained engine is this one, and that is what is submitted.
         opened = app.evaluate_result_ui(done)
-        bench, calib, note = opened[-3:]
+        target, engine_picker, note = opened[-3:]
         self.assertEqual(_prop(opened[0], "selected"), "evaluate")
-        self.assertEqual((_prop(bench, "value"), _prop(calib, "value")), (engine_id, engine_id))
+        self.assertEqual((_prop(target, "value"), _prop(engine_picker, "value")), (app.TARGET_ENGINE, engine_id))
+        chosen = (_prop(engine_picker, "value"), _prop(target, "value"))
         submitted = []
 
         def stop(path, body=None, **kwargs):  # what would be submitted, before any story is judged
@@ -1181,9 +1182,9 @@ class TrainResultTests(_Sandbox):
 
         with patch.object(app.API, "post", side_effect=stop):
             with self.assertRaises(RuntimeError):
-                app.judge_benchmark_ui(10, 0, _prop(bench, "value"), False, "", 4, progress=self._quiet)
+                app.judge_benchmark_ui(10, 0, chosen[0], False, "", 4, chosen[1], progress=self._quiet)
             with self.assertRaises(RuntimeError):
-                app.calibrate_fitness_ui(30, 0, _prop(calib, "value"), False, progress=self._quiet)
+                app.calibrate_fitness_ui(30, 0, chosen[0], False, chosen[1], progress=self._quiet)
         self.assertEqual([(path, body["engine_id"]) for path, body in submitted],
                          [("/v1/jobs/judge-benchmark", engine_id), ("/v1/jobs/calibrate-fitness", engine_id)])
         recorded = records.load_engine(engine_id)
@@ -1201,7 +1202,7 @@ class TrainResultTests(_Sandbox):
             self.assertEqual(kept.id, kept_id)
             self.assertEqual(evaluation._source(kept_id)[2], dict(kept.genome_traits))
             api._evaluable_engine(kept_id)
-            self.assertEqual(_prop(app.evaluate_result_ui({"engine_id": kept_id})[-3], "value"), kept_id)
+            self.assertEqual(_prop(app.evaluate_result_ui({"engine_id": kept_id})[-2], "value"), kept_id)
         with self.assertRaises(api.HTTPException) as unknown:
             api._evaluable_engine("0" * 32)
         self.assertEqual(unknown.exception.status_code, 404)
@@ -2286,9 +2287,9 @@ class EngineNamesTests(_Sandbox):
         self.assertIn("its id stays", message)
         self.assertEqual(_prop(box, "value"), "Second name")
         self.assertIn("Completed engine: Second name", result_card)
-        self.assertEqual(len(pickers), 8)
+        self.assertEqual(len(pickers), 7)
         self.assertTrue(all(any(engine_id == value and text.startswith("Second name") for text, value in
-                                _prop(picker, "choices")) for picker in pickers[:5]))
+                                _prop(picker, "choices")) for picker in pickers[:4]))
         # An export is named after the engine unless a name is given, and carries it.
         exported = export.export_engine(source="engine", engine_id=engine_id)
         self.assertEqual((exported["manifest"]["name"], exported["manifest"]["engine_name"]),
@@ -2502,6 +2503,158 @@ class EngineQuestsTests(_Sandbox):
             names = [fn.fn.__name__ for fn in demo.fns.values() if (trigger._id, "change") in fn.targets]
             self.assertIn("play_quests_ui", names)
         self.assertIn("play-quest-world", by)
+
+
+class EvaluationTargetTests(_Sandbox):
+    """⚖ Evaluate plays a selected trained engine or, explicitly, the baseline (the current configuration with
+    random storytellers); the target is said before submission and in the results, and the engine_id meant is
+    the one the job plays. In A/B, A and B are both that target (B with version B's settings) on the same
+    seeds, each pair judged in both orders. Two engines, and an active configuration unlike both."""
+
+    def setUp(self):
+        super().setUp()
+        from backend import export
+
+        for patcher in (patch.dict(os.environ, {"ANE_RECORDS": "off", "ANE_SAVE_DIR": str(self.dir / "evaluate")}),
+                        patch.dict(export.ENGINES, {}, clear=True), patch.dict(export.RUNS, {}, clear=True)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.addCleanup(lambda: (setattr(store.config, "_override", None), type(store.config).reload(store.config)))
+        self.engines = [self.client.post("/v1/simulations", json={
+            "candidate_count": 1, "generations": 1, "simulation_steps": 2, "deterministic": False}).json()["engine_id"]
+            for _ in range(2)]
+        current = store.config.as_dict()  # the active configuration differs from both engines' saved worlds
+        current["world_definition"]["missions"]["evaluate_errand"] = copy.deepcopy(
+            current["world_definition"]["missions"]["shield_bearer"])
+        store.config.use_override(current)
+        self.played, self.compared = [], []
+
+    def _fakes(self):
+        """Stories and the judge stand-ins: what is played (engine, seeds, variants) and judged is recorded."""
+        played, compared = self.played, self.compared
+
+        def play_stories(count, first_seed=0, engine_id=None, variants=None, budget=None):
+            played.append({"count": count, "seed": first_seed, "engine_id": engine_id, "variants": variants})
+            return [{"seed": seed, "digest": f"{engine_id}|{sorted((variants or {}).items())}|{seed}",
+                     "breakdown": {"term": 1.0}, "fitness": 10.0, "turns": 5, "won": False, "end_kind": "limit"}
+                    for seed in range(first_seed, first_seed + count)]
+
+        class Judge:
+            def judge_digest(self, digest):
+                return {"engagement": 7.0, "scores": {}, "verdict": "fine"}
+
+            def compare_digests(self, digest_a, digest_b):  # GameJudge reads both orders here
+                compared.append((digest_a, digest_b))
+                return {"winner": "A", "criteria": {}, "reason": "", "agreed": True}
+
+        return patch.object(api.evaluation, "play_stories", side_effect=play_stories), \
+            patch.object(api.evaluation, "_judge", return_value=Judge())
+
+    def test_the_target_is_said_and_the_intended_engine_reaches_the_job(self):
+        engine_a, engine_b = self.engines
+        target = self.client.get("/v1/evaluation/target", params={"engine_id": engine_a}).json()
+        self.assertEqual((target["kind"], target["engine_id"]), ("engine", engine_a))
+        self.assertTrue(target["label"].endswith(engine_a[:8]))
+        self.assertFalse(target["world"]["current"])                     # its saved world, not the active one
+        baseline = self.client.get("/v1/evaluation/target").json()
+        self.assertEqual((baseline["kind"], baseline["engine_id"], baseline["world"]["current"]),
+                         ("baseline", None, True))
+        self.assertEqual(self.client.get("/v1/evaluation/target", params={"engine_id": "0" * 32}).status_code, 404)
+        plays, judge = self._fakes()
+        with plays, judge:
+            job = self.client.post("/v1/jobs/judge-benchmark", json={"stories": 3, "seed": 7, "engine_id": engine_a,
+                                                                      "workers": 2}).json()
+            self.assertEqual(job["target"]["engine_id"], engine_a)          # on the job from its submission
+            self.assertIn(engine_a[:8], job["description"])
+            done = _finished(self.client, job["id"])
+            self.assertEqual(done["status"], "finished", done.get("error"))
+            self.assertEqual((done["result"]["target"]["engine_id"], done["result"]["seeds"]), (engine_a, [7, 9]))
+            self.assertEqual(self.played, [{"count": 3, "seed": 7, "engine_id": engine_a, "variants": None}])
+            # A/B with the selected engine: both sides are that engine, on the same seeds; each pair compared.
+            self.played.clear()
+            job = self.client.post("/v1/jobs/judge-benchmark", json={
+                "stories": 2, "seed": 4, "engine_id": engine_b, "pairwise": True,
+                "variants": {"climax.enabled": False}}).json()
+            done = _finished(self.client, job["id"])
+            self.assertEqual(done["status"], "finished", done.get("error"))
+        a_side, b_side = self.played
+        self.assertEqual((a_side["engine_id"], b_side["engine_id"]), (engine_b, engine_b))   # not ignored
+        self.assertEqual((a_side["seed"], a_side["count"]), (b_side["seed"], b_side["count"]))  # same seeds
+        self.assertEqual((a_side["variants"], b_side["variants"]), (None, {"climax.enabled": False}))
+        self.assertEqual([(a.rsplit("|", 1)[1], b.rsplit("|", 1)[1]) for a, b in self.compared],
+                         [("4", "4"), ("5", "5")])                          # pair by pair, the same seed
+        result = done["result"]
+        self.assertEqual(result["target"]["engine_id"], engine_b)
+        self.assertIn("as it is", result["a"]["label"])
+        self.assertEqual(result["b"]["variants"], {"climax.enabled": False})
+        # Calibration: the job carries its target too.
+        with patch.object(api.evaluation, "calibrate", side_effect=lambda stories, seed, engine_id, *a, **k: {
+                "target": api.evaluation.describe_target(engine_id), "term_weights": {}, "n": stories}) as calibrate:
+            job = self.client.post("/v1/jobs/calibrate-fitness", json={"stories": 10, "engine_id": engine_a}).json()
+            self.assertEqual(job["target"]["engine_id"], engine_a)
+            _finished(self.client, job["id"])
+        self.assertEqual(calibrate.call_args.args[2], engine_a)
+
+    def test_the_studio_keeps_the_engine_the_baseline_explicit_and_the_plan_visible(self):
+        import gradio as gr
+
+        import app
+
+        engine_a, engine_b = self.engines
+        # Evaluate this result: the selected trained engine is this one (not the newest, not the baseline).
+        opened = app.evaluate_result_ui({"engine_id": engine_a})
+        target, picker, note = opened[-3:]
+        self.assertEqual((_prop(target, "value"), _prop(picker, "value")), (app.TARGET_ENGINE, engine_a))
+        self.assertNotIn("", [value for _, value in _prop(picker, "choices")])  # the baseline is not an engine
+        # The plan, before anything is submitted.
+        shown, said, card, bench, calib = app.evaluation_plan_ui(app.TARGET_ENGINE, engine_a, False, "", 5, 2, 10, 0)
+        self.assertIn("**Selected trained engine:**", said)
+        self.assertIn(engine_a, said)
+        self.assertIn("seeds 2–6", bench)
+        _, _, _, bench, _ = app.evaluation_plan_ui(app.TARGET_ENGINE, engine_a, True, "climax.enabled: false", 3, 0,
+                                                   10, 0)
+        self.assertIn("**A/B on the same 3 seeds**", bench)
+        self.assertIn("both orders", bench)
+        self.assertIn("with version B's settings (`climax.enabled: False`)", bench)
+        _, said, _, bench, _ = app.evaluation_plan_ui(app.TARGET_BASELINE, engine_a, False, "", 5, 0, 10, 0)
+        self.assertIn("**Baseline:**", said)
+        self.assertIn("Baseline: the current configuration with random storytellers", bench)
+        _, said, _, _, _ = app.evaluation_plan_ui(app.TARGET_ENGINE, None, False, "", 5, 0, 10, 0)
+        self.assertIn("No trained engine selected", said)
+        # What is submitted: the selected engine; the baseline only when chosen; never one for the other.
+        submitted = []
+
+        def stop(path, body=None, **kwargs):
+            submitted.append(body["engine_id"])
+            raise RuntimeError("stopped before judging")
+
+        with patch.object(app.API, "post", side_effect=stop):
+            for engine, target_choice in ((engine_a, app.TARGET_ENGINE), (engine_a, app.TARGET_BASELINE)):
+                with self.assertRaises(RuntimeError):
+                    app.judge_benchmark_ui(4, 0, engine, False, "", 2, target_choice, progress=lambda *a, **k: None)
+                with self.assertRaises(RuntimeError):
+                    app.calibrate_fitness_ui(10, 0, engine, False, target_choice, progress=lambda *a, **k: None)
+            with self.assertRaises(gr.Error):                               # an engine target needs an engine
+                app.judge_benchmark_ui(4, 0, None, False, "", 2, app.TARGET_ENGINE, progress=lambda *a, **k: None)
+            with self.assertRaises(gr.Error):                               # A/B needs version B's settings
+                app.judge_benchmark_ui(4, 0, engine_a, True, "# none", 2, app.TARGET_ENGINE,
+                                       progress=lambda *a, **k: None)
+        self.assertEqual(submitted, [engine_a, engine_a, None, None])
+        # The result says what it evaluated (through the real job, with the stand-ins).
+        plays, judge = self._fakes()
+        with plays, judge:
+            summary, table = app.judge_benchmark_ui(2, 0, engine_a, True, "climax.enabled: false", 2,
+                                                    app.TARGET_ENGINE, progress=lambda *a, **k: None)
+        self.assertIn("**A** = ", summary)
+        self.assertIn(f"engine `{engine_a}`", summary)
+        self.assertNotIn("Current settings (A)", summary)
+        # After a training or a loaded engine, the newest is offered and selected; otherwise the choice stays.
+        target, picker = app.evaluation_engines_ui(app.TARGET_ENGINE, engine_a, newest=True)
+        self.assertEqual(_prop(picker, "value"), engine_b)
+        target, picker = app.evaluation_engines_ui(app.TARGET_ENGINE, engine_a)
+        self.assertEqual(_prop(picker, "value"), engine_a)
+        target, picker = app.evaluation_engines_ui(app.TARGET_BASELINE, engine_a)
+        self.assertEqual((_prop(target, "value"), _prop(picker, "visible")), (app.TARGET_BASELINE, False))
 
 
 class WeightsFollowUpTests(_Sandbox):

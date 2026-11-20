@@ -105,6 +105,30 @@ def _source(engine_id):
     return active, export_tag_vectors(world_tags(active)), None
 
 
+BASELINE_LABEL = "Baseline: the current configuration with random storytellers"
+
+
+def describe_target(engine_id=None):
+    """What an evaluation plays (said before it is submitted and in its result): {kind: engine |
+    baseline, engine_id, label, world: {source, digest, id, summary, current}, storyteller}. A
+    selected trained engine: its saved world and its trained storyteller (the same traits for every
+    seed). The baseline: the current configuration, with a random storyteller drawn per seed.
+    LookupError for an unknown engine."""
+    from backend import export
+
+    if engine_id:
+        engine_id, cfg = export.engine_world_config(engine_id)
+        try:
+            label = export.engine_card(engine_id)["label"]
+        except LookupError:
+            label = f"engine {engine_id[:8]}"
+        return {"kind": "engine", "engine_id": engine_id, "label": label,
+                "world": export.world_identity(cfg, engine_id),
+                "storyteller": "its trained storyteller (the same for every seed)"}
+    return {"kind": "baseline", "engine_id": None, "label": BASELINE_LABEL,
+            "world": export.world_identity(config.as_dict()), "storyteller": "a random storyteller per seed"}
+
+
 def play_stories(count, first_seed=0, engine_id=None, variants=None, budget=None):
     """Play ``count`` stories (seeds first_seed..) in a spawned process, with the current
     settings or a recorded engine's, and ``variants`` applied."""
@@ -182,6 +206,8 @@ def benchmark(stories=10, seed=0, engine_id=None, variants=None, pairwise=False,
 
     judge = judge or _judge()
     workers = max(1, min(8, int(workers)))
+    target = describe_target(engine_id)
+    seeds = [int(seed), int(seed) + int(stories) - 1]
     if pairwise:
         if not variants:
             raise EvaluationError("A pairwise benchmark needs the settings of version B (`variants`).")
@@ -200,7 +226,11 @@ def benchmark(stories=10, seed=0, engine_id=None, variants=None, pairwise=False,
         rows = [{"seed": a["seed"], "winner": r["winner"], "criteria": r["criteria"], "reason": r["reason"],
                  "agreed": r.get("agreed", False), "fitness_a": a["fitness"], "fitness_b": b["fitness"]}
                 for a, b, r in zip(played_a, played_b, results)]
-        return {"variants": dict(variants), **pairwise_summary(rows), "rows": rows}
+        # A and B are the same target (the selected engine, or the baseline) on the same seeds; B has
+        # version B's settings on top. Each pair is judged in both orders (compare_digests).
+        return {"variants": dict(variants), **pairwise_summary(rows), "rows": rows, "target": target, "seeds": seeds,
+                "a": {"label": f"{target['label']}, as it is", "variants": {}},
+                "b": {"label": f"{target['label']}, with version B's settings", "variants": dict(variants)}}
 
     played = play_stories(stories, seed, engine_id, variants)
     step = _progress_step(progress, len(played))
@@ -218,6 +248,7 @@ def benchmark(stories=10, seed=0, engine_id=None, variants=None, pairwise=False,
     criteria = {name: round(statistics.mean(row["scores"][name] for row in judged if name in row["scores"]), 2)
                 for name in CRITERIA if any(name in row["scores"] for row in judged)}
     return {
+        "target": target, "seeds": seeds,
         "variants": dict(variants or {}), "stories": len(rows), "judged": len(judged),
         "engagement": round(statistics.mean(row["engagement"] for row in judged), 2) if judged else None,
         "criteria": criteria, "rows": rows,
@@ -235,6 +266,7 @@ def calibrate(stories=30, seed=0, engine_id=None, alpha=None, apply=False, worke
     if int(stories) < 10:
         raise EvaluationError("Calibrating needs at least 10 judged stories.")
     judge = judge or _judge()
+    target = describe_target(engine_id)
     played = play_stories(stories, seed, engine_id)
     step = _progress_step(progress, len(played))
 
@@ -259,6 +291,6 @@ def calibrate(stories=30, seed=0, engine_id=None, alpha=None, apply=False, worke
         applied = True
     return {"term_weights": weights, "terms": result["terms"], "spearman": result["spearman"],
             "cv_spearman": result["cv_spearman"], "alpha": result["alpha"], "n": result["n"],
-            "stories": len(played),
+            "stories": len(played), "target": target, "seeds": [int(seed), int(seed) + int(stories) - 1],
             "engagement": round(statistics.mean(engagement for _, engagement in samples), 2),
             "yaml": to_yaml(result), "applied": applied}

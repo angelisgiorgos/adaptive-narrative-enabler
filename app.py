@@ -1233,13 +1233,13 @@ def finished_engines_ui(chosen=None):
 
 def engine_picker_updates():
     """New choices (labels) for every engine picker after a name changed: Train's finished engines,
-    Play's trained AI, Evaluate's two storytellers, Export's finished runs, the recorded-engine pickers
+    Play's trained AI, Evaluate's trained engine, Export's finished runs, the recorded-engine pickers
     of Train, Play and Export. Their values (engine ids) do not change."""
-    finished, evaluated, recorded = finished_run_choices(), evaluation_engine_choices(), recorded_engines()
-    named = [choice for choice in evaluated if choice[1]]
-    return (gr.Dropdown(choices=named), gr.Dropdown(choices=finished), gr.Dropdown(choices=evaluated),
-            gr.Dropdown(choices=evaluated), gr.Dropdown(choices=finished), gr.Dropdown(choices=recorded),
-            gr.Dropdown(choices=recorded), gr.Dropdown(choices=recorded))
+    finished, recorded = finished_run_choices(), recorded_engines()
+    named = evaluation_engines()
+    return (gr.Dropdown(choices=named), gr.Dropdown(choices=finished), gr.Dropdown(choices=named),
+            gr.Dropdown(choices=finished), gr.Dropdown(choices=recorded), gr.Dropdown(choices=recorded),
+            gr.Dropdown(choices=recorded))
 
 
 @ui
@@ -1340,9 +1340,16 @@ def play_result_ui(done, profile, mission, stats_choice, stats_points=None):
     engine_id = _result_engine(done)
     choices = finished_run_choices()
     _offered(engine_id, choices, "▶ Play")
+    cleared = ""
+    if mission:  # the quest chosen in ▶ Play may belong to another engine's world, or not be open to the profile
+        offered = [value for _, value in quest_overview(profile, engine_id)[0]]
+        if mission not in offered:
+            cleared = (f"  \nThe quest chosen before (`{mission}`) is not offered in this engine's world for profile "
+                       f"`{profile or 'default'}`: the story drew one.")
+            mission = ""
     token, *game, status = play_new_game_ui(engine_id, profile, mission, stats_choice, stats_points)
     return (*navigate("play"), gr.Dropdown(choices=choices, value=engine_id), gr.Accordion(open=False), token,
-            *game, f"**Playing the engine just trained, {_label_of(engine_id, choices)}.**  \n{status}")
+            *game, f"**Playing the engine just trained, {_label_of(engine_id, choices)}.**{cleared}  \n{status}")
 
 
 def evaluation_engine_choices():
@@ -1355,17 +1362,112 @@ def evaluation_engine_choices():
             + [(label, value) for label, value in recorded_engines() if value not in listed])
 
 
+# What ⚖ Evaluate plays: a selected trained engine, or the explicit baseline.
+TARGET_ENGINE = "Selected trained engine"
+TARGET_BASELINE = "Baseline: current configuration with random storytellers"
+EVALUATION_TARGETS = (TARGET_ENGINE, TARGET_BASELINE)
+
+
+def evaluation_engines():
+    """(label, engine id) of the trained engines Evaluate can select: finished runs (newest first), then
+    the other recorded engines; the baseline is a choice of its own, not one of them."""
+    return [choice for choice in evaluation_engine_choices() if choice[1]]
+
+
+def evaluation_engines_ui(target, chosen=None, newest=False):
+    """Evaluate's engine picker after a training, a loaded engine or ↻ Refresh: the engines offered now,
+    the chosen one kept while it is offered (``newest``: the newest chosen, e.g. the one just trained).
+    Returns (the target, the engine picker)."""
+    choices = evaluation_engines()
+    ids = [value for _, value in choices]
+    value = ids[0] if ids and (newest or chosen not in ids) else (chosen if chosen in ids else None)
+    if target not in EVALUATION_TARGETS:
+        target = TARGET_ENGINE if ids else TARGET_BASELINE
+    return gr.Radio(value=target), gr.Dropdown(choices=choices, value=value, visible=target == TARGET_ENGINE)
+
+
+def evaluation_engine_id(target, engine_id):
+    """The engine an evaluation plays: None for the baseline; the selected one for a trained engine
+    (refused when none is selected: it is never replaced by the baseline in silence)."""
+    if target == TARGET_BASELINE:
+        return None
+    if target == TARGET_ENGINE and not engine_id:
+        raise gr.Error("Choose a trained engine to evaluate, or choose the baseline (the current configuration "
+                       "with random storytellers).")
+    return engine_id or None
+
+
+def evaluation_target_markdown(target):
+    """An evaluation's target (GET /v1/evaluation/target, or a result's ``target``) in words."""
+    world = target.get("world") or {}
+    summary = world.get("summary") or {}
+    counts = " · ".join(f"{summary[key]} {name}" for key, name in (
+        ("locations", "places"), ("npcs", "people"), ("items", "items"), ("events", "events"), ("missions", "quests"))
+        if key in summary)
+    identity = f"world `{(world.get('digest') or '')[:12]}`"
+    if target.get("kind") == "engine":
+        where = "the active world" if world.get("current") else "not the active world"
+        return (f"**Selected trained engine:** {target['label']} (engine `{target['engine_id']}`): its saved world "
+                f"({counts} · {identity}, {where}) and {target['storyteller']}.")
+    return (f"**Baseline:** the current configuration ({counts} · {identity}) with {target['storyteller']}: no trained "
+            "engine.")
+
+
+def _variants_note(variants_text):
+    try:
+        variants = _variants(variants_text)
+    except gr.Error as exc:
+        return None, f"⚠ {exc}"
+    return variants, ", ".join(f"`{key}: {value}`" for key, value in variants.items()) or "none"
+
+
+def evaluation_plan_ui(target, engine_id, pairwise, variants_text, stories, seed, calib_stories, calib_seed):
+    """Before anything is submitted: what will be evaluated (the target, its world and storyteller), the
+    judge benchmark's plan (its seeds; in A/B: A and B are both the target, B with version B's settings,
+    on the same seeds, each pair judged in both orders) and the calibration's. Returns (the engine
+    picker's visibility, the target, its card, the benchmark's plan, the calibration's plan)."""
+    shown = gr.Dropdown(visible=target == TARGET_ENGINE)
+    if target == TARGET_ENGINE and not engine_id:
+        missing = ("⛔ **No trained engine selected.** Choose one (↻ Refresh after a training), or choose the "
+                   "baseline.")
+        return shown, missing, "", missing, missing
+    try:
+        described = API.get("/v1/evaluation/target",
+                            engine_id=(engine_id or None) if target == TARGET_ENGINE else None)
+    except APIError as exc:
+        problem = f"⛔ The target cannot be read: {exc}"
+        return shown, problem, "", problem, problem
+    label = described["label"]
+    card = engine_card_ui(described["engine_id"]) if described["engine_id"] else (
+        "*The baseline has no result card: the current configuration, a random storyteller per seed.*")
+    first = int(seed or 0)
+    seeds = f"seeds {first}–{first + int(stories) - 1}"
+    if pairwise:
+        variants, said = _variants_note(variants_text)
+        bench = (f"**A/B on the same {int(stories)} seeds** ({seeds}), each pair judged in both orders:  \n"
+                 f"**A** = {label}, as it is · **B** = {label}, with version B's settings ({said}).")
+        if variants is not None and not variants:
+            bench += "  \n⚠ Version B has no settings: give at least one, or untick A/B."
+    else:
+        bench = f"Will play and judge **{int(stories)}** stories ({seeds}) of **{label}**."
+    calib_first = int(calib_seed or 0)
+    calib = (f"Will play and judge **{int(calib_stories)}** stories (seeds {calib_first}–"
+             f"{calib_first + int(calib_stories) - 1}) of **{label}**, then fit the fitness to the judge.")
+    return shown, evaluation_target_markdown(described), card, bench, calib
+
+
 @ui
 def evaluate_result_ui(done):
-    """⚖ Evaluate this result: Evaluate opens with the completed engine as the storyteller of both
-    the judge benchmark and the fitness calibration (nothing is judged until the user starts it)."""
+    """⚖ Evaluate this result: Evaluate opens with the completed engine as the selected trained engine,
+    the target of both the judge benchmark and the fitness calibration (nothing is judged until the user
+    starts it). Returns the navigation, the target, the engine picker and the note."""
     engine_id = _result_engine(done)
-    choices = evaluation_engine_choices()
+    choices = evaluation_engines()
     _offered(engine_id, choices, "⚖ Evaluate")
-    return (*navigate("evaluate"), gr.Dropdown(choices=choices, value=engine_id),
-            gr.Dropdown(choices=choices, value=engine_id),
-            f"**Storyteller:** the engine just trained, {_label_of(engine_id, choices)}. Press **Play and judge** (or *Play, judge "
-            "and fit*) to evaluate it.")
+    return (*navigate("evaluate"), gr.Radio(value=TARGET_ENGINE),
+            gr.Dropdown(choices=choices, value=engine_id, visible=True),
+            f"**Selected trained engine:** the engine just trained, {_label_of(engine_id, choices)}. Press **Play and "
+            "judge** (or *Play, judge and fit*) to evaluate it.")
 
 
 @ui
@@ -1703,10 +1805,9 @@ def resend_report_ui(profile):
             else f"Not sent: {delivery['error'] or 'HTTP ' + str(delivery['status'])}.")
 
 
-def quest_overview(profile):
-    """(choices of the quest picker, Markdown overview of the world's quests) for this profile:
-    the quests open to it now can be chosen; the others are listed, struck through."""
-    quests = API.get("/v1/missions/playable", profile=profile or None)["missions"]
+def _quests_text(quests, profile):
+    """(choices of the quest picker, Markdown overview): the quests open to the profile now can be
+    chosen; the others are listed, struck through."""
     choices = [(ANY_QUEST, "")] + [(q["title"], q["key"]) for q in quests if q["available"]]
     lines = [f"**Quests in this world** (for profile `{profile or 'default'}`):"]
     for quest in quests:
@@ -1718,9 +1819,60 @@ def quest_overview(profile):
     return choices, "\n".join(lines)
 
 
+def quest_overview(profile, engine_id=None):
+    """(choices of the quest picker, Markdown overview of the world's quests) for this profile, in the
+    world of ``engine_id`` (its saved configuration) or, without one, the active world."""
+    data = API.get("/v1/missions/playable", profile=profile or None, engine_id=engine_id or None)
+    return _quests_text(data["missions"], profile)
+
+
+def quest_world_markdown(world, label=None):
+    """Beside the quest picker: which engine's saved world the quests come from, and its identity."""
+    summary = world.get("summary") or {}
+    counts = " · ".join(f"{summary[key]} {name}" for key, name in (
+        ("locations", "places"), ("npcs", "people"), ("items", "items"), ("events", "events"), ("missions", "quests"))
+        if key in summary)
+    same = ("✓ the same world as the active configuration" if world.get("current") else
+            "⚠ not the active world: a new game with this engine makes it active")
+    if world.get("source") == "engine":
+        return (f"**Quests from the saved world of** {label or ''} (engine `{world['engine_id'][:8]}`): {counts} · world "
+                f"`{world['digest'][:12]}` · {same}.")
+    return (f"**Quests from the active world** (no trained AI chosen): {counts} · world `{world['digest'][:12]}`.")
+
+
 @ui
-def playable_quests_ui(profile):
-    choices, text = quest_overview(profile)
+def play_quests_ui(engine_id, profile, chosen=""):
+    """The quests a new game may have, for the trained AI and the profile chosen: read from that engine's
+    saved world (the active configuration is not changed) with the profile's save game. A quest chosen
+    before that is not offered now (not in that world, or not open to the profile) is cleared, saying
+    why. Returns (the quest picker, the quests' overview, the note beside the picker)."""
+    try:
+        data = API.get("/v1/missions/playable", profile=profile or None, engine_id=engine_id or None)
+    except APIError as exc:
+        return (gr.Dropdown(choices=[(ANY_QUEST, "")], value=""), "",
+                f"⚠ The quests of engine `{(engine_id or '')[:8]}` could not be read ({exc}): the story will draw one.")
+    choices, text = _quests_text(data["missions"], profile)
+    label = None
+    if engine_id:
+        label = next((name for name, value in finished_run_choices() if value == engine_id), None)
+        label = label.rsplit(" · ", 1)[0] if label else None
+    note = quest_world_markdown(data["world"], f"**{label}**" if label else None)
+    offered = [value for _, value in choices]
+    if chosen and chosen not in offered:
+        quest = next((q for q in data["missions"] if q["key"] == chosen), None)
+        why = ("is not in this engine's world" if quest is None else
+               f"was already achieved in profile `{profile or 'default'}`'s save game" if quest.get("achieved") else
+               f"is not open to profile `{profile or 'default'}` now")
+        name = quest["title"] if quest else chosen
+        note = (f"⚠ The quest chosen before, **{name}**, {why}: it was cleared (the story draws one, or choose "
+                "another).  \n" + note)
+        chosen = ""
+    return gr.Dropdown(choices=choices, value=chosen or ""), text, note
+
+
+@ui
+def playable_quests_ui(profile, engine_id=None):
+    choices, text = quest_overview(profile, engine_id)
     return gr.Dropdown(choices=choices, value=""), text
 
 
@@ -2698,21 +2850,43 @@ def _variants(text):
     return variants
 
 
+def _evaluated(result, engine_id):
+    """The result's own account of what it played; a result that played another target than the one
+    submitted says so (it never should)."""
+    target = result.get("target") or {}
+    line = evaluation_target_markdown(target) if target else ""
+    if target and (target.get("engine_id") or None) != (engine_id or None):
+        line = (f"⚠ **This result played `{target.get('engine_id') or 'the baseline'}`, not the target submitted "
+                f"(`{engine_id or 'the baseline'}`).** " + line)
+    return line
+
+
 @ui
-def judge_benchmark_ui(stories, seed, engine_id, pairwise, variants_text, workers, progress=gr.Progress()):
+def judge_benchmark_ui(stories, seed, engine_id, pairwise, variants_text, workers, target=None,
+                       progress=gr.Progress()):
+    """Play and judge: the target is the selected trained engine (``engine_id``) or the baseline (``target``
+    = TARGET_BASELINE). In A/B, A and B are both that target (B with version B's settings), on the same
+    seeds, each pair judged in both orders. Returns (summary naming what was evaluated, the table)."""
+    engine_id = evaluation_engine_id(target, engine_id) if target else (engine_id or None)
     variants = _variants(variants_text) if pairwise else {}
+    if pairwise and not variants:
+        raise gr.Error("A/B needs version B's settings (at least one dotted.path: value), or untick A/B.")
     job = API.post("/v1/jobs/judge-benchmark", {
-        "stories": int(stories), "seed": int(seed or 0), "engine_id": engine_id or None, "pairwise": bool(pairwise),
+        "stories": int(stories), "seed": int(seed or 0), "engine_id": engine_id, "pairwise": bool(pairwise),
         "variants": variants, "workers": int(workers),
     })
     result = API.wait(job, _job_progress(progress, "Judged"))
+    evaluated = _evaluated(result, engine_id)
     if pairwise:
         rate = result.get("b_win_rate")
         low, high = result["wilson_95"]
         a_rate = None if rate is None else 1 - rate
         criteria = " · ".join(f"{name} {1 - value:.0%}" for name, value in result["criteria"].items() if value is not None)
-        summary = (f"### Current settings (A) vs version B: A won {result['a_wins']}, B won {result['b_wins']}, "
-                   f"{result['ties']} tie(s)\n"
+        a_label = (result.get("a") or {}).get("label") or "A"
+        b_label = (result.get("b") or {}).get("label") or "B"
+        summary = (f"### A vs B: A won {result['a_wins']}, B won {result['b_wins']}, {result['ties']} tie(s)\n"
+                   f"**A** = {a_label} · **B** = {b_label} (same seeds, each pair judged in both orders).  \n"
+                   f"{evaluated}\n\n"
                    + (f"A's win rate **{a_rate:.0%}** of decided pairs (95% interval {1 - high:.0%}-{1 - low:.0%})."
                       if a_rate is not None else "No pair was decided.")
                    + (f"\n\nA's win rate per criterion: {criteria}" if criteria else ""))
@@ -2722,17 +2896,19 @@ def judge_benchmark_ui(stories, seed, engine_id, pairwise, variants_text, worker
     else:
         engagement = result.get("engagement")
         criteria = " · ".join(f"{name} {value:.1f}" for name, value in result["criteria"].items())
-        summary = (f"### Engagement {engagement:.2f}/10 over {result['judged']} judged stories\n{criteria}"
-                   if engagement is not None else "### No judgement could be read.")
+        summary = ((f"### Engagement {engagement:.2f}/10 over {result['judged']} judged stories\n{criteria}"
+                    if engagement is not None else "### No judgement could be read.") + f"\n\n{evaluated}")
         table = pd.DataFrame([{"seed": r["seed"], "engagement": r["engagement"], "fitness": round(r["fitness"], 1),
                                "turns": r["turns"], "won": r["won"], "verdict": r["verdict"]} for r in result["rows"]])
     return summary, table
 
 
 @ui
-def calibrate_fitness_ui(stories, seed, engine_id, apply, progress=gr.Progress()):
+def calibrate_fitness_ui(stories, seed, engine_id, apply, target=None, progress=gr.Progress()):
+    """Play, judge and fit, on the selected trained engine or the baseline (``target``)."""
+    engine_id = evaluation_engine_id(target, engine_id) if target else (engine_id or None)
     job = API.post("/v1/jobs/calibrate-fitness", {"stories": int(stories), "seed": int(seed or 0),
-                                                  "engine_id": engine_id or None, "apply": bool(apply)})
+                                                  "engine_id": engine_id, "apply": bool(apply)})
     result = API.wait(job, _job_progress(progress, "Judged"))
     cv = result.get("cv_spearman")
     summary = (f"### Fitted on {result['n']} judged stories\nAgreement with the judge (Spearman): "
@@ -2740,7 +2916,8 @@ def calibrate_fitness_ui(stories, seed, engine_id, apply, progress=gr.Progress()
                + (f"**{cv:+.2f} on stories left out**" if cv is not None else "not cross-validated (too few stories)")
                + f" (ridge strength {result['alpha']:g}). "
                + ("The weights were saved as `fitness.term_weights`." if result["applied"]
-                  else "Apply them below, or edit them first."))
+                  else "Apply them below, or edit them first.")
+               + f"\n\n{_evaluated(result, engine_id)}")
     return summary, to_yaml(result["term_weights"])
 
 
@@ -5754,7 +5931,8 @@ def build_app():
                 play_token = session_token  # the game played here (Export's "this game's storyteller" too)
                 play_actions = gr.State([])
                 play_finished = finished_run_choices()
-                play_first_quests, quest_overview_text = quest_overview(profiles["default"])
+                play_first_quests, quest_overview_text = quest_overview(
+                    profiles["default"], play_finished[0][1] if play_finished else None)
                 allocation = character_stats.get("allocation") or {}
                 with gr.Accordion("🎮 New game", open=True) as play_setup:
                     with gr.Row():
@@ -5765,9 +5943,12 @@ def build_app():
                                                label="Player profile", scale=2,
                                                info="Its progression and persistent variables are kept.")
                         play_quest = gr.Dropdown(play_first_quests, value="", label="Quest", scale=2,
-                                                 info="Or let the story draw one.")
+                                                 elem_id="play-quest",
+                                                 info="From the chosen AI's own world, open to this profile; or let "
+                                                 "the story draw one.")
                         play_stats = gr.Dropdown(PLAY_STATS, value="story default", label="Character", scale=2,
                                                  info="My own points: set them below.")
+                    play_quest_world = gr.Markdown(elem_id="play-quest-world")
                     with gr.Row():
                         play_new = gr.Button("▶ New game", variant="primary", scale=3)
                         play_upload = gr.UploadButton("📂 Continue a save game", file_types=[".json"],
@@ -5869,8 +6050,11 @@ def build_app():
                 demo.load(play_runs_ui, play_run, play_run)
                 for event in engine_events:  # a run has finished: it is the newest to play
                     event.success(lambda: play_runs_ui(), None, play_run).then(studio_status_ui, None, studio_status)
-                play_who.change(playable_quests_ui, play_who, [play_quest, quest_overview_md])
-                refresh_quests.click(playable_quests_ui, play_who, [play_quest, quest_overview_md])
+                # The quests follow the chosen AI (its own saved world) and the profile (its save game): on
+                # either change, and on loading the page; a quest no longer offered is cleared, saying why.
+                quest_outputs = [play_quest, quest_overview_md, play_quest_world]
+                for event in (play_run.change, play_who.change, refresh_quests.click, demo.load):
+                    event(play_quests_ui, [play_run, play_who, play_quest], quest_outputs, show_progress="hidden")
                 randomize_stats.click(lambda: stats_points_text("random"), None, stats_points).then(
                     lambda: "defined", None, play_stats)
                 balance_stats.click(lambda: stats_points_text("balanced"), None, stats_points).then(
@@ -5898,44 +6082,58 @@ def build_app():
                     "Stories are played in a separate process, so the games in progress keep their settings. "
                     "The judge also runs in the loop of evolution when `evolution.judge_weight` > 0 (Engine logic)."
                 )
-                evaluate_note = gr.Markdown()  # the storyteller chosen by 🧠 Train's "Evaluate this result"
+                evaluate_note = gr.Markdown()  # the engine chosen by 🧠 Train's "Evaluate this result"
                 with gr.Row():
                     judge_status = gr.Markdown()
                     judge_status_button = gr.Button("Check the judge again", size="sm", scale=0)
                 demo.load(judge_status_ui, None, judge_status)
                 judge_status_button.click(judge_status_ui, None, judge_status)
+                gr.Markdown("#### What is evaluated")
+                evaluation_choices = evaluation_engines()
+                eval_target = gr.Radio(list(EVALUATION_TARGETS),
+                                       value=TARGET_ENGINE if evaluation_choices else TARGET_BASELINE,
+                                       label="Evaluate", elem_id="evaluate-target",
+                                       info="A selected trained engine (its saved world and trained storyteller), or "
+                                       "the baseline to compare it with (the current configuration, a random "
+                                       "storyteller per seed). Both the judge benchmark and the calibration use it.")
+                with gr.Row(equal_height=True):
+                    eval_engine = gr.Dropdown(evaluation_choices,
+                                              value=evaluation_choices[0][1] if evaluation_choices else None,
+                                              label="Trained engine", scale=5, elem_id="evaluate-engine",
+                                              visible=bool(evaluation_choices),
+                                              info="Finished runs (newest first), then other recorded engines.")
+                    eval_refresh = gr.Button("↻ Refresh", scale=1, elem_id="evaluate-refresh")
+                eval_target_note = gr.Markdown(elem_id="evaluate-target-note")
+                with gr.Accordion("🏷 About this engine: its result card", open=False):
+                    bench_card = gr.Markdown(elem_id="evaluate-engine-card")
                 with gr.Accordion("Judge the engine's stories", open=True):
                     with gr.Row():
                         bench_stories = gr.Slider(1, 60, value=10, step=1, label="Stories")
                         bench_seed = gr.Number(value=0, precision=0, label="First seed")
                         bench_workers = gr.Slider(1, 8, value=4, step=1, label="Judgements at once")
-                    evaluation_engines = evaluation_engine_choices()
-                    bench_engine = gr.Dropdown(evaluation_engines, value="", label="Storyteller",
-                                               info="Finished runs (newest first), then other recorded engines.")
-                    with gr.Accordion("🏷 About this storyteller: its result card", open=False):
-                        bench_card = gr.Markdown(elem_id="evaluate-engine-card")
-                    bench_engine.change(engine_card_ui, bench_engine, bench_card, show_progress="hidden")
                     bench_pairwise = gr.Checkbox(
-                        label="Compare with version B (pairwise A/B on the same seeds, each pair judged in both orders)")
+                        label="Compare with version B (pairwise A/B: the target as it is (A) and with version B's "
+                        "settings (B), on the same seeds, each pair judged in both orders)", elem_id="evaluate-pairwise")
                     bench_variants = gr.Code(value="# version B: dotted.path: value\nclimax.enabled: false\n",
                                              language="yaml", label="Version B's settings")
-                    bench_button = gr.Button("Play and judge", variant="primary")
-                    bench_summary = gr.Markdown()
+                    bench_plan = gr.Markdown(elem_id="evaluate-plan")
+                    bench_button = gr.Button("Play and judge", variant="primary", elem_id="evaluate-run")
+                    bench_summary = gr.Markdown(elem_id="evaluate-summary")
                     bench_table = gr.Dataframe(label="Stories", interactive=False, wrap=True)
-                    bench_button.click(judge_benchmark_ui, [bench_stories, bench_seed, bench_engine, bench_pairwise,
-                                                            bench_variants, bench_workers], [bench_summary, bench_table],
-                                       concurrency_limit=1, concurrency_id="judge")
+                    bench_button.click(judge_benchmark_ui, [bench_stories, bench_seed, eval_engine, bench_pairwise,
+                                                            bench_variants, bench_workers, eval_target],
+                                       [bench_summary, bench_table], concurrency_limit=1, concurrency_id="judge")
                 with gr.Accordion("Fit the fitness to the judge", open=False):
                     gr.Markdown(
-                        "Plays and judges stories, fits the judged engagement on the fitness terms and suggests a "
-                        "multiplier per term (`fitness.term_weights`). Trust it as far as its agreement on stories "
-                        "left out goes."
+                        "Plays and judges stories of the target above, fits the judged engagement on the fitness "
+                        "terms and suggests a multiplier per term (`fitness.term_weights`). Trust it as far as its "
+                        "agreement on stories left out goes."
                     )
                     with gr.Row():
                         calib_stories = gr.Slider(10, 60, value=30, step=1, label="Stories")
                         calib_seed = gr.Number(value=0, precision=0, label="First seed")
-                        calib_engine = gr.Dropdown(evaluation_engines, value="", label="Storyteller")
                         calib_apply = gr.Checkbox(label="Save the suggested weights at once")
+                    calib_plan = gr.Markdown(elem_id="evaluate-calibration-plan")
                     calib_button = gr.Button("Play, judge and fit", variant="primary")
                     calib_summary = gr.Markdown()
                     term_weights_editor = gr.Code(value=load_term_weights_ui(), language="yaml",
@@ -5944,11 +6142,23 @@ def build_app():
                         save_weights_terms = gr.Button("Save term weights", variant="primary")
                         reload_weights_terms = gr.Button("Reload")
                     term_weights_status = gr.Markdown()
-                    calib_button.click(calibrate_fitness_ui, [calib_stories, calib_seed, calib_engine, calib_apply],
+                    calib_button.click(calibrate_fitness_ui, [calib_stories, calib_seed, eval_engine, calib_apply,
+                                                              eval_target],
                                        [calib_summary, term_weights_editor], concurrency_limit=1, concurrency_id="judge")
                     save_weights_terms.click(save_term_weights_ui, term_weights_editor,
                                              [term_weights_editor, term_weights_status])
                     reload_weights_terms.click(load_term_weights_ui, None, term_weights_editor)
+                # The plan follows every choice it depends on, before anything is submitted.
+                plan_inputs = [eval_target, eval_engine, bench_pairwise, bench_variants, bench_stories, bench_seed,
+                               calib_stories, calib_seed]
+                plan_outputs = [eval_engine, eval_target_note, bench_card, bench_plan, calib_plan]
+                gr.on([eval_target.change, eval_engine.change, bench_pairwise.change, bench_variants.change,
+                       bench_stories.change, bench_seed.change, calib_stories.change, calib_seed.change],
+                      evaluation_plan_ui, plan_inputs, plan_outputs, show_progress="hidden", trigger_mode="always_last")
+                for listed in (eval_refresh.click(evaluation_engines_ui, [eval_target, eval_engine],
+                                                  [eval_target, eval_engine]),
+                               demo.load(evaluation_engines_ui, [eval_target, eval_engine], [eval_target, eval_engine])):
+                    listed.then(evaluation_plan_ui, plan_inputs, plan_outputs, show_progress="hidden")
                 with gr.Accordion("Recorded stories: judge one, or compare two", open=False):
                     record_story = gr.Dropdown(recorded_stories(), label="Recorded story",
                                                info="Every story recorded: training previews, games played, imports.")
@@ -6441,13 +6651,18 @@ def build_app():
         play_result.click(play_result_ui, [train_result, *player_inputs],
                           [*nav_outputs, play_run, play_setup, *new_game_outputs], concurrency_limit=1).success(
             integration_session_text, play_token, integration_session, show_progress="hidden")
-        evaluate_result.click(evaluate_result_ui, train_result, [*nav_outputs, bench_engine, calib_engine, evaluate_note],
+        evaluate_result.click(evaluate_result_ui, train_result, [*nav_outputs, eval_target, eval_engine, evaluate_note],
                               show_progress="hidden")
+        # After a training or a loaded engine, Evaluate offers it (the newest is selected) and its plan follows.
+        for event in [*engine_events, loaded]:
+            event.success(lambda target, chosen: evaluation_engines_ui(target, chosen, newest=True),
+                          [eval_target, eval_engine], [eval_target, eval_engine], show_progress="hidden").then(
+                evaluation_plan_ui, plan_inputs, plan_outputs, show_progress="hidden")
         export_result.click(export_result_ui, [train_result, export_platform, export_name],
                             [*nav_outputs, *export_form], show_progress="hidden")
         # Names: from Train's result card or its finished engines; every picker's labels follow (ids unchanged).
-        engine_pickers = [card_engine, play_run, bench_engine, calib_engine, export_engine, record_engine,
-                          play_record_engine, files_engine]
+        engine_pickers = [card_engine, play_run, eval_engine, export_engine, record_engine, play_record_engine,
+                          files_engine]
         renamed = [result_name_save.click(rename_result_ui, [train_result, result_name, card_engine],
                                           [result_name_status, engine_card_view, result_name, result_card,
                                            *engine_pickers]),
@@ -6455,7 +6670,7 @@ def build_app():
                                         [card_name_status, engine_card_view, card_name, result_card, *engine_pickers])]
         for event in renamed:  # the cards beside Play's, Evaluate's and Export's pickers show the new name too
             event.success(engine_card_ui, play_run, play_card, show_progress="hidden").then(
-                engine_card_ui, bench_engine, bench_card, show_progress="hidden").then(
+                evaluation_plan_ui, plan_inputs, plan_outputs, show_progress="hidden").then(
                 engine_cards_ui, export_engine, export_cards, show_progress="hidden")
         train_result.change(result_name_ui, train_result, result_name, show_progress="hidden")
         # ⚙ Advanced → 🔌 Integration names the game it acts on: the one open in ▶ Play.

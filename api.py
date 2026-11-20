@@ -2037,10 +2037,12 @@ class CompareRequest(BaseModel):
 class JudgeBenchmarkRequest(BaseModel):
     stories: int = Field(default=10, ge=1, le=evaluation.MAX_STORIES)
     seed: int = Field(default=0, ge=0, description="The first story's seed (stories use seed, seed+1, ...).")
-    engine_id: str | None = Field(default=None, description="A recorded engine's world and storyteller; "
-                                  "left out: the current settings with random storytellers.")
-    pairwise: bool = Field(default=False, description="Compare the current settings (A) with `variants` (B) on "
-                           "the same seeds, each pair judged in both orders.")
+    engine_id: str | None = Field(default=None, description="The selected trained engine (a finished run or a "
+                                  "recorded engine): its saved world and its trained storyteller. Left out: the "
+                                  "baseline, the current configuration with a random storyteller per seed.")
+    pairwise: bool = Field(default=False, description="Compare the target (the selected engine, or the baseline) as "
+                           "it is (A) with the same target and `variants` (B) on the same seeds, each pair judged in "
+                           "both orders.")
     variants: dict[str, Any] = Field(default_factory=dict, description="Settings of version B: {dotted.path: value}, "
                                      "e.g. {\"climax.enabled\": false}.")
     workers: int = Field(default=4, ge=1, le=8, description="Judgements sent to the model at once.")
@@ -2101,6 +2103,7 @@ def submit_judge_benchmark(body: JudgeBenchmarkRequest):
         raise HTTPException(status_code=400, detail="A pairwise benchmark needs the settings of version B (`variants`).")
     if body.engine_id:
         _evaluable_engine(body.engine_id)
+    target = _evaluation_target(body.engine_id)
 
     def work(progress):
         result = evaluation.benchmark(body.stories, body.seed, body.engine_id, body.variants or None, body.pairwise,
@@ -2109,7 +2112,8 @@ def submit_judge_benchmark(body: JudgeBenchmarkRequest):
             engine_meta.record_evaluation(body.engine_id, "judge", result)
         return result
     kind = "pairwise A/B" if body.pairwise else "judge benchmark"
-    return sessions.submit_job("judge-benchmark", work, f"{kind} of {body.stories} stories")
+    return sessions.submit_job("judge-benchmark", work, f"{kind} of {body.stories} stories · {target['label']}",
+                               meta={"target": target})
 
 
 @api.post("/v1/jobs/calibrate-fitness", status_code=202, tags=["Jobs", "Evaluation"])
@@ -2120,6 +2124,7 @@ def submit_calibration(body: CalibrationRequest):
     yaml, applied}); `apply` saves them as fitness.term_weights."""
     if body.engine_id:
         _evaluable_engine(body.engine_id)
+    target = _evaluation_target(body.engine_id)
 
     def work(progress):
         result = evaluation.calibrate(body.stories, body.seed, body.engine_id, body.alpha, body.apply, body.workers,
@@ -2127,7 +2132,23 @@ def submit_calibration(body: CalibrationRequest):
         if body.engine_id:
             engine_meta.record_evaluation(body.engine_id, "calibration", result)
         return result
-    return sessions.submit_job("calibrate-fitness", work, f"fit the fitness to the judge on {body.stories} stories")
+    return sessions.submit_job("calibrate-fitness", work, f"fit the fitness to the judge on {body.stories} stories · "
+                               f"{target['label']}", meta={"target": target})
+
+
+@api.get("/v1/evaluation/target", tags=["Evaluation"])
+def get_evaluation_target(engine_id: str | None = None):
+    """What a judge benchmark or calibration with this ``engine_id`` plays, before it is submitted:
+    {kind: engine | baseline, engine_id, label, world, storyteller}. Left out: the baseline (the
+    current configuration with a random storyteller per seed). 404 for an unknown engine."""
+    return _evaluation_target(engine_id)
+
+
+def _evaluation_target(engine_id):
+    try:
+        return evaluation.describe_target(engine_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @api.get("/v1/fitness/term-weights", tags=["Evaluation"])

@@ -479,9 +479,18 @@ one); `tests/test_studio_coverage.py` checks it.
   `replayability`, with `engagement`, `spread` (between its `llm_judge.samples`
   judgements), `verdict`, `best_moment` and `weakest_moment`. `404` for an unknown story
   or session, `503` when no language model is available (`vllm`).
-- `GET /v1/missions/playable?profile=`: the quests a player may choose when
+- `GET /v1/missions/playable?profile=&engine_id=`: the quests a player may choose when
   starting a game (`key`, `title`, `description`, `stages` (their titles),
-  `available` for that profile now).
+  `available` for that profile now, `achieved` in its save game).
+  - With `engine_id` (a finished run or a recorded engine; `latest` is the newest), the quests
+    come from the world that engine was trained on, read from its saved configuration. They are
+    evaluated against that world's variable definitions and progression rules, with the
+    profile's save game. The active configuration does not change, so the answer is what
+    `POST /v1/engines/{id}/play` with a `mission` then accepts. Without `engine_id`, the
+    active world is used.
+  - `world` says which world was read: `source` (`engine` or `active`), `engine_id`, `digest`
+    (the world alone), `id` (world and tuning, as in the engine's manifest), `summary` and
+    `current` (whether it is the active configuration's world). An unknown engine answers `404`.
 - `GET /v1/lint/failures`: the failures the current world leaves as dead ends,
   `{dead_ends: [{action, owner, why}]}`: actions that can fail (a skill check, or
   failure outcomes) where failing changes nothing but health or coins and no
@@ -502,19 +511,29 @@ one); `tests/test_studio_coverage.py` checks it.
   game. The pair is judged in both orders and a side wins only where both agree:
   `{winner: A | B | tie (null: unreadable), criteria: {criterion: A | B | tie},
   reason, agreed}`. `400` for an unknown story or session.
-- `POST /v1/jobs/judge-benchmark` (`stories` 1-60, `seed`, `engine_id` (a recorded
-  engine; left out: the current settings with random storytellers), `pairwise`,
-  `variants` (`{dotted.path: value}`: version B), `workers`): the judge on the
-  engine's stories. Absolute: `{engagement, criteria, judged, rows}`. Pairwise: the
-  same seeds with the current settings (A) and with `variants` (B), each pair judged
-  in both orders: `{pairs, a_wins, b_wins, ties, b_win_rate, wilson_95, criteria,
-  rows}`. The stories are played in a separate process, so the settings of games
-  in progress never change.
+- `POST /v1/jobs/judge-benchmark` (`stories` 1-60, `seed`, `engine_id`, `pairwise`, `variants`,
+  `workers`): the judge on the stories of the target.
+  - **Target:** `engine_id` is the selected trained engine (a finished run or a recorded engine):
+    its saved world, and its trained storyteller for every seed. Left out, the target is the
+    baseline: the current configuration, with a random storyteller per seed.
+  - **Absolute:** `{engagement, criteria, judged, rows}`.
+  - **Pairwise:** A is the target as it is and B is the same target with `variants`
+    (`{dotted.path: value}`, version B). Both are played on the same seeds, and each pair is
+    judged in both orders: `{pairs, a_wins, b_wins, ties, b_win_rate, wilson_95, criteria, rows,
+    a, b}`, where `a` and `b` give each side's `label` and `variants`.
+  - Every result also has `target` and `seeds` (`[first, last]`), and the job carries `target`
+    from its submission. The target is `{kind: engine | baseline, engine_id, label, world:
+    {digest, id, summary, current}, storyteller}`.
+  - The stories are played in a separate process, so the settings of games in progress never
+    change.
+- `GET /v1/evaluation/target?engine_id=`: the same `target`, before anything is submitted. `404`
+  for an unknown engine.
 - `POST /v1/jobs/calibrate-fitness` (`stories` 10-60, `seed`, `engine_id`, `alpha`,
   `apply`, `workers`): plays and judges the stories, fits the judged engagement on
   the fitness terms and suggests a multiplier per term: `{term_weights, terms,
   spearman, cv_spearman (agreement on stories left out), alpha, n, yaml,
-  applied}`; `apply: true` saves them.
+  applied, engagement, stories, target, seeds}`; `apply: true` saves them. Its target is the same as the
+  judge benchmark's, and its job carries it as well.
 - `GET|PUT /v1/fitness/term-weights` (`{"weights": {term: multiplier}}`, `{}`
   removes them): `fitness.term_weights`, the multiplier of each fitness term.
 - The judge in the loop of evolution is a setting: `evolution.judge_weight`
