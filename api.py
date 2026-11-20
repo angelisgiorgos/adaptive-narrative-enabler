@@ -619,11 +619,17 @@ def put_weights(body: WeightUpdate):
 
 
 @api.get("/v1/entities/{kind}", tags=["World authoring"])
-def list_entities(kind: Literal["Locations", "NPCs", "Items", "Events"], fields: Literal["all", "names"] = "all"):
-    """The entries of a kind (``fields=names``: their names only)."""
+def list_entities(kind: Literal["Locations", "NPCs", "Items", "Events"],
+                  fields: Literal["all", "names", "summary"] = "all"):
+    """The entries of a kind (``fields=names``: their names only; ``fields=summary``: a light summary of
+    each, as the studio's content library lists them: {names, entries: [{name, tags, summary (its first
+    description, shortened), actions (how many), facts (a few words: a start, a role, a hostile
+    encounter, an event's title, an item's bonus)}]})."""
     names, _ = content._entity_name_values(kind)
     if fields == "names":
         return {"kind": kind, "names": names}
+    if fields == "summary":
+        return {"kind": kind, "names": names, "entries": content.entity_summaries(kind)}
     return {"kind": kind, "entities": [get_entity(kind, name) for name in names]}
 
 

@@ -325,6 +325,12 @@ one); `tests/test_studio_coverage.py` checks it.
   (`retry_on_failure`). The whole action list is validated before it is
   written; an unknown index is `404`.
 - `GET /v1/entities/{kind}?fields=names` returns only the names.
+- `GET /v1/entities/{kind}?fields=summary` returns the names plus a light summary of each entry, in
+  order: `{kind, names, entries: [{name, tags, summary, actions, facts}]}`. `summary` is the first
+  description, shortened to 140 characters, and `actions` is how many it has. `facts` gives a few
+  words on what it is: a start place, an NPC's role and whether it is unique or generic, a hostile
+  encounter, an event's title, an item's stat bonus. The studio's content library is built from it,
+  and the other `fields` values are unchanged.
 
 **Jobs** (long work with progress)
 - `POST /v1/jobs/simulations` (body as `POST /v1/simulations`),

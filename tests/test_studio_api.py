@@ -2657,6 +2657,127 @@ class EvaluationTargetTests(_Sandbox):
         self.assertEqual((_prop(target, "value"), _prop(picker, "visible")), (app.TARGET_BASELINE, False))
 
 
+class ContentLibraryTests(_Sandbox):
+    """🌍 World → Entries' content library: every location, NPC, item and event, searchable, with per-type
+    counts and each entry's tags and summary (GET /v1/entities/{kind}?fields=summary, the listing extended
+    compatibly). Searching and filtering never change the entry open in the editor; choosing one opens it
+    through the editor's guard (unsaved changes: asked first). Empty types and no results say so."""
+
+    def _summary(self, kind):
+        answer = self.client.get(f"/v1/entities/{kind}", params={"fields": "summary"})
+        self.assertEqual(answer.status_code, 200, answer.text)
+        return answer.json()
+
+    def _empty_events(self):
+        (self.dir / "events.yaml").write_text("world_definition:\n  events: {}\n", encoding="utf-8")
+
+    def test_the_listing_summarises_each_entry_compatibly(self):
+        for kind in ("Locations", "NPCs", "Items", "Events"):
+            with self.subTest(kind=kind):
+                names = self.client.get(f"/v1/entities/{kind}", params={"fields": "names"}).json()
+                self.assertEqual(set(names), {"kind", "names"})               # unchanged
+                summary = self._summary(kind)
+                self.assertEqual(summary["names"], names["names"])
+                self.assertEqual([e["name"] for e in summary["entries"]], names["names"])  # the same order
+                for entry in summary["entries"]:
+                    self.assertEqual(set(entry), {"name", "tags", "summary", "actions", "facts"})
+                    self.assertLessEqual(len(entry["summary"]), 140)
+        self.assertIn("entities", self.client.get("/v1/entities/Items").json())     # fields=all unchanged
+        harbor = next(e for e in self._summary("Locations")["entries"] if e["name"] == "Harbor")
+        self.assertIn("maritime", harbor["tags"])
+        self.assertIn("can start here", harbor["facts"])
+        event = self._summary("Events")["entries"][0]
+        self.assertEqual(event["facts"], [self._yaml("events.yaml")["world_definition"]["events"][event["name"]]["title"]])
+        self._empty_events()
+        self.assertEqual(self._summary("Events"), {"kind": "Events", "names": [], "entries": []})
+
+    def test_search_type_switching_and_a_stable_selection(self):
+        import app
+
+        loaded = {"kind": "Locations", "entity": "Harbor"}
+        harbor = app.library_key("Locations", "Harbor")
+        filters, results, selected, status = app.library_view("", app.LIBRARY_ALL, loaded)
+        counts = {kind: len(self._summary(kind)["names"]) for kind in app.LIBRARY_KINDS}
+        self.assertEqual(filters[0], (f"All ({sum(counts.values())})", app.LIBRARY_ALL))
+        self.assertIn((f"🧑 NPCs ({counts['NPCs']})", "NPCs"), filters)
+        self.assertEqual(len(results), sum(counts.values()))
+        self.assertEqual(selected, harbor)
+        self.assertIn("Open in the editor: **Harbor** (Locations).", status)
+        label = dict((value, text) for text, value in results)[harbor]
+        self.assertIn("📍 Harbor", label)
+        self.assertIn("tags: urban, maritime", label)                       # its tags and summary
+        self.assertIn("— You approach the harbor.", label)
+        # A search: each word must match the name, tags, summary or facts; counts say "found of all".
+        filters, results, selected, status = app.library_view("maritime", app.LIBRARY_ALL, loaded)
+        self.assertTrue(results)
+        self.assertTrue(all("maritime" in text.lower() for text, _ in results))
+        self.assertEqual(selected, harbor)                                     # still open, still marked
+        self.assertRegex(filters[1][0], r"Locations \(\d+ of 16\)")
+        # Another type: Harbor is hidden, not replaced; the editor keeps it open.
+        filters, results, selected, status = app.library_view("", "NPCs", loaded)
+        self.assertTrue(all(json.loads(value)[0] == "NPCs" for _, value in results))
+        self.assertIsNone(selected)
+        self.assertIn("hidden by the search or filter: it stays open, nothing else was chosen", status)
+        # No results, and a type with no entries.
+        _, results, _, status = app.library_view("zzqx nothing", app.LIBRARY_ALL, loaded)
+        self.assertEqual(results, [])
+        self.assertIn("**No entries match “zzqx nothing”.**", status)
+        self._empty_events()
+        filters, results, _, status = app.library_view("", "Events", loaded)
+        self.assertIn(("⚡ Events (0)", "Events"), filters)
+        self.assertEqual(results, [])
+        self.assertIn("**No events in this world yet.**", status)
+        _, _, _, status = app.library_view("", app.LIBRARY_ALL, {}, entries={})
+        self.assertIn("**The world has no entries yet.**", status)
+        filter_update, results_update, _ = app.library_ui("harbor", "Locations", loaded)
+        self.assertEqual(_prop(filter_update, "value"), "Locations")
+        self.assertEqual(_prop(results_update, "value"), harbor)
+
+    def test_renamed_and_deleted_entries_and_the_editor_s_guard(self):
+        import gradio as gr
+
+        import app
+
+        loaded = {"kind": "Locations", "entity": "Harbor"}
+        item = self.client.get("/v1/entities/Items/Ancient Map").json()
+        renamed = self.client.put("/v1/entities/Items/Ancient Map", json={**item, "name": "Faded Map"})
+        self.assertEqual(renamed.status_code, 200, renamed.text)
+        values = [value for _, value in app.library_view("map", app.LIBRARY_ALL, loaded)[1]]
+        self.assertIn(app.library_key("Items", "Faded Map"), values)
+        self.assertNotIn(app.library_key("Items", "Ancient Map"), values)
+        with self.assertRaises(gr.Error) as stale:                             # an entry listed before: gone
+            app.library_choice_ui(app.library_key("Items", "Ancient Map"), loaded, {})
+        self.assertIn("renamed or deleted", str(stale.exception))
+        self.assertEqual(self.client.delete("/v1/entities/NPCs/Smuggler").status_code, 200)
+        values = [value for _, value in app.library_view("", "NPCs", loaded)[1]]
+        self.assertNotIn(app.library_key("NPCs", "Smuggler"), values)
+        # Unsaved changes: choosing in the library asks first, and the editor keeps its entry and draft.
+        editor = _Editor(app, "Locations", "Harbor")
+        editor.type("fields", 2, "Masts, gulls and a library search.")
+        self.assertTrue(editor.unsaved)
+        editor._draft(app.library_choice_ui(app.library_key("NPCs", "Priest"), *editor.guard))
+        self.assertTrue(editor.prompt)
+        self.assertEqual((editor.loaded["kind"], editor.loaded["entity"]), ("Locations", "Harbor"))
+        self.assertEqual(editor.pending, {"type": "entry", "kind": "NPCs", "entity": "Priest"})
+        editor.answer("discard")
+        self.assertEqual((editor.loaded["kind"], editor.loaded["entity"]), ("NPCs", "Priest"))
+        # Without unsaved changes it opens at once, in its own content type.
+        editor._draft(app.library_choice_ui(app.library_key("Events", "confront_thief"), *editor.guard))
+        self.assertFalse(editor.prompt)
+        self.assertEqual((editor.kind, editor.loaded["entity"]), ("Events", "confront_thief"))
+        # Wired: the library's choice goes through the editor's guard; searching and filtering list again.
+        demo = app.build_app()
+        by = {b.elem_id: b for b in demo.blocks.values() if getattr(b, "elem_id", None)}
+
+        def listeners(component, event):
+            return [fn.fn.__name__ for fn in demo.fns.values() if (component._id, event) in fn.targets]
+
+        self.assertEqual(listeners(by["library-results"], "input"), ["library_choice_ui"])
+        self.assertEqual(listeners(by["library-results"], "change"), [])     # a value set by code opens nothing
+        self.assertIn("library_ui", listeners(by["library-search"], "input"))
+        self.assertIn("library_ui", listeners(by["library-filter"], "input"))
+
+
 class WeightsFollowUpTests(_Sandbox):
     """Weights: saved values changed from the shipped ones are listed (and the shipped values can be put
     in the draft); leaving ⚙ Advanced with an unsaved weights draft asks Save, Discard or Stay; the Basic

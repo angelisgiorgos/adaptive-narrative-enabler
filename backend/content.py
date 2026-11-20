@@ -53,6 +53,48 @@ def _entity_name_values(kind: str):
     names = list(records) if shape == "mapping" else [record.get("name", "Unnamed") for record in records]
     return names, names[0] if names else None
 
+SUMMARY_CHARS = 140  # an entry's one-line summary in the content library
+
+
+def _text_of(description) -> str:
+    """A description line as text (a conditional description is a mapping with its text)."""
+    if isinstance(description, dict):
+        return str(description.get("text") or description.get("description") or "")
+    return str(description or "")
+
+
+def entity_summaries(kind: str) -> list[dict]:
+    """Every entry of a kind, in order, as the content library lists it (one read of its file):
+    [{name, tags, summary (its first description, shortened), actions (how many), facts (a few words
+    on what it is: a start, an NPC's role, a hostile encounter, an event's title, an item's bonus)}]."""
+    _, _, records, shape = _entity_records(kind)
+    pairs = list(records.items()) if shape == "mapping" else [(r.get("name", "Unnamed"), r) for r in records]
+    found = []
+    for name, record in pairs:
+        record = record if isinstance(record, dict) else {}
+        tags = [str(tag) for tag in (record.get("tags") if shape == "mapping" else record.get("associated_tags")) or []]
+        descriptions = record.get("entered_descriptions") or record.get("descriptions") or []
+        first = " ".join(_text_of(descriptions[0]).split()) if descriptions else ""
+        summary = first if len(first) <= SUMMARY_CHARS else first[:SUMMARY_CHARS - 1].rstrip() + "…"
+        facts = []
+        if kind == "Locations" and record.get("start_eligible"):
+            facts.append("can start here")
+        if kind == "NPCs":
+            if record.get("role"):
+                facts.append(str(record["role"]))
+            facts.append("unique" if record.get("unique") else "generic")
+            if record.get("encounter_event"):
+                facts.append(f"hostile: {record['encounter_event']}")
+        if kind == "Events" and record.get("title"):
+            facts.append(str(record["title"]))
+        if kind == "Items" and isinstance(record.get("stat_bonus"), dict) and record["stat_bonus"]:
+            facts.append(", ".join(f"{stat} {value:+g}" if isinstance(value, (int, float)) else f"{stat} {value}"
+                                   for stat, value in record["stat_bonus"].items()))
+        found.append({"name": str(name), "tags": tags, "summary": summary,
+                      "actions": len(record.get("actions") or []), "facts": facts})
+    return found
+
+
 def _event_choices():
     return [("None", "")] + [(name, name) for name in (config.get("world_definition.events") or {})]
 

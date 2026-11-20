@@ -254,6 +254,8 @@ button[role="tab"] {font-size: .88rem !important; padding: .3rem .75rem !importa
 .weights-advanced-changes {margin-top: .25rem; padding: .3rem .5rem; border-left: 3px solid #b45309;
                            background: color-mix(in srgb, #b45309 10%, transparent)}
 .weights-basic-area {padding: .4rem .6rem}
+#library-results .wrap {flex-direction: column; flex-wrap: nowrap; max-height: 22rem; overflow-y: auto; gap: .15rem}
+#library-results label {width: 100%; justify-content: flex-start; text-align: left; font-size: .88rem}
 .weight-inactive input {background: var(--background-fill-secondary)}
 /* Deleting: the question first (naming what goes), then the Undo bar. */
 .delete-confirm {border: 2px solid #ef4444 !important; border-radius: 12px; padding: .2rem .6rem}
@@ -3591,6 +3593,124 @@ def entry_choice_ui(kind, name, loaded, base, *values):
     return _choose({"type": "entry", "kind": kind, "entity": name}, loaded, base, values)
 
 
+# ---- the content library (🌍 World → Entries): every location, NPC, item and event, searchable ----------
+
+LIBRARY_ALL = "All"
+LIBRARY_KINDS = ("Locations", "NPCs", "Items", "Events")
+LIBRARY_ICONS = {"Locations": "📍", "NPCs": "🧑", "Items": "🎒", "Events": "⚡"}
+LIBRARY_LIMIT = 200  # results listed at once (the rest: narrow the search)
+
+
+def library_key(kind, name):
+    """A library entry's value: its content type and its name (JSON: any name is safe in it)."""
+    return json.dumps([kind, name], ensure_ascii=False)
+
+
+def library_entries():
+    """{kind: [summary, ...]} of the world's entries (GET /v1/entities/{kind}?fields=summary); a kind
+    that cannot be read is empty (and logged)."""
+    found = {}
+    for kind in LIBRARY_KINDS:
+        try:
+            found[kind] = API.get(_path("/v1/entities", kind), fields="summary")["entries"]
+        except APIError as exc:
+            LOG.warning("The %s could not be listed: %s", kind, exc)
+            found[kind] = []
+    return found
+
+
+def library_matches(entry, query):
+    """Whether every word of the search is in the entry's name, tags, summary or facts (any case)."""
+    words = str(query or "").lower().split()
+    if not words:
+        return True
+    text = " ".join([entry["name"], *entry.get("tags", []), entry.get("summary", ""), *entry.get("facts", [])]).lower()
+    return all(word in text for word in words)
+
+
+def library_label(kind, entry):
+    """A result's line: the type's icon, the name, its facts and tags, its summary."""
+    parts = [f"{LIBRARY_ICONS.get(kind, '')} {entry['name']}"]
+    if entry.get("facts"):
+        parts.append(f"({', '.join(entry['facts'])})")
+    if entry.get("tags"):
+        shown = entry["tags"][:6]
+        parts.append("· tags: " + ", ".join(shown) + (f" +{len(entry['tags']) - 6}" if len(entry["tags"]) > 6 else ""))
+    if entry.get("summary"):
+        parts.append(f"— {entry['summary']}")
+    return " ".join(parts)
+
+
+def library_view(query, kind_filter, loaded, entries=None):
+    """The library for a search and a type filter: (the type filter's choices with per-type counts, the
+    results (label, key), the key of the entry the editor has open (None when the search or filter hides
+    it: it stays open, nothing else is chosen), the status line)."""
+    entries = entries if entries is not None else library_entries()
+    kind_filter = kind_filter if kind_filter in (LIBRARY_ALL, *LIBRARY_KINDS) else LIBRARY_ALL
+    matching = {kind: [e for e in entries.get(kind, []) if library_matches(e, query)] for kind in LIBRARY_KINDS}
+    total = sum(len(entries.get(kind, [])) for kind in LIBRARY_KINDS)
+    searching = bool(str(query or "").strip())
+
+    def count(kind=None):
+        have = total if kind is None else len(entries.get(kind, []))
+        found = sum(map(len, matching.values())) if kind is None else len(matching[kind])
+        return f"{found} of {have}" if searching else str(have)
+
+    filters = [(f"All ({count()})", LIBRARY_ALL)] + [(f"{LIBRARY_ICONS[k]} {k} ({count(k)})", k) for k in LIBRARY_KINDS]
+    shown_kinds = LIBRARY_KINDS if kind_filter == LIBRARY_ALL else (kind_filter,)
+    results = [(library_label(kind, e), library_key(kind, e["name"])) for kind in shown_kinds for e in matching[kind]]
+    loaded = loaded or {}
+    current = library_key(loaded.get("kind"), loaded.get("entity")) if loaded.get("entity") else None
+    selected = current if current in [value for _, value in results[:LIBRARY_LIMIT]] else None
+    what = "entries" if kind_filter == LIBRARY_ALL else kind_filter
+    if total == 0:
+        status = "**The world has no entries yet.** Choose a content type below and press **New entry** to add one."
+    elif kind_filter != LIBRARY_ALL and not entries.get(kind_filter):
+        status = (f"**No {kind_filter.lower() if kind_filter != 'NPCs' else 'NPCs'} in this world yet.** Choose "
+                  f"*{kind_filter}* as the content type below and press **New entry** to add one.")
+    elif not results:
+        status = (f"**No {what} match “{str(query).strip()}”.** Clear the search, or choose *All* to look in "
+                  "every type.")
+    else:
+        have = total if kind_filter == LIBRARY_ALL else len(entries.get(kind_filter, []))
+        status = (f"**{len(results)}** of {have} {what} match “{str(query).strip()}”" if searching
+                  else f"Showing all **{have}** {what}")
+        if len(results) > LIBRARY_LIMIT:
+            status += f" (the first {LIBRARY_LIMIT}: narrow the search)"
+        status += "."
+    if current:
+        name = f"**{loaded['entity']}** ({loaded['kind']})"
+        status += (f"  \nOpen in the editor: {name}." if selected else
+                   f"  \nOpen in the editor: {name}, hidden by the search or filter: it stays open, nothing else "
+                   "was chosen.")
+    return filters, results[:LIBRARY_LIMIT], selected, status
+
+
+@ui
+def library_ui(query, kind_filter, loaded):
+    """Search or filter changed (or the world did): the library's filter, results and status. The entry
+    open in the editor never changes here. Returns (the type filter, the results, the status)."""
+    filters, results, selected, status = library_view(query, kind_filter, loaded)
+    kind_filter = kind_filter if kind_filter in (LIBRARY_ALL, *LIBRARY_KINDS) else LIBRARY_ALL
+    return gr.Radio(choices=filters, value=kind_filter), gr.Radio(choices=results, value=selected), status
+
+
+@ui
+def library_choice_ui(key, loaded, base, *values):
+    """An entry chosen in the library: opened in the editor as when chosen in its pickers; with unsaved
+    changes, nothing is opened yet and the editor asks first (Save, Discard or Stay)."""
+    try:
+        kind, name = json.loads(key) if key else (None, None)
+    except (TypeError, ValueError):
+        kind, name = None, None
+    loaded = loaded or {}
+    if kind not in LIBRARY_KINDS or not name or (kind, name) == (loaded.get("kind"), loaded.get("entity")):
+        return _draft_update()
+    if name not in _entity_names(kind):
+        raise gr.Error(f"{name} is no longer among the {kind}: it was renamed or deleted. ↻ Refresh the library.")
+    return _choose({"type": "entry", "kind": kind, "entity": name}, loaded, base, values)
+
+
 @ui
 def new_entry_choice_ui(loaded, base, *values):
     """*New entry*: a blank form for the content type."""
@@ -4966,6 +5086,21 @@ def build_app():
             with gr.Tab("🌍 World", id="world", elem_id="dest-world") as world_tab:
                 with gr.Tabs(selected="entries") as world_sections:
                     with gr.Tab(WORLD_SECTIONS["entries"], id="entries") as section_entries:
+                        # The content library: every location, NPC, item and event, searchable; choosing one opens
+                        # it below (guarded like the pickers); searching or filtering never changes what is open.
+                        library_filters, library_found, library_selected, library_said = library_view(
+                            "", LIBRARY_ALL, {"kind": "Locations", "entity": selected_name})
+                        with gr.Accordion("📚 Content library: search every location, NPC, item and event", open=True,
+                                          elem_id="library"):
+                            with gr.Row(equal_height=True):
+                                library_search = gr.Textbox(label="Search", scale=5, elem_id="library-search",
+                                                            placeholder="Names, tags, descriptions… (every word must match)")
+                                library_refresh = gr.Button("↻ Refresh", scale=1, elem_id="library-refresh")
+                            library_filter = gr.Radio(library_filters, value=LIBRARY_ALL, label="Type",
+                                                      elem_id="library-filter")
+                            library_status = gr.Markdown(library_said, elem_id="library-status")
+                            library_results = gr.Radio(library_found, value=library_selected, label="Entries",
+                                                       elem_id="library-results", elem_classes="library-results")
                         with gr.Row():
                             kind = gr.Radio(REFERENCE["entity_kinds"], value="Locations", label="Content type")
                             entity = gr.Dropdown(label="Entry", choices=names, value=selected_name)
@@ -5516,6 +5651,15 @@ def build_app():
                                           [saved_draft, draft_offer, draft_offer_group, draft_offer_text])
                 # The user's choices: carried out at once, or, with unsaved changes, undone and asked about.
                 kind.input(*tracked(entry_choice_ui, [kind, entity, *guard_inputs], draft_outputs))
+                # The library: a search, a filter or a change in the world (a load, save, rename, delete, undo:
+                # every one sets the draft's baseline) lists it again; choosing an entry opens it, guarded.
+                library_inputs = [library_search, library_filter, draft_loaded]
+                library_outputs = [library_filter, library_results, library_status]
+                gr.on([library_search.input, library_filter.input, library_refresh.click, draft_base.change,
+                       draft_loaded.change, section_entries.select], library_ui, library_inputs, library_outputs,
+                      trigger_mode="always_last", show_progress="hidden")
+                library_results.input(*tracked(library_choice_ui, [library_results, *guard_inputs], draft_outputs)).then(
+                    library_ui, library_inputs, library_outputs, show_progress="hidden")
                 entity.input(*tracked(entry_choice_ui, [kind, entity, *guard_inputs], draft_outputs))
                 add_entry.click(*tracked(new_entry_choice_ui, guard_inputs, draft_outputs))
                 act_pick.input(*tracked(action_choice_ui, [act_pick, *guard_inputs], draft_outputs))

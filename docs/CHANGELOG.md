@@ -7,6 +7,16 @@ that introduces them.
 
 ## [Unreleased]
 
+### 🌍 World: a searchable content library
+
+#### Added
+- 🌍 World → Entries has a content library listing every location, NPC, item and event, with its tags,
+  facts and first description, a search, per-type counts and type filters. Choosing an entry opens it
+  in the editor, guarded like the pickers (unsaved changes are asked about first). Searching and
+  filtering never change the open entry. Empty worlds, empty types and searches without results say so.
+- `GET /v1/entities/{kind}?fields=summary`, a light summary of each entry; the other `fields` values
+  are unchanged.
+
 ### ⚖ Evaluate: a selected trained engine, or the baseline, said before and after
 
 #### Changed
