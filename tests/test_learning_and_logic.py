@@ -179,7 +179,8 @@ class LearningInPlayTests(_TempSaves):
                                         progress=lambda *a, **k: None)
         curve, traits = outputs[3], outputs[4]  # after the report and the run's files: training only, no game
         done, card = outputs[-5], outputs[-4]   # the completed engine, played, judged or exported from its card
-        self.assertIn(f"Completed engine `{done['engine_id']}`", card)
+        self.assertIn("Completed engine", card)
+        self.assertIn(f"engine `{done['engine_id']}`", card)
         self.assertIn("No game has been started", card)
         self.assertEqual(set(curve["series"]), {"benchmark (champion)", "best this generation", "population average"})
         self.assertIn("goal_bias", set(traits["trait"]))

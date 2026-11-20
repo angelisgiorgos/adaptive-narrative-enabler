@@ -7,6 +7,57 @@ that introduces them.
 
 ## [Unreleased]
 
+### Engine names and result cards; the weights' shipped values, leave question and trait scaling
+
+#### Added
+- Completed engines can be given an optional name: on Train's result card, or in 🧠 Train → 🏷 Finished
+  engines. Train, Play, Evaluate and Export show every engine by one label: its name, or, for an
+  unnamed engine, what it is, when it was made, its generations and its training fitness, always
+  with its short id. The engine and run ids stay the identifiers. An export without a name takes
+  the engine's.
+- Result cards, in Train and beside the engine pickers of Play, Evaluate and Export, show when the
+  engine was made, its world, its generations and training settings, its training fitness, the
+  judge's engagement (once judged: a different measure, shown apart) and the storyteller traits
+  that scale the Basic weights.
+- `GET /v1/engines/{engine_id}/card` and `PUT /v1/engines/{engine_id}/name`. Engine listings also
+  answer `name` and `label`. A judge benchmark or calibration of an engine is kept on its card.
+  Names and evaluations are kept with the saves (`engine_meta.json`, format 1, older files
+  migrated), so they work with recording off and survive a restart.
+- Weights: *Changed from the shipped values* lists the saved values that differ from the release's,
+  and *↺ Shipped values into the draft* puts them back for saving. `config/default_history.json`
+  records the shipped values, and `GET /v1/weights` answers them.
+- Leaving ⚙ Advanced with unsaved weights asks Save, Discard or Stay, like the World editors.
+- The Basic controls a storyteller scales say how far its traits move them (from `genome_bounds`).
+  *Event frequency* has the turns between events and the most events per story.
+
+#### Changed
+- The studio waits up to 90 s (`ANE_UI_STARTUP_WAIT`) for its page to answer at start, instead of
+  Gradio's single 3-second check, which a busy host could fail.
+
+### A guide for building another frontend on the API
+
+#### Added
+- [docs/FRONTEND.md](FRONTEND.md) describes every studio view as requests and JSON fields: what each
+  view loads, its components, its actions, the client-side logic a new frontend has to reimplement,
+  and where it navigates. It also covers the API contract (headers, errors, jobs, downloads, drafts,
+  conflicts and undo), real samples of the shared response shapes, the gaps a rebuild should not
+  copy, and an index of which view uses which of the 128 endpoints.
+- `FrontendGuideTests` (in `tests/test_studio_coverage.py`) fails when the index and the API's
+  routes disagree, or when the guide names a request the API does not have.
+
+#### Changed
+- docs/API.md links to the guide, and its CORS note now lists `PATCH`, which the API allows.
+
+### ANE AI runtime: stopping without cutting answers short
+
+#### Fixed
+- `POST /shutdown` sometimes answered with the headers but no body (`IncompleteRead`): the process
+  exited before the answer was written. The server now stops listening only after that answer is sent.
+- A stop by signal, by the UNP process ending or by stdin closing now waits up to 5 seconds
+  (`DRAIN_TIMEOUT`) for the requests still being answered, rather than exiting under them.
+- If saving the sessions fails during a shutdown, the server still stops (it no longer stays up
+  answering `503`).
+
 ### Weights: a Basic view of common gameplay controls
 
 #### Added

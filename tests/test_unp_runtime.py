@@ -7,7 +7,8 @@ savegame.py, content_rules.py; packaging/; backend/export.py platforms):
   damaged or made by another engine; an ended session is not rebuilt;
 - world content from the UNP is checked like the studio checks it;
 - the catalogue holds every entity and field;
-- the server only serves local, authorised JSON requests;
+- the server only serves local, authorised JSON requests; stopped, it answers the requests in
+  flight before the process exits;
 - the whole protocol end to end, with Python (packaging/smoke_test.py), like CI does with the
   standalone build;
 - exports by platform: a standalone runtime is used only when its code version is the API's; the
@@ -34,6 +35,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -256,8 +258,8 @@ class ProtocolTests(unittest.TestCase):
         env["ANE_RUNTIME_TOKEN"] = "t"
         process = subprocess.Popen([PYTHON, "run.py", "--data-dir", tempfile.mkdtemp(), "serve", "--port", "0",
                                     "--exit-on-stdin-eof"], cwd=self.package, env=env, stdin=subprocess.PIPE,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        self.addCleanup(process.kill)
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        self.addCleanup(_close, process)
         info = json.loads(process.stdout.readline())
         port = info["port"]
         self.assertNotIn("token", info)  # given by the UNP, never echoed
@@ -333,6 +335,95 @@ class _Server:
         rest = [json.loads(line) for line in self.process.stdout.read().splitlines() if line.strip()]
         return code, rest
 
+    def close(self):
+        _close(self.process)
+
+
+def _close(process):
+    """Kill ``process`` if it still runs, reap it and close its pipes (no ResourceWarning)."""
+    if process.poll() is None:
+        process.kill()
+    process.wait(timeout=60)
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None:
+            stream.close()
+
+
+class _StubEngine:
+    """Just enough of a NarrativeEngine for the server; ``GET /engine`` runs ``info``."""
+
+    manifest, games, revision, data_dir = {"name": "stub"}, {}, 0, "."
+
+    def __init__(self, info):
+        self.lock = threading.RLock()
+        self.info = info
+
+    def shutdown(self, save=True, end_sessions=False):
+        return {"saved": [], "ended": []}
+
+
+class ServerStopTests(unittest.TestCase):
+    """A stop that does not come from POST /shutdown (signal, the UNP gone, stdin closed) must not
+    end the process under a request still being answered: serve() returns only once it is."""
+
+    def _serve(self, info, drain_timeout):
+        from narrative_runtime.server import RuntimeServer
+
+        server = RuntimeServer(_StubEngine(info), drain_timeout=drain_timeout)
+        serving = threading.Thread(target=server.serve, daemon=True)
+        serving.start()
+        self.addCleanup(server.httpd.server_close)
+        return server, serving
+
+    def _get_engine(self, server, answers):
+        connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=30)
+        connection.request("GET", "/engine", headers={"Host": f"127.0.0.1:{server.port}"})
+        response = connection.getresponse()
+        answers.append((response.status, json.loads(response.read())))
+        connection.close()
+
+    def test_a_stop_waits_for_the_answers_in_flight(self):
+        entered, release = threading.Event(), threading.Event()
+
+        def info():
+            entered.set()
+            release.wait(30)
+            return {"name": "stub", "padding": "x" * 100_000}
+
+        server, serving = self._serve(info, drain_timeout=30)
+        answers = []
+        client = threading.Thread(target=self._get_engine, args=(server, answers), daemon=True)
+        client.start()
+        self.assertTrue(entered.wait(30))
+        server.shutdown(reason="signal 15")  # what lifecycle's stop() does
+        server.httpd.shutdown()  # returns once serve_forever has stopped
+        serving.join(0.5)
+        self.assertTrue(serving.is_alive())  # still waiting for the answer in flight
+        release.set()
+        client.join(30)
+        serving.join(30)
+        self.assertFalse(serving.is_alive())
+        self.assertEqual(answers[0][0], 200)
+        self.assertEqual(len(answers[0][1]["padding"]), 100_000)  # the whole body
+
+    def test_a_stuck_request_does_not_keep_the_process_alive(self):
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+
+        def info():
+            entered.set()
+            release.wait(30)
+            return {}
+
+        server, serving = self._serve(info, drain_timeout=0.5)
+        threading.Thread(target=self._get_engine, args=(server, []), daemon=True).start()
+        self.assertTrue(entered.wait(30))
+        started = time.monotonic()
+        server.shutdown(reason="signal 15")
+        serving.join(10)
+        self.assertFalse(serving.is_alive())
+        self.assertLess(time.monotonic() - started, 5)
+
 
 class CommandLineTests(unittest.TestCase):
     @classmethod
@@ -374,6 +465,7 @@ class CommandLineTests(unittest.TestCase):
     def test_serve_with_a_ready_file_and_without_a_token(self):
         ready_file = Path(tempfile.mkdtemp()) / "ready.json"
         server = _Server(self.package, "--ready-file", str(ready_file), "--no-token", token=None)
+        self.addCleanup(server.close)
         try:
             self.assertEqual(json.loads(ready_file.read_text()), server.ready)
             if os.name == "posix":
@@ -389,6 +481,7 @@ class CommandLineTests(unittest.TestCase):
         shutil.copytree(self.package, package)
         origin = "http://localhost:3000"
         server = _Server(package, "--allow-origin", origin, "--allow-evolve")
+        self.addCleanup(server.close)
         try:
             status, headers, _ = server.send("OPTIONS", "/games", headers={"Origin": origin})
             self.assertEqual((status, headers.get("Access-Control-Allow-Origin")), (204, origin))
@@ -416,6 +509,7 @@ class CommandLineTests(unittest.TestCase):
     def test_sigterm_saves_every_session_and_stops(self):
         data = tempfile.mkdtemp()
         server = _Server(self.package, data_dir=data)
+        self.addCleanup(server.close)
         status, _, game = server.send("POST", "/games", {"profile": "cli", "seed": 2})
         self.assertEqual(status, 201, game)
         server.process.send_signal(signal.SIGTERM)
@@ -431,6 +525,7 @@ class CommandLineTests(unittest.TestCase):
         --parent-pid <the game> --unp-url <callback>; the token in ANE_RUNTIME_TOKEN."""
         server = _Server(self.package, "--exit-on-stdin-eof", "--parent-pid", str(os.getpid()), "--unp-url",
                          "http://127.0.0.1:9/ane-events", extra=("--package", str(self.package)))
+        self.addCleanup(server.close)
         self.assertEqual(server.ready["event"], "ready")
         self.assertNotIn("token", server.ready)  # given by the game, never echoed
         server.process.stdin.close()  # the game went away

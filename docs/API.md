@@ -9,6 +9,10 @@ below (`ANE_API_URL`, set to `http://hamlet-ane-api:8004` by Compose), and
 whatever it does, other clients can do too. Without `ANE_API_URL`, `python
 app.py` serves the same API inside the studio's process.
 
+**Building another frontend?** [FRONTEND.md](FRONTEND.md) describes every studio view as
+requests and JSON fields: what each screen loads, its components, its actions, the client-side logic
+to reimplement, and an index of which view uses which endpoint.
+
 | URL | Purpose |
 |---|---|
 | `http://localhost:8003` | Adaptive Narrative Studio |
@@ -269,7 +273,7 @@ curl -X POST http://localhost:8004/v1/simulations -H 'Content-Type: application/
 - Uploads are recognised by their extension (`.yaml`/`.yml`, `.zip`) and
   read in chunks up to their limit.
 - CORS is off unless `ANE_CORS_ORIGINS` lists the allowed origins (comma
-  separated). It then allows `GET`, `PUT`, `POST`, `DELETE` and the headers
+  separated). It then allows `GET`, `PUT`, `PATCH`, `POST`, `DELETE` and the headers
   `Content-Type`, `Authorization`, `X-ANE-Client`, and `X-ANE-User`.
 
 ## Endpoint coverage
@@ -373,6 +377,12 @@ one); `tests/test_studio_coverage.py` checks it.
   (`backend/tuning_basic.yaml`; no presets); a control whose parameter the configuration lacks is
   left out. A `PUT` may send `expected` `{path: value}`, the values the form was loaded with. A
   changed parameter whose stored value has moved since is then refused with `409`, and nothing is saved.
+  `shipped` (`{path: value}`, also `shipped` in each parameter) is what this release ships:
+  `config/default_history.json`'s `shipped` record, written by `packaging/default_history.py`
+  from the configuration being released. It is read from `ANE_CONFIG_DEFAULTS`, the image's
+  pristine `config.defaults`, or `config/`. A Basic control the storyteller scales has
+  `scaled_by` and `scaling`, which says how far each storyteller's learned traits move its value.
+  `unexpected_events.cooldown_steps` and `max_per_story` are weights too.
 - `GET /v1/logic` lists the parameter sections of the engine's logic, with what
   each controls. `GET|PUT /v1/logic/{section}` reads or changes one section as
   YAML text (`{"parameters": "evolution:\n  ..."}`). It must keep the same
@@ -605,7 +615,29 @@ one); `tests/test_studio_coverage.py` checks it.
   default the newest) or `source: run` (that run's engine, without
   `generation`). A generation's champion, the remembered storyteller, a play
   session's storyteller, or no complete engine yet answer `409`. The response
-  carries the `engine_id`.
+  carries the `engine_id`. Without a `name`, the export is named after the engine's
+  name, if it has one; its manifest carries that name as `engine_name`.
+- **Engine names and result cards.** Each entry of `GET /v1/exports/engines`, `GET /v1/runs`
+  and `GET /v1/records/engines` also has `name` (null when unnamed) and `label`. The label is
+  the name with the creation time, or, for an unnamed engine, what it is, when it was made, its
+  generations and its training fitness. It always ends with the short id. The engine and run
+  ids stay the identifiers.
+  - `PUT /v1/engines/{engine_id}/name` with `{"name": "…"}` names an engine, and `""` or
+    `null` removes the name. It answers `400` for a name over 80 characters or one with control
+    characters, and `404` for an unknown engine.
+  - `GET /v1/engines/{engine_id}/card` is the result card: `name`, `label`, `default_label`,
+    `created_at`, `kind`, `run_id`, `parent_id`, `world` (`id`, `summary`, and `current`: trained
+    on the active world), `generations`, `settings` (`main` and `other`: what its training ran
+    with), `fitness` (`training`, the evolution's objective, plus `improvement`,
+    `early_stopped` and `history`), `judge_in_training`, `evaluations`, `resumable` and
+    `scaling_traits`.
+  - `evaluations` lists, newest first, the judge benchmarks (`POST /v1/jobs/judge-benchmark`
+    with an `engine_id`, neither pairwise nor with variants) and calibrations of this engine.
+    Each gives the judge's mean `engagement` (1–10), kept apart from the training fitness, which
+    is on its own scale.
+  - Names and evaluations are kept with the saves (`ANE_SAVE_DIR/engine_meta.json`,
+    `{"format": 1, "engines": {...}}`), so they work with recording on or off and survive a
+    restart. An older bare `{engine_id: name}` file is read and rewritten in this format.
 - `GET /v1/learning` returns the storytellers the AI remembers from earlier
   runs; `DELETE /v1/learning` forgets them.
 - `POST /v1/engines/load?profile=&stats_mode=&stats=&mission=` loads an engine model

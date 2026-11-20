@@ -137,6 +137,42 @@ class EndpointCoverageTests(unittest.TestCase):
                     self.assertTrue(reached(_signature(target.group(0))), equivalent)
 
 
+class FrontendGuideTests(unittest.TestCase):
+    """docs/FRONTEND.md, the guide a frontend is built from, stays true to the API: its endpoint index
+    lists every route exactly once, and every request it names anywhere is a route."""
+
+    GUIDE = ROOT / "docs" / "FRONTEND.md"
+    REQUEST = re.compile(r"\b(GET|PUT|POST|PATCH|DELETE)\s+`?(/v1/[^\s`?)|,;\\]*)")
+
+    @staticmethod
+    def _routes():
+        return {(method, route.path) for route in api.api.routes if getattr(route, "path", "").startswith("/v1")
+                for method in getattr(route, "methods", set()) - {"HEAD", "OPTIONS"}}
+
+    def _text(self):
+        return self.GUIDE.read_text(encoding="utf-8")
+
+    def test_the_endpoint_index_lists_every_route_once(self):
+        index = self._text().split("\n# Endpoint index", 1)[1]
+        rows = re.findall(r"^\| `(GET|PUT|POST|PATCH|DELETE)` \| `(/v1/[^`]*)` \|", index, flags=re.M)
+        self.assertEqual(len(rows), len(set(rows)), "an endpoint is listed twice")
+        listed, routes = set(rows), self._routes()
+        self.assertEqual(sorted(routes - listed), [], "routes missing from the guide's endpoint index")
+        self.assertEqual(sorted(listed - routes), [], "the guide's endpoint index lists routes the API does not have")
+
+    def test_every_request_the_guide_names_exists(self):
+        routes = {(method, _signature(path)) for method, path in self._routes()}
+
+        def exists(method, signature):  # the guide may name a value (Locations) where the route has {kind}
+            return any(m == method and len(s) == len(signature) and all(a == b or "*" in (a, b)
+                                                                       for a, b in zip(s, signature))
+                       for m, s in routes)
+
+        unknown = sorted({f"{method} {path}" for method, path in self.REQUEST.findall(self._text())
+                          if not exists(method, _signature(path.rstrip(".:")))})
+        self.assertEqual(unknown, [], "requests named in docs/FRONTEND.md that the API does not have")
+
+
 class _CoverageSandbox(_Sandbox):
     def setUp(self):
         super().setUp()

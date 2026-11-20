@@ -1133,7 +1133,8 @@ class TrainResultTests(_Sandbox):
         for result in (outputs, continued, retrained):
             with self.subTest(kind=result[-5]["kind"]):
                 engine_id = result[-5]["engine_id"]
-                self.assertIn(f"Completed engine `{engine_id}`", result[-4])
+                self.assertIn("Completed engine", result[-4])
+                self.assertIn(f"engine `{engine_id}`", result[-4])
                 self.assertIn("No game has been started", result[-4])
                 self.assertTrue(all(_prop(button, "interactive") for button in result[-3:]))
                 self.assertFalse([s for s in records.list_stories(engine_id=engine_id) if s["kind"] == "play"])
@@ -1160,7 +1161,8 @@ class TrainResultTests(_Sandbox):
         self.assertEqual(_prop(opened[0], "selected"), "play")
         self.assertEqual(_prop(picker, "value"), engine_id)
         self.assertFalse(_prop(setup, "open"))                   # the game is on: its setup folds away
-        self.assertIn(f"Playing the engine just trained, `{engine_id}`", opened[-1])
+        self.assertIn("Playing the engine just trained", opened[-1])
+        self.assertIn(f"(engine `{engine_id}`)", opened[-1])                 # its label, and its exact id
         self.assertEqual(set(sessions.SESSIONS) - before, {token})  # one game, the one asked for
         (story,) = records.list_stories(session_id=token)
         self.assertEqual(story["engine_id"], engine_id)
@@ -2047,7 +2049,7 @@ class BasicTuningTests(_Sandbox):
             self.assertTrue(area["title"] and area["summary"])
             for control in area["controls"]:
                 with self.subTest(path=control["path"]):
-                    self.assertEqual(set(control), {"path", "effect"})     # one parameter, nothing set besides
+                    self.assertLessEqual(set(control), {"path", "effect", "scaled_by", "scaling"})  # one parameter
                     self.assertIn(control["path"], info)                   # a parameter of the configuration
                     self.assertTrue(info[control["path"]]["described"])    # from the engine's code
                     self.assertTrue(info[control["path"]]["source"])
@@ -2086,7 +2088,7 @@ class BasicTuningTests(_Sandbox):
                     self.assertEqual(([i._id for i in mirror.inputs], [o._id for o in mirror.outputs], mirror.js),
                                      ([source._id], [target._id], "(value) => value"))
                     (status,) = [fn for fn in demo.fns.values() if fn.trigger_after == mirror._id]
-                    self.assertIs(status.fn, app.weights_draft_markup)
+                    self.assertIs(status.fn, app.weights_draft_ui)
                 self.assertIn("Also in Basic", full.info)
         self.assertEqual(sum(1 for key in by if key.startswith("weight-basic-")), len(basic))
         self.assertEqual(sum(1 for key in by if key.startswith("weight-advanced-")), len(info))
@@ -2100,7 +2102,7 @@ class BasicTuningTests(_Sandbox):
         # An edit to a parameter Basic does not show updates the draft's status too.
         other = next(p for p in info if p not in basic)
         (status,) = listeners(by[app.weight_elem_id("advanced", other)], "input")
-        self.assertIs(status.fn, app.weights_draft_markup)
+        self.assertIs(status.fn, app.weights_draft_ui)
 
     def test_advanced_changes_are_shown_and_a_save_sends_only_the_changes(self):
         import gradio as gr
@@ -2198,7 +2200,8 @@ class TrainFollowUpTests(_Sandbox):
         done = app.run_simulation_ui(*controls, None, progress=lambda *a, **k: None)[-5]
         restored, card, *buttons = app.restore_result_ui(done)
         self.assertEqual(restored, done)
-        self.assertIn(f"Completed engine `{done['engine_id']}`", card)
+        self.assertIn("Completed engine", card)
+        self.assertIn(f"engine `{done['engine_id']}`", card)
         self.assertIn("Trained earlier in this browser", card)
         self.assertTrue(all(_prop(b, "interactive") for b in buttons))
         gone, card, *buttons = app.restore_result_ui({**done, "engine_id": "0" * 32})
@@ -2206,6 +2209,288 @@ class TrainFollowUpTests(_Sandbox):
         self.assertIn("no longer among the finished runs", card)
         self.assertFalse(any(_prop(b, "interactive") for b in buttons))
         self.assertIsNone(app.restore_result_ui(None)[0])
+
+
+class EngineNamesTests(_Sandbox):
+    """Completed engines get an optional name, kept with the saves (recording on or off), shown by one
+    label in Train, Play, Evaluate and Export; the engine and run ids stay their identifiers. An unnamed
+    engine is labelled by what it is, when it was made, its generations and its training fitness. Its
+    result card (creation, world, generations, settings, training fitness, the judge's engagement when
+    evaluated) keeps the training fitness and the judge's engagement apart."""
+
+    def _train(self):
+        trained = self.client.post("/v1/simulations", json={"candidate_count": 1, "generations": 1,
+                                                             "simulation_steps": 2, "deterministic": False})
+        self.assertEqual(trained.status_code, 200, trained.text)
+        return trained.json()
+
+    def _off(self):
+        """Recording off, a fresh save folder, nothing in this process's memory (as after a restart)."""
+        from backend import export
+
+        stack = [patch.dict(os.environ, {"ANE_RECORDS": "off", "ANE_SAVE_DIR": str(self.dir / "fresh")}),
+                 patch.dict(export.ENGINES, {}, clear=True), patch.dict(export.RUNS, {}, clear=True)]
+        for patcher in stack:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_a_name_is_shown_everywhere_and_the_ids_stay(self):
+        import app
+        from backend import export
+
+        self._off()
+        result = self._train()
+        engine_id, run_id = result["engine_id"], result["run_id"]
+        listed = self.client.get("/v1/exports/engines").json()["engines"][0]
+        self.assertEqual((listed["engine_id"], listed["name"]), (engine_id, None))
+        self.assertRegex(listed["label"], r"^Run of \d{4}-\d\d-\d\d \d\d:\d\d · 1 generation · fitness -?\d+\.\d · "
+                         + engine_id[:8] + "$")  # an unnamed result: what, when, generations, fitness, its id
+        card = self.client.get(f"/v1/engines/{engine_id}/card").json()
+        self.assertEqual((card["engine_id"], card["run_id"], card["name"], card["generations"]),
+                         (engine_id, run_id, None, 1))
+        self.assertTrue(card["world"]["current"])                      # trained on the active world
+        self.assertEqual(card["world"]["summary"]["locations"], len(store.config.get("world_definition.locations")))
+        self.assertEqual(card["settings"]["main"]["pop_size"], 1)    # what its training ran with
+        self.assertEqual(card["fitness"]["training"], listed["score"])
+        self.assertEqual(card["evaluations"], [])
+        self.assertEqual(set(card["scaling_traits"]), {"voyage_bias", "goal_bias", "novelty_bias", "event_prob",
+                                                       "chaos_bias"})
+        # Named: every listing and picker shows the name; the ids do not change.
+        named = self.client.put(f"/v1/engines/{engine_id}/name", json={"name": "  Harbor   tales v1 "})
+        self.assertEqual(named.status_code, 200, named.text)
+        self.assertEqual(named.json()["name"], "Harbor tales v1")
+        label = named.json()["label"]
+        self.assertTrue(label.startswith("Harbor tales v1 · ") and label.endswith(engine_id[:8]), label)
+        self.assertEqual(self.client.get("/v1/exports/engines").json()["engines"][0]["label"], label)
+        self.assertEqual(self.client.get("/v1/runs").json()["runs"][0]["label"], label)
+        self.assertIn((label, engine_id), app.finished_run_choices())                 # Play, Export
+        self.assertIn((label, engine_id), app.evaluation_engine_choices())            # Evaluate
+        done = app.completed_engine(result, "run")
+        self.assertIn("Completed engine: Harbor tales v1", app.completed_view_ui(done)[0])  # Train
+        self.assertIn(f"engine `{engine_id}` · run `{run_id}`", app.completed_view_ui(done)[0])
+        played = app.play_result_ui(done, "player", "", "balanced")
+        self.assertIn("Harbor tales v1", played[-1])
+        self.assertIn("Harbor tales v1", _prop(app.export_result_ui(done, "python")[-2], "value"))
+        # The studio's rename refreshes every picker's labels (values unchanged).
+        message, card_text, box, result_card, *pickers = app.rename_engine_ui(engine_id, "Second name", done)
+        self.assertIn("its id stays", message)
+        self.assertEqual(_prop(box, "value"), "Second name")
+        self.assertIn("Completed engine: Second name", result_card)
+        self.assertEqual(len(pickers), 8)
+        self.assertTrue(all(any(engine_id == value and text.startswith("Second name") for text, value in
+                                _prop(picker, "choices")) for picker in pickers[:5]))
+        # An export is named after the engine unless a name is given, and carries it.
+        exported = export.export_engine(source="engine", engine_id=engine_id)
+        self.assertEqual((exported["manifest"]["name"], exported["manifest"]["engine_name"]),
+                         ("Second-name", "Second name"))
+        # Kept with the saves: after a restart (nothing in memory) and with recording off, still named.
+        export.ENGINES.clear()
+        export.RUNS.clear()
+        again = self.client.get("/v1/exports/engines").json()["engines"][0]
+        self.assertEqual((again["engine_id"], again["name"]), (engine_id, "Second name"))
+        stored = json.loads((self.dir / "fresh" / "engine_meta.json").read_text())
+        self.assertEqual((stored["format"], stored["engines"][engine_id]["name"]), (1, "Second name"))
+        # No name: the label again.
+        cleared = self.client.put(f"/v1/engines/{engine_id}/name", json={"name": ""}).json()
+        self.assertIsNone(cleared["name"])
+        self.assertTrue(cleared["label"].startswith("Run of "))
+        # Refused: too long, control characters, an unknown engine.
+        for bad in ("x" * 81, "bell\x07"):
+            self.assertEqual(self.client.put(f"/v1/engines/{engine_id}/name", json={"name": bad}).status_code, 400)
+        self.assertEqual(self.client.put("/v1/engines/nothing/name", json={"name": "x"}).status_code, 404)
+        self.assertEqual(self.client.get("/v1/engines/nothing/card").status_code, 404)
+
+    def test_recorded_engines_are_named_and_carded_too(self):
+        import app
+
+        with patch.dict(os.environ, {"ANE_RECORDS_DIR": str(self.dir / "records")}):
+            self.assertTrue(records.enabled())
+            engine_id = self._train()["engine_id"]
+            self.client.put(f"/v1/engines/{engine_id}/name", json={"name": "Recorded one"})
+            rows = self.client.get("/v1/records/engines").json()["engines"]
+            best = next(row for row in rows if row["id"] == engine_id)
+            self.assertTrue(best["label"].startswith("Recorded one · "))
+            champion = next(row for row in rows if row["source"] == "generation_champion")
+            self.assertIsNone(champion["name"])
+            self.assertTrue(champion["label"].startswith("Generation champion of "))
+            self.assertIn("generation 0", champion["label"])
+            self.assertTrue(any(label.startswith("Recorded one") for label, _ in app.recorded_engines()))
+            card = self.client.get(f"/v1/engines/{engine_id}/card").json()
+            self.assertEqual(card["name"], "Recorded one")
+            no_model = self.client.get(f"/v1/engines/{champion['id']}/card")  # no model file: what its record says
+            self.assertEqual(no_model.status_code, 200, no_model.text)
+            self.assertEqual(no_model.json()["kind"], "Generation champion")
+
+    def test_training_fitness_and_judge_engagement_are_kept_apart(self):
+        import app
+        from backend import engine_meta
+
+        self._off()
+        engine_id = self._train()["engine_id"]
+        text = app.engine_card_ui(engine_id)
+        self.assertIn("**Training fitness:**", text)
+        self.assertIn("**Judge engagement:** not evaluated yet", text)
+        judged = {"stories": 4, "judged": 4, "engagement": 6.25, "criteria": {"surprise": 6.0},
+                  "rows": [{"fitness": 10.0}, {"fitness": 14.0}]}
+        with patch.object(api.evaluation, "benchmark", return_value=judged) as benchmark:
+            job = self.client.post("/v1/jobs/judge-benchmark", json={"stories": 4, "engine_id": engine_id})
+            self.assertEqual(job.status_code, 202, job.text)
+            self.assertEqual(_finished(self.client, job.json()["id"])["status"], "finished")
+            benchmark.assert_called_once()
+            pairwise = self.client.post("/v1/jobs/judge-benchmark", json={
+                "stories": 4, "engine_id": engine_id, "pairwise": True, "variants": {"climax.enabled": False}})
+            _finished(self.client, pairwise.json()["id"])            # a comparison, not this engine's rating
+        card = self.client.get(f"/v1/engines/{engine_id}/card").json()
+        self.assertEqual(len(card["evaluations"]), 1)
+        self.assertEqual((card["evaluations"][0]["kind"], card["evaluations"][0]["engagement"],
+                          card["evaluations"][0]["story_fitness"]), ("judge", 6.25, 12.0))
+        text = app.engine_card_markdown(card)
+        fitness_line = next(line for line in text.splitlines() if "Training fitness" in line)
+        judge_line = next(line for line in text.splitlines() if "Judge engagement" in line)
+        self.assertNotIn("/ 10", fitness_line)
+        self.assertIn("6.25 / 10", judge_line)
+        self.assertIn("not the fitness", judge_line)
+        # Format 0 (a bare {engine id: name}) is read as names and written back in the current format.
+        path = engine_meta.meta_path()
+        path.write_text(json.dumps({"old-engine": "From before"}), encoding="utf-8")
+        self.assertEqual(engine_meta.names(), {"old-engine": "From before"})
+        engine_meta.set_name(engine_id, "New")
+        stored = json.loads(path.read_text())
+        self.assertEqual(stored["format"], 1)
+        self.assertEqual(stored["engines"]["old-engine"], {"name": "From before"})
+        path.write_text("not json", encoding="utf-8")                  # unreadable: shown unnamed, no failure
+        self.assertEqual(engine_meta.names(), {})
+
+
+class WeightsFollowUpTests(_Sandbox):
+    """Weights: saved values changed from the shipped ones are listed (and the shipped values can be put
+    in the draft); leaving ⚙ Advanced with an unsaved weights draft asks Save, Discard or Stay; the Basic
+    controls say how far each storyteller's traits move them; the turns between events and the most
+    events per story are Basic controls; the studio's start waits for a slow first page."""
+
+    _weights, _file, _value = TuningParameterTests._weights, TuningParameterTests._file, TuningParameterTests._value
+
+    def _meta(self):
+        import app
+
+        weights = self._weights()
+        return app, weights, app.weights_meta(weights["parameters"], weights["basic"], weights["shipped"])
+
+    def test_changes_from_the_shipped_values_are_listed_and_can_be_drafted(self):
+        app, weights, meta = self._meta()
+        self.assertEqual(weights["shipped"]["director.retry_bonus"], weights["values"]["director.retry_bonus"])
+        info = {p["path"]: p for p in weights["parameters"]}
+        self.assertEqual(info["director.retry_bonus"]["shipped"], weights["values"]["director.retry_bonus"])
+        self.assertIn("shipped 15", app.weight_help(info["director.retry_bonus"]))
+        self.assertIn('data-changed="0"', app.weights_shipped_markup(meta, weights["values"]))
+        self.client.put("/v1/weights", json={"values": {"director.retry_bonus": 9, "fitness.base.mission_win_bonus": 99}})
+        saved = self._weights()["values"]
+        panel = app.weights_shipped_markup(meta, saved)
+        self.assertIn('data-changed="2"', panel)
+        basic_part, advanced_part = panel.split("Only in Advanced")
+        self.assertIn("director.retry_bonus</code>: shipped 15, saved 9", basic_part)
+        self.assertIn("fitness.base.mission_win_bonus", advanced_part)
+        values = [saved[p] for p in meta["paths"]]
+        out = app.shipped_into_draft_ui(meta, saved, *values)
+        advanced, basic = out[:len(meta["paths"])], out[len(meta["paths"]):len(meta["paths"]) + len(meta["basic_paths"])]
+        self.assertEqual(advanced[meta["paths"].index("director.retry_bonus")], 15)
+        self.assertEqual(basic[meta["basic_paths"].index("director.retry_bonus")], 15)
+        self.assertEqual(advanced[meta["paths"].index("fitness.base.mission_win_bonus")],
+                         weights["shipped"]["fitness.base.mission_win_bonus"])
+        self.assertEqual(sum(1 for value in advanced if value != app.gr.skip()), 2)  # nothing else changes
+        self.assertIn("Save changes", out[-1])
+        self.assertEqual(self._value("director.retry_bonus"), 9)                 # a draft, not saved
+
+    def test_leaving_advanced_with_unsaved_weights_asks(self):
+        app, weights, meta = self._meta()
+        saved = weights["values"]
+        draft = dict(zip(meta["paths"], [saved[p] for p in meta["paths"]]))
+        draft["fitness.base.mission_win_bonus"] = 91
+        dirty = app.weights_dirty(meta, saved, {"entries": []}, list(draft.values()))
+        self.assertEqual(dirty, {"entries": [], "weights": ["Advanced only"]})
+        asked = app.nav_choice_ui("train", "advanced", "entries", {}, dirty)
+        self.assertEqual(asked["advanced_section"], "weights")
+        self.assertEqual(_prop(asked["nav"][0], "selected"), "advanced")          # stays in Advanced
+        shown, text, target = asked["prompts"]["weights"]
+        self.assertIn("Save them before", text)
+        self.assertEqual(target, {"type": "destination", "id": "train"})
+        self.assertEqual(app.nav_choice_ui("train", "advanced", "entries", {}, {"entries": []})["nav"][-1], "train")
+        nav = len(app.navigate("world"))
+        fields = len(meta["paths"]) + len(meta["basic_paths"])
+        stay = app.weights_resolve_ui("stay", target, meta, saved, dirty, *draft.values())
+        self.assertFalse(stay[0]["visible"])
+        self.assertEqual(self._value("fitness.base.mission_win_bonus"), saved["fitness.base.mission_win_bonus"])
+        out = app.weights_resolve_ui("save", target, meta, saved, dirty, *draft.values())
+        self.assertEqual(out[3 + nav - 1], "train")                                 # then where it was going
+        self.assertEqual(out[3 + nav]["fitness.base.mission_win_bonus"], 91)        # saved
+        self.assertEqual(self._value("fitness.base.mission_win_bonus"), 91)
+        self.assertEqual(out[-1], {"entries": []})
+        draft["fitness.base.mission_win_bonus"] = 92
+        now = self._weights()["values"]
+        out = app.weights_resolve_ui("discard", target, meta, now, dirty, *draft.values())
+        self.assertEqual(out[3 + nav + 1 + meta["paths"].index("fitness.base.mission_win_bonus")], 91)  # saved back
+        self.assertEqual(self._value("fitness.base.mission_win_bonus"), 91)
+        self.assertEqual(len(out), 3 + nav + 1 + fields + 4)
+        # A refused save keeps the question, the draft and where it was going.
+        draft["fitness.base.mission_win_bonus"] = None
+        kept = app.weights_resolve_ui("save", target, meta, now, dirty, *draft.values())
+        self.assertTrue(kept[0]["visible"])
+        self.assertIn("could not be saved", kept[1])
+        self.assertEqual(kept[2], target)
+
+    def test_basic_says_how_traits_scale_and_has_the_event_limits(self):
+        weights = self._weights()
+        controls = {c["path"]: c for area in weights["basic"] for c in area["controls"]}
+        self.assertIn("unexpected_events.cooldown_steps", controls)
+        self.assertIn("unexpected_events.max_per_story", controls)
+        info = {p["path"]: p for p in weights["parameters"]}
+        self.assertEqual((info["unexpected_events.cooldown_steps"]["type"], info["unexpected_events.cooldown_steps"]
+                          ["requires"]), ("integer", "unexpected_events.enabled"))
+        bounds = store.config.get("genome_bounds")
+        low, high = bounds["novelty_bias"]
+        self.assertIn(f"×{low:g} to ×{high:g}", controls["action_selection.repetition_penalty"]["scaling"])
+        self.assertIn("0.5 +", controls["director.explore_weight"]["scaling"])
+        self.assertIn("unexpected_events.genome_weight", controls["unexpected_events.base_chance"]["scaling"])
+        self.assertIn("goal_bias", controls["mission_settings.route_weight"]["scaling"])
+        self.assertNotIn("scaling", controls["director.ping_pong_penalty"])        # no trait: nothing said
+        import app
+
+        field = app.basic_weight_field(info["action_selection.repetition_penalty"],
+                                       controls["action_selection.repetition_penalty"])
+        self.assertIn("Each storyteller multiplies it", field.info)
+        saved = self.client.put("/v1/weights", json={"values": {"unexpected_events.max_per_story": 5}})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(self._value("unexpected_events.max_per_story"), 5)
+        self.assertEqual(self.client.put("/v1/weights", json={"values": {"unexpected_events.max_per_story": 2.5}})
+                         .status_code, 400)
+
+    def test_the_studio_waits_for_a_slow_first_page(self):
+        import httpx
+
+        import app
+
+        class Answer:
+            status_code = 200
+
+        calls = []
+
+        def slow_then_ready(url, **kwargs):
+            calls.append(url)
+            if len(calls) < 3:
+                raise httpx.ReadTimeout("busy")
+            return Answer()
+
+        from gradio import networking
+
+        original = networking.url_ok
+        self.addCleanup(setattr, networking, "url_ok", original)
+        with patch("httpx.head", side_effect=slow_then_ready), patch.object(app.time, "sleep"):
+            check = app.patient_startup_check(wait=60)
+            self.assertIs(networking.url_ok, check)
+            self.assertTrue(check("http://127.0.0.1:1/"))
+        self.assertEqual(len(calls), 3)
+        with patch("httpx.head", side_effect=httpx.ConnectError("down")), patch.object(app.time, "sleep"):
+            self.assertFalse(app.patient_startup_check(wait=0)("http://127.0.0.1:1/"))
 
 
 class DraftEverywhereTests(_Sandbox):
@@ -2950,7 +3235,7 @@ class StudioLayoutTests(_Sandbox):
         self.assertLessEqual({"📝 Entries", "Fields", "Actions & outcomes", "Scheduling", "More details", "✨ Suggest",
                               "🎯 Missions", "📜 Story rules", "🗺 Map", "✨ Grow the world", "🔍 Checks"},
                              sections["world"])
-        self.assertEqual(sections["train"], {"Run", "From a recorded engine"})
+        self.assertEqual(sections["train"], {"Run", "From a recorded engine", "🏷 Finished engines"})
         self.assertEqual(sections["advanced"], {"Simulation", "Weights", "Engine logic", "App & jobs", "🗂 Records",
                                                 "🔌 Integration"})
         # The records by purpose: continue/retrain in Train, stories in Evaluate, files in Export, import in Advanced.
