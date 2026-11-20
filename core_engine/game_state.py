@@ -2038,7 +2038,7 @@ class GameState(StoryBeats, SessionScope):
             threshold = config.get("game_state.auto_travel_commit_threshold", 1.2)
         return self._commit_score(target_name) >= threshold
 
-    def _location_objective_score(self, location, intent_tags=None, character=None):
+    def _location_objective_score(self, location, intent_tags=None):
         """Calculate deterministic narrative value for a possible transition."""
         transition_cfg = config.get("transition_objective", {})
         intent_tags = set(intent_tags or [])
@@ -2083,36 +2083,28 @@ class GameState(StoryBeats, SessionScope):
         score += self._goal_route_pull(location.name)
         if location.name in self._payoff_sites() and self._open_clues():
             score += self.genome.setup_prob * rules.settings()["payoff_route_weight"]
-        if character is not None:
-            score += semantic_tag_similarity(character.associated_tags, location_tags) * transition_cfg.get(
-                "character_goal_weight", 2.0
-            )
-            if location.name in character.known_locations:
-                score += transition_cfg.get("known_location_bonus", 3.0)
         return score
 
     def _best_transition_destination(
         self,
         candidate_names=None,
         intent_tags=None,
-        character=None,
         exclude=None,
         allow_special=False,
     ):
         """Choose the highest-value destination without random sampling."""
         barred = self._barred_places()  # avoided unless nothing else is left
         if barred:
-            preferred = self._best_transition_destination_core(candidate_names, intent_tags, character,
+            preferred = self._best_transition_destination_core(candidate_names, intent_tags,
                                                                set(exclude or ()) | barred, allow_special)
             if preferred is not None:
                 return preferred
-        return self._best_transition_destination_core(candidate_names, intent_tags, character, exclude, allow_special)
+        return self._best_transition_destination_core(candidate_names, intent_tags, exclude, allow_special)
 
     def _best_transition_destination_core(
         self,
         candidate_names=None,
         intent_tags=None,
-        character=None,
         exclude=None,
         allow_special=False,
     ):
@@ -2132,7 +2124,7 @@ class GameState(StoryBeats, SessionScope):
         return max(
             candidates,
             key=lambda location: (
-                self._location_objective_score(location, intent_tags, character),
+                self._location_objective_score(location, intent_tags),
                 location.name,
             ),
         )

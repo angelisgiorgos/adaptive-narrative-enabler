@@ -85,7 +85,7 @@ class Genome:
     def mutate(self, rng=None, rate=None, step=None):
         rng = rng or random
         if rate is None:
-            rate = config.get("evolution.mutation_rate", config.get("simulation.mutation_rate", 0.2))
+            rate = config.get("evolution.mutation_rate", 0.22)
         if step is None:
             step = config.get("evolution.mutation_step", 0.1)
         for attr in vars(self):
