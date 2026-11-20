@@ -248,6 +248,9 @@ button[role="tab"] {font-size: .88rem !important; padding: .3rem .75rem !importa
 .draft-prompt {border: 2px solid #f59e0b !important; border-radius: 12px; padding: .2rem .6rem;
                background: var(--background-fill-secondary)}
 .draft-prompt h3 {font-size: 1rem; margin: .2rem 0}
+/* ⚙ Advanced → Weights: a parameter that has no effect while the setting it needs is off. */
+.weight-inactive {opacity: .6}
+.weight-inactive input {background: var(--background-fill-secondary)}
 /* Deleting: the question first (naming what goes), then the Undo bar. */
 .delete-confirm {border: 2px solid #ef4444 !important; border-radius: 12px; padding: .2rem .6rem}
 .delete-confirm h3 {font-size: 1rem; margin: .2rem 0}
@@ -623,7 +626,10 @@ def weight_help(info):
     elif high is not None:
         facts.append(f"at most {_number(high)}")
     facts.append(kind)
-    return f"{info.get('explanation') or ''} {' · '.join(facts)}. Parameter: {info['path']}".strip()
+    text = f"{info.get('explanation') or ''} {' · '.join(facts)}. Parameter: {info['path']}".strip()
+    if info.get("inactive"):  # it has no effect while the setting it needs is off
+        text = f"Inactive now: {info['requires']} is off (it takes effect when that is on). {text}"
+    return text
 
 
 def weight_field(info):
@@ -632,7 +638,8 @@ def weight_field(info):
     integer = info["type"] == "integer"
     return gr.Number(value=info["value"], label=info["label"], info=weight_help(info), precision=0 if integer else None,
                      minimum=info.get("minimum"), maximum=info.get("maximum"),
-                     elem_classes=["weight", "weight-described" if info["described"] else "weight-plain"])
+                     elem_classes=["weight", "weight-described" if info["described"] else "weight-plain",
+                                   *(["weight-inactive"] if info.get("inactive") else [])])
 
 
 @ui
@@ -821,9 +828,9 @@ def _training_outputs(result):
 # A training asked for from the studio only trains: the game is started in ▶ Play when the user asks.
 TRAIN_ONLY = {"start_game": False}
 TRAINING_KINDS = {"run": "New run", "continue": "Training continued", "retrain": "Retrained"}
-NO_RESULT = ("No training has finished in this session yet. Configure a run above and press **🧠 Evolve "
-             "storytellers** (or continue or retrain a recorded engine in *Records*): its completed engine appears "
-             "here, ready to play, evaluate or export.")
+NO_RESULT = ("No training has finished here yet. Configure a run above and press **🧠 Evolve storytellers** (or "
+             "continue or retrain one in *From a recorded engine*): its completed engine appears here, ready to "
+             "play, evaluate or export.")
 
 
 def completed_engine(result, kind, check=""):
@@ -851,6 +858,20 @@ def completed_view_ui(done):
     return (text, *[gr.Button(interactive=ready) for _ in range(3)])
 
 
+@ui
+def restore_result_ui(saved):
+    """The completed engine this browser trained last (kept across reloads), shown again on its card
+    with its actions, if it is still a finished run here; else the card says it is gone. Returns
+    (the completed engine, the card, its three actions)."""
+    if not saved or not saved.get("engine_id"):
+        return (None, *completed_view_ui(None))
+    if saved["engine_id"] not in [value for _, value in finished_run_choices()]:
+        return (None, NO_RESULT + f"\n\n*The engine trained earlier, `{saved['engine_id']}`, is no longer among the "
+                f"finished runs here.*", *completed_view_ui(None)[1:])
+    text, *buttons = completed_view_ui(saved)
+    return (saved, text + "\n\n*Trained earlier in this browser.*", *buttons)
+
+
 def _training_done(result, kind, check=""):
     """What a finished training adds to Train's outputs: the completed engine, its card and actions."""
     done = completed_engine(result, kind, check)
@@ -871,16 +892,17 @@ def _offered(engine_id, choices, where):
 
 
 @ui
-def play_result_ui(done):
-    """▶ Play this result: Play opens with the completed engine chosen as its trained AI; the game
-    starts when the user presses New game (with the player, quest and character chosen there).
-    Returns the navigation, the trained-AI picker, the setup panel (opened) and Play's status."""
+def play_result_ui(done, profile, mission, stats_choice, stats_points=None):
+    """▶ Play this result: a new game with exactly the completed engine starts in ▶ Play, with the
+    player, quest and character chosen there (the user asked to play it: this is the game's start).
+    Returns the navigation, the trained-AI picker (that engine), the setup panel (folded) and the new
+    game (play_new_game_ui's outputs: the session, the screen, the story, the status)."""
     engine_id = _result_engine(done)
     choices = finished_run_choices()
     _offered(engine_id, choices, "▶ Play")
-    return (*navigate("play"), gr.Dropdown(choices=choices, value=engine_id), gr.Accordion(open=True),
-            f"**Trained AI:** the engine just trained, `{engine_id}`. Choose the player, quest and character, then "
-            "press **▶ New game**.")
+    token, *game, status = play_new_game_ui(engine_id, profile, mission, stats_choice, stats_points)
+    return (*navigate("play"), gr.Dropdown(choices=choices, value=engine_id), gr.Accordion(open=False), token,
+            *game, f"**Playing the engine just trained, `{engine_id}`.**  \n{status}")
 
 
 def evaluation_engine_choices():
@@ -1114,9 +1136,14 @@ def executed_markdown(training, shown=None):
         differs += [key for key in RUN_COMPARED
                     if shown["effective"].get(key) != executed.get(key) and key not in differs]
     seed = f"seed {executed['seed']}" if executed["seed"] is not None else "random"
+    warm = f"warm start {executed['warm_start_mode']}"
+    if executed["warm_start_mode"] != "off" and executed.get("warm_started") is not None:
+        # The summary counted the memory before the run; this is what the run really started from.
+        counted = (shown or {}).get("remembered") if shown else training.get("remembered")
+        warm += f" (started from {executed['warm_started']} remembered storyteller(s)" + (
+            f"; the summary counted {counted}" if counted is not None and counted != executed["warm_started"] else "") + ")"
     ran = (f"{executed['population']:,} storytellers × {executed['generations']:,} generations × "
-           f"{executed['stories_per_storyteller']} stories × up to {executed['story_turns']} turns, {seed}, "
-           f"warm start {executed['warm_start_mode']}")
+           f"{executed['stories_per_storyteller']} stories × up to {executed['story_turns']} turns, {seed}, {warm}")
     if not differs:
         return f"✅ **Ran exactly as summarised before it started:** {ran}."
     changes = "; ".join(f"{key}: shown {(shown or {'effective': resolved})['effective'].get(key)}, ran {executed.get(key)}"
@@ -1877,8 +1904,12 @@ def import_records_ui(move, preview, progress=gr.Progress()):
 
 
 def refresh_records_ui():
-    return (gr.Dropdown(choices=recorded_engines()), gr.Dropdown(choices=recorded_stories()), recorded_runs(),
-            records_status_text())
+    """The records, listed again wherever they are used: the recorded engines (🧠 Train to continue or
+    retrain, 📦 Export to download), the recorded stories (⚖ Evaluate), the runs (📦 Export) and
+    whether recording is on (⚙ Advanced → 🗂 Records)."""
+    engines = recorded_engines()
+    return (gr.Dropdown(choices=engines), gr.Dropdown(choices=engines), gr.Dropdown(choices=recorded_stories()),
+            recorded_runs(), records_status_text())
 
 
 @ui
@@ -2920,9 +2951,26 @@ def _closed():
     return gr.update(visible=False), "", gr.update(visible=True)
 
 
-def _undo_bar(undo, text):
-    """(what Undo restores, its bar, its text): shown after a deletion, gone once used."""
-    return undo, gr.update(visible=bool(undo)), text
+def _history_bar(history, note=""):
+    """(the deletions Undo can bring back, newest last; its bar; its text): the newest is named, with how
+    many earlier ones can be undone after it, after ``note`` (what the last Undo did). Hidden when there is
+    nothing to undo and nothing to say."""
+    history = list(history or [])
+    lines = [note] if note else []
+    if history:
+        earlier = len(history) - 1
+        lines.append(history[-1]["said"] + (f"  \n*{earlier} earlier deletion(s) can be undone after it.*"
+                                            if earlier else ""))
+    return history, gr.update(visible=bool(lines)), "\n\n".join(lines)
+
+
+def restore_history_ui(history):
+    """A panel's Undo history as this browser kept it (a reload shows it again)."""
+    return _history_bar([item for item in (history or []) if isinstance(item, dict) and item.get("undo")])
+
+
+def _pushed(history, undo, said):
+    return _history_bar([*(history or []), {"undo": undo, "said": said}])
 
 
 @ui
@@ -2937,12 +2985,18 @@ def ask_delete_entry_ui(loaded, base, *values):
     if name not in names:
         raise gr.Error(f"`{name}` is no longer in {kind}: choose it again from the list.")
     actions = len(API.get(_path(f"/v1/entities/{kind}", name, "actions"))["actions"])
+    references = API.get(_path(f"/v1/entities/{kind}", name, "references"))["references"]
     unsaved = unsaved_parts(base, *values)
     text = (f"### 🗑 Delete the {ENTRY_WORDS.get(kind, 'entry')} **{name}**?\n"
             f"{kind}, {_ordinal(names.index(name) + 1)} of {len(names)}: every field of the entry, its "
             f"{actions} action(s) and its details."
             + (f" Its unsaved changes ({', '.join(DRAFT_PARTS[p] for p in unsaved)}) go with it." if unsaved else "")
-            + " **Undo** brings it back, where it was, in this session.")
+            + " **Undo** brings it back, where it was.")
+    if references:  # what refers to it would no longer work (the deletion is still allowed)
+        shown = "\n".join(f"- {html.escape(problem)}" for problem in references[:8])
+        more = f"\n- … and {len(references) - 8} more" if len(references) > 8 else ""
+        text += (f"\n\n⚠ **{len(references)} thing(s) refer to it** and would no longer work (fix them, or undo "
+                 f"the deletion):\n{shown}{more}")
     return {"type": "entity", "kind": kind, "name": name}, *_question(text)
 
 
@@ -2995,7 +3049,7 @@ def _refused(exc, outputs_before):
 
 
 @ui
-def confirm_delete_entry_ui(pending, loaded, base, *values):
+def confirm_delete_entry_ui(pending, history, loaded, base, *values):
     """The confirmed deletion of exactly the entry asked about. When it is the one being edited, the
     content type's first entry opens. Returns (the entry editor, the message, the parts to capture,
     nothing pending, the question closed, Undo's state, bar and text)."""
@@ -3016,12 +3070,12 @@ def confirm_delete_entry_ui(pending, loaded, base, *values):
         capture = []
     word = ENTRY_WORDS.get(kind, "entry")
     return (*entry, f"Deleted the {word} **{name}** ({kind}).", capture, None, *_closed(),
-            *_undo_bar(result["undo"], f"🗑 Deleted the {word} **{name}** ({kind}, {_ordinal(result['undo']['position'])} "
-                                        f"of {result['undo']['of']})."))
+            *_pushed(history, result["undo"], f"🗑 Deleted the {word} **{name}** ({kind}, "
+                                              f"{_ordinal(result['undo']['position'])} of {result['undo']['of']})."))
 
 
 @ui
-def confirm_delete_action_ui(pending, loaded, base, *values):
+def confirm_delete_action_ui(pending, history, loaded, base, *values):
     """The confirmed deletion of exactly the action asked about (refused if the action at its number
     is not that one any more)."""
     if not pending or pending.get("type") != "action":
@@ -3039,11 +3093,11 @@ def confirm_delete_action_ui(pending, loaded, base, *values):
         capture = ["action", *(p for p in STALE_AFTER["action"] if p not in others)]
         entry_update = _entry_update(**{p: _part_load(p, kind, entry) for p in capture})
     return (*entry_update, result["message"], capture, None, *_closed(),
-            *_undo_bar(result["undo"], f"🗑 Deleted the action **{index + 1}. {name}** of **{entry}** ({kind})."))
+            *_pushed(history, result["undo"], f"🗑 Deleted the action **{index + 1}. {name}** of **{entry}** ({kind})."))
 
 
 @ui
-def confirm_delete_mission_ui(pending):
+def confirm_delete_mission_ui(pending, history=None):
     """The confirmed deletion of exactly the mission asked about. Returns (the mission picker, the
     message, missions.yaml, nothing pending, the question closed, Undo's state, bar and text)."""
     if not pending or pending.get("type") != "mission":
@@ -3054,28 +3108,30 @@ def confirm_delete_mission_ui(pending):
     except APIError as exc:
         return _refused(exc, (gr.skip(), gr.skip(), gr.skip()))
     return (gr.Dropdown(choices=list(result["missions"]), value=None), result["message"], load_missions_yaml(), None,
-            *_closed(), *_undo_bar(result["undo"], f"🗑 Deleted the mission **{pending['title']}** (`{key}`)."))
+            *_closed(), *_pushed(history, result["undo"], f"🗑 Deleted the mission **{pending['title']}** (`{key}`)."))
 
 
-def _restore(undo):
-    """POST /v1/deletions/{token}/restore. Returns (the result, None) or (None, why it was not restored,
-    whether Undo can still be tried: not when the deletion is no longer kept)."""
-    if not undo:
+def _restore(history):
+    """Undo the newest deletion of ``history`` (POST /v1/deletions/{token}/restore). Returns (the
+    result or None, the history left, why it was not restored): a deletion no longer kept leaves the
+    history; one in conflict stays, to be tried again."""
+    history = list(history or [])
+    if not history:
         raise gr.Error("Nothing to undo.")
     try:
-        return API.post(_path("/v1/deletions", undo["token"], "restore")), None, True
+        return API.post(_path("/v1/deletions", history[-1]["undo"]["token"], "restore")), history[:-1], None
     except APIError as exc:
-        return None, f"⚠ **Not restored:** {html.escape(str(exc))}", exc.status != 404
+        return None, history[:-1] if exc.status == 404 else history, f"⚠ **Not restored:** {html.escape(str(exc))}"
 
 
 @ui
-def undo_delete_entry_ui(undo, loaded, base, *values):
+def undo_delete_entry_ui(history, loaded, base, *values):
     """**Undo** a deleted entry: it goes back where it was and opens, unless the entry being edited has
     unsaved changes (they are kept: the list shows it). Returns (the entry editor, the message, the parts
     to capture, Undo's state, bar and text)."""
-    result, why, retry = _restore(undo)
+    result, history, why = _restore(history)
     if result is None:
-        return (*_entry_update(), gr.skip(), [], undo if retry else None, gr.update(visible=True), why)
+        return (*_entry_update(), gr.skip(), [], *_history_bar(history, why))
     loaded = loaded or {}
     kind, name = result["kind"], result["name"]
     if unsaved_parts(base, *values):
@@ -3084,16 +3140,16 @@ def undo_delete_entry_ui(undo, loaded, base, *values):
         message, capture = result["message"] + " Your unsaved changes were kept: open it from the list.", []
     else:
         entry, message, capture = _entry_load(kind, name), result["message"], list(DRAFT_PARTS)
-    return (*entry, message, capture, None, gr.update(visible=False), "")
+    return (*entry, message, capture, *_history_bar(history))
 
 
 @ui
-def undo_delete_action_ui(undo, loaded, base, *values):
+def undo_delete_action_ui(history, loaded, base, *values):
     """**Undo** a deleted action: it goes back where it was; when its entry is the one being edited, it
     opens (unless the action form has unsaved changes: then only the list shows it)."""
-    result, why, retry = _restore(undo)
+    result, history, why = _restore(history)
     if result is None:
-        return (*_entry_update(), gr.skip(), [], undo if retry else None, gr.update(visible=True), why)
+        return (*_entry_update(), gr.skip(), [], *_history_bar(history, why))
     loaded = loaded or {}
     kind, entry = result["kind"], result["entry"]
     capture, segments = [], {}
@@ -3107,19 +3163,19 @@ def undo_delete_action_ui(undo, loaded, base, *values):
         else:
             segments["action"] = _part_load("action", kind, entry, index=result["position"] - 1)
             capture.append("action")
-    return (*_entry_update(**segments), result["message"], capture, None, gr.update(visible=False), "")
+    return (*_entry_update(**segments), result["message"], capture, *_history_bar(history))
 
 
 @ui
-def undo_delete_mission_ui(undo):
+def undo_delete_mission_ui(history):
     """**Undo** a deleted mission: it goes back where it was, and opens in the form. Returns (the picker,
     the mission form and its state, the message, missions.yaml, Undo's state, bar and text)."""
-    result, why, retry = _restore(undo)
+    result, history, why = _restore(history)
     if result is None:
-        return (gr.skip(), *[gr.skip()] * 8, gr.skip(), gr.skip(), undo if retry else None, gr.update(visible=True), why)
+        return (gr.skip(), *[gr.skip()] * 8, gr.skip(), gr.skip(), *_history_bar(history, why))
     key = result["name"]
     return (gr.Dropdown(choices=_mission_keys(), value=key), *mission_form_ui(key), result["message"],
-            load_missions_yaml(), None, gr.update(visible=False), "")
+            load_missions_yaml(), *_history_bar(history))
 
 
 # Before the page is closed or reloaded with unsaved changes, the browser asks (launch(head=...)).
@@ -3471,6 +3527,12 @@ def build_app():
         nav_menu = gr.Radio([(label, key) for key, label in DESTINATIONS], value="world",
                             label="☰ Menu: go to a section", elem_id="ane-menu", elem_classes="nav-menu")
         dest_now = gr.State("world")  # the destination open (leaving 🌍 World with unsaved changes asks first)
+        # 🧠 Train's completed engine, kept in this browser so that a reload shows it again (restore_result_ui).
+        # Defined here, outside the destinations: the browser restores it before the page's load events.
+        saved_result = gr.BrowserState(None, storage_key="ane-train-result")
+        # Each delete panel's Undo history, kept in this browser too (the API keeps the deletions on disk).
+        saved_histories = {name: gr.BrowserState([], storage_key=f"ane-undo-{name}")
+                           for name in ("entry", "action", "mission")}
         studio_status = gr.Markdown(elem_classes="status")
         demo.load(studio_status_ui, None, studio_status)
 
@@ -4026,6 +4088,7 @@ def build_app():
                     button.click(lambda *rest, part=part: reload_part_ui(part, *rest), guard_inputs,
                                  [*entry_outputs, draft_capture]).success(**capture)
                 # Deleting: a question naming exactly what goes, then Undo (this session) once it is gone.
+                history_events = {"entry": [], "action": [], "mission": []}
                 for ask, asked, pending, (confirm, question, delete, cancel, bar, said, undo), state, confirmed, \
                         undone, said_where in (
                         (delete_entry, ask_delete_entry_ui, entry_pending,
@@ -4038,11 +4101,14 @@ def build_app():
                     question_outputs = [pending, confirm, question, delete]
                     ask.click(asked, guard_inputs, question_outputs, show_progress="hidden")
                     cancel.click(cancel_delete_ui, None, question_outputs, show_progress="hidden")
-                    delete.click(confirmed, [pending, *guard_inputs],
-                                 [*entry_outputs, said_where, draft_capture, *question_outputs, state, bar, said]).success(
-                        **capture)
-                    undo.click(undone, [state, *guard_inputs],
-                               [*entry_outputs, said_where, draft_capture, state, bar, said]).success(**capture)
+                    deleted = delete.click(confirmed, [pending, state, *guard_inputs],
+                                           [*entry_outputs, said_where, draft_capture, *question_outputs, state, bar,
+                                            said])
+                    undone_event = undo.click(undone, [state, *guard_inputs],
+                                              [*entry_outputs, said_where, draft_capture, state, bar, said])
+                    for event in (deleted, undone_event):
+                        event.success(**capture)
+                    history_events["entry" if state is entry_undo_state else "action"] += [deleted, undone_event]
                 # An action's outcomes are switched, added and removed inside its draft (saved with Save action).
                 out_pick.input(pick_outcome_ui, [action_state, out_pick, *outcome_fields],
                                [action_state, *outcome_fields]).then(**status)
@@ -4067,12 +4133,13 @@ def build_app():
                 mission_question_outputs = [mission_pending, mission_confirm, mission_question, mission_delete]
                 mis_delete.click(ask_delete_mission_ui, mission_state, mission_question_outputs, show_progress="hidden")
                 mission_cancel.click(cancel_delete_ui, None, mission_question_outputs, show_progress="hidden")
-                mission_delete.click(confirm_delete_mission_ui, mission_pending,
-                                     [mis_pick, missions_status, missions_editor, *mission_question_outputs,
-                                      mission_undo_state, mission_undo_bar, mission_undo_said])
-                mission_undo.click(undo_delete_mission_ui, mission_undo_state,
-                                   [mis_pick, *mission_fields, mission_state, missions_status, missions_editor,
-                                    mission_undo_state, mission_undo_bar, mission_undo_said])
+                history_events["mission"] += [
+                    mission_delete.click(confirm_delete_mission_ui, [mission_pending, mission_undo_state],
+                                         [mis_pick, missions_status, missions_editor, *mission_question_outputs,
+                                          mission_undo_state, mission_undo_bar, mission_undo_said]),
+                    mission_undo.click(undo_delete_mission_ui, mission_undo_state,
+                                       [mis_pick, *mission_fields, mission_state, missions_status, missions_editor,
+                                        mission_undo_state, mission_undo_bar, mission_undo_said])]
                 # The map.
                 map_place.input(map_place_ui, map_place, [map_view, map_borders])
                 demo.load(map_form_ui, map_place, [map_view, map_place, map_borders])
@@ -4206,12 +4273,12 @@ def build_app():
                             forget_button.click(forget_learning_ui, None, memory_status)
                         run_state = gr.State(None)
 
-                    with gr.Tab("Records", id="train-records"):
-                        records_status = gr.Markdown(records_status_text())
+                    with gr.Tab("From a recorded engine", id="train-records"):
                         with gr.Row(equal_height=True):
                             record_engine = gr.Dropdown(recorded_engines(), label="Recorded engine", scale=4,
                                                         info="Every run's best, every generation's champion, loaded, "
-                                                        "continued and retrained engines. Play one in ▶ Play.")
+                                                        "continued and retrained engines. Its files: 📦 Export; its "
+                                                        "stories: ⚖ Evaluate.")
                             refresh_records = gr.Button("↻ Refresh", scale=1)
                         with gr.Row(equal_height=True):
                             more_generations = gr.Slider(1, limits["generation_limit"], value=3, step=1,
@@ -4225,40 +4292,6 @@ def build_app():
                         retrain_summary = gr.Markdown("Choose a recorded engine to see what retraining it would run "
                                                       "with.", elem_classes="run-summary")
                         retrain_plan = gr.State(None)
-                        with gr.Row():
-                            download_record = gr.Button("Download its model file and world")
-                        with gr.Row():
-                            record_model_file = gr.File(label="Engine model (.ane.zip)", interactive=False)
-                            record_world_file = gr.File(label="World and tuning (YAML)", interactive=False)
-                        with gr.Accordion("Recorded stories", open=False):
-                            record_story = gr.Dropdown(recorded_stories(), label="Recorded story")
-                            with gr.Row():
-                                judge_story_button = gr.Button("Judge this story (Gemma 4)")
-                                compare_story = gr.Dropdown(recorded_stories(), label="Compare with another recorded story")
-                                compare_button = gr.Button("Which is the better game?")
-                            story_judgement = gr.Markdown()
-                            story_view = gr.Markdown()
-                        with gr.Accordion("Recorded runs", open=False):
-                            runs_table = gr.Dataframe(recorded_runs(), label="Recorded runs", interactive=False)
-                            record_run = gr.Dropdown(recorded_run_choices(), label="A run: its settings and generations")
-                            run_detail = gr.Markdown()
-                            run_generations = gr.Dataframe(label="Generations", interactive=False)
-                        with gr.Accordion("Recorded worlds", open=False):
-                            with gr.Row():
-                                record_world = gr.Dropdown(recorded_world_choices(), label="Recorded world")
-                                download_world = gr.Button("Download it as a configuration to upload")
-                            record_world_download = gr.File(label="World and tuning (YAML)", interactive=False)
-                        with gr.Accordion("Import earlier engines and games (the server's import folder)", open=False):
-                            gr.Markdown("Engine models, offline exports, older engine ZIPs and story configurations "
-                                        "in the server's import folder are read, completed (tag vectors, a score, "
-                                        "their run, a preview story) and recorded; files that are not engines or "
-                                        "games, or whose world is invalid, stay where they are.")
-                            import_note = gr.Markdown()
-                            with gr.Row():
-                                import_move = gr.Checkbox(False, label="Move the files into the records (else copy)")
-                                import_preview = gr.Checkbox(True, label="Play a preview story of each new engine")
-                                import_button = gr.Button("Import", variant="primary")
-                            import_status = gr.Markdown()
 
                 train_outputs = [simulation_report, generated_config, generated_engine, learning_plot, learned_traits]
                 # Every training ends with its completed engine (the state the follow-up actions carry), shown
@@ -4279,6 +4312,10 @@ def build_app():
                     record_outputs, concurrency_limit=1, concurrency_id="narrative_evolution"))
                 for event in engine_events[1:]:  # continued or retrained: Run shows its completed engine
                     event.success(lambda: gr.Tabs(selected="train-run"), None, train_sections, show_progress="hidden")
+                for event in engine_events:  # remembered in this browser, across reloads
+                    event.success(lambda done: done, train_result, saved_result, show_progress="hidden")
+                demo.load(restore_result_ui, saved_result, [train_result, result_card, *result_buttons],
+                          show_progress="hidden")
                 retrain_inputs = [record_engine, more_generations, *run_controls]
                 record_engine.change(retrain_form_ui, retrain_inputs, [retrain_summary, retrain_plan],
                                      show_progress="hidden")
@@ -4287,25 +4324,6 @@ def build_app():
                 for control in run_controls:  # the Train form's settings apply to a retraining too
                     control.input(retrain_form_ui, retrain_inputs, [retrain_summary, retrain_plan],
                                   show_progress="hidden")
-                record_lists = [record_engine, record_story, runs_table, records_status]
-                for event in engine_events:  # a finished run is recorded
-                    event.success(refresh_records_ui, None, record_lists)
-                refresh_records.click(refresh_records_ui, None, record_lists).then(
-                    lambda: gr.Dropdown(choices=recorded_stories()), None, compare_story,
-                )
-                refresh_records.click(lambda: (gr.Dropdown(choices=recorded_run_choices()),
-                                               gr.Dropdown(choices=recorded_world_choices())), None,
-                                      [record_run, record_world])
-                record_run.change(run_detail_ui, record_run, [run_detail, run_generations])
-                download_world.click(download_world_ui, record_world, record_world_download)
-                judge_story_button.click(judge_story_ui, record_story, story_judgement)
-                compare_button.click(compare_stories_ui, [record_story, compare_story], story_judgement)
-                download_record.click(download_recorded_ui, record_engine, [record_model_file, record_world_file])
-                record_story.change(story_view_ui, record_story, story_view)
-                demo.load(import_folder_ui, None, import_note)
-                import_button.click(import_records_ui, [import_move, import_preview], import_status,
-                                    concurrency_limit=1).then(refresh_records_ui, None, record_lists).then(
-                    import_folder_ui, None, import_note)
 
             with gr.Tab("▶ Play", id="play", elem_id="dest-play") as play_tab:
                 play_token = session_token  # the game played here (Export's "this game's storyteller" too)
@@ -4493,6 +4511,15 @@ def build_app():
                     save_weights_terms.click(save_term_weights_ui, term_weights_editor,
                                              [term_weights_editor, term_weights_status])
                     reload_weights_terms.click(load_term_weights_ui, None, term_weights_editor)
+                with gr.Accordion("Recorded stories: judge one, or compare two", open=False):
+                    record_story = gr.Dropdown(recorded_stories(), label="Recorded story",
+                                               info="Every story recorded: training previews, games played, imports.")
+                    with gr.Row():
+                        judge_story_button = gr.Button("Judge this story (Gemma 4)")
+                        compare_story = gr.Dropdown(recorded_stories(), label="Compare with another recorded story")
+                        compare_button = gr.Button("Which is the better game?")
+                    story_judgement = gr.Markdown()
+                    story_view = gr.Markdown()
 
             with gr.Tab("📦 Export", id="export", elem_id="dest-export") as export_tab:
                 gr.Markdown(
@@ -4527,6 +4554,24 @@ def build_app():
                 export_status = gr.Markdown()
                 gr.Markdown("Which systems this API has runtimes for, and the world as a UNP receives it: "
                             "⚙ Advanced → 🔌 Integration.", elem_classes="lead")
+                with gr.Accordion("Recorded engines, runs and worlds: their files", open=False):
+                    with gr.Row(equal_height=True):
+                        files_engine = gr.Dropdown(recorded_engines(), label="Recorded engine", scale=4,
+                                                   info="Any run's best, a generation's champion, a loaded, continued "
+                                                   "or retrained engine.")
+                        download_record = gr.Button("Download its model file and world", scale=2)
+                        refresh_record_files = gr.Button("↻ Refresh", scale=1)
+                    with gr.Row():
+                        record_model_file = gr.File(label="Engine model (.ane.zip)", interactive=False)
+                        record_world_file = gr.File(label="World and tuning (YAML)", interactive=False)
+                    runs_table = gr.Dataframe(recorded_runs(), label="Recorded runs", interactive=False)
+                    record_run = gr.Dropdown(recorded_run_choices(), label="A run: its settings and generations")
+                    run_detail = gr.Markdown()
+                    run_generations = gr.Dataframe(label="Generations", interactive=False)
+                    with gr.Row():
+                        record_world = gr.Dropdown(recorded_world_choices(), label="Recorded world")
+                        download_world = gr.Button("Download it as a configuration to upload")
+                    record_world_download = gr.File(label="World and tuning (YAML)", interactive=False)
                 export_form = [export_source, export_generation, export_engine, export_engine_note, export_button]
                 for control in (export_platform, export_source):
                     control.change(export_form_ui, [export_platform, export_source, export_engine], export_form)
@@ -4664,7 +4709,8 @@ def build_app():
 
                     with gr.Tab("App & jobs"):
                         with gr.Accordion("App parameters", open=True):
-                            gr.Markdown("Saved in config/ui_settings.yml. Upload limits are in bytes; crossover probability is between 0 and 1.")
+                            gr.Markdown("Saved in config/ui_settings.yml. Upload limits are in bytes. A training's crossover is "
+                                        "evolution.crossover_rate (⚙ Advanced → Weights → Training).")
                             parameter_inputs = []
                             for key, value in limits.items():
                                 label = key.replace("_", " ").title()
@@ -4685,6 +4731,19 @@ def build_app():
                             refresh_jobs = gr.Button("Refresh")
                             jobs_table = gr.Dataframe(label="Jobs", interactive=False, wrap=True)
                             refresh_jobs.click(jobs_table_ui, None, jobs_table)
+                    with gr.Tab("🗂 Records", id="advanced-records"):
+                        records_status = gr.Markdown(records_status_text())
+                        with gr.Accordion("Import earlier engines and games (the server's import folder)", open=True):
+                            gr.Markdown("Engine models, offline exports, older engine ZIPs and story configurations "
+                                        "in the server's import folder are read, completed (tag vectors, a score, "
+                                        "their run, a preview story) and recorded; files that are not engines or "
+                                        "games, or whose world is invalid, stay where they are.")
+                            import_note = gr.Markdown()
+                            with gr.Row():
+                                import_move = gr.Checkbox(False, label="Move the files into the records (else copy)")
+                                import_preview = gr.Checkbox(True, label="Play a preview story of each new engine")
+                                import_button = gr.Button("Import", variant="primary")
+                            import_status = gr.Markdown()
                     with gr.Tab("🔌 Integration", id="advanced-integration"):
                         gr.Markdown("Diagnostics for a UNP (the game platform that launches and drives the exported "
                                     "ANE AI): its protocol tried on the game in ▶ Play, session reports sent again, "
@@ -4765,10 +4824,40 @@ def build_app():
         for key, tab in destination_tabs.items():  # a tab chosen another way: the banner and the menu follow
             tab.select(lambda key=key: mark_destination(key), None, [*nav_buttons, nav_menu, dest_now],
                        show_progress="hidden")
+        # Each panel's Undo history follows into this browser (after each deletion or undo), and comes back
+        # after a reload.
+        for name, state, bar, said in (("entry", entry_undo_state, entry_undo_bar, entry_undo_said),
+                                       ("action", action_undo_state, action_undo_bar, action_undo_said),
+                                       ("mission", mission_undo_state, mission_undo_bar, mission_undo_said)):
+            for event in history_events[name]:
+                event.then(lambda kept: kept, state, saved_histories[name], show_progress="hidden")
+            demo.load(restore_history_ui, saved_histories[name], [state, bar, said], show_progress="hidden")
+
+        # The records, used across destinations: continue or retrain in 🧠 Train, judge their stories in
+        # ⚖ Evaluate, download their files in 📦 Export, import and see whether recording is on in ⚙ Advanced.
+        record_lists = [record_engine, files_engine, record_story, runs_table, records_status]
+        for event in engine_events:  # a finished run is recorded
+            event.success(refresh_records_ui, None, record_lists)
+        for refresh in (refresh_records, refresh_record_files):
+            refresh.click(refresh_records_ui, None, record_lists).then(
+                lambda: (gr.Dropdown(choices=recorded_stories()), gr.Dropdown(choices=recorded_run_choices()),
+                         gr.Dropdown(choices=recorded_world_choices())), None, [compare_story, record_run, record_world])
+        record_run.change(run_detail_ui, record_run, [run_detail, run_generations])
+        download_world.click(download_world_ui, record_world, record_world_download)
+        judge_story_button.click(judge_story_ui, record_story, story_judgement)
+        compare_button.click(compare_stories_ui, [record_story, compare_story], story_judgement)
+        download_record.click(download_recorded_ui, files_engine, [record_model_file, record_world_file])
+        record_story.change(story_view_ui, record_story, story_view)
+        demo.load(import_folder_ui, None, import_note)
+        import_button.click(import_records_ui, [import_move, import_preview], import_status,
+                            concurrency_limit=1).then(refresh_records_ui, None, record_lists).then(
+            import_folder_ui, None, import_note)
+
         # 🧠 Train's completed engine, carried by its exact id to ▶ Play, ⚖ Evaluate and 📦 Export: each opens
         # with that engine chosen, and nothing starts (no game, no judgement, no export) until the user asks.
-        play_result.click(play_result_ui, train_result, [*nav_outputs, play_run, play_setup, play_status],
-                          show_progress="hidden")
+        play_result.click(play_result_ui, [train_result, *player_inputs],
+                          [*nav_outputs, play_run, play_setup, *new_game_outputs], concurrency_limit=1).success(
+            integration_session_text, play_token, integration_session, show_progress="hidden")
         evaluate_result.click(evaluate_result_ui, train_result, [*nav_outputs, bench_engine, calib_engine, evaluate_note],
                               show_progress="hidden")
         export_result.click(export_result_ui, [train_result, export_platform], [*nav_outputs, *export_form],

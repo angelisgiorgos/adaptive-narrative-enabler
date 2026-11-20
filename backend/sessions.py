@@ -594,7 +594,7 @@ def run_simulation(candidate_count=None, generations=None, simulation_steps=None
         settings={
             "pop_size": run["population"], "generations": run["generations"], "max_steps": run["requested_steps"],
             "episodes_per_genome": run["stories_per_storyteller"],
-            "crossover_rate": APP_SETTINGS["crossover_probability"], "warm_start": run["warm_start"],
+            "warm_start": run["warm_start"],
         },
         seed=run["seed"],
         memory=LearningMemory(),
@@ -615,15 +615,18 @@ def run_simulation(candidate_count=None, generations=None, simulation_steps=None
         raise
     game = _finish_training(evolution, result, run_id, origin, profile, points, mode, candidate_count, episodes,
                             simulation_steps, title="Evolution complete.", mission=mission, start_game=start_game)
-    game["training"] = _training_record(plan, evolution)
+    game["training"] = _training_record(plan, evolution, result.warm_started)
     return game
 
 
-def _training_record(plan, evolution):
+def _training_record(plan, evolution, warm_started=0):
     """What a run returns of its settings: its overrides, where each value came from, the values it
-    was resolved to, and those its evolution ran with (read back from it)."""
+    was resolved to, and those its evolution ran with (read back from it), with the number of
+    storytellers it really started from (``warm_started``: the summary before it only counted the
+    memory, ``remembered``)."""
     return {"overrides": plan["overrides"], "sources": plan["sources"], "resolved": plan["effective"],
-            "executed": executed_training(evolution)}
+            "remembered": plan.get("remembered"),
+            "executed": {**executed_training(evolution), "warm_started": int(warm_started or 0)}}
 
 
 def _train(evolution, progress=None, resume=None):
@@ -924,7 +927,7 @@ def retrain_engine(engine_id, candidate_count=None, generations=None, simulation
     if seed is not None:
         engine.apply_random_seed(force=True, seed=seed)
     settings = {"pop_size": candidate_count, "generations": generations, "max_steps": simulation_steps,
-                "episodes_per_genome": episodes, "crossover_rate": APP_SETTINGS["crossover_probability"]}
+                "episodes_per_genome": episodes}
     run_id = uuid.uuid4().hex
     records.start_run(origin, kind="retrain", settings=settings, parameters={**settings, "profile": profile},
                       seed=seed, parent_engine_id=engine_id, run_id=run_id, user_id=user_id)
@@ -942,7 +945,7 @@ def retrain_engine(engine_id, candidate_count=None, generations=None, simulation
     game = _finish_training(evolution, result, run_id, origin, profile, points, mode, candidate_count, episodes,
                             simulation_steps, title=f"Retrained from engine `{engine_id}`.", parent_id=engine_id,
                             source=f"retrained from {engine_id}", mission=mission, start_game=start_game)
-    game["training"] = _training_record(plan, evolution)
+    game["training"] = _training_record(plan, evolution, result.warm_started)
     return game
 
 

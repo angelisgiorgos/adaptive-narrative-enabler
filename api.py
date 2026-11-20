@@ -639,6 +639,17 @@ def put_entity(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str,
         _fail(exc)
 
 
+@api.get("/v1/entities/{kind}/{name}/references", tags=["World authoring"])
+def get_entity_references(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str):
+    """What refers to the entry and would break if it were deleted (missions, actions, conditions,
+    dialogue, routes, ...), as the engine's checks word it: {references: [...]} (empty: nothing).
+    Deleting is still allowed; a deleted entry's restore is checked against them."""
+    names, _ = content._entity_name_values(kind)
+    if name not in names:
+        raise HTTPException(status_code=404, detail="Entity not found.")
+    return {"references": content.entity_references(kind, name)}
+
+
 @api.delete("/v1/entities/{kind}/{name}", tags=["World authoring"])
 def delete_entity(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str):
     """Delete an entry (at least one location, NPC and item remains: 400 for the last). ``undo``: what
@@ -1509,8 +1520,8 @@ def put_app_settings(body: AppSettingsBody):
         store.save_app_settings({**store.load_app_settings(), **body.settings})
     except (ValueError, OSError) as exc:
         _fail(exc)
-    note = (f" Ignored {', '.join(retired)}: a run's defaults are the saved engine defaults (evolution.*), and "
-            "each run may set its own." if retired else "")
+    note = (f" Ignored {', '.join(retired)}: a run's defaults are the saved engine defaults (evolution.*, "
+            "crossover included: evolution.crossover_rate), and each run may set its own sizes." if retired else "")
     return {"message": "App parameters saved. Restart the studio and the API to apply them." + note,
             "settings": store.load_app_settings()}
 
