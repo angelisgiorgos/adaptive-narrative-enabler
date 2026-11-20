@@ -367,6 +367,12 @@ one); `tests/test_studio_coverage.py` checks it.
   type it is written with. A `PUT` (paths left out keep their value) is checked whole first: a
   fraction for an integer parameter is `400` (never cut down), as is a value outside the engine's
   bounds, and nothing is saved; values that do not change are kept exactly as written.
+  `requires` names the true/false setting a parameter needs, and `inactive` says why it has no
+  effect now. `basic` is the studio's Basic view, a chosen set of common gameplay controls:
+  `[{key, title, summary, controls: [{path, effect}]}]`. Each control is one of the parameters
+  (`backend/tuning_basic.yaml`; no presets); a control whose parameter the configuration lacks is
+  left out. A `PUT` may send `expected` `{path: value}`, the values the form was loaded with. A
+  changed parameter whose stored value has moved since is then refused with `409`, and nothing is saved.
 - `GET /v1/logic` lists the parameter sections of the engine's logic, with what
   each controls. `GET|PUT /v1/logic/{section}` reads or changes one section as
   YAML text (`{"parameters": "evolution:\n  ..."}`). It must keep the same

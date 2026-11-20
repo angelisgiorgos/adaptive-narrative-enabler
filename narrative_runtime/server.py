@@ -97,17 +97,28 @@ class RuntimeServer:
         finally:
             self.httpd.server_close()
 
-    def shutdown(self, save=True, end_sessions=False, reason="request"):
+    def shutdown(self, save=True, end_sessions=False, reason="request", stop_serving=True):
         """Save (or end) every session, deliver everything, then stop serving. Safe to call
-        more than once and from any thread except the one serving."""
+        more than once and from any thread except the one serving.
+
+        ``stop_serving=False`` leaves the listener running so the caller can answer first (the
+        ``POST /shutdown`` handler): once serving stops the process exits, and the daemon
+        handler thread would die mid-response."""
         with self._stop_lock:
             if self.stopping:
                 return self.stop_result or {"stopping": True}
             self.stopping, self.stop_reason = True, reason
-        result = self.engine.shutdown(save=save, end_sessions=end_sessions)
-        self.stop_result = {"stopping": True, "reason": reason, **result}
-        threading.Thread(target=self.httpd.shutdown, name="ane-http-stop", daemon=True).start()
+        try:
+            result = self.engine.shutdown(save=save, end_sessions=end_sessions)
+            self.stop_result = {"stopping": True, "reason": reason, **result}
+        finally:
+            if stop_serving:
+                self.stop_serving()
         return self.stop_result
+
+    def stop_serving(self):
+        """Make ``serve()`` return (from any thread; calling it again is harmless)."""
+        threading.Thread(target=self.httpd.shutdown, name="ane-http-stop", daemon=True).start()
 
 
 def _routes(server):
@@ -129,8 +140,9 @@ def _routes(server):
         return 201, engine.new_game(**options).view()
 
     def shutdown(body):
+        # The handler stops serving once this answer is written (see Handler._route).
         return 200, server.shutdown(save=bool(body.get("save", True)), end_sessions=bool(body.get("end_sessions")),
-                                    reason="POST /shutdown")
+                                    reason="POST /shutdown", stop_serving=False)
 
     def evolve(body):
         if not server.allow_evolve:
@@ -241,6 +253,15 @@ def make_handler(server):
             return body
 
         def _route(self, method):
+            try:
+                self._dispatch(method)
+            finally:
+                # A POST /shutdown stops serving only after its answer is written: the process
+                # exits as soon as serve() returns, taking this (daemon) thread with it.
+                if method == "POST" and server.stopping and self.path.split("?")[0].rstrip("/") == "/shutdown":
+                    server.stop_serving()
+
+        def _dispatch(self, method):
             from core_engine import resume, savegame, snapshot
 
             from .world import PatchFormatError

@@ -7,6 +7,27 @@ that introduces them.
 
 ## [Unreleased]
 
+### Weights: a Basic view of common gameplay controls
+
+#### Added
+- ⚙ Advanced → Weights has two views of one draft. **Basic** (shown first) groups 20 common gameplay
+  controls in Difficulty, Pacing, Repetition and Event frequency. Each control is one tuning parameter
+  (`backend/tuning_basic.yaml`; no presets), explained by what raising or lowering it does in play.
+  **Advanced** is the complete editor, as before. A value edited in one view is the same value in the
+  other, and switching views changes no value.
+- The draft's status, above both views, lists every unsaved change. Changes made in Advanced to
+  parameters that Basic doesn't show are listed apart (*Advanced only, not shown in Basic*). Unsaved
+  weights make the browser ask before the page is left.
+- `GET /v1/weights` also answers `basic`, the Basic view. `PUT /v1/weights` takes an optional
+  `expected` (the values when loaded); a parameter changed since then is refused with `409`.
+- The parameters of the director, variation, unexpected events, first trips and the alert name the
+  setting they need (`requires`), and are marked inactive while it is off.
+
+#### Changed
+- The weights form saves only the values that changed, rather than every field, and *Discard changes*
+  reloads the saved values. The form also reloads the saved values when the page opens, so a page built
+  earlier no longer writes back stale values.
+
 ### Drafts everywhere, undo histories, references, and the engine's parameters cleaned up
 
 #### Added
