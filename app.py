@@ -222,6 +222,12 @@ CSS = """
 /* Navigation. The destinations are chosen with the workflow banner (wide screens) or the menu (narrow
    screens), so the destinations' own tab bar is not shown: no destination hides behind an overflow button. */
 #ane-nav > .tab-wrapper {display: none !important}
+#world-sections > .tab-wrapper {display: none !important}
+#world-nav, #world-content-nav {gap: .35rem; flex-wrap: wrap; align-items: center}
+#world-nav > button, #world-content-nav > button {flex: 0 0 auto !important; width: auto !important;
+                                                  min-width: max-content !important}
+#world-nav::before {content: "World"; font-size: .8rem; font-weight: 600; opacity: .7; margin-right: .15rem}
+#world-content-nav {padding-left: 1rem; border-left: 3px solid var(--border-color-primary)}
 #ane-banner {gap: .35rem; align-items: center; flex-wrap: wrap; padding: .3rem .6rem; border-radius: 12px;
              border: 1px solid var(--border-color-primary); background: var(--background-fill-secondary)}
 #ane-banner::before {content: "Workflow"; font-size: .8rem; font-weight: 600; opacity: .7; margin-right: .15rem}
@@ -1076,7 +1082,9 @@ def map_markdown(known):
         paths.setdefault(b, []).append(a)
     for a, b in known.get("one_way", []):
         paths.setdefault(a, []).append(f"{b} (one way)")
-    lines = ["### Map"]
+    lines = ["### 🧭 Discovered map (this game)",
+             "*Only the places this player has found, and the ways to them; the world's complete map is the "
+             "authoring map (🌍 World → 🗺 Map).*"]
     for place in known.get("places", []):
         name = place["name"]
         mark = "📍 " if name == known.get("current") else ""
@@ -4230,6 +4238,47 @@ def new_action_choice_ui(loaded, base, *values):
     return _choose({"type": "action", "new": True}, loaded, base, values, scope=("action",))
 
 
+# 🌍 World's sub-navigation: three places, Content (its own sections), Missions and Map. They select the
+# World's sections (world_sections; their ids are what the leave guards, the address and the drafts use).
+WORLD_GROUPS = {"content": ("📚 Content", ("entries", "story-rules", "behaviour", "grow", "checks")),
+                "missions": ("🎯 Missions", ("missions",)), "map": ("🗺 Map", ("map",))}
+CONTENT_SECTIONS = WORLD_GROUPS["content"][1]
+
+
+def world_group_of(section):
+    return next((group for group, (_, sections) in WORLD_GROUPS.items() if section in sections), "content")
+
+
+def world_group_target(group, now_section, content_last=None):
+    """The section a sub-navigation button opens: Content its last section open (else Entries), Missions
+    and Map their own."""
+    if group == "content":
+        if now_section in CONTENT_SECTIONS:
+            return now_section
+        return content_last if content_last in CONTENT_SECTIONS else "entries"
+    return WORLD_GROUPS[group][1][0]
+
+
+def world_nav_ui(section, content_last=None):
+    """The sub-navigation for the section open now: the place highlighted, Content's own row shown (its
+    section highlighted) while in Content, and Content's last section remembered. Returns (Content,
+    Missions, Map, Content's row, its sections' buttons, the last Content section)."""
+    group = world_group_of(section)
+    tops = [gr.Button(variant="primary" if key == group else "secondary") for key in WORLD_GROUPS]
+    inner = [gr.Button(variant="primary" if key == section else "secondary") for key in CONTENT_SECTIONS]
+    last = section if section in CONTENT_SECTIONS else (content_last or "entries")
+    return (*tops, gr.update(visible=group == "content"), *inner, last)
+
+
+def world_section_choice_ui(section, now_section, loaded, dirty):
+    """A sub-navigation button: the World's section guard (section_choice_ui: leaving an editor with
+    unsaved changes asks first), and the section's tab selected when it may go."""
+    result = section_choice_ui(section, now_section, loaded, dirty)
+    if "section" not in result and result.get("section_now"):
+        result = {**result, "section": result["section_now"]}
+    return result
+
+
 # Which World section each editor with a draft is in (drafts_dirty: {editor: [parts unsaved]}).
 EDITOR_SECTIONS = {"entries": "entries", "missions": "missions", "rules": "story-rules", "map": "map"}
 SECTION_EDITORS = {section: editor for editor, section in EDITOR_SECTIONS.items()}
@@ -5730,7 +5779,17 @@ def build_app():
         with gr.Tabs(elem_id="ane-nav", elem_classes="main-tabs") as main_tabs:
             nav_outputs = [main_tabs, *nav_buttons, nav_menu, dest_now]  # what navigate() returns
             with gr.Tab("🌍 World", id="world", elem_id="dest-world") as world_tab:
-                with gr.Tabs(selected="entries") as world_sections:
+                # The World's sub-navigation (the sections' own tab bar is not shown, as the destinations').
+                with gr.Row(elem_id="world-nav", elem_classes="world-nav"):
+                    world_nav_buttons = [gr.Button(label, variant="primary" if key == "content" else "secondary",
+                                                   size="sm", elem_id=f"world-nav-{key}")
+                                         for key, (label, _) in WORLD_GROUPS.items()]
+                with gr.Row(elem_id="world-content-nav", elem_classes="world-content-nav") as world_content_nav:
+                    content_nav_buttons = [gr.Button(WORLD_SECTIONS[key], size="sm",
+                                                     variant="primary" if key == "entries" else "secondary",
+                                                     elem_id=f"world-content-{key}") for key in CONTENT_SECTIONS]
+                content_last = gr.State("entries")  # Content's last section open (📚 Content goes back to it)
+                with gr.Tabs(selected="entries", elem_id="world-sections") as world_sections:
                     with gr.Tab(WORLD_SECTIONS["entries"], id="entries") as section_entries:
                         # The content library: every location, NPC, item and event, searchable; choosing one opens
                         # it below (guarded like the pickers); searching or filtering never changes what is open.
@@ -6189,8 +6248,13 @@ def build_app():
                         map_selected = gr.State(places_now[0] if places_now else None)  # the place whose borders show
                         (map_draft_status, map_prompt, map_prompt_text, map_save, map_discard, map_stay,
                          map_pending_state) = form_panels("map")
-                        gr.Markdown("Pick a place and tick the places it borders: a route holds both ways, and a far "
-                                    "place is reached through the places between. The map below shows every route.")
+                        gr.Markdown("### 🗺 The authoring map: the whole world\nEvery place and every route of this "
+                                    "world, as authored: what every story's map is made from. A player never sees it "
+                                    "whole: ▶ Play shows each game's **discovered map** (the places that player has "
+                                    "found, and the ways to them), which grows as the story goes.", elem_classes="lead")
+                        gr.Markdown("Pick a place and tick the places it borders: a route holds both ways (saving "
+                                    "a border updates both places), and a far place is reached through the places "
+                                    "between. The drawing shows every route.")
                         with gr.Row():
                             with gr.Column(scale=2):
                                 map_place = gr.Dropdown(places_now, value=places_now[0] if places_now else None,
@@ -6848,7 +6912,7 @@ def build_app():
                         play_quest_log = gr.Markdown("### 🎯 Quest\nStart a game to see its quest.",
                                                      elem_classes="quest-card")
                         play_you = gr.Markdown("### 🧍 You\nStart a game to see your character.", elem_classes="you-card")
-                        with gr.Accordion("👥 People met & the map", open=False):
+                        with gr.Accordion("👥 People met & the discovered map", open=False):
                             play_people = gr.Markdown("### People met\nNobody yet.", elem_classes="people-card")
                 with gr.Accordion("🧭 Your journey: every choice and what came of it", open=False):
                     play_journey = gr.Markdown("*Your journey starts with your first choice.*", elem_classes="journey")
@@ -7436,6 +7500,18 @@ def build_app():
             tab.select(lambda now_section, loaded, dirty, section=section: leave_emit(
                 section_choice_ui(section, now_section, loaded, dirty)), [section_now, draft_loaded, drafts_dirty],
                 leave_outputs, show_progress="hidden")
+        # The World's sub-navigation: each button goes through the same guard as the sections' tabs (unsaved
+        # changes: asked in the editor first); the bar follows the section open, however it was opened.
+        world_nav_outputs = [*world_nav_buttons, world_content_nav, *content_nav_buttons, content_last]
+        for group, button in zip(WORLD_GROUPS, world_nav_buttons):
+            button.click(lambda now_section, loaded, dirty, last, group=group: leave_emit(world_section_choice_ui(
+                world_group_target(group, now_section, last), now_section, loaded, dirty)),
+                [section_now, draft_loaded, drafts_dirty, content_last], leave_outputs, show_progress="hidden")
+        for section, button in zip(CONTENT_SECTIONS, content_nav_buttons):
+            button.click(lambda now_section, loaded, dirty, section=section: leave_emit(world_section_choice_ui(
+                section, now_section, loaded, dirty)), [section_now, draft_loaded, drafts_dirty], leave_outputs,
+                show_progress="hidden")
+        section_now.change(world_nav_ui, [section_now, content_last], world_nav_outputs, show_progress="hidden")
         nav_events = {key: button.click(lambda *rest, key=key: leave_emit(nav_choice_ui(key, *rest)), leave_inputs,
                                         leave_outputs,
                                         show_progress="hidden")

@@ -3222,6 +3222,91 @@ class ConditionBuilderTests(_Sandbox):
             self.assertTrue([fn for fn in demo.fns.values() if (by[f"{prefix}-mode"]._id, "input") in fn.targets])
 
 
+class WorldSubnavigationTests(_Sandbox):
+    """🌍 World's sub-navigation: 📚 Content (Entries, Story rules, Behaviour by tags, Grow, Checks), 🎯
+    Missions and 🗺 Map select the World's sections through the same guard as before (unsaved changes:
+    asked in the editor first; nothing discarded); Content goes back to its last section. The authoring
+    map (the whole world) is told apart from the discovered map a player sees in ▶ Play."""
+
+    def setUp(self):
+        super().setUp()
+        shutil.copy(store.CONFIG_DIR / "locations.yaml", self.dir / "locations.yaml")
+
+    def test_the_sub_navigation_selects_sections_through_the_guard(self):
+        import app
+
+        self.assertEqual(app.world_group_target("missions", "entries"), "missions")
+        self.assertEqual(app.world_group_target("map", "missions"), "map")
+        self.assertEqual(app.world_group_target("content", "map", "story-rules"), "story-rules")  # the last one
+        self.assertEqual(app.world_group_target("content", "map", None), "entries")
+        self.assertEqual(app.world_group_target("content", "checks", "entries"), "checks")
+        # The bar follows the section open: its place highlighted, Content's own row only in Content.
+        out = app.world_nav_ui("map", "story-rules")
+        tops, row, inner, last = out[:3], out[3], out[4:-1], out[-1]
+        self.assertEqual([_prop(b, "variant") for b in tops], ["secondary", "secondary", "primary"])
+        self.assertTrue(all(_prop(b, "variant") == "secondary" for b in inner))  # no Content section open
+        self.assertFalse(row["visible"])
+        self.assertEqual(last, "story-rules")                                   # remembered
+        out = app.world_nav_ui("behaviour", "entries")
+        self.assertTrue(out[3]["visible"])
+        self.assertEqual([_prop(b, "variant") for b in out[4:-1]],
+                         ["primary" if key == "behaviour" else "secondary" for key in app.CONTENT_SECTIONS])
+        self.assertEqual(out[-1], "behaviour")
+        # Nothing unsaved: the section opens (its tab selected). Unsaved entry: asked first, nothing discarded.
+        loaded = {"kind": "Locations", "entity": "Harbor"}
+        self.assertEqual(app.world_section_choice_ui("map", "entries", loaded, {}),
+                         {"section_now": "map", "section": "map"})
+        asked = app.world_section_choice_ui("missions", "entries", loaded, {"entries": ["fields"]})
+        self.assertEqual(asked["section"], "entries")                           # stays where the draft is
+        self.assertNotIn("section_now", asked)
+        self.assertEqual(asked["prompts"]["entries"][2], {"type": "section", "id": "missions"})
+        editor = _Editor(app, "Locations", "Harbor")
+        editor.type("fields", 2, "Kept while away.")
+        editor.leave(app.world_section_choice_ui("map", "entries", editor.loaded, editor.dirty))
+        editor.answer("stay")
+        self.assertEqual((editor.value("fields", 2), editor.unsaved), ("Kept while away.", ["fields"]))
+        # Wired: each button goes through the guard (the leave outputs), and the bar follows section_now.
+        demo = app.build_app()
+        by = {b.elem_id: b for b in demo.blocks.values() if getattr(b, "elem_id", None)}
+        tabs = by["world-sections"]
+        for key in [*app.WORLD_GROUPS, *[f"content-{k}" for k in app.CONTENT_SECTIONS]]:
+            elem = f"world-nav-{key}" if key in app.WORLD_GROUPS else f"world-{key}"
+            (fn,) = [fn for fn in demo.fns.values() if (by[elem]._id, "click") in fn.targets]
+            self.assertIn(tabs._id, [o._id for o in fn.outputs])
+        followers = [fn for fn in demo.fns.values() if fn.fn is not None and getattr(fn.fn, "__name__", "") == "world_nav_ui"]
+        self.assertEqual(len(followers), 1)
+        self.assertIn("#world-sections > .tab-wrapper {display: none !important}", app.CSS)
+        titles = {b.label for b in demo.blocks.values() if isinstance(b, app.gr.Tab) and getattr(b, "parent", None) is tabs}
+        self.assertEqual(titles, set(app.WORLD_SECTIONS.values()))              # every section still there
+
+    def test_missions_and_the_map_keep_working_and_the_two_maps_are_told_apart(self):
+        import app
+
+        # The map's borders, saved from the studio: both places follow.
+        before = self.client.get("/v1/map").json()["routes"]
+        borders = sorted(set(before["Tavern"]) - {"Alley"} | {"Sewers"})
+        view, message, yaml_text = app.save_borders_ui("Tavern", borders)
+        routes = self.client.get("/v1/map").json()["routes"]
+        self.assertEqual(sorted(routes["Tavern"]), borders)
+        self.assertIn("Tavern", routes["Sewers"])                               # added both ways
+        self.assertNotIn("Tavern", routes.get("Alley", []))                     # removed both ways
+        self.assertIn("Sewers", yaml.safe_load(yaml_text)["routes"]["Tavern"])  # the YAML follows
+        # A mission edited in its form: its steps, condition and rewards saved.
+        mission = self.client.get("/v1/missions/shield_bearer").json()["mission"]
+        mission = {**mission, "title": "Find a shield, again", "enabled_if": {"reputation": {"gte": 1}},
+                   "rewards": [{"change_coins": 7}]}
+        saved = self.client.put("/v1/missions/shield_bearer", json={"mission": mission})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        stored = self._yaml("missions.yaml")["world_definition"]["missions"]["shield_bearer"]  # as written
+        self.assertEqual((stored["title"], stored["enabled_if"], stored["rewards"]),
+                         ("Find a shield, again", {"reputation": {"gte": 1}}, [{"change_coins": 7}]))
+        # The two maps: the player's is the discovered map of a game.
+        text = app.map_markdown({"current": "Harbor", "places": [{"name": "Harbor", "visited": True, "locked": False}],
+                                 "paths": [], "one_way": []})
+        self.assertIn("Discovered map (this game)", text)
+        self.assertIn("authoring map (🌍 World → 🗺 Map)", text)
+
+
 class WeightsFollowUpTests(_Sandbox):
     """Weights: saved values changed from the shipped ones are listed (and the shipped values can be put
     in the draft); leaving ⚙ Advanced with an unsaved weights draft asks Save, Discard or Stay; the Basic

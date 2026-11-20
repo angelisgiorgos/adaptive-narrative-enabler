@@ -7,6 +7,16 @@ that introduces them.
 
 ## [Unreleased]
 
+### 🌍 World: Content, Missions and Map
+
+#### Changed
+- 🌍 World has a sub-navigation: **📚 Content** (Entries, Story rules, Behaviour by tags, Grow the world,
+  Checks; it goes back to the last one opened), **🎯 Missions** and **🗺 Map**. The missions and map
+  interfaces, their API calls and their YAML stay as they were. Switching keeps selections and unsaved
+  drafts: an editor with unsaved changes asks first.
+- The map in 🌍 World is named the **authoring map** (the whole world). The map in ▶ Play is the
+  **discovered map** (this game's: only what the player has found).
+
 ### 🌍 World → Entries: a condition builder
 
 #### Added
