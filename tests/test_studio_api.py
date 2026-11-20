@@ -1507,17 +1507,19 @@ class EntryDraftTests(_Sandbox):
         app, editor = self._editor("Events", "tavern_brawl")
         stored = self._stored("Events", "tavern_brawl")
         condition = editor.value("fields", 7)
-        editor.type("scheduling", 3, 9)                 # cooldown: saves
+        policy = self.client.get("/v1/entities/Events/tavern_brawl/policy").json()["policy"]
+        editor.type("scheduling", 3, 9)                 # cooldown: valid on its own
         editor.type("fields", 7, "{any: [")              # enabled_if: cannot be read
         editor.choose("Locations", "Harbor")
         editor.answer("save")
         self.assertEqual((editor.kind, editor.entity, editor.loaded["entity"]), ("Events", "tavern_brawl", "tavern_brawl"))
         self.assertTrue(editor.prompt)
-        self.assertIn("could not be saved", editor.message)
-        self.assertIn("Scheduling saved before it", editor.message)
+        self.assertIn("Nothing was saved", editor.message)       # the entry is saved whole, or not at all
+        self.assertIn("(Fields, Scheduling)", editor.message)
         self.assertEqual(editor.value("fields", 7), "{any: [")  # the draft, as typed
-        self.assertEqual(editor.unsaved, ["fields"])            # what was saved is no longer unsaved
+        self.assertEqual(editor.unsaved, ["fields", "scheduling"])  # nothing was saved: both still unsaved
         self.assertEqual(self._stored("Events", "tavern_brawl")["enabled_if"], stored["enabled_if"])
+        self.assertEqual(self.client.get("/v1/entities/Events/tavern_brawl/policy").json()["policy"], policy)
         self.assertEqual(editor.pending["entity"], "Harbor")   # still asked: correct it and save, or discard
         # A form's own save that fails changes nothing either (the error is shown; no output is applied).
         import gradio as gr
@@ -1530,7 +1532,7 @@ class EntryDraftTests(_Sandbox):
         editor.answer("save")
         self.assertIn("Nothing was saved", editor.message)
         self.assertEqual(editor.entity, "tavern_brawl")
-        self.assertEqual(sorted(editor.unsaved), ["entry_yaml", "fields"])
+        self.assertEqual(sorted(editor.unsaved), ["entry_yaml", "fields", "scheduling"])  # still nothing saved
 
     def test_a_form_s_save_keeps_the_other_forms_drafts(self):
         app, editor = self._editor("Locations", "Harbor")
@@ -2729,7 +2731,9 @@ class ContentLibraryTests(_Sandbox):
         self.assertIn("**No events in this world yet.**", status)
         _, _, _, status = app.library_view("", app.LIBRARY_ALL, {}, entries={})
         self.assertIn("**The world has no entries yet.**", status)
-        filter_update, results_update, _ = app.library_ui("harbor", "Locations", loaded)
+        filter_update, results_update, _, more, shown = app.library_ui("harbor", "Locations", loaded)
+        self.assertFalse(_prop(more, "visible"))                              # everything is listed
+        self.assertEqual(shown, app.LIBRARY_LIMIT)
         self.assertEqual(_prop(filter_update, "value"), "Locations")
         self.assertEqual(_prop(results_update, "value"), harbor)
 
@@ -2774,8 +2778,176 @@ class ContentLibraryTests(_Sandbox):
 
         self.assertEqual(listeners(by["library-results"], "input"), ["library_choice_ui"])
         self.assertEqual(listeners(by["library-results"], "change"), [])     # a value set by code opens nothing
-        self.assertIn("library_ui", listeners(by["library-search"], "input"))
-        self.assertIn("library_ui", listeners(by["library-filter"], "input"))
+        self.assertIn("library_search_ui", listeners(by["library-search"], "input"))  # the first page again
+        self.assertIn("library_search_ui", listeners(by["library-filter"], "input"))
+        self.assertIn("library_more_ui", listeners(by["library-more"], "click"))
+
+
+class LibraryPagingTests(_Sandbox):
+    """The content library lists LIBRARY_LIMIT results a page: *Show more* lists the next page (those shown
+    stay), a new search or filter starts at the first page again, and the entry open in the editor is
+    never cut off (the list reaches it)."""
+
+    def _many(self, count):
+        return {"Locations": [{"name": "Harbor", "tags": ["port"], "summary": "", "actions": 0, "facts": []}],
+                "NPCs": [], "Events": [],
+                "Items": [{"name": f"Trinket {n:03d}", "tags": ["junk"], "summary": "", "actions": 0, "facts": []}
+                          for n in range(count)]}
+
+    def test_show_more_pages_through_and_the_open_entry_is_reached(self):
+        import app
+
+        entries = self._many(450)
+        loaded = {"kind": "Locations", "entity": "Harbor"}
+        filters, shown, selected, status, count, total = app._library_view("", app.LIBRARY_ALL, loaded, entries)
+        self.assertEqual((count, total), (app.LIBRARY_LIMIT, 451))
+        self.assertIn("showing the first **200**: *Show 200 more*", status)
+        _, shown, _, status, count, _ = app._library_view("", app.LIBRARY_ALL, loaded, entries, limit=400)
+        self.assertEqual(count, 400)
+        self.assertIn("*Show 51 more*", status)
+        _, shown, _, status, count, _ = app._library_view("", app.LIBRARY_ALL, loaded, entries, limit=600)
+        self.assertEqual(count, 451)
+        self.assertNotIn("more*", status)
+        # The open entry beyond the first page: the list reaches it, and it stays marked.
+        far = {"kind": "Items", "entity": "Trinket 349"}
+        _, shown, selected, _, count, _ = app._library_view("", "Items", far, entries)
+        self.assertEqual((count, selected), (400, app.library_key("Items", "Trinket 349")))
+        # The studio's handlers: a page more each time; a search starts again at the first page.
+        with patch.object(app, "library_entries", return_value=entries):
+            *_, more, limit = app.library_ui("", app.LIBRARY_ALL, loaded)
+            self.assertEqual((limit, _prop(more, "value")), (200, "Show 200 more (251 not shown)"))
+            *_, more, limit = app.library_more_ui("", app.LIBRARY_ALL, loaded, limit)
+            self.assertEqual((limit, _prop(more, "visible")), (400, True))
+            *_, more, limit = app.library_more_ui("", app.LIBRARY_ALL, loaded, limit)
+            self.assertEqual((limit, _prop(more, "visible")), (451, False))         # all of them
+            _, results, _, more, limit = app.library_search_ui("trinket 12", app.LIBRARY_ALL, loaded)
+            self.assertEqual(limit, 200)
+            self.assertEqual(len(_prop(results, "choices")), sum("12" in f"{n:03d}" for n in range(450)))
+            self.assertFalse(_prop(more, "visible"))
+
+
+class EntrySaveChangesTests(_Sandbox):
+    """💾 Save changes: every section of the entry's draft saved at once (PUT .../draft): applied to a copy of
+    the stored entry (fields no section touches kept), checked whole with the world, written once. An
+    invalid action or condition anywhere: nothing is written, every problem named with its section; the
+    form and the YAML then show the same stored entry."""
+
+    def _file(self, name):
+        return (self.dir / name).read_text(encoding="utf-8")
+
+    def _harbor(self):
+        return self._yaml("locations.yaml")["world_definition"]["locations"]["Harbor"]
+
+    def test_the_endpoint_saves_every_section_at_once_or_nothing(self):
+        # Something no form shows is kept by every section's save.
+        data = self._yaml("locations.yaml")
+        data["world_definition"]["locations"]["Harbor"]["custom_note"] = "kept as written"
+        (self.dir / "locations.yaml").write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+                                                 encoding="utf-8")
+        stored = self.client.get("/v1/entities/Locations/Harbor").json()
+        actions = self.client.get("/v1/entities/Locations/Harbor/actions").json()["actions"]
+        good_action = {**actions[0], "name": "Watch the ships come in"}
+        fields = {**stored, "descriptions": ["Masts as far as the eye can see."], "tags": [*stored["tags"], "busy"]}
+        before = self._file("locations.yaml")
+        # An invalid action (an unknown item) with valid fields and details: nothing is written.
+        bad_action = {**actions[0], "required_object": "No Such Thing"}
+        refused = self.client.put("/v1/entities/Locations/Harbor/draft", json={
+            "fields": fields, "action": {"index": 0, "action": bad_action},
+            "details": {"interact_prompts": ["Walk to the docks"]}})
+        self.assertEqual(refused.status_code, 400, refused.text)
+        self.assertIn("Nothing was saved", refused.json()["detail"])
+        self.assertIn("unknown item `No Such Thing`", refused.json()["detail"])
+        self.assertEqual(self._file("locations.yaml"), before)               # not one section written
+        # An invalid condition in the fields, with a valid action: nothing is written either.
+        refused = self.client.put("/v1/entities/Locations/Harbor/draft", json={
+            "fields": {**fields, "enabled_if": {"nope_variable": 1}}, "action": {"index": 0, "action": good_action}})
+        self.assertEqual(refused.status_code, 400, refused.text)
+        self.assertIn("Fields: `enabled_if` uses undefined variable `nope_variable`", refused.json()["detail"])
+        self.assertEqual(self._file("locations.yaml"), before)
+        # Two sections that change the same data: refused before anything.
+        clash = self.client.put("/v1/entities/Locations/Harbor/draft", json={"fields": fields, "entry_yaml": "tags: []"})
+        self.assertEqual(clash.status_code, 400)
+        self.assertEqual(self._file("locations.yaml"), before)
+        # Valid: every section in one write; what no section touches is kept.
+        saved = self.client.put("/v1/entities/Locations/Harbor/draft", json={
+            "fields": fields, "action": {"index": 0, "action": good_action},
+            "details": {"interact_prompts": ["Walk to the docks"]}})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json()["saved"], ["action", "details", "fields"])
+        harbor = self._harbor()
+        self.assertEqual(harbor["entered_descriptions"], ["Masts as far as the eye can see."])
+        self.assertIn("busy", harbor["tags"])
+        self.assertEqual(harbor["actions"][0]["name"], "Watch the ships come in")
+        self.assertEqual(harbor["interact_prompts"], ["Walk to the docks"])
+        self.assertEqual(harbor["custom_note"], "kept as written")
+        self.assertIn("custom_note: kept as written", self.client.get("/v1/entities/Locations/Harbor/yaml").json()["yaml"])
+        # A rename that would leave the world's references dangling (the map's routes name Harbor): refused,
+        # each one named, nothing written.
+        before = self._file("locations.yaml")
+        dangling = self.client.put("/v1/entities/Locations/Harbor/draft", json={"fields": {**fields, "name": "Old Harbor"}})
+        self.assertEqual(dangling.status_code, 400)
+        self.assertIn("The world: routes", dangling.json()["detail"])
+        self.assertEqual(self._file("locations.yaml"), before)
+        # A new entry is made from its fields; renamed, it stays where it is.
+        made = self.client.put("/v1/entities/Items/Brass Key/draft", params={"create": "true"}, json={
+            "fields": {"name": "Brass Key", "tags": ["urban"], "descriptions": ["A small brass key."]}})
+        self.assertEqual(made.status_code, 200, made.text)
+        names = self.client.get("/v1/entities/Items", params={"fields": "names"}).json()["names"]
+        renamed = self.client.put("/v1/entities/Items/Brass Key/draft", json={
+            "fields": {"name": "Iron Key", "tags": ["urban"], "descriptions": ["A small iron key."]}})
+        self.assertEqual(renamed.status_code, 200, renamed.text)
+        self.assertEqual(self.client.get("/v1/entities/Items", params={"fields": "names"}).json()["names"],
+                         [*names[:-1], "Iron Key"])
+
+    def test_the_studio_saves_the_whole_draft_or_nothing(self):
+        import app
+
+        before = self._file("locations.yaml")
+        editor = _Editor(app, "Locations", "Harbor")
+        editor.type("fields", 2, "Masts as far as the eye can see.")              # Fields
+        editor.type("fields", 7, "{nope_variable: 1}")                            # an invalid condition
+        actions = yaml.safe_load(editor.value("actions_yaml")) or []
+        actions[0]["name"] = "Watch the ships come in"
+        editor.type("actions_yaml", 0, yaml.safe_dump(actions, sort_keys=False))  # Actions as YAML (valid)
+        self.assertEqual(set(editor.unsaved), {"fields", "actions_yaml"})
+        status = app.draft_status_markup(editor.unsaved, editor.loaded)
+        self.assertIn("● Unsaved changes in Harbor: Fields, Actions as YAML", status)
+        self.assertIn("✓ Saved: Actions &amp; outcomes, More details, Every field (YAML)", status)
+        self.assertNotIn("Scheduling", status)                                      # places have none
+        out = app.save_changes_ui(*editor.guard)
+        message = out[app.ENTRY_OUTPUTS]
+        self.assertIn("Nothing was saved", message)
+        self.assertIn("nope_variable", message)
+        self.assertEqual(out[-1], [])                                               # nothing captured as saved
+        self.assertEqual(self._file("locations.yaml"), before)                      # no section written
+        self.assertEqual(set(editor.unsaved), {"fields", "actions_yaml"})           # the draft is kept
+        # The leave prompt's Save is the same single save: still nothing written.
+        editor.choose("Locations", "Market")
+        self.assertTrue(editor.prompt)
+        editor.answer("save")
+        self.assertTrue(editor.prompt)
+        self.assertIn("Nothing was saved", editor.message)
+        self.assertEqual(self._file("locations.yaml"), before)
+        self.assertEqual(editor.loaded["entity"], "Harbor")
+        editor.answer("stay")
+        # Corrected: both sections saved at once; the forms and the YAML show the stored entry.
+        editor.type("fields", 7, "")
+        out = app.save_changes_ui(*editor.guard)
+        self.assertIn("Saved **Harbor** at once: Fields, Actions as YAML", out[app.ENTRY_OUTPUTS])
+        self.assertEqual(out[-1], list(app.DRAFT_PARTS))
+        editor._form(out)
+        harbor = self._harbor()
+        self.assertEqual(harbor["entered_descriptions"], ["Masts as far as the eye can see."])
+        self.assertEqual(harbor["actions"][0]["name"], "Watch the ships come in")
+        self.assertEqual(editor.unsaved, [])
+        self.assertIn("Masts as far as the eye can see.", editor.value("entry_yaml"))
+        self.assertIn("Watch the ships come in", editor.value("entry_yaml"))
+        self.assertIn("No unsaved changes", app.save_changes_ui(*editor.guard)[app.ENTRY_OUTPUTS])
+        # Wired: the persistent button runs the whole save through the editor's draft handling.
+        demo = app.build_app()
+        by = {b.elem_id: b for b in demo.blocks.values() if getattr(b, "elem_id", None)}
+        (fn,) = [fn for fn in demo.fns.values() if (by["entry-save-changes"]._id, "click") in fn.targets]
+        self.assertEqual(fn.fn.__name__, "save_changes_ui")
 
 
 class WeightsFollowUpTests(_Sandbox):

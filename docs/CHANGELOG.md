@@ -7,6 +7,20 @@ that introduces them.
 
 ## [Unreleased]
 
+### 🌍 World → Entries: Save changes at once, and the library's next pages
+
+#### Added
+- **💾 Save changes**, always under the entry's status line, saves every section with unsaved changes at
+  once (`PUT /v1/entities/{kind}/{name}/draft`). The entry is checked whole with the world and written
+  once, or not at all, with every problem named by section; fields no section touches are kept. The
+  forms and the YAML are then reloaded from the stored entry.
+- The status line names the sections with unsaved changes and those saved.
+- The content library lists 200 results at a time, with *Show N more* for the next ones.
+
+#### Changed
+- The leave question's **Save** no longer saves some sections when another fails: it is the same
+  single save as *Save changes*.
+
 ### 🌍 World: a searchable content library
 
 #### Added

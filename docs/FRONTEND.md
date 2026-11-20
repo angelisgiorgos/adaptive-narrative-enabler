@@ -2505,6 +2505,7 @@ the API disagree, or when this guide names a request the API does not have.
 | `DELETE` | `/v1/entities/{kind}/{name}/actions/{index}` | [entries-actions](#entries-actions) | Delete one action (the others are checked as a save checks them). |
 | `GET` | `/v1/entities/{kind}/{name}/details` | [entries](#entries), [entries-details](#entries-details) | The fields of an entry the entry form does not show: |
 | `PUT` | `/v1/entities/{kind}/{name}/details` | [entries-details](#entries-details) |  |
+| `PUT` | `/v1/entities/{kind}/{name}/draft` | [entries](#entries) | Save an entry's whole draft at once (every section checked whole, written once or not at all). |
 | `GET` | `/v1/missions/{key}` | [missions](#missions), [play-quests-savegame](#play-quests-savegame), [play-setup](#play-setup) |  |
 | `PUT` | `/v1/missions/{key}` | [missions](#missions) | Add or replace one mission (``rename``: |
 | `DELETE` | `/v1/missions/{key}` | [missions](#missions) | Delete a mission (the others are checked as a save checks them). |

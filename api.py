@@ -664,6 +664,45 @@ def put_entity(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str,
         _fail(exc)
 
 
+class EntryDraft(BaseModel):
+    fields: Entity | None = Field(default=None, description="The entry form, as PUT /v1/entities/{kind}/{name} "
+                                  "takes it (its name: a rename; with create, the new entry's name).")
+    entry_yaml: str | None = Field(default=None, description="Every field of the entry as YAML (replaces it).")
+    actions: list[dict[str, Any]] | str | None = Field(default=None, description="Every action (a list or YAML).")
+    action: dict[str, Any] | None = Field(default=None, description="One action: {index, action} (index = the "
+                                          "number of actions: a new one).")
+    policy: dict[str, Any] | str | None = Field(default=None, description="An event's start rules or an item's "
+                                                "uniqueness (a mapping or YAML).")
+    details: dict[str, Any] | None = Field(default=None, description="As PUT /v1/entities/{kind}/{name}/details.")
+
+
+@api.put("/v1/entities/{kind}/{name}/draft", tags=["World authoring"])
+def put_entry_draft(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str, body: EntryDraft,
+                    create: bool = False):
+    """Save an entry's whole draft at once (the studio's *Save changes*): its sections (fields, entry_yaml,
+    actions, action, policy, details; as their own endpoints take them) are applied to a copy of the
+    stored entry, every field no section touches is kept, the entry and the world with it are checked
+    as each section's own save checks them, and the entry is written once. Anything wrong: 400 naming
+    every problem with its section, and nothing is written (no section is saved without the others).
+    Fields and Every field (YAML), or Actions as YAML and one action, change the same data: 400.
+    ``create``: a new entry named ``name`` (its fields required). Returns {name, saved, message,
+    entity}."""
+    if not create:
+        _known_entity(kind, name)
+    elif body.fields is None or body.fields.name.strip() != name:
+        raise HTTPException(status_code=400, detail="A new entry is made from its fields, named as in the path.")
+    draft = body.model_dump(exclude={"fields"}, exclude_none=True)
+    if body.fields is not None:
+        fields = body.fields.model_dump()
+        draft["fields"] = {key: value for key, value in fields.items()
+                           if key not in ("role", "secret") or key in body.fields.model_fields_set}
+    try:
+        result = content.save_entry_draft(kind, None if create else name, draft)
+        return {**result, "entity": get_entity(kind, result["name"])}
+    except Exception as exc:
+        _fail(exc)
+
+
 @api.get("/v1/entities/{kind}/{name}/references", tags=["World authoring"])
 def get_entity_references(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str):
     """What refers to the entry and would break if it were deleted (missions, actions, conditions,

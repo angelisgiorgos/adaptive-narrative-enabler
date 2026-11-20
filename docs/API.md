@@ -325,6 +325,18 @@ one); `tests/test_studio_coverage.py` checks it.
   (`retry_on_failure`). The whole action list is validated before it is
   written; an unknown index is `404`.
 - `GET /v1/entities/{kind}?fields=names` returns only the names.
+- `PUT /v1/entities/{kind}/{name}/draft` saves an entry's whole draft at once, as the studio's
+  *Save changes* does. The sections are `fields` (as `PUT /v1/entities/{kind}/{name}` takes them; their
+  `name` renames the entry), `entry_yaml`, `actions` (a list or YAML), `action` (`{index, action}`, where
+  `index` equal to the number of actions adds one), `policy` (a mapping or YAML) and `details`.
+  - They are applied, in order, to a copy of the stored entry; every field no section touches is kept.
+  - The entry, and the world with it, are checked as each section's own save checks them, and the entry
+    is written once.
+  - When anything is wrong, `400` names every problem with its section and nothing is written: no
+    section is saved without the others. Two sections that change the same data (`fields` and
+    `entry_yaml`, or `actions` and `action`) are also `400`.
+  - `?create=true` makes a new entry named `name` from its `fields`.
+  - Returns `{name, saved, message, entity}`.
 - `GET /v1/entities/{kind}?fields=summary` returns the names plus a light summary of each entry, in
   order: `{kind, names, entries: [{name, tags, summary, actions, facts}]}`. `summary` is the first
   description, shortened to 140 characters, and `actions` is how many it has. `facts` gives a few

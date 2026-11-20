@@ -255,6 +255,7 @@ button[role="tab"] {font-size: .88rem !important; padding: .3rem .75rem !importa
                            background: color-mix(in srgb, #b45309 10%, transparent)}
 .weights-basic-area {padding: .4rem .6rem}
 #library-results .wrap {flex-direction: column; flex-wrap: nowrap; max-height: 22rem; overflow-y: auto; gap: .15rem}
+.draft-saved {font-weight: 400; color: var(--body-text-color-subdued)}
 #library-results label {width: 100%; justify-content: flex-start; text-align: left; font-size: .88rem}
 .weight-inactive input {background: var(--background-fill-secondary)}
 /* Deleting: the question first (naming what goes), then the Undo bar. */
@@ -395,6 +396,15 @@ def _lines(text):
 @ui
 def save_entity_ui(kind, selected_name, name, tags, descriptions, goals, unique, encounter_event, encounter_repeat,
                    enabled_if, title, stat_bonus, start_eligible, start_weight, role=None, secret=None):
+    body = _fields_body(kind, selected_name, name, tags, descriptions, goals, unique, encounter_event,
+                        encounter_repeat, enabled_if, title, stat_bonus, start_eligible, start_weight, role, secret)
+    saved = API.put(_path(f"/v1/entities/{kind}", selected_name or body["name"]), body)
+    return gr.Dropdown(choices=_entity_names(kind), value=saved["name"]), f"Saved **{saved['name']}**."
+
+
+def _fields_body(kind, selected_name, name, tags, descriptions, goals, unique, encounter_event, encounter_repeat,
+                 enabled_if, title, stat_bonus, start_eligible, start_weight, role=None, secret=None):
+    """The entry form as PUT /v1/entities/{kind}/{name} (and the entry draft's fields) take it."""
     name = (name or "").strip()
     if not name:
         raise gr.Error("Name is required.")
@@ -417,8 +427,7 @@ def save_entity_ui(kind, selected_name, name, tags, descriptions, goals, unique,
     if not selected_name and name in _entity_names(kind):  # PUT to a taken name would replace that entry
         raise gr.Error(f"An entry named `{name}` already exists. Choose a unique name, or pick it from the list "
                        "to edit it.")
-    saved = API.put(_path(f"/v1/entities/{kind}", selected_name or name), body)
-    return gr.Dropdown(choices=_entity_names(kind), value=saved["name"]), f"Saved **{saved['name']}**."
+    return body
 
 
 @ui
@@ -3151,6 +3160,16 @@ def delete_outcome_ui(state):
 @ui
 def save_action_form_ui(state, *values):
     """Save the action in the form (with the outcome being edited); the whole list is checked."""
+    kind, name, index, action = _action_body(state, *values)
+    API.put(_path(f"/v1/entities/{kind}", name, "actions", index), {"action": action})
+    form = load_action_form_ui(kind, name, index)
+    return (gr.Dropdown(choices=_action_choices(kind, name), value=index), *form,
+            f"Saved the action **{action['name']}** of {name}.", load_entity_actions_yaml(kind, name))
+
+
+def _action_body(state, *values):
+    """The action in the form (with the outcome being edited) as PUT .../actions/{index} (and the entry
+    draft's action) take it: (kind, entry, index, action)."""
     state = dict(state or {})
     if not state.get("name") or state.get("index") is None:
         raise gr.Error("Pick an action, or add one, first.")
@@ -3165,11 +3184,7 @@ def save_action_form_ui(state, *values):
         action.pop("outcomes", None)  # an action that only starts an event
     if not action["name"]:
         raise gr.Error("The action needs a name.")
-    kind, name, index = state["kind"], state["name"], state["index"]
-    API.put(_path(f"/v1/entities/{kind}", name, "actions", index), {"action": action})
-    form = load_action_form_ui(kind, name, index)
-    return (gr.Dropdown(choices=_action_choices(kind, name), value=index), *form,
-            f"Saved the action **{action['name']}** of {name}.", load_entity_actions_yaml(kind, name))
+    return state["kind"], state["name"], state["index"], action
 
 
 ACTION_FIELD_NAMES = ("name", "repeat", "retry", "stat", "modifier", "group", "event", "coins", "item", "tag",
@@ -3195,6 +3210,14 @@ def policy_form_ui(kind, name):
 def save_policy_form_ui(kind, name, trigger, chance, weight, cooldown, most, repeat, unique, location):
     if kind not in ("Events", "Items") or not name:
         raise gr.Error("Pick an event or an item.")
+    policy = _policy_body(kind, trigger, chance, weight, cooldown, most, repeat, unique, location)
+    API.put(_path(f"/v1/entities/{kind}", name, "policy"), {"policy": policy})
+    return f"Saved when **{name}** happens." if kind == "Events" else f"Saved **{name}**'s uniqueness.", \
+        load_entity_policy_yaml(kind, name)
+
+
+def _policy_body(kind, trigger, chance, weight, cooldown, most, repeat, unique, location):
+    """The scheduling form as PUT .../policy (and the entry draft's policy) take it."""
     if kind == "Events":
         policy = {"trigger": trigger, "repeat": repeat}
         if trigger == "random":
@@ -3207,9 +3230,7 @@ def save_policy_form_ui(kind, name, trigger, chance, weight, cooldown, most, rep
         policy = {"unique": bool(unique)}
         if unique and location not in (None, NONE):
             policy["location"] = location
-    API.put(_path(f"/v1/entities/{kind}", name, "policy"), {"policy": policy})
-    return f"Saved when **{name}** happens." if kind == "Events" else f"Saved **{name}**'s uniqueness.", \
-        load_entity_policy_yaml(kind, name)
+    return policy
 
 
 # An entry's details (/v1/entities/{kind}/{name}/details): what the entry form does not show.
@@ -3260,6 +3281,15 @@ def save_details_ui(kind, name, known_places, known_items, article, dialogue, di
                     points=None):
     if kind not in ("NPCs", "Locations") or not name:
         raise gr.Error("Pick a person or a place.")
+    details = _details_body(kind, name, known_places, known_items, article, dialogue, distant, entered, prompts,
+                            locked, points)
+    API.put(_path(f"/v1/entities/{kind}", name, "details"), {"details": details})
+    return f"Saved the details of **{name}**.", load_entity_yaml_ui(kind, name)
+
+
+def _details_body(kind, name, known_places, known_items, article, dialogue, distant, entered, prompts, locked,
+                  points=None):
+    """The details form as PUT .../details (and the entry draft's details) take it."""
     if kind == "NPCs":
         # A line with several variants (a list) is shown joined with " / ": it is saved as the list again, as it
         # was (unchanged), or split at " / " (edited in its row), never as one string holding the separators.
@@ -3283,8 +3313,7 @@ def save_details_ui(kind, name, known_places, known_items, article, dialogue, di
         details = {"distant_descriptions": _lines(distant), "entered_descriptions": _lines(entered),
                    "interact_prompts": _lines(prompts), "exit_locked": bool(locked),
                    "interaction_points": _parse_points(points)}
-    API.put(_path(f"/v1/entities/{kind}", name, "details"), {"details": details})
-    return f"Saved the details of **{name}**.", load_entity_yaml_ui(kind, name)
+    return details
 
 
 # The language model in the editor (/v1/suggestions, /v1/world/size, /v1/jobs/world-proposal,
@@ -3432,13 +3461,24 @@ def _entry_label(loaded):
             else f"the new {str(loaded.get('kind') or 'entry').rstrip('s')} entry")
 
 
+def entry_sections(kind):
+    """The editor's sections an entry of this kind has (scheduling: events and items; details: people and places)."""
+    return [part for part in DRAFT_PARTS
+            if not (part in ("scheduling", "policy_yaml") and kind not in ("Events", "Items"))
+            and not (part == "details" and kind not in ("NPCs", "Locations"))]
+
+
 def draft_status_markup(dirty, loaded):
-    """The editor's draft indicator (data-dirty: the page asks before it is closed or reloaded)."""
+    """The editor's draft indicator: the sections with unsaved changes, and those saved (data-dirty: the
+    page asks before it is closed or reloaded)."""
+    saved = [part for part in entry_sections((loaded or {}).get("kind")) if part not in (dirty or [])]
     if dirty:
         what = ", ".join(DRAFT_PARTS[part] for part in dirty)
+        rest = (f' <span class="draft-saved">· ✓ Saved: {html.escape(", ".join(DRAFT_PARTS[p] for p in saved))}</span>'
+                if saved else "")
         return (f'<div class="draft-status dirty" data-dirty="1">● Unsaved changes in '
-                f'{html.escape((loaded or {}).get("entity") or "the new entry")}: {html.escape(what)}</div>')
-    return '<div class="draft-status" data-dirty="0">✓ No unsaved changes</div>'
+                f'{html.escape((loaded or {}).get("entity") or "the new entry")}: {html.escape(what)}{rest}</div>')
+    return '<div class="draft-status" data-dirty="0">✓ No unsaved changes: every section is saved</div>'
 
 
 def draft_status_ui(base, loaded, *values):
@@ -3641,10 +3681,17 @@ def library_label(kind, entry):
     return " ".join(parts)
 
 
-def library_view(query, kind_filter, loaded, entries=None):
+def library_view(query, kind_filter, loaded, entries=None, limit=None):
     """The library for a search and a type filter: (the type filter's choices with per-type counts, the
-    results (label, key), the key of the entry the editor has open (None when the search or filter hides
-    it: it stays open, nothing else is chosen), the status line)."""
+    results (label, key) shown: the first ``limit`` (LIBRARY_LIMIT a page; more with *Show more*, and
+    always as far as the entry open in the editor), the key of the entry the editor has open (None when
+    the search or filter hides it: it stays open, nothing else is chosen), the status line)."""
+    return _library_view(query, kind_filter, loaded, entries, limit)[:4]
+
+
+def _library_view(query, kind_filter, loaded, entries=None, limit=None):
+    """library_view, with how many results are shown and how many there are."""
+    limit = max(LIBRARY_LIMIT, int(limit or LIBRARY_LIMIT))
     entries = entries if entries is not None else library_entries()
     kind_filter = kind_filter if kind_filter in (LIBRARY_ALL, *LIBRARY_KINDS) else LIBRARY_ALL
     matching = {kind: [e for e in entries.get(kind, []) if library_matches(e, query)] for kind in LIBRARY_KINDS}
@@ -3661,7 +3708,11 @@ def library_view(query, kind_filter, loaded, entries=None):
     results = [(library_label(kind, e), library_key(kind, e["name"])) for kind in shown_kinds for e in matching[kind]]
     loaded = loaded or {}
     current = library_key(loaded.get("kind"), loaded.get("entity")) if loaded.get("entity") else None
-    selected = current if current in [value for _, value in results[:LIBRARY_LIMIT]] else None
+    keys = [value for _, value in results]
+    if current in keys and keys.index(current) >= limit:  # the open entry is never cut off: a page more
+        limit = (keys.index(current) // LIBRARY_LIMIT + 1) * LIBRARY_LIMIT
+    shown = results[:limit]
+    selected = current if current in keys else None
     what = "entries" if kind_filter == LIBRARY_ALL else kind_filter
     if total == 0:
         status = "**The world has no entries yet.** Choose a content type below and press **New entry** to add one."
@@ -3675,24 +3726,41 @@ def library_view(query, kind_filter, loaded, entries=None):
         have = total if kind_filter == LIBRARY_ALL else len(entries.get(kind_filter, []))
         status = (f"**{len(results)}** of {have} {what} match “{str(query).strip()}”" if searching
                   else f"Showing all **{have}** {what}")
-        if len(results) > LIBRARY_LIMIT:
-            status += f" (the first {LIBRARY_LIMIT}: narrow the search)"
+        if len(results) > len(shown):
+            status += (f" — showing the first **{len(shown)}**: *Show {min(LIBRARY_LIMIT, len(results) - len(shown))} "
+                       "more*, or narrow the search")
         status += "."
     if current:
         name = f"**{loaded['entity']}** ({loaded['kind']})"
         status += (f"  \nOpen in the editor: {name}." if selected else
                    f"  \nOpen in the editor: {name}, hidden by the search or filter: it stays open, nothing else "
                    "was chosen.")
-    return filters, results[:LIBRARY_LIMIT], selected, status
+    return filters, shown, selected, status, len(shown), len(results)
 
 
 @ui
-def library_ui(query, kind_filter, loaded):
-    """Search or filter changed (or the world did): the library's filter, results and status. The entry
-    open in the editor never changes here. Returns (the type filter, the results, the status)."""
-    filters, results, selected, status = library_view(query, kind_filter, loaded)
+def library_ui(query, kind_filter, loaded, limit=None):
+    """The world changed (or ↻ Refresh): the library's filter, results and status, as many shown as before
+    (``limit``). The entry open in the editor never changes here. Returns (the type filter, the results,
+    the status, *Show more*, how many are shown)."""
+    filters, shown, selected, status, count, total = _library_view(query, kind_filter, loaded, limit=limit)
     kind_filter = kind_filter if kind_filter in (LIBRARY_ALL, *LIBRARY_KINDS) else LIBRARY_ALL
-    return gr.Radio(choices=filters, value=kind_filter), gr.Radio(choices=results, value=selected), status
+    left = total - count
+    more = gr.Button(value=f"Show {min(LIBRARY_LIMIT, left)} more ({left} not shown)", visible=left > 0)
+    return (gr.Radio(choices=filters, value=kind_filter), gr.Radio(choices=shown, value=selected), status, more,
+            max(count, LIBRARY_LIMIT))
+
+
+@ui
+def library_search_ui(query, kind_filter, loaded):
+    """A search or a type filter: the first page of what matches."""
+    return library_ui(query, kind_filter, loaded, LIBRARY_LIMIT)
+
+
+@ui
+def library_more_ui(query, kind_filter, loaded, limit):
+    """*Show more*: the next page of the results (those shown stay, the open entry stays marked)."""
+    return library_ui(query, kind_filter, loaded, int(limit or LIBRARY_LIMIT) + LIBRARY_LIMIT)
 
 
 @ui
@@ -3821,9 +3889,33 @@ def _error_text(exc):
     return html.escape(str(getattr(exc, "message", None) or exc))
 
 
+def _draft_body(dirty, kind, name, split):
+    """The entry draft (PUT /v1/entities/{kind}/{name}/draft) of the parts with unsaved changes, each as its
+    own save sends it: fields, action, policy (scheduling, or its YAML), details, entry_yaml, actions."""
+    body = {}
+    for part in dirty:
+        if part == "fields":
+            body["fields"] = _fields_body(kind, name, *split["fields"])
+        elif part == "action":
+            _, _, index, action = _action_body(split["action"][0], *split["action"][1:])
+            body["action"] = {"index": index, "action": action}
+        elif part == "scheduling":
+            body["policy"] = _policy_body(kind, *split["scheduling"])
+        elif part == "details":
+            body["details"] = _details_body(kind, name, *split["details"])
+        elif part == "entry_yaml":
+            body["entry_yaml"] = split["entry_yaml"][0]
+        elif part == "actions_yaml":
+            body["actions"] = split["actions_yaml"][0]
+        elif part == "policy_yaml":
+            body["policy"] = split["policy_yaml"][0]
+    return body
+
+
 def _save_draft(dirty, loaded, values):
-    """Save every part with unsaved changes, each with its own save; nothing when two of them edit the
-    same data. Returns (the entry as it is now, the parts saved); a failure raises DraftNotSaved."""
+    """Save every part with unsaved changes at once (PUT .../draft): the entry is checked whole and written
+    once, or not at all. Nothing is saved when two parts edit the same data. Returns (the entry as it is
+    now, the parts saved: all of them); a failure raises DraftNotSaved, nothing having been saved."""
     loaded = dict(loaded or {})
     conflict = next(((a, b) for a, b in DRAFT_CONFLICTS if a in dirty and b in dirty), None)
     if conflict:
@@ -3831,21 +3923,43 @@ def _save_draft(dirty, loaded, values):
                             "change the same data. Choose **Stay** and save the one to keep with its own button, or "
                             "**Discard** both.", (), loaded)
     kind, name = loaded.get("kind"), loaded.get("entity")
-    order = sorted(dirty, key=DRAFT_SAVE_ORDER.index)
-    if name is None and "fields" in order:  # a new entry exists once its fields are saved
-        order.remove("fields")
-        order.insert(0, "fields")
-    split, saved = _split_draft(values), []
-    for part in order:
-        try:
-            name, _ = _save_part(part, kind, name, split)
-        except gr.Error as exc:
-            done = f" ({', '.join(DRAFT_PARTS[p] for p in saved)} saved before it)" if saved else ""
-            raise DraftNotSaved(f"⚠ **{DRAFT_PARTS[part]} could not be saved**{done}: {_error_text(exc)}  \n"
-                                "Nothing was discarded: correct it and **Save** again, **Stay**, or **Discard**.",
-                                saved, {"kind": kind, "entity": name}) from exc
-        saved.append(part)
-    return {"kind": kind, "entity": name}, saved
+    order = [part for part in DRAFT_PARTS if part in dirty]
+    try:
+        body = _draft_body(order, kind, name, _split_draft(values))
+        if name is None and "fields" not in body:
+            raise gr.Error("A new entry is saved from its fields: give it a name first.")
+        target = name or body["fields"]["name"]
+        result = API.put(_path(f"/v1/entities/{kind}", target, "draft"), body, create=True if name is None else None)
+    except (gr.Error, APIError) as exc:
+        raise DraftNotSaved(f"⚠ **Nothing was saved** ({', '.join(DRAFT_PARTS[p] for p in order)}): "
+                            f"{_error_text(exc)}  \nNothing was discarded: correct it and **Save** again, **Stay**, "
+                            "or **Discard**.", (), loaded) from exc
+    return {"kind": kind, "entity": result["name"]}, order
+
+
+@ui
+def save_changes_ui(loaded, base, *values):
+    """💾 Save changes: every section with unsaved changes saved at once, checked whole (an invalid action,
+    condition, field, ...: nothing is saved, the draft stays, every problem is named), then the whole entry
+    reloaded as stored, so the forms and the YAML show the same entry. Returns (the entry editor, the
+    message, the parts to capture)."""
+    loaded = dict(loaded or {})
+    dirty = unsaved_parts(base, *values)
+    if not dirty:
+        return (*_entry_update(), "✓ No unsaved changes: every section is saved.", [])
+    try:
+        now, saved = _save_draft(dirty, loaded, values)
+    except DraftNotSaved as failure:
+        return (*_entry_update(), failure.message, [])
+    kind, name = now["kind"], now["entity"]
+    index = (_split_draft(values)["action"][0] or {}).get("index")
+    actions = _action_choices(kind, name)
+    index = index if index in [value for _, value in actions] else None
+    entry = _entry_update(selection=(gr.update(value=kind), gr.Dropdown(choices=_entity_names(kind), value=name)),
+                          loaded=(now,), **{part: _part_load(part, kind, name, index if part == "action" else None)
+                                            for part in DRAFT_PARTS})
+    return (*entry, f"✓ Saved **{name}** at once: {', '.join(DRAFT_PARTS[p] for p in saved)}. Every section now "
+                    "shows the entry as stored.", list(DRAFT_PARTS))
 
 
 @ui
@@ -5101,12 +5215,21 @@ def build_app():
                             library_status = gr.Markdown(library_said, elem_id="library-status")
                             library_results = gr.Radio(library_found, value=library_selected, label="Entries",
                                                        elem_id="library-results", elem_classes="library-results")
+                            library_total = sum(len(e) for e in library_entries().values())
+                            library_more = gr.Button(f"Show {min(LIBRARY_LIMIT, library_total - len(library_found))} more",
+                                                     visible=library_total > len(library_found), size="sm",
+                                                     elem_id="library-more")
+                            library_shown = gr.State(LIBRARY_LIMIT)  # how many results are listed (a page more each time)
                         with gr.Row():
                             kind = gr.Radio(REFERENCE["entity_kinds"], value="Locations", label="Content type")
                             entity = gr.Dropdown(label="Entry", choices=names, value=selected_name)
                             add_entry = gr.Button("New entry")
                         # The draft: compared with what was last loaded or saved (draft_base, part by part).
                         draft_status = gr.HTML(draft_status_markup([], None), elem_id="draft-status")
+                        with gr.Row(equal_height=True, elem_classes="entry-save-row"):
+                            save_changes = gr.Button("💾 Save changes", variant="primary", scale=0, min_width=180,
+                                                     elem_id="entry-save-changes")
+                            save_changes_status = gr.Markdown(elem_id="entry-save-changes-status")
                         draft_base = gr.State({})
                         draft_loaded = gr.State({"kind": "Locations", "entity": selected_name})  # what the forms show
                         draft_pending = gr.State(None)  # where the user was going when asked
@@ -5654,12 +5777,16 @@ def build_app():
                 # The library: a search, a filter or a change in the world (a load, save, rename, delete, undo:
                 # every one sets the draft's baseline) lists it again; choosing an entry opens it, guarded.
                 library_inputs = [library_search, library_filter, draft_loaded]
-                library_outputs = [library_filter, library_results, library_status]
-                gr.on([library_search.input, library_filter.input, library_refresh.click, draft_base.change,
-                       draft_loaded.change, section_entries.select], library_ui, library_inputs, library_outputs,
+                library_outputs = [library_filter, library_results, library_status, library_more, library_shown]
+                gr.on([library_search.input, library_filter.input], library_search_ui, library_inputs, library_outputs,
                       trigger_mode="always_last", show_progress="hidden")
+                gr.on([library_refresh.click, draft_base.change, draft_loaded.change, section_entries.select],
+                      library_ui, [*library_inputs, library_shown], library_outputs, trigger_mode="always_last",
+                      show_progress="hidden")
+                library_more.click(library_more_ui, [*library_inputs, library_shown], library_outputs,
+                                   show_progress="hidden")
                 library_results.input(*tracked(library_choice_ui, [library_results, *guard_inputs], draft_outputs)).then(
-                    library_ui, library_inputs, library_outputs, show_progress="hidden")
+                    library_ui, [*library_inputs, library_shown], library_outputs, show_progress="hidden")
                 entity.input(*tracked(entry_choice_ui, [kind, entity, *guard_inputs], draft_outputs))
                 add_entry.click(*tracked(new_entry_choice_ui, guard_inputs, draft_outputs))
                 act_pick.input(*tracked(action_choice_ui, [act_pick, *guard_inputs], draft_outputs))
@@ -5667,6 +5794,10 @@ def build_app():
                 for button, choice in ((draft_save, "save"), (draft_discard, "discard"), (draft_stay, "stay")):
                     button.click(*tracked(lambda pending, *rest, choice=choice: resolve_draft_ui(choice, pending, *rest),
                                           [draft_pending, *guard_inputs], draft_outputs))
+                # 💾 Save changes: every section with unsaved changes, checked whole and written at once (or
+                # not at all), then the whole entry reloaded as stored.
+                save_changes.click(*tracked(save_changes_ui, guard_inputs,
+                                            [*entry_outputs, save_changes_status, draft_capture]))
                 # Each form's own save: that part (a failure changes nothing), then reloaded as stored.
                 for button, part, said in ((save_entry, "fields", editor_status), (act_save, "action", actions_status),
                                            (save_policy_form, "scheduling", policy_status),
