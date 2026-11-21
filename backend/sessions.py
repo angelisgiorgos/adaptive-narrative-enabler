@@ -1408,6 +1408,33 @@ def _now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
 
+# Jobs a user may cancel (POST /v1/jobs/{id}/cancel); others (a world proposal, an import) run to the end.
+CANCELLABLE_JOBS = ("simulation", "continue", "retrain", "judge-benchmark", "calibrate-fitness")
+ACTIVE_JOB_STATES = ("queued", "running", "cancel_requested")  # they hold or wait for the one worker
+_CANCEL_FLAGS: dict = {}  # job id -> threading.Event, set when its cancellation is requested
+
+
+class JobCancelled(Exception):
+    """Raised inside a running job at a safe point, after its cancellation was requested."""
+
+    cancelled = True  # records.finish_run records the run as cancelled, not failed
+
+
+def _cancel_check(flag):
+    def check():
+        if flag.is_set():
+            raise JobCancelled("Cancelled at the user's request.")
+    return check
+
+
+def check_cancelled(progress):
+    """At a safe point of a job's work: stop it (JobCancelled) if its cancellation was requested.
+    ``progress``: the job's progress callback (None, or one without a check: never cancelled)."""
+    check = getattr(progress, "check", None)
+    if check is not None:
+        check()
+
+
 def submit_job(kind: str, work, description: str = "", meta: dict | None = None, request=None) -> dict:
     """Queue ``work(progress)``; ``progress(generation, total, stats)`` records how far
     it got and ``work`` returns the job's result (JSON data). ``meta``: more fields of the job
@@ -1419,21 +1446,28 @@ def submit_job(kind: str, work, description: str = "", meta: dict | None = None,
         key = hashlib.sha256(json.dumps([kind, request], sort_keys=True, default=str).encode()).hexdigest()[:16]
         with _JOBS_LOCK:
             same = next((j for j in JOBS.values() if j.get("request_key") == key
-                         and j["status"] in ("queued", "running")), None)
+                         and j["status"] in ("queued", "running")), None)  # not one being cancelled
         if same is not None:
             return {**get_job(same["id"]), "reused": True}
     job = {"id": uuid.uuid4().hex, "kind": kind, "description": description, "status": "queued",
            "created_at": _now(), "started_at": None, "finished_at": None, "progress": None,
-           "result": None, "error": None, "request_key": key, **(meta or {})}
+           "result": None, "error": None, "request_key": key, "cancel_requested_at": None, "partial": None,
+           **(meta or {})}
+    flag = threading.Event()
     with _JOBS_LOCK:
         JOBS[job["id"]] = job
+        _CANCEL_FLAGS[job["id"]] = flag
         while len(JOBS) > MAX_JOBS:
             oldest = next(iter(JOBS))
-            if JOBS[oldest]["status"] in ("queued", "running"):
+            if JOBS[oldest]["status"] in ACTIVE_JOB_STATES:
                 break
             JOBS.pop(oldest)
+            _CANCEL_FLAGS.pop(oldest, None)
 
     def progress(generation, total, stats):
+        """The work's progress, reported at its safe points (a generation done, a story judged): there,
+        a requested cancellation stops it (JobCancelled), before the progress is recorded."""
+        check()
         with _JOBS_LOCK:
             if isinstance(stats, str):  # a job counting its own steps (stories judged): step n of total
                 job["progress"] = {"generation": generation, "total": total, "label": stats}
@@ -1441,13 +1475,26 @@ def submit_job(kind: str, work, description: str = "", meta: dict | None = None,
             job["progress"] = {"generation": generation + 1, "total": total, "label": "generation", "best": stats.best,
                                "mean": stats.mean, "validation": stats.validation, "improved": bool(stats.improved)}
 
+    check = _cancel_check(flag)
+    progress.check = check  # work may also check between its own safe points (check_cancelled)
+
     def run():
         with _JOBS_LOCK:
+            if job["status"] == "cancelled":  # cancelled while queued: it never starts
+                return
             job.update(status="running", started_at=_now())
         try:
             result = work(progress)
             with _JOBS_LOCK:
+                # A cancellation asked for after the work's last safe point comes too late: the work is
+                # complete, so it is finished, with its result, and says so.
+                late = job["status"] == "cancel_requested"
                 job.update(status="finished", result=result)
+                if late:
+                    job["cancel_note"] = "Its cancellation came after its work had completed: the result is kept."
+        except JobCancelled:
+            with _JOBS_LOCK:
+                job.update(status="cancelled", partial=_partial(job))
         except Exception as exc:  # noqa: BLE001 - reported to the client as the job's error
             with _JOBS_LOCK:
                 job.update(status="failed", error=getattr(exc, "detail", None) or getattr(exc, "message", None) or str(exc))
@@ -1459,6 +1506,50 @@ def submit_job(kind: str, work, description: str = "", meta: dict | None = None,
     return {**get_job(job["id"]), "reused": False}
 
 
+def _partial(job) -> dict:
+    """What a job cancelled while running had done: its last progress and what is kept of it (nothing is
+    labelled finished: a training cancelled makes no engine, an evaluation cancelled keeps no result)."""
+    progress = copy.deepcopy(job.get("progress")) or {}
+    done, total = progress.get("generation"), progress.get("total")
+    if job["kind"] in ("simulation", "continue", "retrain"):
+        note = (f"Stopped after generation {done} of {total} (a generation is the safe point: the one being played "
+                "is finished first). No engine was made and nothing is kept as a result; the run is recorded as "
+                "cancelled." if done else "Stopped before its first generation was done: nothing is kept.")
+    else:
+        note = (f"Stopped after {done} of {total} {progress.get('label') or 'steps'} (a story judged is the safe "
+                "point). The judgements so far are not kept as a result: a part of a benchmark would mislead."
+                if done else "Stopped before any story was judged: nothing is kept.")
+    return {"progress": progress or None, "note": note}
+
+
+def cancel_job(job_id: str) -> dict:
+    """Ask a job to stop. Queued: cancelled at once (it never starts). Running: ``cancel_requested``; it
+    stops at its next safe point (a generation done, a story judged) and is then ``cancelled``. Already
+    ended (finished, failed, cancelled): unchanged. LookupError: no such job; ValueError: a job of a kind
+    that cannot be cancelled. Returns the job (without its result), with ``message``."""
+    with _JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if job is None:
+            raise LookupError(f"No job `{job_id}`: the API keeps the latest {MAX_JOBS}, in memory only.")
+        if job["kind"] not in CANCELLABLE_JOBS:
+            raise ValueError(f"A {job['kind']} job cannot be cancelled; only {', '.join(CANCELLABLE_JOBS)} jobs can.")
+        status = job["status"]
+        if status == "queued":
+            job.update(status="cancelled", finished_at=_now(), cancel_requested_at=_now(),
+                       partial={"progress": None, "note": "Cancelled before it started: nothing ran."})
+            message = "Cancelled before it started: nothing ran."
+        elif status == "running":
+            job.update(status="cancel_requested", cancel_requested_at=_now())
+            _CANCEL_FLAGS[job_id].set()
+            message = "Cancellation requested: it stops at its next safe point (a generation done, a story judged)."
+        elif status == "cancel_requested":
+            message = "Its cancellation was already requested: it stops at its next safe point."
+        else:
+            message = f"It had already {'been cancelled' if status == 'cancelled' else status}: nothing to cancel."
+        return {**{k: v for k, v in job.items() if k != "result"}, "queue_ahead": _queue_ahead(job),
+                "message": message}
+
+
 def _queue_ahead(job) -> int | None:
     """How many jobs run before a queued one (jobs run one at a time, in the order they came: those
     queued or running before it); None once it runs or ended. Call with _JOBS_LOCK held."""
@@ -1468,7 +1559,7 @@ def _queue_ahead(job) -> int | None:
     for other in JOBS.values():
         if other is job:
             return ahead
-        ahead += other["status"] in ("queued", "running")
+        ahead += other["status"] in ACTIVE_JOB_STATES
     return ahead
 
 
@@ -1479,11 +1570,16 @@ def get_job(job_id: str) -> dict | None:
     result, error, ...}."""
     with _JOBS_LOCK:
         job = JOBS.get(job_id)
-        return {**copy.deepcopy(job), "queue_ahead": _queue_ahead(job)} if job is not None else None
+        if job is None:
+            return None
+        return {**copy.deepcopy(job), "queue_ahead": _queue_ahead(job),
+                "cancellable": job["kind"] in CANCELLABLE_JOBS and job["status"] in ("queued", "running")}
 
 
 def list_jobs() -> list[dict]:
     """The kept jobs, newest first, without their results (each with ``queue_ahead``)."""
     with _JOBS_LOCK:
         return [{**{k: v for k, v in job.items() if k != "result"}, "queue_ahead": _queue_ahead(job),
-                 "has_result": job.get("result") is not None} for job in reversed(JOBS.values())]
+                 "has_result": job.get("result") is not None,
+                 "cancellable": job["kind"] in CANCELLABLE_JOBS and job["status"] in ("queued", "running")}
+                for job in reversed(JOBS.values())]

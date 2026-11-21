@@ -186,6 +186,13 @@ def compare(a, b, judge=None):
     return {key: result.get(key) for key in ("winner", "criteria", "reason", "agreed")}
 
 
+def _check(progress):
+    """A safe point of an evaluation job: stop it there if its cancellation was requested."""
+    from backend.sessions import check_cancelled
+
+    check_cancelled(progress)
+
+
 def _progress_step(progress, total):
     done = {"count": 0}
 
@@ -212,11 +219,15 @@ def benchmark(stories=10, seed=0, engine_id=None, variants=None, pairwise=False,
         if not variants:
             raise EvaluationError("A pairwise benchmark needs the settings of version B (`variants`).")
         budget = _pair_budget()
+        _check(progress)
         played_a = play_stories(stories, seed, engine_id, None, budget)
+        _check(progress)
         played_b = play_stories(stories, seed, engine_id, variants, budget)
+        _check(progress)
         step = _progress_step(progress, len(played_a))
 
         def one(pair):
+            _check(progress)
             result = judge.compare_digests(pair[0]["digest"], pair[1]["digest"])
             step("pairs judged")
             return result
@@ -232,10 +243,13 @@ def benchmark(stories=10, seed=0, engine_id=None, variants=None, pairwise=False,
                 "a": {"label": f"{target['label']}, as it is", "variants": {}},
                 "b": {"label": f"{target['label']}, with version B's settings", "variants": dict(variants)}}
 
+    _check(progress)
     played = play_stories(stories, seed, engine_id, variants)
+    _check(progress)  # a safe point: the stories are played, none judged yet
     step = _progress_step(progress, len(played))
 
     def judge_one(story):
+        _check(progress)  # a safe point: before each judgement
         result = judge.judge_digest(story["digest"])
         step("stories judged")
         return result
@@ -267,10 +281,13 @@ def calibrate(stories=30, seed=0, engine_id=None, alpha=None, apply=False, worke
         raise EvaluationError("Calibrating needs at least 10 judged stories.")
     judge = judge or _judge()
     target = describe_target(engine_id)
+    _check(progress)
     played = play_stories(stories, seed, engine_id)
+    _check(progress)
     step = _progress_step(progress, len(played))
 
     def judge_one(story):
+        _check(progress)
         result = judge.judge_digest(story["digest"])
         step("stories judged")
         return result

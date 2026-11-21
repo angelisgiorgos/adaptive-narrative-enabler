@@ -2069,7 +2069,8 @@ def add_to_world(body: WorldAdditions):
 def _job_or_404(job_id):
     job = sessions.get_job(job_id)
     if job is None:
-        raise HTTPException(status_code=404, detail="Job not found.")
+        raise HTTPException(status_code=404, detail="Job not found: the API keeps its jobs in memory (the latest "
+                            f"{sessions.MAX_JOBS}); an API restart loses them.")
     return job
 
 
@@ -2300,12 +2301,31 @@ def list_jobs():
 
 @api.get("/v1/jobs/{job_id}", tags=["Jobs"])
 def get_job(job_id: str):
-    """status (queued, running, finished, failed), progress (generation, total, label: what is counted
+    """status (queued, running, cancel_requested, cancelled, finished, failed), progress (generation, total,
+    label: what is counted
     (generation, stories judged, ...), best, mean, validation), queue_ahead (a queued job: how many
     jobs run before it; jobs run one at a time, in the order they came), and the result (as the
     synchronous endpoint returns it) or the error. A submission identical to a job still queued or
     running returns that job (``reused``: true) instead of queuing it again."""
     return _job_or_404(job_id)
+
+
+@api.post("/v1/jobs/{job_id}/cancel", tags=["Jobs"])
+def cancel_job(job_id: str):
+    """Cancel a training or evaluation job (simulation, continue, retrain, judge-benchmark,
+    calibrate-fitness). Queued: ``cancelled`` at once, and it never starts. Running:
+    ``cancel_requested``; the work stops at its next safe point (a training: the end of the generation
+    being played; an evaluation: before the next story is judged) and becomes ``cancelled``, with
+    ``partial`` (its last progress and what is kept of it: no engine, no result; never ``finished``).
+    If the work completes before reaching a safe point, it is ``finished`` with its result and a
+    ``cancel_note``. An ended job is unchanged. Returns the job (without its result) and ``message``;
+    404: no such job (kept in memory only: an API restart loses them); 409: a job of another kind."""
+    try:
+        return sessions.cancel_job(job_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @api.get("/v1/artifacts/{artifact_id}", tags=["Artifacts"])

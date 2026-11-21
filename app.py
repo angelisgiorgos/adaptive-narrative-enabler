@@ -71,6 +71,15 @@ class APIError(Exception):
         self.status = status
 
 
+class JobCancelledError(APIError):
+    """A job that was cancelled (POST /v1/jobs/{id}/cancel): what it had done is in ``partial``."""
+
+    def __init__(self, job):
+        partial = job.get("partial") or {}
+        super().__init__(f"The job was cancelled. {partial.get('note') or ''}".strip(), None)
+        self.job = job
+
+
 class StudioAPI:
     def __init__(self, base_url=None, timeout=900):
         base_url = base_url if base_url is not None else os.environ.get("ANE_API_URL", "").strip()
@@ -151,16 +160,31 @@ class StudioAPI:
         target.write_bytes(response.content)
         return str(target)
 
-    def wait(self, job, on_progress=None, interval=0.5):
-        """Poll a job (POST /v1/jobs/...) until it ends; returns its result or raises its error."""
+    def wait(self, job, on_progress=None, interval=0.5, patience=60):
+        """Poll a job (POST /v1/jobs/...) until it ends: its result when finished; APIError when it failed
+        (or is no longer known: 404); JobCancelledError when it was cancelled (cancel_requested goes on
+        until it stops). A lost connection to the API is tried again for ``patience`` seconds."""
+        lost = None
         while True:
-            job = self.get(f"/v1/jobs/{job['id']}")
+            try:
+                job = self.get(f"/v1/jobs/{job['id']}")
+                lost = None
+            except APIError as exc:
+                if exc.status is not None:  # the API answered: e.g. 404, the job is gone
+                    raise
+                lost = lost or time.monotonic()
+                if time.monotonic() - lost > patience:
+                    raise
+                time.sleep(max(interval, 1.0))
+                continue
             if on_progress is not None and job.get("progress"):
                 on_progress(job["progress"])
             if job["status"] == "finished":
                 return job["result"]
             if job["status"] == "failed":
                 raise APIError(job["error"] or "The job failed.")
+            if job["status"] == "cancelled":
+                raise JobCancelledError(job)
             time.sleep(interval)
 
 
@@ -1578,7 +1602,9 @@ def _job_progress(progress, label="Generation"):
 
 TRAIN_JOBS = {"simulation": "🧠 Run", "continue": "🧠 Training continued", "retrain": "🧠 Retrained"}
 EVALUATE_JOBS = {"judge-benchmark": "⚖ Judge benchmark", "calibrate-fitness": "⚖ Fitness calibration"}
-JOB_STATES = {"queued": "⏳ queued", "running": "▶ running", "finished": "✅ finished", "failed": "❌ failed"}
+JOB_STATES = {"queued": "⏳ queued", "running": "▶ running", "cancel_requested": "⏸ cancellation requested (it stops "
+              "at its next safe point)", "cancelled": "🚫 cancelled", "finished": "✅ finished", "failed": "❌ failed"}
+ACTIVE_STATES = ("queued", "running", "cancel_requested")
 JOB_HINTS = (  # (what the error says, what to do), first match
     (r"judge|vllm|language model|gemma", "The judge (the language model) is not available or failed: check it with "
                                          "*Check the judge again* in ⚖ Evaluate; its settings are `vllm` in ⚙ Advanced → "
@@ -1616,7 +1642,7 @@ def job_failure_hint(error):
     return "Correct what the error names, then submit again: the form keeps its settings."
 
 
-def job_line(job, now=None):
+def job_line(job, now=None, mine=None):
     """One job as the panel shows it: its kind, state, description; where it is (queued: how many jobs run
     first; running: its progress, counted as the job counts it, and the scores so far); how long it has
     queued, run or took; a failure's error with what to do."""
@@ -1626,7 +1652,8 @@ def job_line(job, now=None):
     name = {**TRAIN_JOBS, **EVALUATE_JOBS}.get(job.get("kind"), job.get("kind"))
     state = JOB_STATES.get(job.get("status"), job.get("status"))
     created, started, finished = (_parse_time(job.get(k)) for k in ("created_at", "started_at", "finished_at"))
-    parts = [f"**{name}** · {state} · {job.get('description') or ''} · `{str(job.get('id'))[:8]}`"]
+    parts = [f"**{name}** · {state} · {job.get('description') or ''} · `{str(job.get('id'))[:8]}`"
+             + (" · **yours (this browser)**" if mine and job.get("id") == mine else "")]
     progress = job.get("progress") or {}
     if job.get("status") == "queued":
         ahead = job.get("queue_ahead")
@@ -1641,52 +1668,76 @@ def job_line(job, now=None):
                   if isinstance(progress.get(key), (int, float))]
         parts.append(line + (" · " + " · ".join(scores) if scores else "")
                      + (" · improved" if progress.get("improved") else ""))
-    if job.get("status") == "running" and started:
+    if job.get("status") in ("running", "cancel_requested") and started:
         parts.append(f"running for {_duration((now - started).total_seconds())}")
-    elif job.get("status") in ("finished", "failed") and started and finished:
+    elif job.get("status") in ("finished", "failed", "cancelled") and started and finished:
         parts.append(f"took {_duration((finished - started).total_seconds())}")
+    if job.get("status") == "cancelled":
+        parts.append(f"**Nothing kept:** {(job.get('partial') or {}).get('note') or 'it was cancelled.'}")
+    if job.get("cancel_note"):
+        parts.append(job["cancel_note"])
     if job.get("status") == "failed":
         parts.append(f"**Error:** {job.get('error') or 'no message'}  \n**What to do:** {job_failure_hint(job.get('error'))}")
     return "  \n".join(parts)
 
 
-def jobs_panel(jobs, kinds, now=None, recent=5):
-    """(the panel's text, whether a job of these kinds is still queued or running, the finished jobs with a
-    result to open: (label, id))."""
+def jobs_panel(jobs, kinds, now=None, recent=5, yours=None):
+    """(the panel's text, whether a job of these kinds is still queued, running or stopping, the finished
+    jobs with a result to open: (label, id), the jobs that can be cancelled: (label, id)). ``yours``: the
+    id of the job this browser submitted (marked; no other job is followed by this browser)."""
     mine = [job for job in jobs if job.get("kind") in kinds]
-    active = [job for job in mine if job.get("status") in ("queued", "running")]
-    done = [job for job in mine if job.get("status") in ("finished", "failed")][:recent]
-    others = [job for job in jobs if job.get("kind") not in kinds and job.get("status") in ("queued", "running")]
+    active = [job for job in mine if job.get("status") in ACTIVE_STATES]
+    done = [job for job in mine if job.get("status") in ("finished", "failed", "cancelled")][:recent]
+    others = [job for job in jobs if job.get("kind") not in kinds and job.get("status") in ACTIVE_STATES]
     lines = []
     if active:
-        lines += ["#### Now"] + [f"- {job_line(job, now)}" for job in active]
+        lines += ["#### Now"] + [f"- {job_line(job, now, yours)}" for job in active]
     if others:
         lines.append(f"*{len(others)} other job(s) of the studio queued or running (one runs at a time): "
                      + ", ".join(sorted({str(job.get('kind')) for job in others})) + ".*")
     if done:
-        lines += ["#### Recent"] + [f"- {job_line(job, now)}" for job in done]
+        lines += ["#### Recent"] + [f"- {job_line(job, now, yours)}" for job in done]
     if not lines:
         lines = ["*No job yet: a run (or an evaluation) shows here while it is queued and runs, then its result.*"]
     names = {**TRAIN_JOBS, **EVALUATE_JOBS}
     results = [(f"{names.get(job['kind'], job['kind'])} · {job.get('description') or ''} · "
                 f"{str(job.get('finished_at') or '')[11:16]} UTC · {job['id'][:8]}", job["id"])
                for job in done if job.get("status") == "finished" and job.get("has_result", True)]
-    return "\n".join(lines), bool(active), results
+    cancellable = [(f"{names.get(job['kind'], job['kind'])} · {JOB_STATES[job['status']].split(' (')[0]} · "
+                    f"{job.get('description') or ''} · {job['id'][:8]}", job["id"])
+                   for job in active if job.get("cancellable", job.get("status") in ("queued", "running"))]
+    return "\n".join(lines), bool(active), results, cancellable
+
+
+JOBS_POLL_ACTIVE, JOBS_POLL_IDLE = 2.0, 10.0  # seconds between the job panel's refreshes: a job of its own active, or not
+
+
+def jobs_poll(active):
+    """The panel's timer: never off, so a refresh computed before a job existed (the page still loading
+    when the job was submitted) slows the next one down instead of stopping the polling; quick while one
+    of its jobs is queued, running or stopping."""
+    return gr.Timer(JOBS_POLL_ACTIVE if active else JOBS_POLL_IDLE, active=True)
 
 
 @ui
-def jobs_panel_ui(kinds_key, chosen=None):
-    """The panel's refresh (on a timer while a job runs): its text, the timer (on only while one of its jobs
-    is queued or running), the finished jobs to open (the chosen one kept)."""
+def jobs_panel_ui(kinds_key, chosen=None, yours=None, to_cancel=None):
+    """The panel's refresh (on its timer): its text, the timer (quick while one of its jobs is queued,
+    running or stopping, slow otherwise: jobs_poll), the finished jobs to open and the jobs that can be
+    cancelled (the chosen ones kept; this browser's job first to cancel). ``yours``: what this browser
+    keeps of its job."""
     kinds = TRAIN_JOBS if kinds_key == "train" else EVALUATE_JOBS
+    mine = (yours or {}).get("id") if isinstance(yours, dict) else yours
     try:
         jobs = API.get("/v1/jobs")["jobs"]
     except APIError as exc:
-        return f"⚠ The jobs could not be read: {exc}", gr.Timer(active=False), gr.skip()
-    text, active, results = jobs_panel(jobs, kinds)
+        return f"⚠ The jobs could not be read: {exc}", jobs_poll(False), gr.skip(), gr.skip()
+    text, active, results, cancellable = jobs_panel(jobs, kinds, yours=mine)
     ids = [value for _, value in results]
-    return (text, gr.Timer(active=active),
-            gr.Dropdown(choices=results, value=chosen if chosen in ids else (ids[0] if ids else None)))
+    cancel_ids = [value for _, value in cancellable]
+    pick = to_cancel if to_cancel in cancel_ids else (mine if mine in cancel_ids else (cancel_ids[0] if cancel_ids else None))
+    return (text, jobs_poll(active),
+            gr.Dropdown(choices=results, value=chosen if chosen in ids else (ids[0] if ids else None)),
+            gr.Dropdown(choices=cancellable, value=pick))
 
 
 @ui
@@ -1718,16 +1769,150 @@ def open_evaluate_job_ui(job_id):
     return (gr.skip(), gr.skip(), *calibration_view(job["result"]))
 
 
+# ---- a job kept in this browser (BrowserState): submitted, then followed; after a reload, followed again ----
+
+JOB_GONE = ("Your {what} job `{id}` is no longer known to the API: the API restarted (it keeps its jobs in memory "
+            "only: a restart loses them, queued, running or finished) or the job was dropped (the latest "
+            "{keep} are kept). {after}")
+
+
+def _job_ref(job, kind, **extra):
+    """What this browser keeps of a job it submitted: its id and what its result needs to be shown."""
+    return {"id": job["id"], "kind": kind, "reused": bool(job.get("reused")), **extra}
+
+
+def _job_outcome(ref, what, after_gone, exc):
+    """The message of a job that ended without a result: cancelled, failed, or no longer known."""
+    if isinstance(exc, JobCancelledError):
+        partial = exc.job.get("partial") or {}
+        return f"### 🚫 Cancelled\nYour {what} job `{ref['id'][:8]}` was cancelled. {partial.get('note') or ''}"
+    if exc.status == 404:
+        return "### ⚠ Job lost\n" + JOB_GONE.format(what=what, id=ref["id"][:8], keep=100, after=after_gone)
+    return (f"### ❌ Failed\nYour {what} job `{ref['id'][:8]}` failed: {exc}  \n**What to do:** "
+            f"{job_failure_hint(str(exc))}")
+
+
+@ui
+def submit_run_ui(use_population, population, use_generations, generations, use_episodes, episodes, use_steps, steps,
+                  reproducibility, use_seed, seed, warm_start, shown=None):
+    """🧠 Evolve storytellers: the job is submitted and kept in this browser (its result follows:
+    follow_training_ui). An identical run still queued or running is followed instead of a second one."""
+    controls = (use_population, population, use_generations, generations, use_episodes, episodes, use_steps, steps,
+                reproducibility, use_seed, seed, warm_start)
+    return _job_ref(API.post("/v1/jobs/simulations", {**_run_overrides(*controls), **TRAIN_ONLY}), "run", shown=shown)
+
+
+@ui
+def submit_continue_ui(engine_id, more_generations):
+    if not engine_id:
+        raise gr.Error("Choose a recorded engine first.")
+    job = API.post(_path("/v1/jobs/engines", engine_id, "continue"), {"generations": int(more_generations), **TRAIN_ONLY})
+    return _job_ref(job, "continue")
+
+
+@ui
+def submit_retrain_ui(engine_id, more_generations, *controls_and_shown):
+    controls, shown = controls_and_shown[:len(RUN_CONTROLS)], (controls_and_shown[len(RUN_CONTROLS):] or [None])[0]
+    if not engine_id:
+        raise gr.Error("Choose a recorded engine first.")
+    job = API.post(_path("/v1/jobs/engines", engine_id, "retrain"),
+                   {**_retrain_overrides(more_generations, *controls), **TRAIN_ONLY})
+    return _job_ref(job, "retrain", shown=shown)
+
+
+TRAINING_FOLLOW_OUTPUTS = 13  # the report, 2 files, the curve, the traits, the memory, the run, its generations,
+                              # the completed engine, its card and its 3 actions
+
+
+@ui
+def follow_training_ui(ref, progress=gr.Progress()):
+    """The training this browser submitted (kept across a reload or a lost connection), followed through
+    GET /v1/jobs/{id} until it ends (never a new job): its result shown as a run, a continued or a retrained
+    engine; or why there is none (cancelled, failed, no longer known to the API). Returns the training's
+    outputs, then what this browser keeps (nothing once it has ended)."""
+    skip = gr.skip()
+    if not ref or not ref.get("id"):
+        return (*[skip] * TRAINING_FOLLOW_OUTPUTS, skip)
+    try:
+        result = API.wait({"id": ref["id"]}, _job_progress(progress))
+    except APIError as exc:
+        message = _job_outcome(ref, "training", "If it had finished, its engine is in 🧠 Train → 🏷 Finished engines; "
+                               "otherwise submit it again.", exc)
+        return (message, *[skip] * (TRAINING_FOLLOW_OUTPUTS - 1), None)
+    report, *outputs = _training_outputs(result)
+    kind = ref.get("kind") or "run"
+    check = executed_markdown(result.get("training"), ref.get("shown")) if kind in ("run", "retrain") else ""
+    return (report, *outputs[:4], learning_memory_text(), *outputs[4:], *_training_done(result, kind, check), None)
+
+
+@ui
+def submit_benchmark_ui(stories, seed, engine_id, pairwise, variants_text, workers, target=None):
+    """Play and judge: the job is submitted and kept in this browser (follow_evaluation_ui)."""
+    engine_id = evaluation_engine_id(target, engine_id) if target else (engine_id or None)
+    variants = _variants(variants_text) if pairwise else {}
+    if pairwise and not variants:
+        raise gr.Error("A/B needs version B's settings (at least one dotted.path: value), or untick A/B.")
+    job = API.post("/v1/jobs/judge-benchmark", {
+        "stories": int(stories), "seed": int(seed or 0), "engine_id": engine_id, "pairwise": bool(pairwise),
+        "variants": variants, "workers": int(workers)})
+    return _job_ref(job, "judge-benchmark", engine_id=engine_id)
+
+
+@ui
+def submit_calibration_ui(stories, seed, engine_id, apply, target=None):
+    engine_id = evaluation_engine_id(target, engine_id) if target else (engine_id or None)
+    job = API.post("/v1/jobs/calibrate-fitness", {"stories": int(stories), "seed": int(seed or 0),
+                                                  "engine_id": engine_id, "apply": bool(apply)})
+    return _job_ref(job, "calibrate-fitness", engine_id=engine_id)
+
+
+@ui
+def follow_evaluation_ui(ref, progress=gr.Progress()):
+    """The evaluation this browser submitted, followed until it ends (never a new job): a benchmark's
+    summary and table, or a calibration's summary and weights; or why there is none. Returns (benchmark
+    summary, its table, calibration summary, the weights, what this browser keeps)."""
+    skip = gr.skip()
+    if not ref or not ref.get("id"):
+        return skip, skip, skip, skip, skip
+    benchmark = ref.get("kind") == "judge-benchmark"
+    try:
+        result = API.wait({"id": ref["id"]}, _job_progress(progress, "Judged"))
+    except APIError as exc:
+        message = _job_outcome(ref, "evaluation", "Submit it again.", exc)
+        return (message, skip, skip, skip, None) if benchmark else (skip, skip, message, skip, None)
+    if benchmark:
+        return (*benchmark_view(result, ref.get("engine_id")), skip, skip, None)
+    return (skip, skip, *calibration_view(result, ref.get("engine_id")), None)
+
+
+@ui
+def cancel_job_ui(job_id):
+    """🚫 Cancel: a queued job never starts; a running one stops at its next safe point."""
+    if not job_id:
+        raise gr.Error("Choose a queued or running job to cancel.")
+    result = API.post(_path("/v1/jobs", job_id, "cancel"))
+    return f"{result['message']} (`{job_id[:8]}`)"
+
+
 def jobs_panel_block(kinds_key, title):
     """The active-job panel (its components), polled by a timer while a job is queued or running."""
     with gr.Accordion(title, open=True, elem_id=f"{kinds_key}-jobs"):
         text = gr.Markdown(elem_id=f"{kinds_key}-jobs-text")
         with gr.Row(equal_height=True):
-            finished = gr.Dropdown([], label="A finished job", scale=4, elem_id=f"{kinds_key}-jobs-finished")
+            # allow_custom_value: a job chosen before the list changed (it ended, or left the latest kept) is
+            # not refused by the dropdown before the panel's refresh replaces it.
+            finished = gr.Dropdown([], label="A finished job", scale=4, allow_custom_value=True,
+                                   elem_id=f"{kinds_key}-jobs-finished")
             open_button = gr.Button("Open its result", scale=1, elem_id=f"{kinds_key}-jobs-open")
             refresh = gr.Button("↻", scale=0, min_width=48, elem_id=f"{kinds_key}-jobs-refresh")
-        timer = gr.Timer(2.0, active=False)
-    return {"text": text, "finished": finished, "open": open_button, "refresh": refresh, "timer": timer}
+        with gr.Row(equal_height=True):
+            cancellable = gr.Dropdown([], label="A queued or running job", scale=4, allow_custom_value=True,
+                                      elem_id=f"{kinds_key}-jobs-cancellable")
+            cancel = gr.Button("🚫 Cancel it", variant="stop", scale=1, elem_id=f"{kinds_key}-jobs-cancel")
+        cancel_note = gr.Markdown(elem_id=f"{kinds_key}-jobs-cancel-note")
+        timer = gr.Timer(JOBS_POLL_IDLE)
+    return {"text": text, "finished": finished, "open": open_button, "refresh": refresh, "timer": timer,
+            "cancellable": cancellable, "cancel": cancel, "cancel_note": cancel_note}
 
 
 @ui
@@ -5988,6 +6173,10 @@ def build_app():
         # 🧠 Train's completed engine, kept in this browser so that a reload shows it again (restore_result_ui).
         # Defined here, outside the destinations: the browser restores it before the page's load events.
         saved_result = gr.BrowserState(None, storage_key="ane-train-result")
+        # The training and the evaluation this browser submitted and has not seen end: followed again after a
+        # reload or a lost connection (never another job, never one this browser did not submit).
+        train_job = gr.BrowserState(None, storage_key="ane-train-job")
+        evaluate_job = gr.BrowserState(None, storage_key="ane-evaluate-job")
         # ▶ Play's game (its session id), kept in this browser so that a reload goes on with it (restore_game_ui).
         saved_game = gr.BrowserState("", storage_key="ane-play-session")
         # Each delete panel's Undo history, kept in this browser too (the API keeps the deletions on disk).
@@ -7020,30 +7209,36 @@ def build_app():
                 # Every training ends with its completed engine (the state the follow-up actions carry), shown
                 # on the card, whose progress bar follows the generations while it runs.
                 result_outputs = [train_result, result_card, *result_buttons]
-                engine_events = [run_button.click(
-                    run_simulation_ui, [*run_controls, run_plan],
-                    [*train_outputs, memory_status, run_state, export_generation, *result_outputs],
-                    concurrency_limit=1,
-                    concurrency_id="narrative_evolution", trigger_mode="once",
-                )]
-                record_outputs = [*train_outputs, run_state, export_generation, *result_outputs]
-                engine_events.append(continue_record.click(
-                    continue_recorded_ui, [record_engine, more_generations],
-                    record_outputs, concurrency_limit=1, concurrency_id="narrative_evolution", trigger_mode="once"))
-                engine_events.append(retrain_record.click(
-                    retrain_recorded_ui, [record_engine, more_generations, *run_controls, retrain_plan],
-                    record_outputs, concurrency_limit=1, concurrency_id="narrative_evolution", trigger_mode="once"))
-                # The jobs panel: polled while a training is queued or running (a submission starts the polling;
-                # it stops by itself); a finished training's result opens on the card, with its actions.
-                train_job_outputs = [train_jobs["text"], train_jobs["timer"], train_jobs["finished"]]
+                # A training: submitted (the job kept in this browser), then followed until it ends; its result,
+                # or why there is none, is shown. After a reload the same job is followed again (on load).
+                run_outputs = [*train_outputs, memory_status, run_state, export_generation, *result_outputs, train_job]
+                submitted = [
+                    run_button.click(submit_run_ui, [*run_controls, run_plan], train_job, trigger_mode="once"),
+                    continue_record.click(submit_continue_ui, [record_engine, more_generations], train_job,
+                                          trigger_mode="once"),
+                    retrain_record.click(submit_retrain_ui, [record_engine, more_generations, *run_controls,
+                                                             retrain_plan], train_job, trigger_mode="once")]
+                engine_events = [event.success(follow_training_ui, train_job, run_outputs, concurrency_limit=8,
+                                               concurrency_id="training_follow") for event in submitted]
+                reattached = demo.load(follow_training_ui, train_job, run_outputs, concurrency_limit=8,
+                                       concurrency_id="training_follow")
+                reattached.success(lambda done: done, train_result, saved_result, show_progress="hidden")
+                # The jobs panel: polled while a training is queued, running or stopping (a submission starts the
+                # polling; it stops by itself); a finished training's result opens on the card, with its actions;
+                # a queued or running one can be cancelled.
+                train_job_outputs = [train_jobs["text"], train_jobs["timer"], train_jobs["finished"],
+                                     train_jobs["cancellable"]]
+                train_panel_inputs = [train_jobs["finished"], train_job, train_jobs["cancellable"]]
+                train_panel = (lambda chosen, yours, to_cancel: jobs_panel_ui("train", chosen, yours, to_cancel))
                 for event in (train_jobs["timer"].tick, train_jobs["refresh"].click, demo.load):
-                    event(lambda chosen: jobs_panel_ui("train", chosen), train_jobs["finished"], train_job_outputs,
-                          show_progress="hidden")
-                for button in (run_button, continue_record, retrain_record):
-                    button.click(lambda: gr.Timer(active=True), None, train_jobs["timer"], show_progress="hidden")
-                for event in engine_events:
-                    event.then(lambda chosen: jobs_panel_ui("train", chosen), train_jobs["finished"], train_job_outputs,
-                               show_progress="hidden")
+                    event(train_panel, train_panel_inputs, train_job_outputs, show_progress="hidden")
+                for event in submitted:
+                    event.success(lambda: jobs_poll(True), None, train_jobs["timer"], show_progress="hidden")
+                for event in [*engine_events, reattached]:
+                    event.then(train_panel, train_panel_inputs, train_job_outputs, show_progress="hidden")
+                train_jobs["cancel"].click(cancel_job_ui, train_jobs["cancellable"], train_jobs["cancel_note"],
+                                           show_progress="hidden").then(train_panel, train_panel_inputs,
+                                                                        train_job_outputs, show_progress="hidden")
                 train_jobs["open"].click(open_train_job_ui, train_jobs["finished"], result_outputs,
                                          show_progress="hidden").success(lambda done: done, train_result, saved_result,
                                                                          show_progress="hidden")
@@ -7257,10 +7452,9 @@ def build_app():
                     bench_button = gr.Button("Play and judge", variant="primary", elem_id="evaluate-run")
                     bench_summary = gr.Markdown(elem_id="evaluate-summary")
                     bench_table = gr.Dataframe(label="Stories", interactive=False, wrap=True)
-                    bench_button.click(judge_benchmark_ui, [bench_stories, bench_seed, eval_engine, bench_pairwise,
-                                                            bench_variants, bench_workers, eval_target],
-                                       [bench_summary, bench_table], concurrency_limit=1, concurrency_id="judge",
-                                       trigger_mode="once")
+                    bench_submitted = bench_button.click(
+                        submit_benchmark_ui, [bench_stories, bench_seed, eval_engine, bench_pairwise, bench_variants,
+                                              bench_workers, eval_target], evaluate_job, trigger_mode="once")
                 with gr.Accordion("Fit the fitness to the judge", open=False):
                     gr.Markdown(
                         "Plays and judges stories of the target above, fits the judged engagement on the fitness "
@@ -7280,17 +7474,34 @@ def build_app():
                         save_weights_terms = gr.Button("Save term weights", variant="primary")
                         reload_weights_terms = gr.Button("Reload")
                     term_weights_status = gr.Markdown()
-                    calib_button.click(calibrate_fitness_ui, [calib_stories, calib_seed, eval_engine, calib_apply,
-                                                              eval_target],
-                                       [calib_summary, term_weights_editor], concurrency_limit=1, concurrency_id="judge",
-                                       trigger_mode="once")
-                    # The jobs panel: polled while an evaluation is queued or running; a finished one opens its result.
-                    evaluate_job_outputs = [evaluate_jobs["text"], evaluate_jobs["timer"], evaluate_jobs["finished"]]
+                    calib_submitted = calib_button.click(
+                        submit_calibration_ui, [calib_stories, calib_seed, eval_engine, calib_apply, eval_target],
+                        evaluate_job, trigger_mode="once")
+                    # An evaluation: submitted (kept in this browser), followed until it ends; after a reload,
+                    # followed again. Its result goes where it belongs (the benchmark's, or the calibration's).
+                    evaluation_outputs = [bench_summary, bench_table, calib_summary, term_weights_editor, evaluate_job]
+                    evaluation_followed = [event.success(follow_evaluation_ui, evaluate_job, evaluation_outputs,
+                                                         concurrency_limit=8, concurrency_id="evaluation_follow")
+                                           for event in (bench_submitted, calib_submitted)]
+                    evaluation_followed.append(demo.load(follow_evaluation_ui, evaluate_job, evaluation_outputs,
+                                                         concurrency_limit=8, concurrency_id="evaluation_follow"))
+                    # The jobs panel: polled while an evaluation is queued, running or stopping; a finished one
+                    # opens its result; a queued or running one can be cancelled.
+                    evaluate_job_outputs = [evaluate_jobs["text"], evaluate_jobs["timer"], evaluate_jobs["finished"],
+                                            evaluate_jobs["cancellable"]]
+                    evaluate_panel_inputs = [evaluate_jobs["finished"], evaluate_job, evaluate_jobs["cancellable"]]
+                    evaluate_panel = (lambda chosen, yours, to_cancel: jobs_panel_ui("evaluate", chosen, yours,
+                                                                                     to_cancel))
                     for event in (evaluate_jobs["timer"].tick, evaluate_jobs["refresh"].click, demo.load):
-                        event(lambda chosen: jobs_panel_ui("evaluate", chosen), evaluate_jobs["finished"],
-                              evaluate_job_outputs, show_progress="hidden")
-                    for button in (bench_button, calib_button):
-                        button.click(lambda: gr.Timer(active=True), None, evaluate_jobs["timer"], show_progress="hidden")
+                        event(evaluate_panel, evaluate_panel_inputs, evaluate_job_outputs, show_progress="hidden")
+                    for event in (bench_submitted, calib_submitted):
+                        event.success(lambda: jobs_poll(True), None, evaluate_jobs["timer"],
+                                      show_progress="hidden")
+                    for event in evaluation_followed:
+                        event.then(evaluate_panel, evaluate_panel_inputs, evaluate_job_outputs, show_progress="hidden")
+                    evaluate_jobs["cancel"].click(cancel_job_ui, evaluate_jobs["cancellable"],
+                                                  evaluate_jobs["cancel_note"], show_progress="hidden").then(
+                        evaluate_panel, evaluate_panel_inputs, evaluate_job_outputs, show_progress="hidden")
                     evaluate_jobs["open"].click(open_evaluate_job_ui, evaluate_jobs["finished"],
                                                 [bench_summary, bench_table, calib_summary, term_weights_editor],
                                                 show_progress="hidden")

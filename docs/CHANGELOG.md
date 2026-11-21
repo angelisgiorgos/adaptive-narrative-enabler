@@ -7,13 +7,40 @@ that introduces them.
 
 ## [Unreleased]
 
+### Jobs: followed again after a refresh, and cancelled
+
+#### Added
+- The studio remembers the job it started in 🧠 Train and in ⚖ Evaluate, in the browser's local storage (one
+  per section). After a refresh or a lost connection it follows that job again through `GET /v1/jobs/{id}`,
+  without starting another, and shows its result as if it had never left. A failed, cancelled or lost job
+  (an API restart; or one of more than the latest 100) is said in so many words. It never attaches itself to
+  another job of the global list: the job panel marks the browser's own job as **yours**.
+- `POST /v1/jobs/{id}/cancel`, and **🚫 Cancel it** in the job panels. A queued job is cancelled at once and
+  never starts. A running one becomes `cancel_requested` and stops at its next safe point (training: after a
+  generation; evaluation: before a story is judged, or after the stories are played), then is `cancelled`.
+  A cancelled job keeps no result: its `partial` says how far it got. A training cancelled makes no engine
+  and its recorded run is `cancelled`. Work that completes before it reaches a safe point finishes, with a
+  `cancel_note`. Either way, the worker goes on to the next job.
+
+#### Changed
+- `StudioAPI.wait()` stops on a cancelled job (`JobCancelledError`) and waits through a lost connection
+  for up to a minute before giving up.
+
+#### Fixed
+- The job panel's polling could stop for good when a run was submitted while the page was still loading:
+  a refresh computed before the job existed switched its timer off. The timer now never stops (it slows
+  down instead).
+- The job panel stopped refreshing once a job chosen in its lists had ended, because the lists refused a
+  value no longer among their choices.
+
 ### Job panels in Train and Evaluate; the discovered map drawn
 
 #### Added
 - **⏱ Jobs** in 🧠 Train and ⚖ Evaluate shows the jobs queued, running and recent. Each shows its state,
   its progress counted as the job counts it (generations, or stories judged), scores, elapsed time and
   queue position, and a failure's error with what to do. A finished job's result can be opened there.
-  The panel polls only while a job is active, without holding up the rest of the studio.
+  The panel refreshes every 2 seconds while one of its jobs is active, every 10 otherwise, without holding
+  up the rest of the studio.
 - Jobs report a `label` with their progress and a `queue_ahead`. An identical submission while a job is
   queued or running returns that job (`reused`) instead of queuing it again.
 - ▶ Play draws the discovered map of the game (only what the player has found).

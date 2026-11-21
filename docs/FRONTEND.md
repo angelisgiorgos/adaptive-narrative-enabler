@@ -66,31 +66,54 @@ In the studio, every handler shows errors this way (`_error_message` and the `ui
 Training, retraining, judging, calibration, world proposals and records imports run as jobs.
 
 1. A `POST` to one of the job endpoints (the `/v1/jobs/...` routes in the
-   [Endpoint index](#endpoint-index)) answers `202` with the job.
-2. Poll `GET /v1/jobs/{id}` until `status` is `finished` or `failed`. The studio polls every
-   **0.5 s**. Jobs run one at a time, in the order they arrive, so a new job may stay `queued`
-   for a while.
-3. `finished`: `result` is what the synchronous endpoint would have returned. For a training job
-   it is the play state of the new game plus the training fields. `failed`: show `error`, which is
-   a string.
+   [Endpoint index](#endpoint-index)) answers `202` with the job. If an identical request is
+   still `queued` or `running`, the API returns that job instead of queuing another, with
+   `reused: true`. Otherwise `reused` is `false`.
+2. Poll `GET /v1/jobs/{id}` until the job has **ended**: `finished`, `failed` or `cancelled`. The
+   studio polls every **0.5 s**. The job is not ended while it is `queued`, `running` or
+   `cancel_requested` (stopping), so keep polling. Jobs run one at a time, in the order they
+   arrive. While a job is `queued`, `queue_ahead` says how many jobs run before it.
+3. Show the ending:
+   - `finished`: `result` is what the synchronous endpoint would have returned. For a training
+     job it is the play state of the new game plus the training fields. If a cancellation came
+     after the work had already completed, the job still finishes, with its result and a
+     `cancel_note` to show.
+   - `failed`: show `error`, which is a string.
+   - `cancelled`: there is no `result`. `partial` is `{progress, note}`: the last progress, and a
+     note saying what was kept. A cancelled training makes no engine, and a cancelled evaluation
+     keeps no judgements.
+4. A `404` while polling means the job was lost: jobs live only in memory, so an API restart
+   loses them. Say so and offer to start again.
+
+**Cancelling.** `POST /v1/jobs/{job_id}/cancel` works on `simulation`, `continue`, `retrain`,
+`judge-benchmark` and `calibrate-fitness` jobs; `cancellable` on a job says whether it can be
+cancelled now. A `queued` job becomes `cancelled` at once and never starts. A `running` job
+becomes `cancel_requested` and stops at its next safe point: a training at the end of the
+generation being played, an evaluation before the next story is judged. Then it is `cancelled`,
+or `finished` if its work completed first. An ended job is unchanged. The answer is the job,
+without its result, plus a `message`. The API answers `409` for a job of another kind, and `404`
+for an unknown job.
 
 ```json
 {"id": "50e2c14a…", "kind": "simulation", "description": "2 generation(s) of 2 storytellers",
  "status": "running", "created_at": "2026-11-20T10:17:18+00:00", "started_at": "2026-11-20T10:17:18+00:00",
- "finished_at": null, "result": null, "error": null,
- "progress": {"generation": 1, "total": 2, "best": 601.071, "mean": 492.433, "validation": 519.32, "improved": true}}
+ "finished_at": null, "result": null, "error": null, "partial": null, "cancellable": true, "queue_ahead": null,
+ "progress": {"generation": 1, "total": 2, "label": "generation", "best": 601.071, "mean": 492.433,
+              "validation": 519.32, "improved": true}}
 ```
 
 `progress` comes in two forms:
 
-- **Training** (`simulation`, `continue`, `retrain`): `{generation, total, best, mean, validation,
-  improved}`. Draw a progress bar from `generation / total` and a chart of `best`, `mean` and
-  `validation`.
+- **Training** (`simulation`, `continue`, `retrain`): `{generation, total, label: "generation",
+  best, mean, validation, improved}`. Draw a progress bar from `generation / total` and a chart
+  of `best`, `mean` and `validation`.
 - **Counting jobs** (judge benchmark, calibration, imports): `{generation, total, label}`. Here
-  `generation` is the number of steps done so far, such as stories judged.
+  `generation` is the number of steps done so far, and `label` names them, for example
+  "stories judged".
 
-`GET /v1/jobs` lists the latest 100 jobs, newest first, without `result`. A job lives only in
-memory, so after an API restart its id answers `404`.
+`GET /v1/jobs` lists the latest 100 jobs, newest first, without `result`. Each job carries
+`has_result`, `queue_ahead` and `cancellable`. A job lives only in memory, so after an API
+restart its id answers `404`.
 
 ### Downloads and uploads
 
@@ -2536,4 +2559,5 @@ the API disagree, or when this guide names a request the API does not have.
 | `POST` | `/v1/jobs/records-import` | [advanced-integration](#advanced-integration), [advanced-records](#advanced-records) | Import every engine and game in the server's import folder into the records, in the background (as `python… |
 | `GET` | `/v1/jobs` | [advanced-app-jobs](#advanced-app-jobs), [advanced-integration](#advanced-integration) |  |
 | `GET` | `/v1/jobs/{job_id}` | [advanced-integration](#advanced-integration), [advanced-records](#advanced-records), [api-client](#api-client), [evaluate-benchmark](#evaluate-benchmark), [evaluate-calibration](#evaluate-calibration), [grow](#grow), [train-records](#train-records), [train-run](#train-run) | status (queued, running, finished, failed), progress (generation, total, best, mean, validation), and the… |
+| `POST` | `/v1/jobs/{job_id}/cancel` | [train-run](#train-run), [evaluate-benchmark](#evaluate-benchmark) | Cancel a training or evaluation job (queued: never starts; running: stops at its next safe point). |
 | `GET` | `/v1/artifacts/{artifact_id}` | [export](#export), [train-run](#train-run) |  |

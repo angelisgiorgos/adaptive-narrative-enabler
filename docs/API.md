@@ -57,7 +57,7 @@ the first one's games, and a restart forgets everything that lives in memory:
 | --- | --- |
 | Play sessions: the newest `max_web_sessions` (100); beyond that the oldest is dropped | Configuration: `config/*.yaml` and the app parameters `config/ui_settings.yml` |
 | Recent runs that can be exported (the latest 20) | Player profiles' persistent variables and the learning memory (`ANE_SAVE_DIR`) |
-| Background jobs (the latest 100) | The records database and engine model files (`ANE_RECORDS_DIR`) |
+| Background jobs (the latest 100), including queued and running ones: a restart loses them, and no job is resumed | The records database and engine model files (`ANE_RECORDS_DIR`) |
 | Download links `/v1/artifacts/{id}` (the files stay in `ANE_ARTIFACT_DIR`, the links do not) | Generated configurations, engine models and exports (`ANE_ARTIFACT_DIR`) |
 | An uploaded configuration (`POST /v1/config/upload`), until `POST /v1/config/reset` or a restart | |
 
@@ -368,7 +368,8 @@ one); `tests/test_studio_coverage.py` checks it.
 - `POST /v1/jobs/judge-benchmark` and `POST /v1/jobs/calibrate-fitness` (see
   **Evaluation**) run the judge in the background; their `progress` is
   `{generation: stories judged so far, total, label}`.
-- `GET /v1/jobs/{id}`: `status` (`queued`, `running`, `finished`, `failed`),
+- `GET /v1/jobs/{id}`: `status` (`queued`, `running`, `cancel_requested`,
+  `cancelled`, `finished`, `failed`),
   `progress` (`generation`, `total`, `label`: what is counted, `generation` or
   `stories judged`, plus a training's `best`, `mean`, `validation`, `improved`),
   `queue_ahead` (for a queued job, how many jobs run before it; null otherwise),
@@ -378,6 +379,24 @@ one); `tests/test_studio_coverage.py` checks it.
   order they arrive; the latest 100 are kept (in memory). A submission identical
   to a job still queued or running (the same body, user and origin) is not queued
   again: it returns that job with `reused: true` (otherwise `reused: false`).
+  `cancellable` says whether the job can still be cancelled. A `404` for a job
+  that was submitted means it was lost: an API restart (jobs live in memory and
+  are not persisted), or more than 100 newer jobs.
+- `POST /v1/jobs/{id}/cancel` cancels a training (`simulation`, `continue`,
+  `retrain`) or evaluation (`judge-benchmark`, `calibrate-fitness`) job; other
+  kinds answer `409`, an unknown job `404`. Cancellation is cooperative:
+  - a **queued** job is `cancelled` at once and never starts;
+  - a **running** job becomes `cancel_requested` and stops at its next safe
+    point: a training after its current generation, an evaluation before the
+    next story is judged or once its stories are played (a play phase itself
+    is not interrupted). It is then `cancelled`;
+  - a cancelled job has no `result`. `partial` (`{progress, note}`) says how far
+    it got; nothing partial is kept as a result. A cancelled training makes no
+    engine, and its recorded run has the status `cancelled`;
+  - if the work completes before it reaches a safe point, the job is `finished`
+    with its result and a `cancel_note`;
+  - an ended job is left as it is (`message` says so). The reply is the job,
+    with a `message`. In every case the worker goes on to the next job.
 
 **Configuration**
 - `GET /v1/config` returns the complete merged active configuration.

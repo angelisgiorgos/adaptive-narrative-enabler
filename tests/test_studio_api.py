@@ -3376,7 +3376,7 @@ class JobPanelTests(_Sandbox):
             {"id": "e" * 32, "kind": "simulation", "status": "finished", "description": "a done run",
              "created_at": at(60), "started_at": at(60), "finished_at": at(52), "has_result": True},
         ]
-        text, active, results = app.jobs_panel(jobs, app.TRAIN_JOBS, now)
+        text, active, results, cancellable = app.jobs_panel(jobs, app.TRAIN_JOBS, now)
         self.assertTrue(active)
         self.assertIn("▶ running", text)
         self.assertIn("Generation 3/25 · best 812.4 · mean 640.0 · benchmark 790.2 · improved", text)
@@ -3386,7 +3386,8 @@ class JobPanelTests(_Sandbox):
         self.assertIn("**What to do:** Lower the population", text)
         self.assertIn("took 8m 00s", text)
         self.assertEqual([value for _, value in results], ["e" * 32])                # a finished result to open
-        evaluate_text, _, _ = app.jobs_panel(jobs, app.EVALUATE_JOBS, now)
+        self.assertEqual([value for _, value in cancellable], ["a" * 32, "b" * 32])  # queued and running
+        evaluate_text, _, _, _ = app.jobs_panel(jobs, app.EVALUATE_JOBS, now)
         self.assertIn("Stories judged 4/10", evaluate_text)                          # not "Generation"
         self.assertNotIn("Generation 4/10", evaluate_text)
         self.assertIn("first in line", app.job_line({**jobs[1], "queue_ahead": 1}, now))
@@ -3408,9 +3409,11 @@ class JobPanelTests(_Sandbox):
         done = _finished(self.client, trained["id"])
         self.assertEqual(done["status"], "finished", done.get("error"))
         self.assertEqual(done["progress"]["label"], "generation")
-        text, timer, finished = app.jobs_panel_ui("train")
+        text, timer, finished, cancellable = app.jobs_panel_ui("train")
+        self.assertEqual(_prop(cancellable, "choices"), [])                          # nothing left to cancel
         self.assertIn(trained["id"][:8], text)
-        self.assertFalse(_prop(timer, "active"))                                     # nothing left to poll
+        self.assertEqual((_prop(timer, "value"), _prop(timer, "active")), (app.JOBS_POLL_IDLE, True))  # slowly
+        self.assertEqual(_prop(app.jobs_poll(True), "value"), app.JOBS_POLL_ACTIVE)
         self.assertEqual(_prop(finished, "value"), trained["id"])
         engine, card, *buttons = app.open_train_job_ui(trained["id"])
         self.assertEqual(engine["engine_id"], done["result"]["engine_id"])
@@ -3429,12 +3432,17 @@ class JobPanelTests(_Sandbox):
         _finished(self.client, failed["id"])
         with self.assertRaises(app.gr.Error):
             app.open_evaluate_job_ui(failed["id"])
-        # Wired: a timer per panel (off until a job is submitted), the submissions ignore repeated clicks.
+        # Wired: a timer per panel (never off: a refresh computed while the page loads cannot stop it), the
+        # submissions ignore repeated clicks; a job chosen before it ended is not refused by the dropdowns.
         demo = app.build_app()
         by = {b.elem_id: b for b in demo.blocks.values() if getattr(b, "elem_id", None)}
         timers = [b for b in demo.blocks.values() if isinstance(b, app.gr.Timer)]
         self.assertGreaterEqual(len(timers), 2)
-        for elem, name in (("train-run-button", "run_simulation_ui"), ("evaluate-run", "judge_benchmark_ui")):
+        self.assertTrue(all(timer.active for timer in timers))
+        for key in ("train", "evaluate"):
+            for part in ("finished", "cancellable"):
+                self.assertEqual(by[f"{key}-jobs-{part}"].preprocess("0123456789abcdef"), "0123456789abcdef")
+        for elem, name in (("train-run-button", "submit_run_ui"), ("evaluate-run", "submit_benchmark_ui")):
             runs = [fn for fn in demo.fns.values() if (by[elem]._id, "click") in fn.targets
                     and getattr(fn.fn, "__name__", "") == name]
             self.assertEqual([fn.trigger_mode for fn in runs], ["once"])
@@ -3461,6 +3469,200 @@ class JobPanelTests(_Sandbox):
         self.assertIn("starts with your first step", app.discovered_map_svg(None))
         screen = app._play_screen({"actions": [], "map": known})
         self.assertEqual(app.play_part(screen, "map"), svg)
+
+
+class JobCancellationTests(_Sandbox):
+    """Cooperative cancellation (POST /v1/jobs/{id}/cancel): a queued job is cancelled at once and never
+    starts; a running one is cancel_requested, stops at its next safe point and is cancelled, with what it
+    had done (never finished); work that completes before a safe point is finished, saying so; the worker
+    is free for the next job. And the studio: the job this browser submitted is kept (BrowserState) and
+    followed again after a reload, never a new job; its result, or why there is none, is shown."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch.dict(os.environ, {"ANE_RECORDS_DIR": str(self.dir / "records")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.gates = []
+
+    def _gate(self):
+        gate = threading.Event()
+        self.gates.append(gate)
+        self.addCleanup(gate.set)
+        return gate
+
+    def _until(self, job_id, *states, seconds=30):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            job = self.client.get(f"/v1/jobs/{job_id}").json()
+            if job["status"] in states:
+                return job
+            time.sleep(0.02)
+        self.fail(f"job {job_id} never reached {states}: {job['status']}")
+
+    def _blocker(self):
+        """A job holding the one worker until its gate opens."""
+        gate = self._gate()
+        job = sessions.submit_job("judge-benchmark", lambda progress: (gate.wait(30), {"done": True})[1])
+        self._until(job["id"], "running")
+        return job, gate
+
+    def test_a_queued_job_is_cancelled_and_never_starts(self):
+        blocker, gate = self._blocker()
+        ran = []
+        queued = sessions.submit_job("simulation", lambda progress: ran.append("ran") or {"x": 1})
+        self.assertEqual(self.client.get(f"/v1/jobs/{queued['id']}").json()["queue_ahead"], 1)
+        cancelled = self.client.post(f"/v1/jobs/{queued['id']}/cancel")
+        self.assertEqual(cancelled.status_code, 200, cancelled.text)
+        self.assertEqual(cancelled.json()["status"], "cancelled")
+        self.assertIn("before it started", cancelled.json()["message"])
+        after = sessions.submit_job("calibrate-fitness", lambda progress: {"after": True})
+        gate.set()
+        self.assertEqual(_finished(self.client, blocker["id"])["status"], "finished")
+        self.assertEqual(_finished(self.client, after["id"])["result"], {"after": True})   # the worker moved on
+        self.assertEqual(ran, [])                                                          # it never started
+        job = self.client.get(f"/v1/jobs/{queued['id']}").json()
+        self.assertEqual((job["status"], job["started_at"], job["result"]), ("cancelled", None, None))
+        # Ended jobs stay as they are; other kinds cannot be cancelled; an unknown one is 404.
+        self.assertIn("already been cancelled", self.client.post(f"/v1/jobs/{queued['id']}/cancel").json()["message"])
+        self.assertIn("already finished", self.client.post(f"/v1/jobs/{after['id']}/cancel").json()["message"])
+        other = sessions.submit_job("world-proposal", lambda progress: {})
+        self.assertEqual(self.client.post(f"/v1/jobs/{other['id']}/cancel").status_code, 409)
+        self.assertEqual(self.client.post("/v1/jobs/nothing/cancel").status_code, 404)
+
+    def test_a_running_job_stops_at_a_safe_point_and_frees_the_worker(self):
+        steps = []
+
+        def work(progress):
+            for step in range(1, 200):
+                time.sleep(0.02)
+                progress(step, 200, "stories judged")                # the safe point
+                steps.append(step)
+            return {"all": True}
+
+        job = sessions.submit_job("judge-benchmark", work)
+        self._until(job["id"], "running")
+        while not steps:
+            time.sleep(0.01)
+        asked = self.client.post(f"/v1/jobs/{job['id']}/cancel").json()
+        self.assertIn(asked["status"], ("cancel_requested", "cancelled"))
+        done = self._until(job["id"], "cancelled")
+        self.assertIsNone(done["result"])
+        self.assertLess(len(steps), 199)                                    # it stopped, not ran to the end
+        self.assertEqual(done["partial"]["progress"]["label"], "stories judged")
+        self.assertIn("not kept as a result", done["partial"]["note"])
+        nxt = sessions.submit_job("judge-benchmark", lambda progress: {"next": True})
+        self.assertEqual(_finished(self.client, nxt["id"])["result"], {"next": True})  # the worker is free
+
+    def test_work_completed_before_a_safe_point_is_finished_not_cancelled(self):
+        gate = self._gate()
+
+        def work(progress):
+            progress(1, 1, "stories judged")                         # the last safe point
+            gate.wait(30)                                             # then the rest of the work
+            return {"complete": True}
+
+        job = sessions.submit_job("judge-benchmark", work)
+        self._until(job["id"], "running")
+        while not (self.client.get(f"/v1/jobs/{job['id']}").json().get("progress")):
+            time.sleep(0.01)
+        self.assertEqual(self.client.post(f"/v1/jobs/{job['id']}/cancel").json()["status"], "cancel_requested")
+        gate.set()
+        done = _finished(self.client, job["id"])
+        self.assertEqual((done["status"], done["result"]), ("finished", {"complete": True}))
+        self.assertIn("came after its work had completed", done["cancel_note"])
+
+    def test_a_training_cancelled_mid_run_makes_no_engine_and_is_recorded_as_cancelled(self):
+        world = store.config.as_dict()
+        world["evolution"]["full_length_stories"] = False
+        store.config.use_override(world)
+        self.addCleanup(lambda: (setattr(store.config, "_override", None), type(store.config).reload(store.config)))
+        job = self.client.post("/v1/jobs/simulations", json={"candidate_count": 2, "generations": 30,
+                                                             "simulation_steps": 2, "episodes": 1,
+                                                             "deterministic": False, "start_game": False}).json()
+        while not self.client.get(f"/v1/jobs/{job['id']}").json().get("progress"):
+            time.sleep(0.05)                                          # a generation is done
+        self.client.post(f"/v1/jobs/{job['id']}/cancel")
+        done = self._until(job["id"], "cancelled", seconds=120)
+        self.assertIsNone(done["result"])
+        self.assertIn("No engine was made", done["partial"]["note"])
+        self.assertLess(done["partial"]["progress"]["generation"], 30)
+        self.assertEqual(records.list_runs()[0]["status"], "cancelled")      # not finished, not failed
+        nxt = sessions.submit_job("simulation", lambda progress: {"next": True})
+        self.assertEqual(_finished(self.client, nxt["id"])["status"], "finished")
+
+    def test_the_studio_follows_its_own_job_through_reloads_and_ends(self):
+        import app
+
+        # Finished: the result shown as a run; what this browser keeps is cleared.
+        result = {"engine_id": "e" * 32, "run_id": "r" * 32, "learning": {"history": [], "best_score": 1.0,
+                  "generations_run": 1}, "report": "Done.", "training": None,
+                  "config_download_url": None, "engine_download_url": None}
+        done = sessions.submit_job("simulation", lambda progress: result)
+        _finished(self.client, done["id"])
+        with patch.object(app, "_training_outputs", return_value=("Done.", None, None, None, None, None, None)), \
+                patch.object(app, "engine_card", return_value=None):
+            out = app.follow_training_ui({"id": done["id"], "kind": "run"}, progress=lambda *a, **k: None)
+        self.assertEqual(len(out), app.TRAINING_FOLLOW_OUTPUTS + 1)
+        self.assertEqual((out[0], out[-1]), ("Done.", None))
+        self.assertEqual(out[8]["engine_id"], "e" * 32)                       # the completed engine
+        # Cancelled, failed, gone: said, and the job forgotten by this browser (never another one started).
+        cancelled = sessions.submit_job("simulation", lambda progress: {})
+        jobs_before = len(self.client.get("/v1/jobs").json()["jobs"])
+        failed = sessions.submit_job("simulation", lambda progress: (_ for _ in ()).throw(ValueError("max_simulation_work")))
+        _finished(self.client, failed["id"])
+        _finished(self.client, cancelled["id"])
+        stopped = sessions.submit_job("judge-benchmark", lambda progress: progress(1, 2, "stories judged") or {})
+        sessions.cancel_job(stopped["id"])
+        for ref, expected in (({"id": failed["id"], "kind": "run"}, "❌ Failed"),
+                              ({"id": "0" * 32, "kind": "run"}, "⚠ Job lost")):
+            out = app.follow_training_ui(ref, progress=lambda *a, **k: None)
+            self.assertIn(expected, out[0])
+            self.assertIsNone(out[-1])
+        self.assertIn("restart loses them", app.follow_training_ui({"id": "0" * 32, "kind": "run"},
+                                                                   progress=lambda *a, **k: None)[0])
+        self.assertIn("Lower the population", app.follow_training_ui({"id": failed["id"], "kind": "run"},
+                                                                     progress=lambda *a, **k: None)[0])
+        self.assertEqual(len(self.client.get("/v1/jobs").json()["jobs"]), jobs_before + 2)  # nothing new submitted
+        # Nothing kept: nothing followed, even with jobs of others running.
+        self.assertTrue(all(o == app.gr.skip() for o in app.follow_training_ui(None, progress=lambda *a, **k: None)))
+        # An evaluation: a cancelled one says so where its result would be.
+        gate = self._gate()
+        judging = sessions.submit_job("judge-benchmark", lambda progress: (progress(1, 3, "stories judged"),
+                                                                          gate.wait(30), progress(2, 3, "x"))[2] or {})
+        self._until(judging["id"], "running")
+        sessions.cancel_job(judging["id"])
+        gate.set()
+        out = app.follow_evaluation_ui({"id": judging["id"], "kind": "judge-benchmark"}, progress=lambda *a, **k: None)
+        self.assertIn("🚫 Cancelled", out[0])
+        self.assertIn("1 of 3 stories judged", out[0])
+        self.assertIsNone(out[-1])
+        # StudioAPI.wait: cancelled ends the polling; a lost connection is tried again.
+        with self.assertRaises(app.JobCancelledError):
+            app.API.wait({"id": judging["id"]})
+        calls = []
+        real_get = app.API.get
+
+        def flaky(path, **params):
+            calls.append(path)
+            if len(calls) < 3:
+                raise app.APIError("could not be reached", None)
+            return real_get(path, **params)
+
+        with patch.object(app.API, "get", side_effect=flaky):
+            self.assertEqual(app.API.wait({"id": done["id"]}, interval=0.01)["engine_id"], "e" * 32)
+        self.assertEqual(len(calls), 3)
+        # Wired: kept in this browser, followed again on load; Cancel in both panels.
+        demo = app.build_app()
+        keys = {b.storage_key for b in demo.blocks.values() if isinstance(b, app.gr.BrowserState)}
+        self.assertLessEqual({"ane-train-job", "ane-evaluate-job"}, keys)
+        loads = [getattr(fn.fn, "__name__", "") for fn in demo.fns.values() if any(t[1] == "load" for t in fn.targets)]
+        self.assertIn("follow_training_ui", loads)
+        self.assertIn("follow_evaluation_ui", loads)
+        by = {b.elem_id: b for b in demo.blocks.values() if getattr(b, "elem_id", None)}
+        for key in ("train", "evaluate"):
+            (fn,) = [fn for fn in demo.fns.values() if (by[f"{key}-jobs-cancel"]._id, "click") in fn.targets]
+            self.assertEqual(fn.fn.__name__, "cancel_job_ui")
 
 
 class WeightsFollowUpTests(_Sandbox):
