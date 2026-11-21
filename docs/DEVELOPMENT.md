@@ -103,8 +103,9 @@ before building the image.
 
 - Record every change in [CHANGELOG.md](CHANGELOG.md) under **Unreleased**, in the section of
   the area it touches, in the same commit.
-- Keep version control active when using augmentation, especially with
-  `augmentation.save_to_source: true`.
+- World augmentation never writes the configuration by itself: `python main.py` keeps a proposal
+  for review, and `python main.py --apply-augmentation FILE` adds it (checked as the studio checks
+  it). Keep version control active anyway, and review the diff after adding one.
 - For reproducible runs, set `reproducibility.seed` in `config/hyperparameters.yaml`.
 - For faster debugging, lower `pop_size`, `generations` and `episodes_per_genome`, or press `q`
   during generation to continue with the best storyteller so far.

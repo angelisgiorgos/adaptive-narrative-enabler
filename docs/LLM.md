@@ -9,8 +9,9 @@ through a single shared runtime ([`utils/llm_model_loader.py`](../utils/llm_mode
 so the model is loaded once:
 
 - `llm_evaluator`: the judge of the final story (`evaluator/llm_eval.py`).
-- `augmentation`: world expansion (`core_engine/augmenter.py`).
 - `editor_suggester`: field suggestions in the terminal editor.
+
+World augmentation has its own model, **Qwen3.5-4B** (below), so the judge's model is not used for it.
 
 It runs on [vLLM](https://docs.vllm.ai), in one of two modes:
 
@@ -52,6 +53,49 @@ installed) and how to start one.
 Without vLLM (or a server), the LLM features report that the model is unavailable, and why, and
 everything else runs as usual. `llm_evaluator` sets the judge's `max_new_tokens` and
 `temperature`, `editor_suggester` the editor's.
+
+## World augmentation: Qwen3.5-4B on vLLM
+
+World augmentation (🌍 World → ✨ Grow the world, and `python main.py`) runs on its own model,
+**Qwen3.5-4B** (`Qwen/Qwen3.5-4B`, the instruction-tuned 4B of the Qwen3.5 small series), in
+**float16** and not quantized (the TITAN RTX, a Turing GPU, has no bfloat16). It is a runtime role of
+its own in `utils/llm_model_loader.py` (`settings("augmentation")`, `get_llm_runtime(role="augmentation")`),
+so it never loads or asks the judge's model, and the judge never loads it.
+
+```yaml
+augmentation:
+  enabled: true                # the tick in Grow the world (PUT /v1/augmentation)
+  llm:
+    mode: server               # server | embedded
+    base_url: http://127.0.0.1:8001/v1
+    model_name: Qwen/Qwen3.5-4B          # the name the server serves it under
+    model_path: /data/angelisg/llm_models/Qwen3.5-4B   # its weights (embedded: loaded from here)
+    dtype: float16
+    gpu_memory_utilization: 0.75
+    max_model_len: 8192
+    limit_mm_per_prompt: {image: 0, video: 0}   # Qwen3.5 is multimodal: text only here
+    enable_thinking: false     # answers directly (JSON), without its reasoning
+    max_new_tokens: 3072
+    temperature: 0.7
+```
+
+- **The weights** are kept in a folder of their own, not the Hugging Face cache:
+  `hf download Qwen/Qwen3.5-4B --local-dir /data/angelisg/llm_models/Qwen3.5-4B` (about 9 GB).
+- **With Docker**, the `augmenter` service in `compose.yaml` serves it, off unless asked for:
+  `docker compose --profile augmenter up -d augmenter`. It mounts `ANE_AUGMENT_MODELS`
+  (`/data/angelisg/llm_models`) read-only, serves `ANE_AUGMENT_MODEL_DIR` (`Qwen3.5-4B`) as
+  `Qwen/Qwen3.5-4B` on GPU `ANE_AUGMENT_GPU` (0), with the judge's vLLM image (vLLM 0.20.2 serves
+  Qwen3.5). The API finds it at `http://hamlet-ane-augmenter:8000/v1` (`ANE_AUGMENT_URL`).
+- **Without Docker**: `vllm serve /data/angelisg/llm_models/Qwen3.5-4B --served-model-name Qwen/Qwen3.5-4B
+  --dtype float16 --max-model-len 8192 --limit-mm-per-prompt '{"image":0,"video":0}' --port 8001`, or
+  `mode: embedded` to load it in the API's process.
+- **Environment**: `ANE_AUGMENT_URL` (a server's `/v1` address: server mode), `ANE_AUGMENT_MODEL`,
+  `ANE_AUGMENT_API_KEY` and `ANE_AUGMENT_MODEL_PATH` take precedence over `augmentation.llm.*`.
+- **Is it there?** `GET /v1/augmentation` says whether augmentation is on and whether its model can be
+  used (`{enabled, model: {available, mode, model, server, reason, how}}`); the studio shows it beside
+  the tick in Grow the world.
+- **Off** (the tick unticked, `augmentation.enabled: false`): the studio's *Propose* is disabled,
+  `POST /v1/jobs/world-proposal` is refused (409), and `python main.py` proposes nothing.
 
 ### Gemma 4 as the judge of a story, from the view of a video game
 

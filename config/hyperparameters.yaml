@@ -714,6 +714,19 @@ augmentation:
   min_outcomes: 60
   output_dir: augmentations
   save_to_source: true
+  llm:                         # augmentation's own language model, not the judge's (vllm: Gemma 4)
+    mode: server               # server: a vLLM server (ANE_AUGMENT_URL overrides base_url) | embedded
+    base_url: http://127.0.0.1:8001/v1
+    api_key: local-vllm
+    model_name: Qwen/Qwen3.5-4B          # the name the server serves it under
+    model_path: /data/angelisg/llm_models/Qwen3.5-4B   # its weights (float16, not quantized)
+    dtype: float16             # TITAN RTX (Turing): no bfloat16
+    gpu_memory_utilization: 0.75
+    max_model_len: 8192
+    limit_mm_per_prompt: {image: 0, video: 0}   # text only
+    enable_thinking: false     # Qwen3.5 answers directly (JSON), without its reasoning
+    max_new_tokens: 3072
+    temperature: 0.7
 director:                      # how a story builds over its course, like a game's director
   enabled: true
   escalation_start: 0.3        # story progress (share of narrative_end.max_actions) where escalation begins

@@ -6,6 +6,7 @@ except ImportError:  # run as tests.<module>
     from tests import records_sandbox  # noqa: F401
 import ast
 import copy
+import io
 import json
 import os
 import re
@@ -48,7 +49,8 @@ class _Sandbox(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.dir = Path(directory.name)
-        for name in ("npcs.yaml", "items.yaml", "events.yaml", "missions.yaml", "hyperparameters.yaml", "locations.yaml"):
+        for name in ("npcs.yaml", "items.yaml", "events.yaml", "missions.yaml", "hyperparameters.yaml", "locations.yaml",
+                     "variables.yaml"):
             shutil.copy(store.CONFIG_DIR / name, self.dir / name)
         entity_files = {
             "Locations": (self.dir / "locations.yaml", "locations", "mapping"),
@@ -59,6 +61,7 @@ class _Sandbox(unittest.TestCase):
         for patcher in (
             patch.dict(content.ENTITY_FILES, entity_files),
             patch.object(content, "MISSIONS_PATH", self.dir / "missions.yaml"),
+            patch.object(content, "VARIABLES_PATH", self.dir / "variables.yaml"),
             patch.object(content, "MAP_PATH", self.dir / "locations.yaml"),
             patch.object(store, "HYPERPARAMETERS_PATH", self.dir / "hyperparameters.yaml"),
             patch.object(store.config, "reload"),
@@ -864,20 +867,26 @@ class TrainingWorkTests(_Sandbox):
         import app
 
         self._settings(True, 120)
-        for steps in (16, 400):
+        free = store.config.get("travel.max_free_turns")
+        self.assertTrue(store.config.get("travel.fast_travel") and free)
+        # 16 steps: training plays the story to its end (120), not beyond. 400: it may also take its turns of
+        # fast travel, which do not count toward the end (travel.max_free_turns), and the work counts them.
+        for steps, turns in ((16, 120), (400, 120 + free)):
             with self.subTest(steps=steps):
                 asked = self._work(2, 3, steps, 4)
-                self.assertEqual((asked["requested_steps"], asked["effective_max_turns"], asked["story_length"]),
-                                 (steps, 120, 120))
+                self.assertEqual((asked["requested_steps"], asked["effective_max_turns"], asked["story_length"],
+                                  asked["fast_travel_turns"]), (steps, turns, 120, free))
                 self.assertTrue(asked["full_length_stories"])
                 self.assertFalse(asked["steps_decide"])
                 self.assertEqual(asked["override"]["setting"], "evolution.full_length_stories")
                 self.assertIn(f"the {steps} steps asked for", asked["override"]["reason"])
                 self.assertEqual(asked["factors"], {"storytellers": 2, "generations": 3, "stories_per_storyteller": 4,
-                                                    "turns_per_story": 120})
-                self.assertEqual(asked["work"], 2 * 3 * 4 * 120)
-                self.assertEqual(asked["story_turns"], 120)                    # older clients
-                self.assertGreaterEqual(self._steps_the_run_plays(steps), 120)  # training plays every story to its end
+                                                    "turns_per_story": turns})
+                self.assertEqual(asked["work"], 2 * 3 * 4 * turns)
+                self.assertEqual(asked["story_turns"], turns)                  # older clients
+                self.assertGreaterEqual(self._steps_the_run_plays(steps), turns)  # what training lets a story play
+                if steps == 400:
+                    self.assertIn(f"plus up to {free} turns of fast travel", asked["override"]["reason"])
         text, steps_look, _ = _form(_controls(population=2, generations=3, episodes=4, steps=16))
         self.assertIn("Full-length stories enabled: up to 120 turns", text)  # the configured value
         self.assertIn("Steps per simulation (16) does not set the story length.", text)
@@ -903,19 +912,29 @@ class TrainingWorkTests(_Sandbox):
         self.assertEqual(steps_look["label"], "Steps per simulation")
         self.assertNotIn("steps-unused", steps_look["elem_classes"])
 
-        # More steps than a story lasts: the story's end decides, and the work counts it, not the steps.
+        # More steps than a story lasts: the story's end decides (plus its turns of fast travel, which do not
+        # count toward it), and the work counts that, not the steps.
+        free = store.config.get("travel.max_free_turns")
         capped = self._work(2, 3, 400, 4)
-        self.assertEqual((capped["effective_max_turns"], capped["steps_decide"]), (100, False))
+        self.assertEqual((capped["effective_max_turns"], capped["steps_decide"]), (100 + free, False))
         self.assertEqual(capped["override"]["setting"], "narrative_end.max_actions")
-        self.assertEqual(capped["work"], 2 * 3 * 4 * 100)
+        self.assertEqual(capped["work"], 2 * 3 * 4 * (100 + free))
+        # Fast travel off: the story's end alone.
+        bounded = store.config.as_dict()
+        store.config.use_override({**bounded, "travel": {**bounded["travel"], "fast_travel": False}})
+        try:
+            self.assertEqual(self._work(2, 3, 400, 4)["effective_max_turns"], 100)
+        finally:
+            store.config.use_override(bounded)
         text, steps_look, _ = _form(_controls(population=2, generations=3, episodes=4, steps=400))
         self.assertIn("Steps per simulation (400) does not set the story length.", text)
-        self.assertIn("capped at 100", steps_look["label"])
+        self.assertIn(f"capped at {100 + free}", steps_look["label"])
+        self.assertIn(f"after 100 turns (plus up to {free} of fast travel)", steps_look["info"])
 
         # A configured length below the minimum: the story lasts the minimum, and the reason says so.
         self._settings(False, 80)
         low = self._work(1, 1, 400, 1)
-        self.assertEqual((low["story_length"], low["effective_max_turns"]), (100, 100))
+        self.assertEqual((low["story_length"], low["effective_max_turns"]), (100, 100 + free))
         self.assertIn("narrative_end.max_actions is 80", low["override"]["reason"])
 
     def test_the_work_limit_boundary(self):
@@ -2469,7 +2488,14 @@ class EngineQuestsTests(_Sandbox):
         self.assertIn(self.B, offered(picker))
         self.assertNotIn(self.A, offered(picker))
         self.assertEqual(_prop(picker, "value"), "")
-        self.assertIn(f"**{self.A}**, is not in this engine's world: it was cleared", note)
+        self.assertIn(f"**{self.A}**, is not in this engine's world: it was cleared", note)  # no title known
+        # The titles listed before (A's world): the cleared quest is named by its title, with its key.
+        _, _, _, titles = app.play_quests_titled_ui(self.engines["A"], "player", "", {})
+        picker, _, note, titles = app.play_quests_titled_ui(self.engines["B"], "player", self.A, titles)
+        title = titles[self.A]
+        self.assertNotEqual(title, self.A)
+        self.assertIn(f"**{title}** (`{self.A}`), is not in this engine's world: it was cleared", note)
+        self.assertIn(self.B, titles)                                   # B's quests are remembered too
         # A quest still offered stays chosen.
         picker, _, note = app.play_quests_ui(self.engines["B"], "player", self.B)
         self.assertEqual(_prop(picker, "value"), self.B)
@@ -2487,8 +2513,8 @@ class EngineQuestsTests(_Sandbox):
         self.assertEqual(store.config.as_dict(), before)
         # ▶ Play this result with a quest of another world: it is not passed on; the story draws one.
         done = {"engine_id": self.engines["A"], "run_id": None, "kind": "run"}
-        opened = app.play_result_ui(done, "player", self.B, "story default")
-        self.assertIn("is not offered in this engine's world", opened[-1])
+        opened = app.play_result_ui(done, "player", self.B, "story default", None, titles)
+        self.assertIn(f"**{titles[self.B]}** (`{self.B}`), is not offered in this engine's world", opened[-1])
         # Wired: the engine, the profile and the page's load each refresh the quests.
         demo = app.build_app()
         by = {b.elem_id: b for b in demo.blocks.values() if getattr(b, "elem_id", None)}
@@ -2503,7 +2529,7 @@ class EngineQuestsTests(_Sandbox):
                               and in_play(b))
         for trigger in (engine_picker, profile_picker):
             names = [fn.fn.__name__ for fn in demo.fns.values() if (trigger._id, "change") in fn.targets]
-            self.assertIn("play_quests_ui", names)
+            self.assertIn("play_quests_titled_ui", names)
         self.assertIn("play-quest-world", by)
 
 
@@ -2746,6 +2772,9 @@ class ContentLibraryTests(_Sandbox):
         item = self.client.get("/v1/entities/Items/Ancient Map").json()
         renamed = self.client.put("/v1/entities/Items/Ancient Map", json={**item, "name": "Faded Map"})
         self.assertEqual(renamed.status_code, 200, renamed.text)
+        # The entry form's own save renames what refers to it too (people and places that name the map).
+        for name in ("npcs.yaml", "locations.yaml", "items.yaml"):
+            self.assertEqual(content._renamed(self._yaml(name), "Ancient Map", "x")[1], 0, name)
         values = [value for _, value in app.library_view("map", app.LIBRARY_ALL, loaded)[1]]
         self.assertIn(app.library_key("Items", "Faded Map"), values)
         self.assertNotIn(app.library_key("Items", "Ancient Map"), values)
@@ -2781,6 +2810,48 @@ class ContentLibraryTests(_Sandbox):
         self.assertIn("library_search_ui", listeners(by["library-search"], "input"))  # the first page again
         self.assertIn("library_search_ui", listeners(by["library-filter"], "input"))
         self.assertIn("library_more_ui", listeners(by["library-more"], "click"))
+
+
+class LibraryWatchTests(_Sandbox):
+    """The content library follows changes made elsewhere (another browser, a tool, an import, by hand)
+    without ↻ Refresh: the studio looks at the world's revision now and then and lists it again only when
+    it changed."""
+
+    def test_the_revision_changes_with_the_world_and_the_list_follows(self):
+        import app
+
+        first = self.client.get("/v1/world/revision").json()["revision"]
+        self.assertEqual(self.client.get("/v1/world/revision").json()["revision"], first)   # stable
+        loaded = {"kind": "NPCs", "entity": "Smuggler"}
+        # The first look only remembers it (the page has just listed the library); unchanged: nothing.
+        self.assertEqual(app.library_watch_ui(None, "", app.LIBRARY_ALL, loaded),
+                         (*[app.gr.skip()] * 5, first))
+        self.assertEqual(app.library_watch_ui(first, "", app.LIBRARY_ALL, loaded), (*[app.gr.skip()] * 5, first))
+        # Another client deletes the entry open here: the revision changes, the list follows and says so.
+        time.sleep(0.01)
+        self.assertEqual(self.client.delete("/v1/entities/NPCs/Smuggler").status_code, 200)
+        second = self.client.get("/v1/world/revision").json()["revision"]
+        self.assertNotEqual(second, first)
+        filters, results, status, more, shown, seen = app.library_watch_ui(first, "", app.LIBRARY_ALL, loaded)
+        self.assertEqual(seen, second)
+        self.assertNotIn(app.library_key("NPCs", "Smuggler"), [v for _, v in _prop(results, "choices")])
+        self.assertIn("**Smuggler** (NPCs), no longer in the world (renamed or deleted elsewhere)", status)
+        # A file edited by hand, and a configuration uploaded in its place: new revisions too.
+        time.sleep(0.01)
+        items = self.dir / "items.yaml"
+        items.write_text(items.read_text() + "\n")
+        third = self.client.get("/v1/world/revision").json()["revision"]
+        self.assertNotEqual(third, second)
+        world = store.config.as_dict()
+        store.config.use_override(world)
+        self.addCleanup(lambda: setattr(store.config, "_override", None))
+        self.assertNotEqual(self.client.get("/v1/world/revision").json()["revision"], third)
+        # Wired: a timer in the library, and the page's load, look at the revision.
+        demo = app.build_app()
+        timers = [fn for fn in demo.fns.values() if getattr(fn.fn, "__name__", "") == "library_watch_ui"]
+        self.assertEqual(len(timers), 1)
+        self.assertIn("tick", [event for _, event in timers[0].targets])
+        self.assertEqual(timers[0].trigger_mode, "always_last")
 
 
 class LibraryPagingTests(_Sandbox):
@@ -2881,13 +2952,34 @@ class EntrySaveChangesTests(_Sandbox):
         self.assertEqual(harbor["interact_prompts"], ["Walk to the docks"])
         self.assertEqual(harbor["custom_note"], "kept as written")
         self.assertIn("custom_note: kept as written", self.client.get("/v1/entities/Locations/Harbor/yaml").json()["yaml"])
-        # A rename that would leave the world's references dangling (the map's routes name Harbor): refused,
-        # each one named, nothing written.
-        before = self._file("locations.yaml")
-        dangling = self.client.put("/v1/entities/Locations/Harbor/draft", json={"fields": {**fields, "name": "Old Harbor"}})
-        self.assertEqual(dangling.status_code, 400)
-        self.assertIn("The world: routes", dangling.json()["detail"])
-        self.assertEqual(self._file("locations.yaml"), before)
+        # A name that also names something else (here an item called Tavern too): its references cannot be
+        # told apart, so they are not renamed, and a rename that would leave them dangling is refused.
+        before = {name: self._file(name) for name in ("locations.yaml", "npcs.yaml", "hyperparameters.yaml")}
+        world = store.config.as_dict()
+        store.config.use_override({**world, "world_definition": {**world["world_definition"], "objects": [
+            *world["world_definition"]["objects"], {"name": "Tavern", "tags": ["urban"]}]}})
+        try:
+            tavern = self.client.get("/v1/entities/Locations/Tavern").json()
+            ambiguous = self.client.put("/v1/entities/Locations/Tavern/draft",
+                                        json={"fields": {**tavern, "name": "Old Tavern"}})
+        finally:
+            store.config._override = None
+        self.assertEqual(ambiguous.status_code, 400)
+        self.assertIn("The world: routes", ambiguous.json()["detail"])
+        self.assertIn("`Tavern` also names an item", ambiguous.json()["detail"])
+        self.assertEqual({name: self._file(name) for name in before}, before)
+        # A rename renames what refers to the entry: the map's routes, the people who know the place, the
+        # tuning parameters that name it; the other files are edited in place (their comments kept).
+        renamed = self.client.put("/v1/entities/Locations/Harbor/draft", json={"fields": {**fields, "name": "Old Harbor"}})
+        self.assertEqual(renamed.status_code, 200, renamed.text)
+        self.assertEqual(renamed.json()["references"], {"locations.yaml": 6, "npcs.yaml": 2, "hyperparameters.yaml": 2})
+        self.assertIn("Updated 10 reference(s) to `Harbor` → `Old Harbor`", renamed.json()["message"])
+        for name in ("locations.yaml", "npcs.yaml", "hyperparameters.yaml", "missions.yaml", "variables.yaml"):
+            self.assertEqual(content._renamed(self._yaml(name), "Harbor", "x")[1], 0, name)  # nothing names Harbor
+        self.assertIn("Old Harbor", self._yaml("locations.yaml")["world_definition"]["routes"])
+        for name in ("npcs.yaml", "hyperparameters.yaml"):
+            self.assertEqual(self._file(name).count("#"), before[name].count("#"), name)  # comments kept
+            self.assertEqual(self._file(name).replace("Old Harbor", "Harbor"), before[name])  # and nothing else
         # A new entry is made from its fields; renamed, it stays where it is.
         made = self.client.put("/v1/entities/Items/Brass Key/draft", params={"create": "true"}, json={
             "fields": {"name": "Brass Key", "tags": ["urban"], "descriptions": ["A small brass key."]}})
@@ -2980,6 +3072,29 @@ class EntryPreviewTests(_Sandbox):
         return {"files": files, "config": store.config.as_dict(),
                 "progression": progress.read_bytes() if progress.exists() else None,
                 "stories": len(records.list_stories()), "session": (state.actions_taken, len(state.history))}
+
+    def test_map_changes_are_listed_with_the_others(self):
+        from backend import preview
+
+        base = {"place": "Harbor", "health": 5, "coins": 0, "inventory": [], "variables": {}, "ended": False,
+                "routes": [("Harbor", "Tavern"), ("Tavern", "Harbor")], "unlocked": [], "confined": "Dungeon"}
+        after = {**base, "routes": [*base["routes"], ("Harbor", "Market"), ("Market", "Harbor"), ("Sewers", "Vault")],
+                 "unlocked": ["Dungeon"], "confined": None}
+        self.assertEqual(preview.scene_changes(base, after),
+                         ["a path opens between Harbor and Market", "a path opens from Sewers to Vault",
+                          "Dungeon can be left (unlocked)", "no longer held in Dungeon"])
+        self.assertEqual(preview.scene_changes(after, base),
+                         ["a path closes between Harbor and Market", "a path closes from Sewers to Vault",
+                          "held in Dungeon"])
+        # In the engine's sample scene: an outcome that reveals a place opens a path there.
+        draft = self._draft()
+        draft["action"]["action"]["outcomes"] = [{"desc": "A sailor points out the way to the Market.",
+                                                  "reveal_location": "Market"}]
+        sim = self.client.post("/v1/entities/Locations/Harbor/preview", params={"simulate": "true", "seed": 2},
+                               json=draft).json()["simulated"]
+        fed = next(a for a in sim["actions"] if a["name"] == "Feed the gulls")
+        self.assertTrue(any(change.startswith("a path opens") and "Harbor" in change for change in fed["changes"]),
+                        fed["changes"])
 
     def test_the_draft_is_previewed_static_and_simulated_without_side_effects(self):
         game = self.client.post("/v1/simulations", json={"candidate_count": 1, "generations": 1,
@@ -3211,15 +3326,54 @@ class ConditionBuilderTests(_Sandbox):
         self.assertEqual(app.condition_sync_ui("Builder", "{visited: Palace}", "enabled_if", tree)[0],
                          app.gr.skip())                                       # what the builder wrote: kept
         self.assertEqual(app.condition_sync_ui("Advanced YAML", "{visited: Palace}")[0], app.gr.skip())
-        # Wired: both condition fields have a builder that writes the field, then its draft's status.
+        # Wired: every condition field has a builder that writes that field, then its draft's status: an
+        # entry's Enabled if, an action's Offered only if and No longer offered once, a mission's Offered
+        # only if, and a dialogue line's Said when.
         demo = app.build_app()
         by = {b.elem_id: b for b in demo.blocks.values() if getattr(b, "elem_id", None)}
-        for prefix in ("entry-condition", "action-condition"):
+        labelled = lambda label: [b for b in demo.blocks.values() if getattr(b, "label", None) == label]  # noqa: E731
+        fields = {"entry-condition": labelled("Enabled if (condition)")[0],
+                  "action-condition": labelled("Offered only if")[0],
+                  "action-until": labelled("No longer offered once")[0],
+                  "mission-condition": labelled("Offered only if")[1],
+                  "dialogue-condition": by["dialogue-condition-text"]}
+        for prefix, field in fields.items():
             for button in ("add", "replace", "remove"):
                 (fn,) = [fn for fn in demo.fns.values() if (by[f"{prefix}-{button}"]._id, "click") in fn.targets]
+                self.assertIn(field, fn.outputs, prefix)                         # the builder writes its field
                 followers = [f for f in demo.fns.values() if f.trigger_after == fn._id]
                 self.assertEqual(len(followers), 1)                              # the draft's status
-            self.assertTrue([fn for fn in demo.fns.values() if (by[f"{prefix}-mode"]._id, "input") in fn.targets])
+            (mode,) = [fn for fn in demo.fns.values() if (by[f"{prefix}-mode"]._id, "input") in fn.targets]
+            self.assertIn(field, mode.inputs)
+
+    def test_a_dialogue_line_s_condition_is_built_in_step_with_the_table(self):
+        import app
+        import pandas as pd
+
+        table = pd.DataFrame([["has_item: Ancient Map", "You found it!"], ["", "Move along."]],
+                             columns=["Said when (condition, empty: always)", "Says"])
+        picker, field = app.dialogue_lines_ui(table, None, "")
+        self.assertEqual(_prop(picker, "choices"), [("1. You found it!", 0), ("2. Move along.", 1)])
+        self.assertEqual(_prop(picker, "value"), 0)                               # the first line, by default
+        self.assertEqual(_prop(field, "value"), "has_item: Ancient Map")
+        self.assertEqual(app.dialogue_lines_ui(table, 0, "has_item: Ancient Map")[1], app.gr.skip())  # no echo
+        self.assertEqual(_prop(app.dialogue_line_condition_ui(table, 1), "value"), "")
+        # The builder writes the field: into its line only, and only when it differs.
+        tree, written, *_ = app.condition_edit_ui("add", app.condition_tree(None), app.CONDITION_TOP, "visited",
+                                                  "Market", None, "", "dialogue")
+        changed = app.dialogue_write_condition_ui(table, 1, written)
+        self.assertEqual(app.condition_text(changed.iat[1, 0]), {"visited": "Market"})
+        self.assertEqual(changed.iat[0, 0], "has_item: Ancient Map")              # the other line as it was
+        self.assertEqual(changed.iat[1, 1], "Move along.")
+        self.assertEqual(app.dialogue_write_condition_ui(changed, 1, written), app.gr.skip())
+        self.assertEqual(app.dialogue_write_condition_ui(table, 5, written), app.gr.skip())   # no such line
+        # The table changed by a load: the field follows the chosen line (a line no longer there: the first).
+        picker, field = app.dialogue_lines_ui(changed.iloc[:1], 1, written)
+        self.assertEqual(_prop(picker, "value"), 0)
+        self.assertEqual(_prop(field, "value"), "has_item: Ancient Map")
+        picker, field = app.dialogue_lines_ui(None, None, written)               # no lines: nothing to build
+        self.assertEqual((_prop(picker, "choices"), _prop(picker, "value"), _prop(field, "value")), ([], None, ""))
+        self.assertEqual(app.dialogue_write_condition_ui(None, None, written), app.gr.skip())
 
 
 class WorldSubnavigationTests(_Sandbox):
@@ -4449,6 +4603,95 @@ class LanguageModelEditorTests(_Sandbox):
         saved.assert_not_called()
         written.assert_not_called()
 
+    def test_augmentation_is_switched_by_a_saved_tick_and_runs_on_its_own_model(self):
+        """🌍 World → ✨ Grow the world: the tick is augmentation.enabled (saved, the file's comments kept);
+        off, nothing is proposed (409); the model shown is augmentation's own (Qwen3.5-4B on vLLM)."""
+        import app
+
+        before = (self.dir / "hyperparameters.yaml").read_text()
+        with patch("utils.llm_model_loader.status", return_value={**self.READY, "model": "Qwen/Qwen3.5-4B"}) as asked:
+            state = self.client.get("/v1/augmentation").json()
+        self.assertEqual(asked.call_args.kwargs["role"], "augmentation")
+        self.assertEqual((state["enabled"], state["model"]["model"]), (True, "Qwen/Qwen3.5-4B"))
+        # Switched off: written into hyperparameters.yaml, that value only (its comments and layout kept).
+        with patch("utils.llm_model_loader.status", return_value=self.NOT_READY):
+            off = self.client.put("/v1/augmentation", json={"enabled": False})
+        self.assertEqual(off.status_code, 200, off.text)
+        after = (self.dir / "hyperparameters.yaml").read_text()
+        self.assertFalse(yaml.safe_load(after)["augmentation"]["enabled"])
+        changed = [(a, b) for a, b in zip(before.splitlines(), after.splitlines()) if a != b]
+        self.assertEqual(changed, [("  enabled: true", "  enabled: false")])
+        self.assertEqual(self.client.put("/v1/augmentation", json={"enabled": "maybe"}).status_code, 422)
+        # Off (as the reloaded configuration has it): a proposal is refused before any job is queued.
+        jobs = len(sessions.list_jobs())
+        with patch.dict(store.config._config["augmentation"], {"enabled": False}):
+            refused = self.client.post("/v1/jobs/world-proposal")
+            self.assertEqual(refused.status_code, 409)
+            self.assertIn("World augmentation is off", refused.json()["detail"])
+            self.assertEqual(len(sessions.list_jobs()), jobs)
+            with patch("utils.llm_model_loader.status", return_value=self.READY):
+                tick, said, propose = app.augmentation_ui()
+            self.assertEqual((_prop(tick, "value"), _prop(propose, "interactive")), (False, False))
+            self.assertIn("World augmentation is off", said)
+        # The studio's tick: saved, and Propose follows it.
+        with patch("utils.llm_model_loader.status", return_value=self.READY):
+            said, propose = app.set_augmentation_ui(True)
+        self.assertTrue(_prop(propose, "interactive"))
+        self.assertTrue(yaml.safe_load((self.dir / "hyperparameters.yaml").read_text())["augmentation"]["enabled"])
+        self.assertIn("Its model is ready", said)
+        demo = app.build_app()
+        tick = next(b for b in demo.blocks.values() if getattr(b, "elem_id", None) == "grow-augment")
+        (wired,) = [fn for fn in demo.fns.values() if (tick._id, "input") in fn.targets]
+        self.assertEqual(wired.fn.__name__, "set_augmentation_ui")
+
+    def test_the_terminal_proposes_first_and_adds_only_what_was_reviewed(self):
+        """python main.py: augmentation keeps a proposal for review and changes no configuration;
+        --apply-augmentation adds the reviewed file, checked as the studio checks it."""
+        import main
+        from core_engine.augmenter import WorldAugmenter
+
+        files = {name: (self.dir / name).read_text() for name in ("locations.yaml", "npcs.yaml", "items.yaml")}
+        out = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, out, True)
+        proposal = {"locations": {"Lighthouse": {"tags": ["harbor", "secluded"], "descriptions": ["A lamp turns."]}},
+                    "objects": [], "characters": [{"name": "Lamplighter", "tags": ["harbor"]}]}
+        with patch.object(WorldAugmenter, "is_sufficient", return_value=False), \
+                patch.object(WorldAugmenter, "propose", return_value=proposal), \
+                patch.object(WorldAugmenter, "augment") as augment, \
+                patch.object(WorldAugmenter, "apply_to_modular_config") as written, \
+                patch("sys.stdout", new_callable=io.StringIO) as said:
+            with patch.dict(store.config._config, {"augmentation": {**store.config.get("augmentation"),
+                                                                    "output_dir": str(out)}}):
+                path = main.propose_augmentation()
+        augment.assert_not_called()
+        written.assert_not_called()
+        self.assertEqual({name: (self.dir / name).read_text() for name in files}, files)  # nothing written
+        self.assertTrue(Path(path).is_file() and Path(path).is_relative_to(out))
+        self.assertEqual(yaml.safe_load(Path(path).read_text()), proposal)
+        self.assertIn("1 places: Lighthouse", said.getvalue())
+        self.assertIn(f"--apply-augmentation {path}", said.getvalue())
+        # Enough already: nothing proposed.
+        with patch.object(WorldAugmenter, "is_sufficient", return_value=True), \
+                patch.object(WorldAugmenter, "propose") as asked, patch("sys.stdout", new_callable=io.StringIO):
+            self.assertIsNone(main.propose_augmentation())
+        asked.assert_not_called()
+        # An invalid reviewed file (a name taken): refused, nothing written.
+        taken = Path(out) / "taken.yaml"
+        taken.write_text(yaml.safe_dump({"locations": {"Harbor": {"tags": ["harbor"]}}}))
+        with patch("sys.stdout", new_callable=io.StringIO), self.assertRaises(SystemExit) as refused:
+            main.engine_command(["--apply-augmentation", str(taken)])
+        self.assertIn("`Harbor` is already a location", str(refused.exception.code))
+        self.assertEqual({name: (self.dir / name).read_text() for name in files}, files)
+        # The reviewed file: added, entry by entry, the rest of each file kept (the map's routes too).
+        with patch("sys.stdout", new_callable=io.StringIO) as said:
+            main.engine_command(["--apply-augmentation", path])
+        locations = self._yaml("locations.yaml")["world_definition"]
+        self.assertIn("Lighthouse", locations["locations"])
+        self.assertEqual(locations.get("routes"), yaml.safe_load(files["locations.yaml"])["world_definition"].get("routes"))
+        self.assertIn("Lamplighter", [c["name"] for c in self._yaml("npcs.yaml")["world_definition"]["characters"]])
+        self.assertEqual((self.dir / "items.yaml").read_text(), files["items.yaml"])
+        self.assertIn("Added to the configuration", said.getvalue())
+
 
 class RecordsImportAndPointsTests(_Sandbox):
     """Importing earlier engines and games from the server's folder (the terminal's --import-artifacts),
@@ -4602,6 +4845,19 @@ class StudioLayoutTests(_Sandbox):
                 self.assertTrue(all(o == gr.skip() for o in out[nav:]))
                 (via_menu,) = wired(menu, "input")
                 self.assertEqual(_prop(via_menu.fn(key, *draft)[0], "selected"), key)
+                # In the browser first: the highlight at once (unless a guard may keep the page), then the server.
+                self.assertEqual(fn.js, f'(...args) => {{ window.aneNavShow && window.aneNavShow("{key}"); return args; }}')
+        self.assertIn("window.aneNavShow(args[0])", via_menu.js)
+        head = app.DRAFT_HEAD
+        self.assertIn('if (!banner || document.querySelector(\'.draft-status[data-dirty="1"]\')) return;', head)
+        self.assertIn("banner.dataset.pending = key;", head)               # a mark: the buttons stay Gradio's
+        self.assertIn(app.NAV_PENDING_CSS, app.CSS)
+        self.assertIn('#ane-banner[data-pending="play"] > #nav-play', app.NAV_PENDING_CSS)
+        self.assertIn("delete banner.dataset.pending;", head)              # the server's answer clears it
+        # The address follows the destination open, however it was opened (replaced, not a new history entry).
+        self.assertIn("new MutationObserver(write).observe(banner", head)
+        self.assertIn('url.searchParams.set("section", key);', head)
+        self.assertIn("history.replaceState(history.state, \"\", url);", head)
         # The address names a destination (?section=play); anything else opens the World.
         for asked, opened in (("play", "play"), ("EXPORT", "export"), ("nowhere", "world"), (None, "world")):
             request = type("Request", (), {"query_params": {"section": asked} if asked else {}})()

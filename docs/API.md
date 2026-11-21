@@ -133,8 +133,10 @@ paths (where the records, saves and models are): only a file's name, when it mat
    and why a story counts as many turns as it does).
    `GET /v1/simulations/work?candidate_count=&generations=&simulation_steps=&episodes=` answers
    beforehand with the same numbers, so a client never computes them itself:
-   `requested_steps`, `effective_max_turns` (the most turns a story can take; `story_turns` is the
-   same, for older clients), `full_length_stories`, `story_length`, `steps_decide` (whether the
+   `requested_steps`, `effective_max_turns` (the most turns a story can take: its length plus
+   `fast_travel_turns`, turns of fast travel that do not count toward its end (`travel.max_free_turns`,
+   0 with fast travel off), at most the steps training plays; `story_turns` is the same, for older
+   clients), `full_length_stories`, `story_length`, `fast_travel_turns`, `steps_decide` (whether the
    steps set `effective_max_turns`), `override` (`{setting, reason}` when they do not: the setting
    that does, `evolution.full_length_stories` or `narrative_end.max_actions`, and why), `factors`
    (`storytellers`, `generations`, `stories_per_storyteller`, `turns_per_story`), `work`, `limit`,
@@ -352,6 +354,14 @@ one); `tests/test_studio_coverage.py` checks it.
     section is saved without the others. Two sections that change the same data (`fields` and
     `entry_yaml`, or `actions` and `action`) are also `400`.
   - `?create=true` makes a new entry named `name` from its `fields`.
+  - A rename (`fields.name`) renames what refers to the entry in the same save: every YAML key or
+    string that is exactly its old name in the entry files, the missions, the variables and the
+    tuning parameters (a place's `location_penalties`, `game_state.arrest_location`); the other files
+    are edited in place, their comments kept. The reply's `references` counts them per file
+    (`{"locations.yaml": 6, "npcs.yaml": 2}`), and `message` says so. When the old name also names
+    something of another kind (an item and a place both called `Lantern`), nothing else is renamed,
+    and a rename that would leave references dangling is `400`, saying why. `PUT
+    /v1/entities/{kind}/{name}` with a new `name` renames the references the same way.
   - Returns `{name, saved, message, entity}`.
 - `GET /v1/entities/{kind}?fields=summary` returns the names plus a light summary of each entry, in
   order: `{kind, names, entries: [{name, tags, summary, actions, facts}]}`. `summary` is the first
@@ -485,6 +495,17 @@ one); `tests/test_studio_coverage.py` checks it.
   `interact_prompts`, `dialogue`), given the entry and the world's names: `{suggestions}`. Nothing
   is saved. `503` (with why and how to start it) without the language model, `404` for an unknown
   entry.
+- `GET /v1/augmentation`: `{enabled, model}`: whether world augmentation is on (`augmentation.enabled`,
+  the studio's tick, what `python main.py` reads) and its own language model's status (`augmentation.llm`:
+  Qwen3.5-4B on vLLM; `{available, mode, model, server, reason, how}`, a server asked which models it
+  serves). `PUT /v1/augmentation` `{enabled: true|false}` switches it (written into
+  `hyperparameters.yaml`, its comments kept; `422` for anything but a boolean). While it is off,
+  `POST /v1/jobs/world-proposal` is `409` and no job is queued; the proposal itself runs on Qwen3.5-4B,
+  not on the judge's model.
+- `GET /v1/world/revision`: `{revision}`, a fingerprint of the world's entries as stored (their
+  files' size and time of change) and of an uploaded configuration in use. It changes whenever an
+  entry is added, changed, renamed or deleted, by any client or by hand; the studio's content library
+  asks for it every 10 seconds and lists the entries again when it changed.
 - `GET /v1/world/size`: the world against the augmentation targets (`augmentation.min_*`):
   `{have, want, enough}` for locations, items, NPCs and outcomes. `POST /v1/jobs/world-proposal`:
   the language model proposes new places, people and items in the background (the job's result:
