@@ -224,7 +224,17 @@ runs/best_world.yaml
 runs/best_story.txt
 ```
 
-Augmented worlds are written under `augmentations/`. If `augmentation.save_to_source` is true, augmentation can also update files under [`config/`](../config/), so review diffs after augmentation.
+World augmentation is review first, in the terminal as in the studio (🌍 World → ✨ Grow the world),
+it is switched on or off by the tick there (`augmentation.enabled`), and it runs on its own language
+model, Qwen3.5-4B on vLLM ([LLM.md](LLM.md)).
+When `augmentation.enabled` is on and the world is below the augmentation targets, `python main.py`
+keeps the language model's proposal in `augmentations/run_<time>/proposal.yaml` (only the new
+locations, objects and characters) and changes no configuration; the run uses the world as it is.
+After reviewing (and editing) it, `python main.py --apply-augmentation augmentations/run_<time>/proposal.yaml`
+adds it: each entry must be new, and the whole world is checked with them, as the studio checks
+them; nothing is written when anything is wrong, and the rest of each file (the map's routes, for
+one) is kept. `augmentation.save_to_source` applies only to `WorldAugmenter.augment()` called
+directly from Python, which no entry point uses any more.
 
 ## Generated configuration and older bundles
 

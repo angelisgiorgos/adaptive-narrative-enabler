@@ -7,6 +7,61 @@ that introduces them.
 
 ## [Unreleased]
 
+### World augmentation: a tick, and its own model (Qwen3.5-4B on vLLM)
+
+#### Added
+- 🌍 World → ✨ Grow the world: **Augment the world with the language model**, a tick saved as
+  `augmentation.enabled` (what `python main.py` reads too). Off: *Propose* is disabled,
+  `POST /v1/jobs/world-proposal` is refused (409), and the terminal proposes nothing.
+- `GET`/`PUT /v1/augmentation`: whether augmentation is on and its model's status; switch it.
+- World augmentation runs on its own model, **Qwen3.5-4B** (float16, not quantized; text only; without
+  its thinking), a role of its own in `utils/llm_model_loader.py` (`augmentation.llm.*`,
+  `ANE_AUGMENT_URL`/`_MODEL`/`_API_KEY`/`_MODEL_PATH`). The judge and the editor's suggestions stay on
+  Gemma 4.
+- `compose.yaml`: the `augmenter` service (profile `augmenter`), serving the weights from
+  `/data/angelisg/llm_models/Qwen3.5-4B` (read-only) with the judge's vLLM image, on GPU 0; the API
+  finds it at `http://hamlet-ane-augmenter:8000/v1`.
+
+### Nine limitations fixed
+
+#### Added
+- 🧩 The condition builder is under every condition field: an action's *No longer offered once*, a
+  mission's *Offered only if*, and a dialogue line's *Said when* (choose the line; its condition is kept
+  in step with the table both ways), besides an entry's *Enabled if* and an action's *Offered only if*.
+- Renaming an entry renames what refers to it, in the same save: the map's routes, people's known places
+  and items, other entries' actions and conditions, missions, variables and the tuning parameters that
+  name a place. The other files are edited in place, their comments kept, and the message counts the
+  references per file. A name that also names something of another kind is not renamed elsewhere: a rename
+  that would then leave references dangling is refused, as before. Both `PUT .../draft` and `PUT
+  /v1/entities/{kind}/{name}` do this.
+- `GET /v1/world/revision`: a fingerprint of the world's entries. The content library looks at it every
+  10 seconds and lists changes made elsewhere (another browser, Grow the world, an import, a file edited
+  by hand) without ↻ Refresh, and says when the entry open in the editor was renamed or deleted elsewhere.
+- The address follows the destination open (`?section=…`, replaced in the browser's history), however it
+  was opened, and a banner or menu choice is marked at once, before the server answers (not with
+  unsaved changes, where the guard decides).
+- `python main.py --apply-augmentation FILE` adds a reviewed world augmentation proposal, checked as the
+  studio checks it.
+
+#### Changed
+- `python main.py` no longer writes world augmentation into `config/`: with `augmentation.enabled`, it
+  keeps the proposal in `augmentations/run_<time>/proposal.yaml` for review (only when the world is below
+  the augmentation targets) and runs with the world as it is. The old path rewrote `locations.yaml` and
+  dropped the map's routes and the files' comments.
+- The training work counts the turns a story may spend in fast travel (`travel.max_free_turns`, which do
+  not count toward its end) when the steps allow them; `GET /v1/simulations/work` adds
+  `fast_travel_turns`. With the shipped settings a full-length story counts 110 turns instead of 100
+  when more steps than its length are asked for.
+- The preview's *changes* list the map's changes too: a path that opens or closes, a place unlocked,
+  being held.
+- A quest cleared in ▶ Play because the new engine's world doesn't have it is named by its title (as
+  the world that listed it had it), with its key.
+
+#### Fixed
+- Old lint warnings: unused imports in `main.py` (the tests and the backend now import `_build_action`,
+  `_build_outcome`, `_stat_usage_errors` and `_fitness_breakdown` from `core_engine`), an unused
+  variable in `core_engine/game_state.py` and an unused import in `backend/sessions.py`.
+
 ### Jobs: followed again after a refresh, and cancelled
 
 #### Added

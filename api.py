@@ -1214,12 +1214,15 @@ class SimulationWork(BaseModel):
     allowed: bool = Field(description="work <= limit: a run asking for more is refused (400).")
     over_by: int = Field(description="How far work is above the limit (0 when allowed).")
     requested_steps: int = Field(description="The steps per story asked for (simulation_steps).")
-    effective_max_turns: int = Field(description="The most turns a story can take in this run.")
+    effective_max_turns: int = Field(description="The most turns a story can take in this run: its length plus "
+                                                 "fast_travel_turns, at most the steps played.")
     story_turns: int = Field(description="The same as effective_max_turns (kept for older clients).")
     full_length_stories: bool = Field(description="evolution.full_length_stories: every story is played to its end.")
     story_length: int = Field(description="Turns after which a story ends by itself (narrative_end.max_actions, at "
                                           "least 100).")
     steps_decide: bool = Field(description="Whether the requested steps set effective_max_turns.")
+    fast_travel_turns: int = Field(default=0, description="Turns of fast travel a story may take on top of its "
+                                                          "length (travel.max_free_turns; 0 with fast travel off).")
     override: WorkOverride | None = Field(default=None, description="Why the steps do not set it, when they do not.")
     factors: dict[str, int] = Field(description="The multiplication: storytellers, generations, "
                                                 "stories_per_storyteller, turns_per_story.")
@@ -2030,6 +2033,14 @@ def suggest_values(body: SuggestionRequest):
         _fail(exc)
 
 
+@api.get("/v1/world/revision", tags=["World authoring"])
+def get_world_revision():
+    """{revision}: a fingerprint of the world's entries as stored (and of an uploaded configuration in use).
+    It changes whenever an entry is added, changed, renamed or deleted, by any client or by hand: a client
+    listing the entries asks for it now and then and lists them again only when it changed."""
+    return content.world_revision()
+
+
 @api.get("/v1/world/size", tags=["World authoring"])
 def get_world_size():
     """How big the world is against the augmentation targets (augmentation.min_*): {have, want, enough}."""
@@ -2042,11 +2053,41 @@ class WorldAdditions(BaseModel):
     characters: list[dict[str, Any]] = Field(default_factory=list, description="NPCs, each with a name.")
 
 
+class AugmentationSwitch(BaseModel):
+    enabled: bool = Field(description="World augmentation on (true) or off (false): augmentation.enabled.")
+
+
+@api.get("/v1/augmentation", tags=["World authoring"])
+def get_augmentation():
+    """World augmentation: {enabled (augmentation.enabled: the studio's tick in 🌍 World → ✨ Grow the world,
+    and what python main.py reads), model: {available, mode, model, server, reason, how}} for its own
+    language model (augmentation.llm: Qwen3.5-4B served by vLLM; ANE_AUGMENT_URL selects a server). A
+    server is asked which models it serves (3 s at most)."""
+    return content.augmentation_state()
+
+
+@api.put("/v1/augmentation", tags=["World authoring"])
+def put_augmentation(body: AugmentationSwitch):
+    """Switch world augmentation on or off (augmentation.enabled in hyperparameters.yaml, its comments
+    kept). Off: POST /v1/jobs/world-proposal is refused (409) and python main.py proposes nothing.
+    Returns as GET /v1/augmentation."""
+    try:
+        return content.set_augmentation_enabled(body.enabled)
+    except Exception as exc:
+        _fail(exc)
+
+
 @api.post("/v1/jobs/world-proposal", status_code=202, tags=["Jobs", "World authoring"])
 def submit_world_proposal():
-    """Gemma proposes new places, people and items for this world, in the background (poll GET
-    /v1/jobs/{id}; the result is {locations, objects, characters}). Nothing is written: add the
-    ones wanted with POST /v1/world/additions."""
+    """The augmentation model (Qwen3.5-4B on vLLM: augmentation.llm) proposes new places, people and
+    items for this world, in the background (poll GET /v1/jobs/{id}; the result is {locations,
+    objects, characters}). Nothing is written: add the ones wanted with POST /v1/world/additions.
+    409 while world augmentation is off (PUT /v1/augmentation)."""
+    try:
+        content.require_augmentation()
+    except Exception as exc:
+        _fail(exc)
+
     def work(progress):
         return content.propose_additions()
     return sessions.submit_job("world-proposal", work, "new places, people and items from the language model")

@@ -334,6 +334,16 @@ THEME = gr.themes.Soft(primary_hue="violet", secondary_hue="indigo", neutral_hue
 DESTINATIONS = [("world", "🌍 World"), ("train", "🧠 Train"), ("play", "▶ Play"), ("evaluate", "⚖ Evaluate"),
                 ("export", "📦 Export"), ("advanced", "⚙ Advanced")]
 DESTINATION_IDS = [key for key, _ in DESTINATIONS]
+# A destination chosen and not yet answered (window.aneNavShow, DRAFT_HEAD): shown as the highlight, the
+# one open dimmed, until the server's answer sets the buttons' own variants.
+NAV_PENDING_CSS = ("#ane-banner[data-pending] > button.primary {background: var(--button-secondary-background-fill) "
+                   "!important; color: var(--button-secondary-text-color) !important; border-color: "
+                   "var(--button-secondary-border-color) !important}\n"
+                   + ",\n".join(f'#ane-banner[data-pending="{key}"] > #nav-{key}' for key in DESTINATION_IDS)
+                   + " {background: var(--button-primary-background-fill) !important; color: "
+                     "var(--button-primary-text-color) !important; border-color: var(--button-primary-border-color) "
+                     "!important}\n")
+CSS += NAV_PENDING_CSS
 WORKFLOW_IDS = DESTINATION_IDS[:5]  # the workflow, in order; Advanced stands apart
 EMPTY_ENTITY = {"name": "", "tags": [], "descriptions": [], "goals": [], "unique": False, "encounter_event": None,
                 "encounter_repeat": False, "enabled_if": None, "title": None, "stat_bonus": None,
@@ -1427,7 +1437,7 @@ def _offered(engine_id, choices, where):
 
 
 @ui
-def play_result_ui(done, profile, mission, stats_choice, stats_points=None):
+def play_result_ui(done, profile, mission, stats_choice, stats_points=None, titles=None):
     """▶ Play this result: a new game with exactly the completed engine starts in ▶ Play, with the
     player, quest and character chosen there (the user asked to play it: this is the game's start).
     Returns the navigation, the trained-AI picker (that engine), the setup panel (folded) and the new
@@ -1439,7 +1449,7 @@ def play_result_ui(done, profile, mission, stats_choice, stats_points=None):
     if mission:  # the quest chosen in ▶ Play may belong to another engine's world, or not be open to the profile
         offered = [value for _, value in quest_overview(profile, engine_id)[0]]
         if mission not in offered:
-            cleared = (f"  \nThe quest chosen before (`{mission}`) is not offered in this engine's world for profile "
+            cleared = (f"  \nThe quest chosen before, {quest_name(mission, titles)}, is not offered in this engine's world for profile "
                        f"`{profile or 'default'}`: the story drew one.")
             mission = ""
     token, *game, status = play_new_game_ui(engine_id, profile, mission, stats_choice, stats_points)
@@ -1983,7 +1993,9 @@ def _steps_look(work):
                 "info": f"Every story is played to its end: up to {work['effective_max_turns']} turns.",
                 "elem_classes": ["steps", "steps-unused"]}
     return {"label": f"{STEPS_LABEL} · capped at {work['effective_max_turns']}",
-            "info": f"Stories end by themselves after {work['story_length']} turns; steps above it are not played.",
+            "info": f"Stories end by themselves after {work['story_length']} turns"
+                    + (f" (plus up to {work['fast_travel_turns']} of fast travel)" if work.get("fast_travel_turns") else "")
+                    + "; steps above it are not played.",
             "elem_classes": ["steps", "steps-unused"]}
 
 
@@ -2256,18 +2268,41 @@ def quest_world_markdown(world, label=None):
     return (f"**Quests from the active world** (no trained AI chosen): {counts} · world `{world['digest'][:12]}`.")
 
 
+def quest_name(key, titles=None):
+    """A quest's title as the page last listed it (``titles``: {key: title}, play_quests_titled_ui), with
+    its key; just the key when it was never listed."""
+    title = (titles or {}).get(key)
+    return f"**{title}** (`{key}`)" if title and title != key else f"**{key}**"
+
+
 @ui
-def play_quests_ui(engine_id, profile, chosen=""):
+def play_quests_titled_ui(engine_id, profile, chosen="", titles=None):
+    """play_quests_ui, remembering the titles of the quests listed ({key: title}, merged with those listed
+    before): a quest of another engine's world, cleared later, is then named by its title, which the new
+    world does not know. Returns play_quests_ui's outputs and the titles."""
+    picker, overview, note, listed = _play_quests(engine_id, profile, chosen, titles)
+    return picker, overview, note, {**(titles or {}), **listed}
+
+
+@ui
+def play_quests_ui(engine_id, profile, chosen="", titles=None):
     """The quests a new game may have, for the trained AI and the profile chosen: read from that engine's
     saved world (the active configuration is not changed) with the profile's save game. A quest chosen
     before that is not offered now (not in that world, or not open to the profile) is cleared, saying
-    why. Returns (the quest picker, the quests' overview, the note beside the picker)."""
+    why (by its title: from this world, else from ``titles``, else its key). Returns (the quest picker,
+    the quests' overview, the note beside the picker)."""
+    return _play_quests(engine_id, profile, chosen, titles)[:3]
+
+
+def _play_quests(engine_id, profile, chosen, titles):
     try:
         data = API.get("/v1/missions/playable", profile=profile or None, engine_id=engine_id or None)
     except APIError as exc:
         return (gr.Dropdown(choices=[(ANY_QUEST, "")], value=""), "",
-                f"⚠ The quests of engine `{(engine_id or '')[:8]}` could not be read ({exc}): the story will draw one.")
+                f"⚠ The quests of engine `{(engine_id or '')[:8]}` could not be read ({exc}): the story will draw one.",
+                {})
     choices, text = _quests_text(data["missions"], profile)
+    listed = {q["key"]: q.get("title") or q["key"] for q in data["missions"]}
     label = None
     if engine_id:
         label = next((name for name, value in finished_run_choices() if value == engine_id), None)
@@ -2279,11 +2314,11 @@ def play_quests_ui(engine_id, profile, chosen=""):
         why = ("is not in this engine's world" if quest is None else
                f"was already achieved in profile `{profile or 'default'}`'s save game" if quest.get("achieved") else
                f"is not open to profile `{profile or 'default'}` now")
-        name = quest["title"] if quest else chosen
-        note = (f"⚠ The quest chosen before, **{name}**, {why}: it was cleared (the story draws one, or choose "
+        name = quest_name(chosen, {**(titles or {}), **listed})
+        note = (f"⚠ The quest chosen before, {name}, {why}: it was cleared (the story draws one, or choose "
                 "another).  \n" + note)
         chosen = ""
-    return gr.Dropdown(choices=choices, value=chosen or ""), text, note
+    return gr.Dropdown(choices=choices, value=chosen or ""), text, note, listed
 
 
 @ui
@@ -3214,6 +3249,37 @@ def judge_status_ui():
             f"{status.get('how') or ''}")
 
 
+def augmentation_markdown(state):
+    """Beside the tick: whether augmentation is on, and its own language model (augmentation.llm:
+    Qwen3.5-4B on vLLM) ready, or why not and how to start it."""
+    model = state.get("model") or {}
+    if not state.get("enabled"):
+        head = "☐ **World augmentation is off.** Tick it to let the language model propose new entries."
+    else:
+        head = "☑ **World augmentation is on.**"
+    if model.get("available"):
+        where = f" at `{model['server']}`" if model.get("server") else " (in the API's process)"
+        return f"{head}  \n✅ **Its model is ready:** {model.get('model')}{where}."
+    return (f"{head}  \n⚠ **Its model ({model.get('model')}) is not available here.** {model.get('reason') or ''}"
+            f"\n\n{model.get('how') or ''}")
+
+
+@ui
+def augmentation_ui():
+    """🌍 World → ✨ Grow the world, on loading: the tick (augmentation.enabled), its model's status and
+    whether *Propose* can be pressed (GET /v1/augmentation)."""
+    state = API.get("/v1/augmentation")
+    return (gr.Checkbox(value=bool(state["enabled"])), augmentation_markdown(state),
+            gr.Button(interactive=bool(state["enabled"])))
+
+
+@ui
+def set_augmentation_ui(enabled):
+    """The tick: world augmentation switched on or off, saved (PUT /v1/augmentation); *Propose* follows."""
+    state = API.put("/v1/augmentation", {"enabled": bool(enabled)})
+    return augmentation_markdown(state), gr.Button(interactive=bool(state["enabled"]))
+
+
 def judgement_markdown(result, title="Judgement"):
     """A judgement of one story: engagement, the criteria, the best and weakest moments, the verdict."""
     if result.get("engagement") is None:
@@ -3835,6 +3901,53 @@ def wire_condition_builder(panel, field, where, after):
             action, tree, target, kind, subject, op, value, where),
             [b["tree"], b["target"], b["kind"], b["subject"], b["op"], b["value"]],
             [b["tree"], field, b["tree_view"], b["target"], b["status"]], show_progress="hidden").success(**after)
+
+
+def _dialogue_frame(dialogue):
+    """The dialogue table as a DataFrame of (condition, line) text (empty when there is none)."""
+    columns = ["Said when (condition, empty: always)", "Says"]
+    if dialogue is None:
+        return pd.DataFrame(columns=columns)
+    frame = dialogue if isinstance(dialogue, pd.DataFrame) else pd.DataFrame(dialogue)
+    return frame if len(frame.columns) == 2 else pd.DataFrame(columns=columns)
+
+
+def _dialogue_cell(value):
+    return "" if value is None or (isinstance(value, float) and pd.isna(value)) else str(value)
+
+
+def dialogue_lines_ui(dialogue, line=None, condition=""):
+    """The dialogue table changed (a load, or an edit): the lines its builder can take (the chosen one
+    kept while it is there) and that line's condition, when it differs from the field (so the field and
+    the table never echo each other). Returns (the line picker, the condition field)."""
+    frame = _dialogue_frame(dialogue)
+    choices = [(f"{index + 1}. {_dialogue_cell(row.iloc[1])[:50] or '(no line yet)'}", index)
+               for index, (_, row) in enumerate(frame.iterrows())]
+    line = line if isinstance(line, int) and 0 <= line < len(frame) else (0 if len(frame) else None)
+    held = _dialogue_cell(frame.iat[line, 0]).strip() if line is not None else ""
+    # Only the value: whether the field can be typed in is the builder's (it writes the field itself).
+    field = gr.skip() if held == str(condition or "").strip() else gr.Textbox(value=held)
+    return gr.Dropdown(choices=choices, value=line), field
+
+
+def dialogue_line_condition_ui(dialogue, line):
+    """A line chosen for the builder: its condition, into the field."""
+    frame = _dialogue_frame(dialogue)
+    if not isinstance(line, int) or not 0 <= line < len(frame):
+        return gr.Textbox(value="")
+    return gr.Textbox(value=_dialogue_cell(frame.iat[line, 0]).strip())
+
+
+def dialogue_write_condition_ui(dialogue, line, condition):
+    """The field changed (typed, or written by the builder): into its line of the table, only when it
+    differs (else nothing, so the table and the field never echo each other)."""
+    frame = _dialogue_frame(dialogue)
+    if not isinstance(line, int) or not 0 <= line < len(frame) or _dialogue_cell(frame.iat[line, 0]).strip() == str(
+            condition or "").strip():
+        return gr.skip()
+    frame = frame.copy()
+    frame.iat[line, 0] = str(condition or "").strip()
+    return frame
 
 
 def _parse_flow(text, what):
@@ -4578,7 +4691,10 @@ def _library_view(query, kind_filter, loaded, entries=None, limit=None):
         status += "."
     if current:
         name = f"**{loaded['entity']}** ({loaded['kind']})"
+        exists = any(e["name"] == loaded["entity"] for e in entries.get(loaded["kind"], []))
         status += (f"  \nOpen in the editor: {name}." if selected else
+                   f"  \n⚠ Open in the editor: {name}, no longer in the world (renamed or deleted elsewhere): saving "
+                   "it would add it again; choose another entry, or discard it." if not exists else
                    f"  \nOpen in the editor: {name}, hidden by the search or filter: it stays open, nothing else "
                    "was chosen.")
     return filters, shown, selected, status, len(shown), len(results)
@@ -4595,6 +4711,23 @@ def library_ui(query, kind_filter, loaded, limit=None):
     more = gr.Button(value=f"Show {min(LIBRARY_LIMIT, left)} more ({left} not shown)", visible=left > 0)
     return (gr.Radio(choices=filters, value=kind_filter), gr.Radio(choices=shown, value=selected), status, more,
             max(count, LIBRARY_LIMIT))
+
+
+LIBRARY_WATCH = 10.0  # seconds between two looks at the world's revision (changes made elsewhere)
+
+
+@ui
+def library_watch_ui(known, query, kind_filter, loaded, limit=None):
+    """Now and then: the world's revision (GET /v1/world/revision). Changed since it was last seen (an
+    entry added, changed, renamed or deleted by another browser, a tool, an import or by hand): the
+    library is listed again (library_ui; the editor is not touched). Unchanged: nothing. Returns the
+    library's outputs and the revision seen."""
+    revision = API.get("/v1/world/revision")["revision"]
+    if revision == known:
+        return (*[gr.skip()] * 5, known)
+    if known is None:  # the first look (the page has just listed it): only remembered
+        return (*[gr.skip()] * 5, revision)
+    return (*library_ui(query, kind_filter, loaded, limit), revision)
 
 
 @ui
@@ -5745,7 +5878,43 @@ DRAFT_HEAD = """<script>
 window.addEventListener("beforeunload", (event) => {
   if (document.querySelector('.draft-status[data-dirty="1"]')) { event.preventDefault(); event.returnValue = ""; }
 });
+// The banner's highlight, at once: a destination chosen in the banner or the menu is marked pending
+// (data-pending, styled as the highlight: NAV_PENDING_CSS) before the server answers, unless an editor
+// has unsaved changes (its guard may keep the page where it is: the answer then decides). The buttons'
+// own classes stay Gradio's; the server's answer sets them and clears the mark (or, unanswered, 10 s).
+window.aneNavShow = (key) => {
+  const banner = document.getElementById("ane-banner");
+  if (!banner || document.querySelector('.draft-status[data-dirty="1"]')) return;
+  banner.dataset.pending = key;
+  clearTimeout(window.aneNavPending);
+  window.aneNavPending = setTimeout(() => { delete banner.dataset.pending; }, 10000);
+};
+// The address follows the destination open, however it was opened (the banner, the menu, a guard's
+// answer, ▶ Play this result...): ?section=<destination>, so a reload or a copied link opens it again.
+(function followTheBanner() {
+  const banner = document.getElementById("ane-banner");
+  if (!banner) { setTimeout(followTheBanner, 500); return; }
+  const write = () => {
+    delete banner.dataset.pending;  // the server has answered: its highlight is the one shown
+    const on = banner.querySelector('button.primary[id^="nav-"]');
+    if (!on) return;
+    const key = on.id.slice(4), url = new URL(window.location.href), now = url.searchParams.get("section");
+    if (now === key || (!now && key === "world")) return;
+    url.searchParams.set("section", key);
+    history.replaceState(history.state, "", url);
+  };
+  new MutationObserver(write).observe(banner, {subtree: true, childList: true, attributes: true,
+                                               attributeFilter: ["class"]});
+  write();
+})();
 </script>"""
+
+
+def nav_show_js(key=None):
+    """The client-side half of a banner click (key) or a menu choice (key None: its first input): the
+    highlight at once (window.aneNavShow, DRAFT_HEAD); the inputs go on to the server unchanged."""
+    shown = json.dumps(key) if key else "args[0]"
+    return f"(...args) => {{ window.aneNavShow && window.aneNavShow({shown}); return args; }}"
 
 
 def world_size_ui():
@@ -6225,6 +6394,8 @@ def build_app():
                                                      visible=library_total > len(library_found), size="sm",
                                                      elem_id="library-more")
                             library_shown = gr.State(LIBRARY_LIMIT)  # how many results are listed (a page more each time)
+                            library_revision = gr.State(None)  # the world's revision the list was made from
+                            library_timer = gr.Timer(LIBRARY_WATCH)  # a look for changes made elsewhere
                         with gr.Row():
                             kind = gr.Radio(REFERENCE["entity_kinds"], value="Locations", label="Content type")
                             entity = gr.Dropdown(label="Entry", choices=names, value=selected_name)
@@ -6381,6 +6552,7 @@ def build_app():
                                         act_until = gr.Textbox(label="No longer offered once",
                                                                placeholder="e.g. action_done: Crack the main safe")
                                 action_condition = condition_builder_panel("action-condition", "Offered only if")
+                                until_condition = condition_builder_panel("action-until", "No longer offered once")
                                 gr.Markdown("**Outcomes**")
                                 with gr.Row(equal_height=True):
                                     out_pick = gr.Dropdown(label="Outcome", choices=[], value=None, scale=4)
@@ -6464,6 +6636,15 @@ def build_app():
                                                                 datatype=["str", "str"], column_count=(2, "fixed"), interactive=True,
                                                                 wrap=True, label="What they say when talked with (the first line "
                                                                 "whose condition holds)")
+                                    with gr.Row():
+                                        dialogue_line = gr.Dropdown([], value=None, label="A line's condition", scale=1,
+                                                                    elem_id="dialogue-line",
+                                                                    info="Choose a line to build its condition.")
+                                        dialogue_condition_text = gr.Textbox(
+                                            label="Said when (this line's condition, empty: always)", scale=3,
+                                            elem_id="dialogue-condition-text",
+                                            placeholder="e.g. has_item: Ancient Map")
+                                    dialogue_condition = condition_builder_panel("dialogue-condition", "Said when")
                                 with gr.Group(visible=False) as place_details:
                                     with gr.Row():
                                         det_distant = gr.Textbox(label="Seen from afar", lines=3, info="One per line.")
@@ -6542,6 +6723,7 @@ def build_app():
                             mis_description = gr.Textbox(label="Description", lines=2)
                             with gr.Row():
                                 mis_enabled = gr.Textbox(label="Offered only if", placeholder="e.g. thief_caught: false")
+                                mission_condition = condition_builder_panel("mission-condition", "Offered only if")
                                 mis_rewards = gr.Textbox(label="Rewards when complete",
                                                          placeholder="change_coins: 10; change_variable: {reputation: 1}")
                             mis_stages = gr.Dataframe(headers=STAGE_COLUMNS, datatype=["str", "str", "str", "str"],
@@ -6721,9 +6903,14 @@ def build_app():
                         behaviour_draft = gr.State({})
 
                     with gr.Tab(WORLD_SECTIONS["grow"], id="grow") as section_grow:
-                        gr.Markdown("The language model proposes new **places, people and items** that fit this world (its places "
-                                    "and tags). Nothing is written until you add them: each must be new, and the whole world is "
-                                    "checked with them in place. The targets are `augmentation.min_*` (⚙ Advanced → Engine logic).")
+                        gr.Markdown("The augmentation model (**Qwen3.5-4B** on vLLM, its own: the judge stays Gemma 4) proposes "
+                                    "new **places, people and items** that fit this world (its places and tags). Nothing is "
+                                    "written until you add them: each must be new, and the whole world is checked with them in "
+                                    "place. The targets are `augmentation.min_*` (⚙ Advanced → Engine logic).")
+                        augment_tick = gr.Checkbox(False, label="Augment the world with the language model",
+                                                   elem_id="grow-augment",
+                                                   info="Saved (augmentation.enabled). Off: nothing is proposed, here or by "
+                                                        "python main.py.")
                         with gr.Row():
                             world_size = gr.Dataframe(label="The world's size", interactive=False, scale=2)
                             with gr.Column(scale=1):
@@ -6812,6 +6999,11 @@ def build_app():
                       show_progress="hidden")
                 library_more.click(library_more_ui, [*library_inputs, library_shown], library_outputs,
                                    show_progress="hidden")
+                # Changes made elsewhere (another browser, a tool, an import, by hand): seen by the world's
+                # revision, now and then; the list follows without a click.
+                gr.on([library_timer.tick, demo.load], library_watch_ui,
+                      [library_revision, *library_inputs, library_shown], [*library_outputs, library_revision],
+                      trigger_mode="always_last", show_progress="hidden")
                 library_results.input(*tracked(library_choice_ui, [library_results, *guard_inputs], draft_outputs)).then(
                     library_ui, [*library_inputs, library_shown], library_outputs, show_progress="hidden")
                 entity.input(*tracked(entry_choice_ui, [kind, entity, *guard_inputs], draft_outputs))
@@ -6877,6 +7069,17 @@ def build_app():
                 # The condition builders write their field; its part's draft status follows.
                 wire_condition_builder(entry_condition, enabled_if, "Enabled if", part_status["fields"])
                 wire_condition_builder(action_condition, act_enabled, "Offered only if", part_status["action"])
+                wire_condition_builder(until_condition, act_until, "until", part_status["action"])
+                # A dialogue line's condition: the line chosen, its condition in a field kept in step with the
+                # table both ways (each writes only what differs), and the builder on that field.
+                det_dialogue.change(dialogue_lines_ui, [det_dialogue, dialogue_line, dialogue_condition_text],
+                                    [dialogue_line, dialogue_condition_text], show_progress="hidden")
+                dialogue_line.input(dialogue_line_condition_ui, [det_dialogue, dialogue_line], dialogue_condition_text,
+                                    show_progress="hidden")
+                dialogue_condition_text.change(dialogue_write_condition_ui,
+                                               [det_dialogue, dialogue_line, dialogue_condition_text], det_dialogue,
+                                               show_progress="hidden").then(**part_status["details"])
+                wire_condition_builder(dialogue_condition, dialogue_condition_text, "dialogue", part_status["details"])
                 # An action's outcomes are switched, added and removed inside its draft (saved with Save action).
                 out_pick.input(pick_outcome_ui, [action_state, out_pick, *outcome_fields],
                                [action_state, *outcome_fields]).then(**part_status["action"])
@@ -6961,6 +7164,11 @@ def build_app():
                             editor, form_resolve_ui(editor, choice, pending, context, base, dirty, *vals)),
                             [pending_state, layout["context"], forms_base, drafts_dirty, *values], form_outputs(editor))
                 pick_inputs = {editor: [form_layouts[editor]["context"], forms_base, drafts_dirty] for editor in form_layouts}
+                # The mission's condition builder writes its field; the mission's draft status follows.
+                wire_condition_builder(mission_condition, mis_enabled, "Offered only if", {
+                    "fn": lambda base, dirty, *vals: form_part_status_ui("missions", "mission", base, dirty, *vals),
+                    "inputs": [forms_base, drafts_dirty, *mission_fields], "outputs": [drafts_dirty, missions_draft_status],
+                    "show_progress": "hidden"})
                 mis_pick.input(lambda target, context, base, dirty: form_emit("missions", form_pick_ui(
                     "missions", target, context, base, dirty)), [mis_pick, *pick_inputs["missions"]], form_outputs("missions"))
                 mis_new.click(lambda context, base, dirty: form_emit("missions", form_pick_ui(
@@ -7054,7 +7262,8 @@ def build_app():
                                       [descriptions, goals, tags, det_distant, det_entered, det_prompts, det_dialogue,
                                        suggest_status]).then(**part_status["fields"]).then(**part_status["details"])
                 demo.load(world_size_ui, None, world_size)
-                demo.load(judge_status_ui, None, grow_llm_status)
+                demo.load(augmentation_ui, None, [augment_tick, grow_llm_status, propose_button])
+                augment_tick.input(set_augmentation_ui, augment_tick, [grow_llm_status, propose_button])
                 propose_button.click(propose_world_ui, None, [proposal_pick, proposal_text, grow_status],
                                      concurrency_limit=1, concurrency_id="language_model")
                 proposal_text.change(sync_proposal_ui, [proposal_text, proposal_pick, proposal_offered],
@@ -7279,6 +7488,7 @@ def build_app():
                         play_stats = gr.Dropdown(PLAY_STATS, value="story default", label="Character", scale=2,
                                                  info="My own points: set them below.")
                     play_quest_world = gr.Markdown(elem_id="play-quest-world")
+                    play_quest_titles = gr.State({})  # {key: title} of the quests listed: a cleared one is named
                     with gr.Row():
                         play_new = gr.Button("▶ New game", variant="primary", scale=3)
                         play_upload = gr.UploadButton("📂 Continue a save game", file_types=[".json"],
@@ -7383,9 +7593,10 @@ def build_app():
                     event.success(lambda: play_runs_ui(), None, play_run).then(studio_status_ui, None, studio_status)
                 # The quests follow the chosen AI (its own saved world) and the profile (its save game): on
                 # either change, and on loading the page; a quest no longer offered is cleared, saying why.
-                quest_outputs = [play_quest, quest_overview_md, play_quest_world]
+                quest_outputs = [play_quest, quest_overview_md, play_quest_world, play_quest_titles]
                 for event in (play_run.change, play_who.change, refresh_quests.click, demo.load):
-                    event(play_quests_ui, [play_run, play_who, play_quest], quest_outputs, show_progress="hidden")
+                    event(play_quests_titled_ui, [play_run, play_who, play_quest, play_quest_titles], quest_outputs,
+                          show_progress="hidden")
                 randomize_stats.click(lambda: stats_points_text("random"), None, stats_points).then(
                     lambda: "defined", None, play_stats)
                 balance_stats.click(lambda: stats_points_text("balanced"), None, stats_points).then(
@@ -7978,12 +8189,12 @@ def build_app():
                 show_progress="hidden")
         section_now.change(world_nav_ui, [section_now, content_last], world_nav_outputs, show_progress="hidden")
         nav_events = {key: button.click(lambda *rest, key=key: leave_emit(nav_choice_ui(key, *rest)), leave_inputs,
-                                        leave_outputs,
+                                        leave_outputs, js=nav_show_js(key),
                                         show_progress="hidden")
                       for key, button in zip(DESTINATION_IDS, nav_buttons)}
         train_button_event = nav_events["train"]
         menu_event = nav_menu.input(lambda key, *rest: leave_emit(nav_choice_ui(key, *rest)), [nav_menu, *leave_inputs],
-                                    leave_outputs, show_progress="hidden")
+                                    leave_outputs, js=nav_show_js(), show_progress="hidden")
         destination_tabs = {"world": world_tab, "train": train_tab, "play": play_tab, "evaluate": evaluate_tab,
                             "export": export_tab, "advanced": advanced_tab}
         for key, tab in destination_tabs.items():  # a tab chosen another way: the banner and the menu follow
@@ -8020,7 +8231,7 @@ def build_app():
 
         # 🧠 Train's completed engine, carried by its exact id to ▶ Play, ⚖ Evaluate and 📦 Export: each opens
         # with that engine chosen, and nothing starts (no game, no judgement, no export) until the user asks.
-        play_result.click(play_result_ui, [train_result, *player_inputs],
+        play_result.click(play_result_ui, [train_result, *player_inputs, play_quest_titles],
                           [*nav_outputs, play_run, play_setup, *new_game_outputs], concurrency_limit=1).success(
             integration_session_text, play_token, integration_session, show_progress="hidden")
         evaluate_result.click(evaluate_result_ui, train_result, [*nav_outputs, eval_target, eval_engine, evaluate_note],

@@ -2,24 +2,27 @@ import json
 
 
 from utils.config_loader import config
-from utils.llm_model_loader import get_llm_runtime
+from utils.llm_model_loader import get_llm_runtime, settings
 
 
 class LLMNarrativeEvaluator:
+    """A language model to prompt: the judge's (``role="judge"``: Gemma 4, vllm.*) or the world
+    augmentation's (``role="augmentation"``: Qwen3.5-4B, augmentation.llm.*)."""
+
     def __init__(
         self,
         model_name=None,
         max_new_tokens=None,
-        temperature=None
+        temperature=None,
+        role="judge",
     ):
-        self.model_name = model_name or config.get(
-            "vllm.model_name",
-            "google/gemma-4-E4B-it",
-        )
-        self.max_new_tokens = max_new_tokens or config.get("llm_evaluator.max_new_tokens", 2048)
-        self.temperature = temperature or config.get("llm_evaluator.temperature", 0.3)
+        self.role = role
+        self.model_name = model_name or settings(role)["model_name"]
+        section = "augmentation.llm" if role == "augmentation" else "llm_evaluator"
+        self.max_new_tokens = max_new_tokens or config.get(f"{section}.max_new_tokens", 2048)
+        self.temperature = temperature or config.get(f"{section}.temperature", 0.3)
 
-        self.runtime = get_llm_runtime(self.model_name)
+        self.runtime = get_llm_runtime(self.model_name, role=role)
 
     # ----------------------------
     # Core generation

@@ -144,10 +144,56 @@
 "d0ff5974b6aa52cf"
 ],
 "augmentation": [
+"4810794ccae9814f",
 "7368ef0ed658da41"
 ],
 "augmentation.enabled": [
 "b5bea41b6c623f7c"
+],
+"augmentation.llm": [
+"018a4a3ab50169e3"
+],
+"augmentation.llm.api_key": [
+"8619dfb2c4555eb0"
+],
+"augmentation.llm.base_url": [
+"87073f35284d3d08"
+],
+"augmentation.llm.dtype": [
+"c530cec0a49eba24"
+],
+"augmentation.llm.enable_thinking": [
+"fcbcf165908dd18a"
+],
+"augmentation.llm.gpu_memory_utilization": [
+"ce5d3aa79ae56155"
+],
+"augmentation.llm.limit_mm_per_prompt": [
+"77920d1d2fc284d8"
+],
+"augmentation.llm.limit_mm_per_prompt.image": [
+"5feceb66ffc86f38"
+],
+"augmentation.llm.limit_mm_per_prompt.video": [
+"5feceb66ffc86f38"
+],
+"augmentation.llm.max_model_len": [
+"864a936a35324151"
+],
+"augmentation.llm.max_new_tokens": [
+"82147211de4c4b84"
+],
+"augmentation.llm.mode": [
+"c0f0ad2c21d3bbd2"
+],
+"augmentation.llm.model_name": [
+"f2da2d4fd266693a"
+],
+"augmentation.llm.model_path": [
+"c6193703d6231f4a"
+],
+"augmentation.llm.temperature": [
+"973b372a514f91db"
 ],
 "augmentation.min_items": [
 "f5ca38f748a1d6ea"
@@ -3229,6 +3275,12 @@
 "action_selection.spawn_weight": 1.5,
 "action_selection.stay_penalty_power": 2.2,
 "action_selection.threat_weight": 1.0,
+"augmentation.llm.gpu_memory_utilization": 0.75,
+"augmentation.llm.limit_mm_per_prompt.image": 0,
+"augmentation.llm.limit_mm_per_prompt.video": 0,
+"augmentation.llm.max_model_len": 8192,
+"augmentation.llm.max_new_tokens": 3072,
+"augmentation.llm.temperature": 0.7,
 "augmentation.min_items": 20,
 "augmentation.min_locations": 12,
 "augmentation.min_npcs": 15,
