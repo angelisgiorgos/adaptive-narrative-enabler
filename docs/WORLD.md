@@ -2,7 +2,7 @@
 
 The world is YAML under `config/`: places, NPCs, items, events, missions, stats, variables,
 messages and the tuning. This guide covers every authoring feature; the studio's
-*🌍 World* and *⚙ Settings* tabs edit the same files
+*🌍 World* and *⚙ Advanced* destinations edit the same files
 ([STUDIO.md](STUDIO.md)).
 
 ## Configuration Files
@@ -1298,7 +1298,7 @@ rewards stealth and talk more than fighting, because most fights first need
 a weapon.
 
 **Where to set it:**
-- **Studio:** *⚙ Settings → Story → Character stats* (definitions);
+- **Studio:** *🌍 World → 📜 Story rules → Character stats* (definitions);
   *▶ Play → Character* and *My own stat points* (story default, random,
   balanced, or your own points, with **Randomize**/**Balance** and a live
   points check); *Create the world* → item **Stat bonus while held**; and

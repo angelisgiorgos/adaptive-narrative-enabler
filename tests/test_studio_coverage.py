@@ -52,6 +52,7 @@ CLIENT_ONLY = {
     ("GET", "/v1/documents"): "/v1/reference lists the documents",
     ("GET", "/v1/runs"): "the studio keeps its run; earlier runs: /v1/records/runs",
     ("POST", "/v1/simulations"): "/v1/jobs/simulations (with progress)",
+    ("GET", "/v1/simulations/work"): "/v1/simulations/resolve (its `work`, with every other resolved setting)",
     ("POST", "/v1/records/engines/{engine_id}/continue"): "/v1/jobs/engines/{engine_id}/continue",
     ("POST", "/v1/records/engines/{engine_id}/retrain"): "/v1/jobs/engines/{engine_id}/retrain",
     ("GET", "/v1/sessions/{session_id}"): "every action returns the game's state",
@@ -134,6 +135,42 @@ class EndpointCoverageTests(unittest.TestCase):
             if target:
                 with self.subTest(endpoint=path):
                     self.assertTrue(reached(_signature(target.group(0))), equivalent)
+
+
+class FrontendGuideTests(unittest.TestCase):
+    """docs/FRONTEND.md, the guide a frontend is built from, stays true to the API: its endpoint index
+    lists every route exactly once, and every request it names anywhere is a route."""
+
+    GUIDE = ROOT / "docs" / "FRONTEND.md"
+    REQUEST = re.compile(r"\b(GET|PUT|POST|PATCH|DELETE)\s+`?(/v1/[^\s`?)|,;\\]*)")
+
+    @staticmethod
+    def _routes():
+        return {(method, route.path) for route in api.api.routes if getattr(route, "path", "").startswith("/v1")
+                for method in getattr(route, "methods", set()) - {"HEAD", "OPTIONS"}}
+
+    def _text(self):
+        return self.GUIDE.read_text(encoding="utf-8")
+
+    def test_the_endpoint_index_lists_every_route_once(self):
+        index = self._text().split("\n# Endpoint index", 1)[1]
+        rows = re.findall(r"^\| `(GET|PUT|POST|PATCH|DELETE)` \| `(/v1/[^`]*)` \|", index, flags=re.M)
+        self.assertEqual(len(rows), len(set(rows)), "an endpoint is listed twice")
+        listed, routes = set(rows), self._routes()
+        self.assertEqual(sorted(routes - listed), [], "routes missing from the guide's endpoint index")
+        self.assertEqual(sorted(listed - routes), [], "the guide's endpoint index lists routes the API does not have")
+
+    def test_every_request_the_guide_names_exists(self):
+        routes = {(method, _signature(path)) for method, path in self._routes()}
+
+        def exists(method, signature):  # the guide may name a value (Locations) where the route has {kind}
+            return any(m == method and len(s) == len(signature) and all(a == b or "*" in (a, b)
+                                                                       for a, b in zip(s, signature))
+                       for m, s in routes)
+
+        unknown = sorted({f"{method} {path}" for method, path in self.REQUEST.findall(self._text())
+                          if not exists(method, _signature(path.rstrip(".:")))})
+        self.assertEqual(unknown, [], "requests named in docs/FRONTEND.md that the API does not have")
 
 
 class _CoverageSandbox(_Sandbox):
@@ -368,6 +405,154 @@ class StudioHandlerTests(_CoverageSandbox):
         weights, message = app.save_term_weights_ui("climax: 1.5\n")
         self.assertEqual(yaml.safe_load(weights), {"climax": 1.5})
         self.assertIn("Saved 1", message)
+
+
+
+class StudioFixesTests(_CoverageSandbox):
+    """Studio handlers that lost or overwrote data, or offered controls that could not work (the gaps found
+    while writing docs/FRONTEND.md): each now keeps what was written, or says why it cannot."""
+
+    def _mission(self, key):  # as saved (the sandbox does not reload the active configuration)
+        return yaml.safe_load((self.dir / "missions.yaml").read_text())["world_definition"]["missions"][key]
+
+    def test_a_mission_is_never_replaced_by_a_new_one_and_keeps_its_weight_and_step(self):
+        import gradio as gr
+        import pandas as pd
+
+        import app
+        new = app.mission_form_ui(None)[-1]
+        step = pd.DataFrame([["Get a shield", "Buy one at the market.", "item: Heavy Shield", ""]],
+                            columns=app.STAGE_COLUMNS)
+        with self.assertRaises(gr.Error):  # a taken key: refused, the mission there is untouched
+            app.save_mission_form_ui(new, "shield_bearer", "Another", "", 1.0, "", "", step)
+        with self.assertRaises(gr.Error):  # no key at all
+            app.save_mission_form_ui(new, "", "Another", "", 1.0, "", "", step)
+        self.assertEqual(self._mission("shield_bearer")["title"], "Find a shield")
+        # Weight 0 (never drawn) is a weight; one step with a description stays a step.
+        app.save_mission_form_ui(new, "never_drawn", "Never drawn", "", 0, "", "", step)
+        saved = self._mission("never_drawn")
+        self.assertEqual(saved["weight"], 0)
+        self.assertEqual(saved["stages"][0]["description"], "Buy one at the market.")
+        self.assertNotIn("goal", saved)
+        with patch.object(app.API, "get", return_value={"mission": saved}):
+            self.assertEqual(app.mission_form_ui("never_drawn")[3], 0.0)  # shown as 0, not 1
+        # A step that holds only its goal: a one-goal mission, as before.
+        state = app.mission_form_ui("shield_bearer")[-1]
+        only_goal = pd.DataFrame([["Find a shield", "", "item: Heavy Shield", ""]], columns=app.STAGE_COLUMNS)
+        app.save_mission_form_ui(state, "shield_bearer", "Find a shield", "", 1.0, "", "", only_goal)
+        self.assertEqual(self._mission("shield_bearer")["goal"], {"item": "Heavy Shield"})
+
+    def test_a_new_entry_never_replaces_one_of_the_same_name(self):
+        import gradio as gr
+
+        import app
+        with self.assertRaises(gr.Error):
+            app.save_entity_ui("NPCs", None, "Merchant", ["x"], "Someone else.", "", False, "", False, "", "", "",
+                               False, 1.0)
+        merchant = self.client.get("/v1/entities/NPCs/Merchant").json()
+        self.assertNotEqual(merchant["descriptions"], ["Someone else."])
+
+    def test_scheduling_is_for_events_and_items_only(self):
+        import gradio as gr
+
+        import app
+        self.assertEqual([u["visible"] for u in app.policy_controls_ui("Locations")], [False, False])
+        self.assertEqual([u["visible"] for u in app.policy_controls_ui("Events")], [True, True])
+        with self.assertRaises(gr.Error):  # a clear message, not the API's 422
+            app.save_entity_policy_ui("Locations", "Harbor", "trigger: random\n")
+
+    def test_dialogue_variants_stay_variants(self):
+        import pandas as pd
+
+        import app
+        details = self.client.get("/v1/entities/NPCs/Merchant/details").json()["details"]
+        details["dialogue"] = [{"text": ["Hello.", "Welcome!"]}, {"text": "Bye."}]
+        self.assertEqual(self.client.put("/v1/entities/NPCs/Merchant/details", json={"details": details}).status_code,
+                         200)
+
+        def save(first):
+            rows = pd.DataFrame([["", first], ["", "Bye."]], columns=["Said when (condition, empty: always)", "Says"])
+            app.save_details_ui("NPCs", "Merchant", details.get("known_locations") or [],
+                                details.get("known_objects") or [], details.get("article"), rows, None, None, None,
+                                None)
+            return [line["text"] for line in
+                    self.client.get("/v1/entities/NPCs/Merchant/details").json()["details"]["dialogue"]]
+
+        self.assertEqual(save("Hello. / Welcome!"), [["Hello.", "Welcome!"], "Bye."])  # unchanged
+        self.assertEqual(save("Hi. / Welcome!"), [["Hi.", "Welcome!"], "Bye."])  # edited in its row
+
+    def test_a_cleared_story_rule_number_is_refused_not_kept(self):
+        import gradio as gr
+
+        import app
+        values = list(app.load_rules_ui())
+        values[app.REFERENCE["rule_fields"].index("route_weight")] = None
+        with self.assertRaises(gr.Error):
+            app.save_rules_ui(*values)
+
+    def test_a_proposal_renamed_in_its_yaml_is_still_added(self):
+        import gradio as gr
+
+        import app
+        text = yaml.safe_dump({"locations": {"Old Mill": {"descriptions": ["A mill."]}},
+                               "characters": [{"name": "Miller"}], "objects": []})
+        ticks, offered = app.sync_proposal_ui(text, [], [])
+        self.assertEqual(ticks["value"], ["Place: Old Mill", "Person: Miller"])
+        renamed = text.replace("Old Mill", "Windmill")
+        ticks, offered = app.sync_proposal_ui(renamed, ["Person: Miller"], offered)  # Old Mill: ticked, renamed
+        self.assertEqual(ticks["value"], ["Place: Windmill", "Person: Miller"])
+        with self.assertRaises(gr.Error):  # a tick for a name no longer there is refused, not dropped
+            app.add_proposal_ui(renamed, ["Place: Old Mill"])
+
+    def test_the_map_never_saves_to_a_place_that_is_gone(self):
+        import gradio as gr
+
+        import app
+        with self.assertRaises(gr.Error):
+            app.save_borders_ui("Atlantis", ["Harbor"])
+        values, extras = app._form_load("map", "borders", "Atlantis")  # falls back to a place there is
+        self.assertIn(extras["context"], self.client.get("/v1/map").json()["places"])
+
+    def test_the_behaviour_tables_are_drafts_of_their_own(self):
+        import app
+        *values, draft, status = app.behaviour_load_ui()
+        self.assertIn('data-dirty="0"', status)
+        npcs, places = values[:3], values[3:]
+        draft, status = app.behaviour_edit_ui("npcs", draft, npcs[0], "every_visit", npcs[2])
+        draft, status = app.behaviour_edit_ui("locations", draft, places[0], "every_visit", places[2])
+        self.assertEqual(draft["dirty"], ["npcs", "locations"])
+        # The people's rules saved: only their table reloads; the places' edits stay unsaved.
+        *reloaded, draft, status = app.behaviour_reload_ui("npcs", draft)
+        self.assertEqual(len(reloaded), 3)
+        self.assertEqual(draft["dirty"], ["locations"])
+        self.assertIn('data-dirty="1"', status)
+
+    def test_dropdowns_offer_the_world_as_it_is_now(self):
+        import app
+        choices = app.fresh_choices_ui("Locations", [app.NONE], "A place deleted meanwhile")["choices"]
+        self.assertEqual(choices[0], app.NONE)
+        self.assertIn("Harbor", choices)
+        self.assertIn("A place deleted meanwhile", choices)  # the form's value stays a choice
+
+    def test_the_game_survives_a_reload_and_more_choices_are_never_hidden(self):
+        import app
+        token, _ = sessions._start_game(Genome(rng=random.Random(7)), "studio-reload", None, None)
+        self.addCleanup(sessions.SESSIONS.pop, token, None)
+        size = len(app.PLAY_PARTS) + 1  # the game screen and the story
+        restored = app.restore_game_ui(token, size)
+        self.assertEqual((restored[0], restored[-1], len(restored)), (token, token, size + 2))
+        gone = app.restore_game_ui("no-such-game", size)
+        self.assertEqual((gone[0], gone[-1]), ("", ""))  # the API forgot it: the kept id goes too
+        state = self.client.get(f"/v1/sessions/{token}").json()
+        state["actions"] = [f"choice {n}" for n in range(app.CHOICE_BUTTONS + 2)]
+        self.assertIn("2 more choice(s)", app._play_screen(state)[1].value)
+
+    def test_reset_asks_first_and_a_report_s_delivery_comes_from_the_save_game(self):
+        import app
+        shown, text = app.reset_question_ui("someone")
+        self.assertTrue(shown["visible"])
+        self.assertIn("cannot be undone", text)
+        self.assertEqual(app._report_delivery({"profile": "nobody-yet", "report_id": "r1"}), "")
 
 
 if __name__ == "__main__":

@@ -24,8 +24,9 @@ class WorldAugmenter:
     @property
     def llm(self):
         if self._llm is None:
-            print("Initializing the shared Gemma 4 runtime (vLLM) for augmentation...")
-            self._llm = LLMNarrativeEvaluator()
+            # The augmentation's own model (augmentation.llm: Qwen3.5-4B on vLLM), not the judge's.
+            self._llm = LLMNarrativeEvaluator(role="augmentation")
+            print(f"World augmentation with {self._llm.model_name} (vLLM)...")
         return self._llm
 
     def get_current_metrics(self):
@@ -176,6 +177,19 @@ class WorldAugmenter:
             accepted[name] = data
         return accepted
 
+    def save_proposal(self, proposal):
+        """Keep a proposal (propose()) for review, nothing else written: augmentations/run_<time>/proposal.yaml
+        holds only the new locations, objects (items) and characters (NPCs), the form
+        ``python main.py --apply-augmentation`` and the studio's Grow the world add. Returns its path."""
+        run_dir = os.path.join(self.output_dir, f"run_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        os.makedirs(run_dir, exist_ok=True)
+        path = os.path.join(run_dir, "proposal.yaml")
+        with open(path, "w", encoding="utf-8") as stream:
+            yaml.safe_dump({key: proposal.get(key) or ({} if key == "locations" else [])
+                            for key in ("locations", "objects", "characters")}, stream, sort_keys=False,
+                           allow_unicode=True)
+        return path
+
     def save_augmentation(self, data):
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         run_dir = os.path.join(self.output_dir, f"run_{timestamp}")
@@ -240,4 +254,7 @@ class WorldAugmenter:
 
 if __name__ == "__main__":
     augmenter = WorldAugmenter()
-    augmenter.augment()
+    found = augmenter.propose()  # review first: a proposal is kept, the configuration is not changed
+    if found:
+        print(f"Proposal kept for review: {augmenter.save_proposal(found)}\n"
+              "Add it with: python main.py --apply-augmentation <that file>")

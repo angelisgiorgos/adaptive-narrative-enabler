@@ -1,6 +1,7 @@
 """Builds the runtime world (locations, NPCs, items, events, missions) from the
 configuration, and validates what the writer wrote."""
 import copy
+import math
 
 from utils.config_loader import config
 from utils.tag_similarity import semantic_tag_similarity
@@ -548,6 +549,22 @@ def _build_action(a_data, outcomes, events_cfg, name=None, character_name=None, 
     action.until = a_data.get("until")
     return action
 
+# Exponents the engine raises a value that can be 0 to (the turns spent in a place, the share of
+# repeated scenes): a negative one would divide by zero mid-story, so the world is not built with it.
+EXPONENTS = ("action_selection.stay_penalty_power", "fitness.objective_losses.scenario_duplication.power")
+
+
+def exponent_errors():
+    errors = []
+    for path in EXPONENTS:
+        value = config.get(path)
+        if value is None:
+            continue  # left out: the engine's own default (2.0) applies
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            errors.append(f"`{path}` must be a number of 0 or more (it is an exponent of a value that can be 0).")
+    return errors
+
+
 def build_world(genome):
     world = WorldGraph()
     config_wd = config.get("world_definition", {})
@@ -570,6 +587,7 @@ def build_world(genome):
     if stat_errors:
         raise ValueError("; ".join(stat_errors))
     start_errors = (starts.validate_settings(starts.settings()) + rules.validate_settings(rules.settings())
+                    + exponent_errors()
                     + rules.validate_behaviour("npc", config.get("npc_behaviour"))
                     + rules.validate_behaviour("location", config.get("location_behaviour")))
     for name, data in (config_wd.get("locations") or {}).items():

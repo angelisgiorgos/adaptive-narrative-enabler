@@ -40,10 +40,12 @@ python main.py                               # the terminal generator
 With Docker, `docker compose up --build` serves the studio at `http://localhost:8003` and the API
 at `http://localhost:8004/v1` (interactive documentation at `/docs`).
 
-In the studio: create the world (*🌍 World*), tune it (*⚙ Settings*), train the AI and export it
-for a game (*🧠 Train & export*), then **play your world** in *▶ Play*: choose a trained AI (a
+In the studio, the workflow banner leads through the work: create the world (*🌍 World*), train the
+AI (*🧠 Train*), then **play your world** in *▶ Play*: choose a trained AI (a
 finished run), a recorded engine or an engine file, start a new game or continue a save game, and
-play it, choice by choice. *⚖ Evaluate* judges the stories.
+play it, choice by choice. *⚖ Evaluate* judges the stories, *📦 Export* makes the engine a game
+runs offline, and *⚙ Advanced* holds the technical settings. On a narrow screen the banner becomes
+a menu of every section.
 
 ## Documentation
 

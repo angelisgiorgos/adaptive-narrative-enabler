@@ -56,7 +56,25 @@ def build():
             for key, digest in document_digests(path.name, document):
                 seen.setdefault(key, set()).add(digest)
         files[path.name] = {key: sorted(digests) for key, digests in sorted(seen.items())}
-    return {"format": 1, "files": files}
+    return {"format": 1, "files": files, "shipped": {"hyperparameters.yaml": shipped_numbers("hyperparameters.yaml")}}
+
+
+def shipped_numbers(name):
+    """{dotted path: number} of config/<name> as it is released (the working tree being packaged): what
+    the studio's Weights tab compares saved values with (backend/tuning.shipped_values)."""
+    path = ROOT / "config" / name
+    document = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    found = {}
+
+    def visit(node, parts=()):
+        if isinstance(node, dict):
+            for key, child in node.items():
+                visit(child, parts + (str(key),))
+        elif isinstance(node, (int, float)) and not isinstance(node, bool):
+            found[".".join(parts)] = node
+
+    visit(document or {})
+    return dict(sorted(found.items()))
 
 
 def main(argv=None):
@@ -68,6 +86,8 @@ def main(argv=None):
                    if not set(digests) <= set(current["files"].get(name, {}).get(key, []))]
         if missing:
             sys.exit(f"{OUT.name} misses {len(missing)} value(s), e.g. {missing[:3]}; run python {Path(__file__).name}")
+        if current.get("shipped") != history["shipped"]:
+            sys.exit(f"{OUT.name}'s shipped values are not the configuration's; run python {Path(__file__).name}")
         return
     OUT.write_text(json.dumps(history, indent=0, sort_keys=True) + "\n", encoding="utf-8")
     print(f"Wrote {OUT.relative_to(ROOT)}: {sum(len(v) for v in history['files'].values())} entries and settings.")

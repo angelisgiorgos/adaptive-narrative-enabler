@@ -183,3 +183,83 @@ class JudgeStatusTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AugmentationModelTests(unittest.TestCase):
+    """World augmentation runs on its own language model (augmentation.llm: Qwen3.5-4B served by vLLM,
+    float16, text only, without its thinking), not the judge's Gemma 4."""
+
+    setUp = JudgeStatusTests.setUp
+    _server = JudgeStatusTests._server
+
+    def test_the_augmentation_role_has_its_own_model_and_settings(self):
+        with patch.dict("os.environ", {"ANE_AUGMENT_URL": "", "ANE_AUGMENT_MODEL": "", "ANE_AUGMENT_MODEL_PATH": ""}):
+            own = llm_model_loader.settings("augmentation")
+            judge = llm_model_loader.settings()
+        self.assertEqual((own["model_name"], own["mode"], own["base_url"], own["model_path"]),
+                         ("Qwen/Qwen3.5-4B", "server", "http://127.0.0.1:8001/v1",
+                          "/data/angelisg/llm_models/Qwen3.5-4B"))
+        self.assertEqual(own["engine"]["dtype"], "float16")                      # not quantized, Turing
+        self.assertEqual(own["engine"]["limit_mm_per_prompt"], {"image": 0, "video": 0})
+        self.assertEqual(own["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(judge["model_name"], "google/gemma-4-E4B-it")          # the judge is unchanged
+        with patch.dict("os.environ", {"ANE_AUGMENT_URL": "http://hamlet-ane-augmenter:8000/v1/",
+                                       "ANE_AUGMENT_MODEL": "q"}):
+            pointed = llm_model_loader.settings("augmentation")
+        self.assertEqual((pointed["mode"], pointed["base_url"], pointed["model_name"]),
+                         ("server", "http://hamlet-ane-augmenter:8000/v1", "q"))
+        # One runtime per role: augmentation never loads or asks the judge's model.
+        self.assertIsNot(get_llm_runtime(role="augmentation"), get_llm_runtime())
+        self.assertIs(get_llm_runtime(role="augmentation"), get_llm_runtime(role="augmentation"))
+
+    def test_the_augmenter_asks_qwen_on_its_server_without_thinking(self):
+        from core_engine.augmenter import WorldAugmenter
+
+        sent = {}
+
+        def fake_urlopen(request, timeout=None):
+            sent["url"], sent["body"] = request.full_url, json.loads(request.data)
+            return io.BytesIO(json.dumps({"choices": [{"message": {"content": "{}"}}]}).encode())
+
+        with patch.dict("os.environ", {"ANE_AUGMENT_URL": "", "ANE_AUGMENT_MODEL": ""}), \
+                patch("urllib.request.urlopen", fake_urlopen):
+            llm = WorldAugmenter().llm
+            self.assertEqual((llm.role, llm.model_name, llm.runtime.role), ("augmentation", "Qwen/Qwen3.5-4B",
+                                                                            "augmentation"))
+            llm.generate("Propose new places.")
+        self.assertEqual(sent["url"], "http://127.0.0.1:8001/v1/chat/completions")
+        self.assertEqual(sent["body"]["model"], "Qwen/Qwen3.5-4B")
+        self.assertEqual(sent["body"]["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(sent["body"]["max_tokens"], config.get("augmentation.llm.max_new_tokens"))
+        # The judge's requests carry nothing of it.
+        with patch.dict(config._config["vllm"], {"mode": "server", "base_url": "http://vllm:8000/v1"}), \
+                patch("urllib.request.urlopen", fake_urlopen):
+            get_llm_runtime().generate("Judge.")
+        self.assertNotIn("chat_template_kwargs", sent["body"])
+
+    def test_embedded_it_loads_the_folder_in_float16_text_only(self):
+        fake = _fake_vllm()
+        chats = []
+        fake.LLM.chat = lambda self, messages, sampling_params=None, use_tqdm=False, **kw: (
+            chats.append(kw), [types.SimpleNamespace(outputs=[types.SimpleNamespace(text="{}")])])[1]
+        with patch.dict(config._config["augmentation"]["llm"], {"mode": "embedded"}), \
+                patch.dict("os.environ", {"ANE_AUGMENT_URL": "", "ANE_AUGMENT_MODEL_PATH": "/models/qwen"}), \
+                patch.dict(sys.modules, {"vllm": fake}):
+            get_llm_runtime(role="augmentation").generate("Propose.")
+        kwargs = fake.LLM.last.kwargs
+        self.assertEqual((kwargs["model"], kwargs["served_model_name"], kwargs["dtype"]),
+                         ("/models/qwen", "Qwen/Qwen3.5-4B", "float16"))
+        self.assertEqual(kwargs["limit_mm_per_prompt"], {"image": 0, "video": 0})
+        self.assertNotIn("quantization", kwargs)
+        self.assertEqual(chats, [{"chat_template_kwargs": {"enable_thinking": False}}])
+
+    def test_its_status_names_its_own_server_and_model(self):
+        url = self._server(models=("google/gemma-4-E4B-it",))              # a server with the judge's model only
+        with patch.dict("os.environ", {"ANE_AUGMENT_URL": url, "ANE_AUGMENT_MODEL": ""}):
+            found = llm_model_loader.status(role="augmentation")
+        self.assertFalse(found["available"])
+        self.assertIn("not Qwen/Qwen3.5-4B (augmentation.llm.model_name or ANE_AUGMENT_MODEL)", found["reason"])
+        self.assertIn("--profile augmenter", found["how"])
+        url = self._server(models=("Qwen/Qwen3.5-4B",))
+        with patch.dict("os.environ", {"ANE_AUGMENT_URL": url, "ANE_AUGMENT_MODEL": ""}):
+            self.assertTrue(llm_model_loader.status(role="augmentation")["available"])

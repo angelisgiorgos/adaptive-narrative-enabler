@@ -1,0 +1,100 @@
+# The Basic view of ⚙ Advanced → Weights: a chosen set of common gameplay controls, read by
+# backend/tuning.py. Every control is ONE tuning parameter (its `path`): Basic edits that parameter's
+# value, the same value the Advanced view (the complete editor) shows; there are no presets and no
+# control that sets several parameters at once. Label, unit, default and bounds come from
+# tuning_parameters.yaml; `effect` says, in plain words, what raising or lowering it does in play.
+# `scaled_by`: the storyteller trait (core_engine/genome.py; learned in training, within genome_bounds) the
+# engine applies to the value: `factor` trait (value × trait), half_plus (value × (0.5 + trait)), drive
+# (value × trait × the quest's pacing, 0 to 1) or adds (the traits add their own amount, `with`: the
+# parameter giving each trait's share). The view says how far each storyteller moves the value.
+# Chosen from what the engine does with each parameter (the code in its metadata's `source`):
+#   difficulty  core_engine/combat.py (CombatSystem.difficulty, target), game_state.py (retry bonus),
+#               story_beats.py (alert);
+#   pacing      game_state.py _rank_actions (the director's pulls; mission route pull);
+#   repetition  game_state.py _rank_actions (novelty, ping-pong, retry cooldown), story_beats.py
+#               _repeat_penalty, game_state.py _maybe_trigger_unexpected_event (effects);
+#   events      game_state.py _maybe_trigger_unexpected_event (event pressure), story_beats.py _first_trip.
+areas:
+  - key: difficulty
+    title: Difficulty
+    summary: >-
+      How hard skill checks are, and how that changes over a story. A check rolls 1–100 (by default) and
+      passes at or under its target, so one point is one percent of the roll.
+    controls:
+      - path: skill_check_resolution.difficulty_penalty
+        effect: Higher makes every skill check harder from the first turn; a negative value makes them easier.
+      - path: skill_check_resolution.difficulty_rate_per_step
+        effect: >-
+          How much harder checks get with each turn after the start turn below; a negative value makes a
+          story easier as it goes on.
+      - path: skill_check_resolution.difficulty_rate_start_step
+        effect: The turn after which checks start to get harder (or easier); higher delays that change.
+      - path: skill_check_resolution.min_chance
+        effect: No check is ever less likely than this to pass; raise it to make hard checks more forgiving.
+      - path: skill_check_resolution.max_chance
+        effect: No check is ever more likely than this to pass; lower it so that even easy checks can fail.
+      - path: director.retry_bonus
+        effect: Each failed attempt makes the next try at the same action easier by this; 0 turns it off.
+      - path: stakes.alert.check_penalty
+        effect: Checks against guards get harder by this for each level of alert; 0 makes the alert harmless to checks.
+  - key: pacing
+    title: Pacing
+    summary: >-
+      How quickly a story moves on. These change how the storyteller ranks the options of a turn, which
+      decides what it does when it plays and which choices a player is shown.
+    controls:
+      - path: director.explore_weight
+        effect: >-
+          Higher pulls the story toward places not visited yet, the more so the longer since the last new
+          place.
+        scaled_by: {trait: voyage_bias, factor: half_plus}
+      - path: director.boredom_weight
+        effect: >-
+          After turns in which nothing new happens, options that bring something new rank higher by this for
+          each further dull turn.
+      - path: director.dead_end_penalty
+        effect: Higher keeps the story from going back to places where nothing is left to do.
+      - path: mission_settings.route_weight
+        effect: >-
+          Higher makes the story head for the mission more directly, once the storyteller pursues it.
+        scaled_by: {trait: goal_bias, factor: drive}
+  - key: repetition
+    title: Repetition
+    summary: How strongly the story avoids doing, visiting and telling the same thing again.
+    controls:
+      - path: action_selection.repetition_penalty
+        effect: >-
+          Higher makes the storyteller avoid taking the same action again; each repeat weighs more than the
+          last.
+        scaled_by: {trait: novelty_bias, factor: trait}
+      - path: variation.repeat_check_penalty
+        effect: Each earlier success at the same action makes its check harder by this, so a winning trick wears off.
+      - path: variation.max_repeat_penalty
+        effect: The most that repeated successes can add to a check's difficulty.
+      - path: director.ping_pong_penalty
+        effect: Higher discourages travelling straight back to the place just left.
+      - path: director.retry_cooldown_penalty
+        effect: Higher makes something else happen before an action that just failed is tried again.
+      - path: unexpected_events.effect_repeat_penalty
+        effect: Higher makes unexpected events go through different effects instead of repeating one.
+  - key: events
+    title: Event frequency
+    summary: >-
+      How often things happen that the player did not choose. An unexpected event happens on a turn when
+      the event pressure reaches the threshold (there is no dice roll), at least the set number of turns
+      after the last one, up to the most per story.
+    controls:
+      - path: unexpected_events.base_chance
+        effect: >-
+          The event pressure a story starts from (a level compared with the threshold, not a probability).
+          Higher: events come sooner, and with more storytellers.
+        scaled_by: {trait: event_prob, factor: adds, with: {event_prob: unexpected_events.genome_weight,
+                                                             chaos_bias: unexpected_events.chaos_weight}}
+      - path: unexpected_events.objective_threshold
+        effect: The pressure needed for an event. Higher means fewer events; lower means more.
+      - path: unexpected_events.cooldown_steps
+        effect: The fewest turns between two unexpected events. Higher spaces them out; 0 allows one every turn.
+      - path: unexpected_events.max_per_story
+        effect: The most unexpected events a story has. Higher allows more in a long story.
+      - path: travel.first_trip.chance
+        effect: The probability (0–1) that a first trip to a place is told with a short scene on the way.

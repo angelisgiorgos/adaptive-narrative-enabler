@@ -390,8 +390,9 @@ def finish_run(run_id, result, model=None, origin=None, error=None):
                  result.warm_started, _json(result.summary()), run_id),
             )
         else:
-            connection.execute("UPDATE runs SET finished_at = ?, status = 'failed', error = ? WHERE id = ?",
-                               (_now(), str(error), run_id))
+            status = "cancelled" if getattr(error, "cancelled", False) else "failed"  # sessions.JobCancelled
+            connection.execute("UPDATE runs SET finished_at = ?, status = ?, error = ? WHERE id = ?",
+                               (_now(), status, str(error), run_id))
         return best_engine_id
 
 

@@ -1,7 +1,6 @@
 """Configuration storage and validation: settings, weights, hyperparameters, story rules."""
 from __future__ import annotations
 
-import math
 import os
 import re
 import tempfile
@@ -19,6 +18,7 @@ from core_engine.narration import validate_messages
 from core_engine.variables import PROFILE_PATTERN, validate_definitions
 from utils.config_loader import config
 
+from . import tuning
 from .errors import AuthoringError
 
 
@@ -174,6 +174,8 @@ OPTIONAL_CONFIG_PATHS = {
     "session_scope",
     "start_selection.recency_factors",
     "start_selection.mission_variety",
+    # Added with world augmentation on its own model (Qwen3.5-4B on vLLM).
+    "augmentation.llm",
 }
 
 CONFIG_LOCK = threading.RLock()
@@ -196,10 +198,6 @@ APP_DEFAULTS = {
     "candidate_limit": RUN_LIMITS["candidate_limit"],
     "generation_limit": RUN_LIMITS["generation_limit"],
     "simulation_step_limit": RUN_LIMITS["simulation_step_limit"],
-    "default_candidates": 8,
-    "default_generations": 5,
-    "default_simulation_steps": 16,
-    "crossover_probability": 0.75,
     "queue_concurrency": 2,
     "queue_max_size": 24,
     "server_host": "0.0.0.0",
@@ -208,7 +206,17 @@ APP_DEFAULTS = {
 }
 
 
+# App parameters that are gone: a run's defaults are the saved engine defaults (evolution.*, ⚙ Advanced
+# → Simulation) and 🧠 Train sets a run's own values. A saved file may still have them: they are left out.
+# Retired app parameters, ignored in a saved file: a run's sizes are the saved engine defaults (evolution.*),
+# and its crossover is evolution.crossover_rate (every run uses it).
+RETIRED_APP_SETTINGS = ("default_candidates", "default_generations", "default_simulation_steps",
+                        "crossover_probability")
+
+
 def validate_app_settings(values):
+    if isinstance(values, dict):
+        values = {key: value for key, value in values.items() if key not in RETIRED_APP_SETTINGS}
     if not isinstance(values, dict) or set(values) != set(APP_DEFAULTS):
         raise ValueError("App settings must contain exactly the supported parameter names.")
     for key, default in APP_DEFAULTS.items():
@@ -228,14 +236,6 @@ def validate_app_settings(values):
     for limit, maximum in RUN_LIMITS.items():
         if values[limit] > maximum:
             raise ValueError(f"{limit} must not exceed {maximum}, the largest run the API accepts.")
-    for default, limit in (("default_candidates", "candidate_limit"),
-                           ("default_generations", "generation_limit"),
-                           ("default_simulation_steps", "simulation_step_limit")):
-        if values[default] > values[limit]:
-            raise ValueError(f"{default} must not exceed {limit}.")
-    work = values["default_candidates"] * values["default_generations"] * values["default_simulation_steps"]
-    if work > values["max_simulation_work"]:
-        raise ValueError("Default simulation exceeds max_simulation_work.")
     return values
 
 
@@ -247,7 +247,7 @@ def load_app_settings():
 
 def save_app_settings(values):
     """Validate and save the app parameters; they apply when the studio and the API restart."""
-    validate_app_settings(values)
+    values = validate_app_settings(values)
     with APP_SETTINGS_LOCK:
         _write_yaml(APP_SETTINGS_PATH, values)
 
@@ -266,6 +266,8 @@ WEIGHT_KEYWORDS = (
     "weight", "bonus", "penalt", "threshold", "chance", "rate",
     "mitigation", "floor", "power",
 )
+# Numeric settings the Weights tab offers though their names hold none of the keywords (event frequency).
+WEIGHT_PATHS = ("unexpected_events.cooldown_steps", "unexpected_events.max_per_story")
 
 def _read_yaml(path: Path) -> dict:
     with CONFIG_LOCK:
@@ -315,31 +317,82 @@ def _weight_entries():
         elif (
             isinstance(value, Number)
             and not isinstance(value, bool)
-            and any(keyword in part.lower() for part in parts for keyword in WEIGHT_KEYWORDS)
+            and (any(keyword in part.lower() for part in parts for keyword in WEIGHT_KEYWORDS)
+                 or ".".join(parts) in WEIGHT_PATHS)
+            and not tuning.retired(".".join(parts))
         ):
             entries.append((".".join(parts), value))
 
-    visit(_read_yaml(CONFIG_DIR / "hyperparameters.yaml"))
+    visit(_read_yaml(HYPERPARAMETERS_PATH))
     return entries
 
+def _scalar_text(value) -> str:
+    """A number as YAML writes it (0.3, 40, 1.0e-05)."""
+    return yaml.safe_dump([value], default_flow_style=True).strip()[1:-1]
+
+
+def _write_scalars(path: Path, changes: dict, expected: dict) -> None:
+    """Rewrite the values of ``changes`` ({dotted path: number}) in place in the YAML file, keeping
+    every comment, blank line and the layout; checked by reading the result back (it must equal
+    ``expected``), otherwise the file is written whole from ``expected`` (as before, without comments)."""
+    with CONFIG_LOCK:
+        text = path.read_text(encoding="utf-8")
+        try:
+            root = yaml.compose(text)
+            spans = []
+            for dotted_path, value in changes.items():
+                node = root
+                for key in dotted_path.split("."):
+                    node = next(child for name, child in node.value if str(name.value) == key)
+                if not isinstance(node, yaml.ScalarNode):
+                    raise ValueError(dotted_path)
+                spans.append((node.start_mark.index, node.end_mark.index, _scalar_text(value)))
+            for start, end, replacement in sorted(spans, reverse=True):
+                text = text[:start] + replacement + text[end:]
+            if yaml.safe_load(text) != expected:
+                raise ValueError("the edited file does not read back as expected")
+        except (StopIteration, ValueError, AttributeError, yaml.YAMLError):
+            _write_yaml(path, expected)
+            return
+        temp = path.with_name(f".{path.name}.tmp")
+        temp.write_text(text, encoding="utf-8")
+        os.replace(temp, path)
+
+
 def save_weights(paths, *values):
+    """Save the tuning parameters (⚙ Advanced → Weights). Every value is checked first (a finite number;
+    a whole number for an integer parameter, never cut down; within the bounds the engine defines:
+    backend/tuning.py), and nothing is written if one is wrong. A value that did not change is kept
+    exactly as it is written."""
     if len(paths) != len(values):
         raise AuthoringError("The weights form is out of sync; reload the app and try again.")
-    path = CONFIG_DIR / "hyperparameters.yaml"
+    path = HYPERPARAMETERS_PATH
     data = _read_yaml(path)
+    places, found = [], []
     for dotted_path, value in zip(paths, values):
-        if value is None or not math.isfinite(float(value)):
-            raise AuthoringError(f"`{dotted_path}` must be a finite number.")
         keys = dotted_path.split(".")
         target = data
         for key in keys[:-1]:
             target = target[key]
-        old_value = target[keys[-1]]
-        target[keys[-1]] = int(value) if isinstance(old_value, int) else float(value)
-    _write_yaml(path, data)
+        stored = target[keys[-1]]
+        if value is None:
+            found.append(f"`{dotted_path}` must be a finite number.")
+            continue
+        found.extend(tuning.problems(dotted_path, value, stored))
+        places.append((target, keys[-1], dotted_path, value, stored))
+    if found:
+        raise AuthoringError("Nothing was saved:\n" + "\n".join(f"- {problem}" for problem in found))
+    changes = {}
+    for target, key, dotted_path, value, stored in places:
+        target[key] = tuning.stored_value(dotted_path, value, stored)
+        if target[key] is not stored:
+            changes[dotted_path] = target[key]
+    changed = len(changes)
+    if changes:  # only the numbers that changed are rewritten: the file's comments and layout stay
+        _write_scalars(path, changes, data)
     config.clear_override()
     engine.refresh_runtime_settings()
-    return f"Saved {len(paths)} configured weights and scoring controls."
+    return f"Saved {len(paths)} configured weights and scoring controls ({changed} changed)."
 
 # Mappings whose keys are chosen by the writer (location names, stat names, ...).
 FREE_FORM_PATHS = {
@@ -741,7 +794,7 @@ LOGIC_SECTIONS = {
     "action_selection": "How the storyteller ranks the actions it can take (threat, discovery, movement, goals, novelty, skill fit, location penalties).",
     "outcome_objective": "How the storyteller picks an outcome of an action (health, coins, success chance, discovery, repetition).",
     "outcome_resolution": "How likely unchecked outcomes are to succeed, and the probability range.",
-    "outcome_scoring": "Bonuses the outcome scoring gives to spawns, movement, discovery, leads and payoffs.",
+    "outcome_scoring": "Retired: the engine does not read this section (an older configuration kept it).",
     "transition_objective": "Which destinations the storyteller prefers, by story phase.",
     "spawn_selection": "Which new places are discovered, by story phase and contrast.",
     "scene": "Which NPCs and items appear in a scene.",

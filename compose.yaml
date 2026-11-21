@@ -62,6 +62,9 @@ services:
       # The language model judge (Gemma 4 on a vLLM server): the `judge` service below when it
       # runs. Another OpenAI-compatible vLLM server works too; empty: vllm.* in the engine logic.
       ANE_JUDGE_URL: ${ANE_JUDGE_URL-http://hamlet-ane-judge:8000/v1}
+      # World augmentation's own language model (Qwen3.5-4B on a vLLM server): the `augmenter`
+      # service below when it runs; empty: augmentation.llm.* in the engine logic.
+      ANE_AUGMENT_URL: ${ANE_AUGMENT_URL-http://hamlet-ane-augmenter:8000/v1}
     volumes: *studio-volumes
     networks:
       hamlet-shared-network:
@@ -114,6 +117,53 @@ services:
       hamlet-shared-network:
         aliases:
           - hamlet-ane-judge
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 600s
+
+  # World augmentation's language model, off unless asked for (it takes a GPU):
+  #   docker compose --profile augmenter up -d augmenter
+  # Qwen3.5-4B (float16, not quantized) served by vLLM from a local folder of its weights
+  # (ANE_AUGMENT_MODELS/Qwen3.5-4B, downloaded with `hf download Qwen/Qwen3.5-4B --local-dir ...`).
+  augmenter:
+    profiles: [augmenter]
+    image: ${ANE_AUGMENT_IMAGE:-hamlet-cpcg-vllm:0.20.2-gemma4-turing}   # vLLM 0.20.2: Qwen3.5 included
+    user: "${ANE_AUGMENT_USER:-1004:1004}"   # the owner of the model folder
+    command:
+      - --model=/models/${ANE_AUGMENT_MODEL_DIR:-Qwen3.5-4B}
+      - --served-model-name=${ANE_AUGMENT_MODEL:-Qwen/Qwen3.5-4B}
+      - --dtype=float16                      # TITAN RTX (Turing): no bfloat16
+      - --max-model-len=8192
+      - --gpu-memory-utilization=${ANE_AUGMENT_GPU_MEMORY:-0.75}
+      - --max-num-seqs=4
+      - --enforce-eager
+      - --api-key=${ANE_AUGMENT_API_KEY:-local-vllm}
+      - '--limit-mm-per-prompt={"image":0,"video":0}'   # text only
+    environment:
+      HOME: /tmp
+      USER: ane
+      LOGNAME: ane
+      HF_HUB_OFFLINE: "1"
+      VLLM_CACHE_ROOT: /tmp/vllm
+      TORCHINDUCTOR_CACHE_DIR: /tmp/inductor
+    volumes:
+      - ${ANE_AUGMENT_MODELS:-/data/angelisg/llm_models}:/models:ro
+    shm_size: 4g
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${ANE_AUGMENT_GPU:-0}"]
+              capabilities: [gpu]
+    networks:
+      hamlet-shared-network:
+        aliases:
+          - hamlet-ane-augmenter
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]

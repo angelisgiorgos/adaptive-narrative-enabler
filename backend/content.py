@@ -1,22 +1,28 @@
 """World authoring: entries, actions, missions, messages, persistent variables, character stats."""
 from __future__ import annotations
 
+import collections
 import copy
+import hashlib
+import json
+import os
 import random
 import re
+import uuid
+from pathlib import Path
 from numbers import Number
 import yaml
 import main as engine
 from core_engine import Mission, conditions, content_rules, effects, starts
-from core_engine.builder import (EVENT_POLICY_FIELDS, ITEM_POLICY_FIELDS, event_policy_errors, item_policy_errors,
-                                 logic_errors, route_errors)
+from core_engine.builder import (EVENT_POLICY_FIELDS, ITEM_POLICY_FIELDS, _stat_usage_errors, event_policy_errors,
+                                 item_policy_errors, logic_errors, route_errors)
 from core_engine.actions import REPEAT_RULES, repetition_errors
 from core_engine.stats import MODES as STAT_MODES, CharacterStats, stats_config, validate_settings as validate_stat_settings
 from core_engine.narration import DEFAULT_MESSAGES, validate_messages
 from core_engine.variables import PROFILE_PATTERN, VariableStore, clamp, validate_changes, validate_definitions
 from utils.config_loader import config
 
-from .errors import AuthoringError
+from .errors import AuthoringError, ConflictError
 from .store import CONFIG_DIR, CONFIG_LOCK, _lines, _read_yaml, _write_yaml
 
 
@@ -47,6 +53,48 @@ def _entity_name_values(kind: str):
     names = list(records) if shape == "mapping" else [record.get("name", "Unnamed") for record in records]
     return names, names[0] if names else None
 
+SUMMARY_CHARS = 140  # an entry's one-line summary in the content library
+
+
+def _text_of(description) -> str:
+    """A description line as text (a conditional description is a mapping with its text)."""
+    if isinstance(description, dict):
+        return str(description.get("text") or description.get("description") or "")
+    return str(description or "")
+
+
+def entity_summaries(kind: str) -> list[dict]:
+    """Every entry of a kind, in order, as the content library lists it (one read of its file):
+    [{name, tags, summary (its first description, shortened), actions (how many), facts (a few words
+    on what it is: a start, an NPC's role, a hostile encounter, an event's title, an item's bonus)}]."""
+    _, _, records, shape = _entity_records(kind)
+    pairs = list(records.items()) if shape == "mapping" else [(r.get("name", "Unnamed"), r) for r in records]
+    found = []
+    for name, record in pairs:
+        record = record if isinstance(record, dict) else {}
+        tags = [str(tag) for tag in (record.get("tags") if shape == "mapping" else record.get("associated_tags")) or []]
+        descriptions = record.get("entered_descriptions") or record.get("descriptions") or []
+        first = " ".join(_text_of(descriptions[0]).split()) if descriptions else ""
+        summary = first if len(first) <= SUMMARY_CHARS else first[:SUMMARY_CHARS - 1].rstrip() + "…"
+        facts = []
+        if kind == "Locations" and record.get("start_eligible"):
+            facts.append("can start here")
+        if kind == "NPCs":
+            if record.get("role"):
+                facts.append(str(record["role"]))
+            facts.append("unique" if record.get("unique") else "generic")
+            if record.get("encounter_event"):
+                facts.append(f"hostile: {record['encounter_event']}")
+        if kind == "Events" and record.get("title"):
+            facts.append(str(record["title"]))
+        if kind == "Items" and isinstance(record.get("stat_bonus"), dict) and record["stat_bonus"]:
+            facts.append(", ".join(f"{stat} {value:+g}" if isinstance(value, (int, float)) else f"{stat} {value}"
+                                   for stat, value in record["stat_bonus"].items()))
+        found.append({"name": str(name), "tags": tags, "summary": summary,
+                      "actions": len(record.get("actions") or []), "facts": facts})
+    return found
+
+
 def _event_choices():
     return [("None", "")] + [(name, name) for name in (config.get("world_definition.events") or {})]
 
@@ -72,7 +120,7 @@ def load_entity(kind: str, name: str):
         record.get("name", name or ""),
         tags,
         "\n".join(descriptions),
-        "\n".join(record.get("goals", [])),
+        "\n".join(_goal_text(goal) for goal in record.get("goals") or []),
         bool(record.get("unique", False)) if npc else None,
         (record.get("encounter_event") or None) if npc else None,
         bool(record.get("encounter_repeat", False)) if npc else None,
@@ -84,6 +132,31 @@ def load_entity(kind: str, name: str):
         (record.get("role") or None) if npc else None,
         (copy.deepcopy(record.get("secret")) or None) if npc else None,
     )
+
+def _goal_text(goal) -> str:
+    """A goal as one line of the editor: its text, or a structured goal ({goal, tags, needed, reward})
+    as one line of YAML, so that it survives being edited and saved."""
+    if isinstance(goal, str):
+        return goal
+    return yaml.safe_dump(goal, default_flow_style=True, sort_keys=False, allow_unicode=True, width=10**9).strip()
+
+
+def _goal_lines(goals) -> list:
+    """The goals typed in the editor, a line each: a line written as a YAML mapping ({goal: ..., tags:
+    [...]}) is a structured goal again; any other line is a goal's text."""
+    found = []
+    for line in _lines(goals):
+        if line.startswith("{"):
+            try:
+                value = yaml.safe_load(line)
+            except yaml.YAMLError:
+                value = None
+            if isinstance(value, dict):
+                found.append(value)
+                continue
+        found.append(line)
+    return found
+
 
 def _apply_start(record: dict, start_eligible, start_weight) -> None:
     """Set a location's start_eligible / start_weight (None keeps the stored value)."""
@@ -104,7 +177,7 @@ def _apply_stat_bonus(record: dict, stat_bonus) -> None:
             stat_bonus = yaml.safe_load(stat_bonus) if stat_bonus.strip() else None
         except yaml.YAMLError as exc:
             raise AuthoringError(f"`Stat bonus` is not valid YAML: {exc}") from exc
-    errors = engine._stat_usage_errors({"stat_bonus": stat_bonus}, list(stats_config().get("stats") or {}), "Item")
+    errors = _stat_usage_errors({"stat_bonus": stat_bonus}, list(stats_config().get("stats") or {}), "Item")
     if errors:
         raise AuthoringError("\n".join(errors))
     if stat_bonus:
@@ -152,6 +225,36 @@ def _references() -> conditions.References:
     """The names conditions and effects may refer to in the current world."""
     return conditions.References.from_world(config.get("world_definition") or {})
 
+def condition_reference() -> dict:
+    """What a condition can say in the current world (core_engine/conditions.py), for a builder: {groups,
+    operators, facts: {fact: {refers_to (items | locations | npcs | events | missions | null: free text),
+    names}}, comparisons: {variable: {name: type}, stat: [names], resource: [names]}}."""
+    refs = _references()
+    names = {"items": sorted(refs.items or []), "locations": list(refs.locations or []),
+             "npcs": sorted(refs.npcs or []), "events": sorted(refs.events or []),
+             "missions": list(refs.missions or [])}
+    variables = {name: (spec or {}).get("type") if isinstance(spec, dict) else None
+                 for name, spec in (refs.variables or {}).items()}
+    variables.update({name: kind for name, kind in conditions.BUILTIN_VARIABLES.items() if name not in variables})
+    return {"groups": list(conditions.GROUPS), "operators": list(conditions.OPERATORS),
+            "facts": {fact: {"refers_to": field, "names": names.get(field, []) if field else []}
+                      for fact, field in conditions._FACT_REFERENCES.items()},
+            "comparisons": {"variable": variables, "stat": sorted(refs.stats or []),
+                            "resource": list(conditions.RESOURCES)}}
+
+
+def validate_condition(condition, where: str = "enabled_if") -> dict:
+    """A condition checked as every save checks it (structure, operators, references, operand types):
+    {valid, errors, empty}. ``condition``: the condition, or its YAML text."""
+    if isinstance(condition, str):
+        try:
+            condition = yaml.safe_load(condition) if condition.strip() else None
+        except yaml.YAMLError as exc:
+            return {"valid": False, "errors": [f"`{where}` is not valid YAML: {exc}"], "empty": False}
+    errors = conditions.validate(condition, _references(), where=where)
+    return {"valid": not errors, "errors": errors, "empty": condition in (None, {}, [])}
+
+
 def _apply_enabled_if(record: dict, enabled_if) -> None:
     """Set or clear an entry's enabled_if (a condition, see core_engine/conditions.py)
     from a mapping, a list or YAML text (None keeps it)."""
@@ -170,6 +273,64 @@ def _apply_enabled_if(record: dict, enabled_if) -> None:
     else:
         record.pop("enabled_if", None)
 
+def _apply_fields(kind: str, record: dict, name: str, tags, descriptions: str, goals: str, unique=None,
+                  encounter_event=None, encounter_repeat=None, enabled_if=None, title=None, stat_bonus=None,
+                  start_eligible=None, start_weight=None, role=None, secret=None) -> None:
+    """Set the entry form's fields on ``record`` (a copy of the stored entry: every other field stays as
+    it is). An option passed as None keeps its stored value; raises AuthoringError for a wrong one."""
+    if ENTITY_FILES[kind][2] == "mapping":
+        record["tags"] = list(tags or [])
+        record["entered_descriptions"] = _lines(descriptions)
+        record["goals"] = _goal_lines(goals)
+        if kind == "Locations":
+            _apply_start(record, start_eligible, start_weight)
+        _apply_enabled_if(record, enabled_if)
+        if kind == "Events" and title is not None:
+            if title.strip():
+                record["title"] = title.strip()
+            else:
+                record.pop("title", None)
+        return
+    record.update(name=name, associated_tags=list(tags or []), descriptions=_lines(descriptions),
+                  goals=_goal_lines(goals))
+    if kind == "NPCs":
+        record["unique"] = bool(record.get("unique", False) if unique is None else unique)
+        if encounter_event is not None:
+            events = config.get("world_definition.events") or {}
+            if encounter_event and encounter_event not in events:
+                raise AuthoringError(f"Unknown encounter event `{encounter_event}`. Define it in events.yaml first.")
+            record["encounter_event"] = encounter_event or None
+        if encounter_repeat is not None:
+            record["encounter_repeat"] = bool(encounter_repeat)
+        if not record.get("encounter_event"):
+            record.pop("encounter_event", None)
+            record.pop("encounter_repeat", None)
+        _apply_role_and_secret(record, role, secret)
+    _apply_enabled_if(record, enabled_if)
+    if kind == "Items":
+        _apply_stat_bonus(record, stat_bonus)
+
+
+def _place_record(records, shape, selected_name, name, record) -> None:
+    """Put ``record`` in ``records`` as ``name``, where ``selected_name`` was (renamed in place), or at
+    the end for a new entry (``selected_name`` None)."""
+    if shape == "mapping":
+        if selected_name is not None and selected_name in records and selected_name != name:
+            items = [(name if key == selected_name else key, record if key == selected_name else value)
+                     for key, value in records.items()]
+            records.clear()
+            records.update(items)
+        else:
+            records[name] = record
+        return
+    index = next((i for i, entry in enumerate(records) if entry.get("name") == selected_name), None) \
+        if selected_name is not None else None
+    if index is None:
+        records.append(record)
+    else:
+        records[index] = record
+
+
 def save_entity(kind: str, selected_name: str, name: str, tags, descriptions: str, goals: str,
                 unique=None, encounter_event=None, encounter_repeat=None, enabled_if=None, title=None,
                 stat_bonus=None, start_eligible=None, start_weight=None, role=None, secret=None):
@@ -182,62 +343,202 @@ def save_entity(kind: str, selected_name: str, name: str, tags, descriptions: st
 
     with CONFIG_LOCK:
         path, data, records, shape = _entity_records(kind)
+        names = _names_in(records, shape)
+        if name != selected_name and name in names:
+            raise AuthoringError(f"An entry named `{name}` already exists. Choose a unique name.")
         if shape == "mapping":
-            if name != selected_name and name in records:
-                raise AuthoringError(f"An entry named `{name}` already exists. Choose a unique name.")
             record = copy.deepcopy(records.get(selected_name, {}))
-            record["tags"] = list(tags or [])
-            record["entered_descriptions"] = _lines(descriptions)
-            record["goals"] = _lines(goals)
-            if kind == "Locations":
-                _apply_start(record, start_eligible, start_weight)
-            _apply_enabled_if(record, enabled_if)
-            if kind == "Events" and title is not None:
-                if title.strip():
-                    record["title"] = title.strip()
-                else:
-                    record.pop("title", None)
+        else:
+            record = copy.deepcopy(next((entry for entry in records if entry.get("name") == selected_name), {}))
+        _apply_fields(kind, record, name, tags, descriptions, goals, unique, encounter_event, encounter_repeat,
+                      enabled_if, title, stat_bonus, start_eligible, start_weight, role, secret)
+        if shape == "mapping":  # as before: a renamed place or event moves to the end
             if selected_name != name:
                 records.pop(selected_name, None)
             records[name] = record
         else:
-            index = next((i for i, entry in enumerate(records) if entry.get("name") == selected_name), None)
-            if name != selected_name and any(entry.get("name") == name for entry in records):
-                raise AuthoringError(f"An entry named `{name}` already exists. Choose a unique name.")
-            record = copy.deepcopy(records[index]) if index is not None else {}
-            record.update(
-                name=name,
-                associated_tags=list(tags or []),
-                descriptions=_lines(descriptions),
-                goals=_lines(goals),
-            )
-            if kind == "NPCs":
-                record["unique"] = bool(record.get("unique", False) if unique is None else unique)
-                if encounter_event is not None:
-                    events = config.get("world_definition.events") or {}
-                    if encounter_event and encounter_event not in events:
-                        raise AuthoringError(f"Unknown encounter event `{encounter_event}`. Define it in events.yaml first.")
-                    record["encounter_event"] = encounter_event or None
-                if encounter_repeat is not None:
-                    record["encounter_repeat"] = bool(encounter_repeat)
-                if not record.get("encounter_event"):
-                    record.pop("encounter_event", None)
-                    record.pop("encounter_repeat", None)
-                _apply_role_and_secret(record, role, secret)
-            _apply_enabled_if(record, enabled_if)
-            if kind == "Items":
-                _apply_stat_bonus(record, stat_bonus)
-            if index is None:
-                records.append(record)
-            else:
-                records[index] = record
-        _write_yaml(path, data)
+            _place_record(records, shape, selected_name if selected_name in names else None, name, record)
+        counts = {}
+        if selected_name in names and selected_name != name and not rename_ambiguity(kind, selected_name):
+            plan = reference_rename_plan(kind, selected_name, name, skip=[path])  # what refers to it follows
+            data, own = _renamed(data, selected_name, name)
+            records = data["world_definition"][ENTITY_FILES[kind][1]]
+            counts = {**({path.name: own} if own else {}), **plan["counts"]}
+            _write_yaml(path, data)
+            _write_rename_plan(plan)
+        else:
+            _write_yaml(path, data)
         config.clear_override()
         config.reload()
         choices = list(records) if shape == "mapping" else [entry["name"] for entry in records]
-    return choices, name, f"Saved **{name}** to `{path.name}`."
+    return choices, name, f"Saved **{name}** to `{path.name}`." + references_said(selected_name, name, counts)
 
 def delete_entity(kind: str, selected_name: str):
+    """Delete an entry (at least one location, NPC and item remains; events may all go). Returns (the
+    entries left, the first of them, a message); remove_entity also keeps it to be restored."""
+    result = remove_entity(kind, selected_name)
+    choices = result["entities"]
+    return choices, (choices[0] if choices else None), result["message"]
+
+
+# ---- a rename that follows its references -----------------------------------------------------------
+#
+# Renaming an entry renames what refers to it: every YAML key or string that is exactly its old name, in
+# the files a world's references can be in (the entries', the missions', the variables' and the tuning
+# parameters': a place's penalties, the arrest location). The other files are edited in place, scalar by
+# scalar, so their comments and layout stay. A name that also names something of another kind (a person
+# and a place both called Lantern) is ambiguous: nothing else is renamed, and a rename that would leave
+# references dangling is refused as before.
+
+KIND_NAMES = {"Locations": "a location", "NPCs": "an NPC", "Items": "an item", "Events": "an event"}
+
+
+def _reference_files() -> list:
+    from . import store
+
+    return list(dict.fromkeys([path for path, *_ in ENTITY_FILES.values()]
+                              + [MISSIONS_PATH, VARIABLES_PATH, store.HYPERPARAMETERS_PATH]))
+
+
+def _renamed(value, old: str, new: str):
+    """(a copy of ``value`` with every mapping key and string equal to ``old`` made ``new``, how many)."""
+    if isinstance(value, dict):
+        out, count = {}, 0
+        for key, item in value.items():
+            item, found = _renamed(item, old, new)
+            if key == old:
+                key, found = new, found + 1
+            out[key] = item
+            count += found
+        return out, count
+    if isinstance(value, list):
+        pairs = [_renamed(item, old, new) for item in value]
+        return [item for item, _ in pairs], sum(found for _, found in pairs)
+    return (new, 1) if isinstance(value, str) and value == old else (value, 0)
+
+
+def rename_ambiguity(kind: str, old: str, world: dict | None = None) -> str | None:
+    """Why the references to ``old`` (an entry of ``kind``) cannot be told apart, or None: the name
+    also names something else (another kind's entry, a mission, a variable)."""
+    world = world if world is not None else (config.get("world_definition") or {})
+    others = []
+    for other, (_, key, shape) in ENTITY_FILES.items():
+        records = world.get(key) or ({} if shape == "mapping" else [])
+        if other != kind and old in _names_in(records, shape):
+            others.append(KIND_NAMES[other])
+    for key, what in (("missions", "a mission"), ("variables", "a variable")):
+        if old in (world.get(key) or {}):
+            others.append(what)
+    if not others:
+        return None
+    return (f"`{old}` also names {' and '.join(others)}, so the references to it cannot be told apart: "
+            "they are not renamed")
+
+
+def _yaml_scalar(text: str) -> str:
+    """``text`` as a YAML string scalar that reads back as itself, in block or flow context."""
+    plain = yaml.safe_dump(text, width=1 << 16).splitlines()[0]
+    if any(c in text for c in ",[]{}#:&*!|>'\"%@`") or text != text.strip() or yaml.safe_load(plain) != text:
+        return json.dumps(text, ensure_ascii=False)
+    return plain
+
+
+def _rename_in_text(text: str, old: str, new: str) -> tuple[str, int]:
+    """``text`` (a YAML document) with every string scalar, key or value, equal to ``old`` written as
+    ``new`` and nothing else changed (comments and layout kept), and how many."""
+    root = yaml.compose(text)
+    spans = set()
+
+    def walk(node):
+        if isinstance(node, yaml.ScalarNode):
+            if node.value == old and node.tag == "tag:yaml.org,2002:str":
+                spans.add((node.start_mark.index, node.end_mark.index))
+        elif isinstance(node, yaml.SequenceNode):
+            for child in node.value:
+                walk(child)
+        elif isinstance(node, yaml.MappingNode):
+            for key, value in node.value:
+                walk(key)
+                walk(value)
+
+    if root is not None:
+        walk(root)
+    scalar = _yaml_scalar(new)
+    for start, end in sorted(spans, reverse=True):
+        text = text[:start] + scalar + text[end:]
+    return text, len(spans)
+
+
+def reference_rename_plan(kind: str, old: str, new: str, skip=()) -> dict:
+    """What renaming ``old`` to ``new`` changes in the reference files other than ``skip``: {files:
+    [(path, text or None, data, count)], counts: {file name: count}, ambiguous: why not, or None}. A
+    file's text is None when it cannot be edited in place (it is then written whole from ``data``)."""
+    ambiguous = rename_ambiguity(kind, old)
+    plan = {"files": [], "counts": {}, "ambiguous": ambiguous}
+    if ambiguous or old == new:
+        return plan
+    skip = {Path(path) for path in skip}
+    for path in _reference_files():
+        path = Path(path)
+        if path in skip or not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(text) or {}
+        expected, count = _renamed(data, old, new)
+        if not count:
+            continue
+        try:
+            edited, found = _rename_in_text(text, old, new)
+            if yaml.safe_load(edited) != expected:
+                raise ValueError("the edited file does not read back as expected")
+        except (ValueError, yaml.YAMLError):
+            edited = None
+        plan["files"].append((path, edited, expected, count))
+        plan["counts"][path.name] = count
+    return plan
+
+
+def _write_rename_plan(plan: dict) -> None:
+    for path, text, data, _ in plan["files"]:
+        if text is None:
+            _write_yaml(path, data)
+            continue
+        temp = path.with_name(f".{path.name}.tmp")
+        temp.write_text(text, encoding="utf-8")
+        os.replace(temp, path)
+
+
+def references_said(old: str, new: str, counts: dict) -> str:
+    """The message part saying which references a rename updated."""
+    total = sum(counts.values())
+    if not total:
+        return ""
+    where = ", ".join(f"`{name}` {count}" for name, count in counts.items())
+    return f" Updated {total} reference(s) to `{old}` → `{new}`: {where}."
+
+
+def entity_references(kind: str, name: str) -> list[str]:
+    """What refers to an entry and would break without it (missions, actions, conditions, dialogue,
+    routes, ...): the world's problems without the entry that it does not have with it, as the
+    engine's own checks (logic_errors, the mission rules) word them."""
+    key = ENTITY_FILES[kind][1]
+    world = copy.deepcopy(config.get("world_definition") or {})
+
+    def problems(candidate):
+        return set(logic_errors(candidate)) | set(content_rules.mission_errors(candidate, candidate.get("missions") or {}))
+
+    before = problems(world)
+    entries = world.get(key)
+    if isinstance(entries, dict):
+        entries.pop(name, None)
+    elif isinstance(entries, list):
+        world[key] = [entry for entry in entries if entry.get("name") != name]
+    return sorted(problem for problem in problems(world) if problem not in before)
+
+
+def remove_entity(kind: str, selected_name: str) -> dict:
+    """delete_entity, keeping the entry whole, with its place, to be restored (restore_deletion).
+    Returns {entities, message, undo}."""
     if not selected_name:
         raise AuthoringError("Select an entry to delete first.")
 
@@ -245,22 +546,19 @@ def delete_entity(kind: str, selected_name: str):
         path, data, records, shape = _entity_records(kind)
         if kind != "Events" and len(records) <= 1:
             raise AuthoringError(f"At least one {kind.lower()[:-1]} must remain in the configuration.")
-        if shape == "mapping":
-            if selected_name not in records:
-                raise AuthoringError(f"`{selected_name}` no longer exists. Refresh the entry list.")
-            del records[selected_name]
-            choices = list(records)
-        else:
-            index = next((i for i, entry in enumerate(records) if entry.get("name") == selected_name), None)
-            if index is None:
-                raise AuthoringError(f"`{selected_name}` no longer exists. Refresh the entry list.")
-            records.pop(index)
-            choices = [entry["name"] for entry in records]
+        names = _names_in(records, shape)
+        if selected_name not in names:
+            raise AuthoringError(f"`{selected_name}` no longer exists. Refresh the entry list.")
+        index = names.index(selected_name)
+        known = _entity_known_errors(kind, records[selected_name] if shape == "mapping" else records[index])
+        record = records.pop(selected_name) if shape == "mapping" else records.pop(index)
         _write_yaml(path, data)
         config.clear_override()
         config.reload()
-
-    return choices, (choices[0] if choices else None), f"Deleted **{selected_name}** from `{path.name}`."
+        choices = _names_in(records, shape)
+        undo = _keep_deletion({"type": "entity", "kind": kind, "name": selected_name, "record": record, "file": path.name,
+                               "known_errors": known}, names, index, choices)
+    return {"entities": choices, "message": f"Deleted **{selected_name}** from `{path.name}`.", "undo": undo}
 
 ACTION_FIELDS = content_rules.ACTION_FIELDS
 
@@ -367,6 +665,183 @@ def save_entity_yaml(kind: str, name: str, yaml_text: str) -> str:
     still = [e for e in dict.fromkeys(logic_errors(config.get("world_definition") or {})) if e in earlier]
     note = (f" The world still has {len(still)} earlier problem(s): " + "; ".join(still[:3])) if still else ""
     return f"Saved every field of **{name}** to `{path.name}`.{note}"
+
+
+# An entry's draft saved at once (save_entry_draft): its sections, in the order they are applied (a
+# rename, in the fields, last), and the pairs that change the same data (never both in one draft).
+DRAFT_SECTIONS = ("action", "policy", "details", "actions", "entry_yaml", "fields")
+DRAFT_SECTION_NAMES = {"action": "Actions & outcomes", "policy": "Scheduling", "details": "More details",
+                       "actions": "Actions as YAML", "entry_yaml": "Every field (YAML)", "fields": "Fields"}
+DRAFT_CONFLICTS = tuple(("entry_yaml", other) for other in DRAFT_SECTIONS if other != "entry_yaml") + (
+    ("actions", "action"),)
+
+
+def _yaml_value(text, what):
+    if not isinstance(text, str):
+        return text
+    try:
+        return yaml.safe_load(text) if text.strip() else None
+    except yaml.YAMLError as exc:
+        raise AuthoringError(f"{what} is not valid YAML: {exc}") from exc
+
+
+def compose_entry_draft(kind: str, name: str | None, draft: dict) -> dict:
+    """An entry as its draft makes it, checked, never written (save_entry_draft writes it; the preview
+    shows it): its sections (``draft``: fields {the entry form, as PUT /v1/entities/{kind}/{name} takes
+    it, its name a rename}, entry_yaml, actions (the whole list, or YAML), action {index, action} (one
+    action; index = their number: a new one), policy (an event's or an item's rules, a mapping or YAML),
+    details; none: the stored entry) are applied, in order, to a copy of the stored entry (every field
+    no section touches stays as it is), then the entry and the world with it are checked as each
+    section's own save checks them. ``name`` None: a new entry, made from its fields. Returns {name (after a rename), selected (the stored
+    name), record (the entry as the draft makes it), problems (each with its section; empty: it can be
+    saved), world (world_definition with it in place), path, data, records, shape, sections}."""
+    draft = {section: value for section, value in (draft or {}).items() if value is not None}
+    unknown = sorted(set(draft) - set(DRAFT_SECTIONS))
+    if unknown:
+        raise AuthoringError(f"No section {', '.join(unknown)}; use {', '.join(DRAFT_SECTIONS)}.")
+    clash = next(((a, b) for a, b in DRAFT_CONFLICTS if a in draft and b in draft), None)
+    if clash:
+        raise AuthoringError(f"Nothing was saved: {DRAFT_SECTION_NAMES[clash[0]]} and {DRAFT_SECTION_NAMES[clash[1]]} "
+                             "change the same data; save one of them.")
+    if name is None and "fields" not in draft:
+        raise AuthoringError("A new entry is made from its fields (at least its name).")
+    problems = []
+
+    def attempt(section, apply):
+        try:
+            apply()
+        except AuthoringError as exc:
+            problems.extend(f"{DRAFT_SECTION_NAMES[section]}: {line.lstrip('- ')}" for line in str(exc).splitlines()
+                            if line.strip() and not line.rstrip().endswith(":"))
+
+    path, data, records, shape = _entity_records(kind)
+    names = _names_in(records, shape)
+    if name is not None and name not in names:
+        raise AuthoringError(f"`{name}` does not exist in {kind}: it was renamed or deleted. Reload it.")
+    if shape == "mapping":
+        record = copy.deepcopy(records.get(name, {})) if name is not None else {}
+    else:
+        record = copy.deepcopy(next((e for e in records if e.get("name") == name), {})) if name is not None else {}
+    final = name
+    for section in DRAFT_SECTIONS:
+        if section not in draft:
+            continue
+        value = draft[section]
+        if section == "action":
+            def apply_action(value=value):
+                index, action = (value or {}).get("index"), (value or {}).get("action")
+                if not isinstance(action, dict) or not str(action.get("name", "")).strip():
+                    raise AuthoringError("An action needs a name.")
+                actions = list(record.get("actions") or [])
+                if not isinstance(index, int) or not 0 <= index <= len(actions):
+                    raise AuthoringError(f"There is no action {index}: the entry has {len(actions)}.")
+                actions[index:index + 1] = [action]
+                record["actions"] = actions
+            attempt(section, apply_action)
+        elif section == "actions":
+            def apply_actions(value=value):
+                actions = _yaml_value(value, "The actions") or []
+                if not isinstance(actions, list):
+                    raise AuthoringError("The actions must be a list.")
+                record["actions"] = actions
+            attempt(section, apply_actions)
+        elif section == "policy":
+            attempt(section, lambda value=value: _apply_policy(kind, record, _checked_policy(kind, final or "", value)))
+        elif section == "details":
+            def apply_details(value=value):
+                errors = _detail_errors(kind, value or {})
+                if errors:
+                    raise AuthoringError("\n".join(errors))
+                _apply_details(record, value or {})
+            attempt(section, apply_details)
+        elif section == "entry_yaml":
+            def apply_yaml(value=value):
+                replaced = _yaml_value(value, "The entry")
+                if not isinstance(replaced, dict):
+                    raise AuthoringError("The entry must be a YAML mapping of its fields.")
+                if shape == "list":
+                    if replaced.setdefault("name", final) != final:
+                        raise AuthoringError("Rename an entry with the entry form (Name), not here.")
+                else:
+                    replaced.pop("name", None)
+                record.clear()
+                record.update(replaced)
+            attempt(section, apply_yaml)
+        elif section == "fields":
+            fields = dict(value or {})
+            new_name = str(fields.get("name") or "").strip()
+            if not new_name:
+                problems.append("Fields: Name is required.")
+                continue
+            if new_name != name and new_name in names:
+                problems.append(f"Fields: An entry named `{new_name}` already exists. Choose a unique name.")
+                continue
+
+            def apply_fields(fields=fields, new_name=new_name):
+                _apply_fields(kind, record, new_name, fields.get("tags"), "\n".join(fields.get("descriptions") or []),
+                              "\n".join(fields.get("goals") or []), fields.get("unique"),
+                              fields.get("encounter_event"), fields.get("encounter_repeat"),
+                              fields.get("enabled_if"), fields.get("title"), fields.get("stat_bonus"),
+                              fields.get("start_eligible"), fields.get("start_weight"), fields.get("role"),
+                              fields.get("secret"))
+            attempt(section, apply_fields)
+            final = new_name
+    # The entry whole, then the world with it, as every save checks them.
+    problems.extend(f"The entry: {e}" for e in _entry_errors(kind, record))
+    key = ENTITY_FILES[kind][1]
+    world = copy.deepcopy(config.get("world_definition") or {})
+    entries = world.setdefault(key, {} if shape == "mapping" else [])
+    _place_record(entries, shape, name, final, copy.deepcopy(record))
+    from .store import _validate_complete_config
+
+    problems.extend(f"The entry: {e}" for e in _validate_complete_config(entries, None, f"world_definition.{key}"))
+    # A rename renames what refers to the entry (reference_rename_plan); checked with them renamed.
+    renaming = name is not None and final != name
+    ambiguous = rename_ambiguity(kind, name) if renaming else None
+    if renaming and not ambiguous:
+        world = _renamed(world, name, final)[0]
+    earlier = list(dict.fromkeys(logic_errors(config.get("world_definition") or {})))
+    dangling = [f"The world: {e}" for e in logic_errors(world) if e not in earlier]
+    problems.extend(dangling)
+    if dangling and ambiguous:
+        problems.append(f"The world: {ambiguous}.")
+    return {"name": final, "selected": name, "record": record, "problems": list(dict.fromkeys(problems)),
+            "world": world, "path": path, "data": data, "records": records, "shape": shape,
+            "sections": [section for section in DRAFT_SECTIONS if section in draft]}
+
+
+def save_entry_draft(kind: str, name: str | None, draft: dict) -> dict:
+    """Save an entry's whole draft at once (compose_entry_draft, then one write): written once, or, when
+    anything is wrong, not at all, with every problem named with its section. Returns {name, saved (the
+    sections), message}."""
+    if not any(value is not None for value in (draft or {}).values()):
+        raise AuthoringError("Nothing to save: the draft has no section.")
+    with CONFIG_LOCK:
+        composed = compose_entry_draft(kind, name, draft)
+        problems, final, record = composed["problems"], composed["name"], composed["record"]
+        path, data, records, shape = composed["path"], composed["data"], composed["records"], composed["shape"]
+        if problems:
+            raise AuthoringError("Nothing was saved; the entry is invalid:\n"
+                                 + "\n".join(f"- {p}" for p in problems))
+        _place_record(records, shape, name, final, record)
+        counts = {}
+        if name is not None and final != name and not rename_ambiguity(kind, name):
+            plan = reference_rename_plan(kind, name, final, skip=[path])
+            data, own = _renamed(data, name, final)  # the entry itself is renamed already: its references
+            counts = {**({path.name: own} if own else {}), **plan["counts"]}
+            _write_yaml(path, data)
+            _write_rename_plan(plan)
+        else:
+            _write_yaml(path, data)
+        config.clear_override()
+        config.reload()
+    saved = [DRAFT_SECTION_NAMES[section] for section in DRAFT_SECTIONS if section in draft]
+    return {"name": final, "saved": [section for section in DRAFT_SECTIONS if section in draft],
+            "references": counts,
+            "message": f"Saved **{final}** ({', '.join(saved)}) to `{path.name}` at once."
+                       + references_said(name, final, counts)}
+
+
 
 
 MAP_PATH = CONFIG_DIR / "locations.yaml"   # the map lives with the locations (world_definition.routes)
@@ -476,6 +951,19 @@ def save_entity_policy(kind: str, name: str, policy) -> dict:
     """Validate and store an event's start rules or an item's uniqueness (a mapping
     or YAML text). The whole policy replaces the stored one; nothing is written
     when it is invalid."""
+    policy = _checked_policy(kind, name, policy)
+    with CONFIG_LOCK:
+        path, data, record = _record(kind, name)
+        _apply_policy(kind, record, policy)
+        _write_yaml(path, data)
+        config.clear_override()
+        config.reload()
+    return load_entity_policy(kind, name)
+
+
+def _checked_policy(kind: str, name: str, policy) -> dict:
+    """An event's start rules or an item's uniqueness (a mapping or YAML text), checked; raises
+    AuthoringError with every problem."""
     if kind not in POLICY_FIELDS:
         raise AuthoringError("Only events and items have uniqueness and scheduling rules here.")
     if isinstance(policy, str):
@@ -494,15 +982,13 @@ def save_entity_policy(kind: str, name: str, policy) -> dict:
         errors += item_policy_errors(policy, f"Item '{name}'", set(config.get("world_definition.locations") or {}))
     if errors:
         raise AuthoringError("The rules are invalid:\n" + "\n".join(f"- {e}" for e in errors))
-    with CONFIG_LOCK:
-        path, data, record = _record(kind, name)
-        for field in POLICY_FIELDS[kind]:
-            record.pop(field, None)
-        record.update(policy)
-        _write_yaml(path, data)
-        config.clear_override()
-        config.reload()
-    return load_entity_policy(kind, name)
+    return policy
+
+
+def _apply_policy(kind: str, record: dict, policy: dict) -> None:
+    for field in POLICY_FIELDS[kind]:
+        record.pop(field, None)
+    record.update(policy)
 
 def save_entity_policy_ui(kind: str, name: str, yaml_text: str):
     if not name:
@@ -855,12 +1341,30 @@ def save_entity_action(kind: str, name: str, index: int, action: dict) -> list:
 
 
 def delete_entity_action(kind: str, name: str, index: int) -> list:
-    actions = load_entity_actions(kind, name)
-    if not 0 <= index < len(actions):
-        raise AuthoringError(f"`{name}` has no action {index + 1} (it has {len(actions)}).")
-    del actions[index]
-    save_entity_actions(kind, name, actions)
-    return load_entity_actions(kind, name)
+    """Delete one action of an entry (the others are checked as a save checks them). Returns the actions."""
+    return remove_entity_action(kind, name, index)["actions"]
+
+
+def remove_entity_action(kind: str, name: str, index: int, expected: str | None = None) -> dict:
+    """delete_entity_action, keeping the action whole, with its place, to be restored. ``expected``:
+    the name the action must have (else ConflictError: the actions changed, and nothing is deleted).
+    Returns {actions, message, undo}."""
+    with CONFIG_LOCK:
+        actions = load_entity_actions(kind, name)
+        if not 0 <= index < len(actions):
+            raise AuthoringError(f"`{name}` has no action {index + 1} (it has {len(actions)}).")
+        found = str(actions[index].get("name", ""))
+        if expected is not None and found != expected:
+            raise ConflictError(f"Action {index + 1} of `{name}` is now `{found}`, not `{expected}` (its actions changed "
+                                "since): nothing was deleted. Reload them and try again.")
+        before = copy.deepcopy(actions)
+        known = validate_entity_actions(kind, before)
+        removed = actions.pop(index)
+        save_entity_actions(kind, name, actions)
+        stored = load_entity_actions(kind, name)
+        undo = _keep_deletion({"type": "action", "kind": kind, "entry": name, "name": found, "record": removed,
+                               "known_errors": known}, before, index, stored)
+    return {"actions": stored, "message": f"Deleted the action `{found}` of `{name}`.", "undo": undo}
 
 
 def save_mission(key: str, mission: dict, rename: str | None = None) -> dict:
@@ -884,12 +1388,24 @@ def save_mission(key: str, mission: dict, rename: str | None = None) -> dict:
 
 
 def delete_mission(key: str) -> dict:
-    missions = _stored_missions()
-    if key not in missions:
-        raise AuthoringError(f"No mission `{key}`.")
-    del missions[key]
-    save_missions(missions)
-    return missions
+    """Delete a mission (the others are checked as a save checks them). Returns the missions left."""
+    return remove_mission(key)["missions"]
+
+
+def remove_mission(key: str) -> dict:
+    """delete_mission, keeping the mission whole, with its place, to be restored. Returns
+    {missions, message, undo}."""
+    with CONFIG_LOCK:
+        missions = _stored_missions()
+        if key not in missions:
+            raise AuthoringError(f"No mission `{key}`.")
+        keys = list(missions)
+        known = validate_missions(missions)
+        record = missions.pop(key)
+        save_missions(missions)
+        undo = _keep_deletion({"type": "mission", "name": key, "title": (record or {}).get("title") or key,
+                               "record": record, "known_errors": known}, keys, keys.index(key), list(missions))
+    return {"missions": missions, "message": f"Deleted the mission `{key}`.", "undo": undo}
 
 
 def _stored_missions() -> dict:
@@ -921,6 +1437,27 @@ def load_entity_details(kind: str, name: str) -> dict:
 def save_entity_details(kind: str, name: str, details: dict) -> dict:
     """Change an entry's details (DETAIL_FIELDS; an empty value removes the field). The entry is
     checked with the whole world in place, as every save is. Returns the details."""
+    errors = _detail_errors(kind, details)
+    if errors:
+        raise AuthoringError("The details are invalid:\n" + "\n".join(f"- {e}" for e in errors))
+    record = copy.deepcopy(_record(kind, name)[2])
+    _apply_details(record, details)
+    save_entity_yaml(kind, name, yaml.safe_dump(record, sort_keys=False, allow_unicode=True))
+    return load_entity_details(kind, name)
+
+
+def _apply_details(record: dict, details: dict) -> None:
+    for field, value in (details or {}).items():
+        if field == "article" and value == "none":
+            value = ""  # a proper name: no article
+        if value in (None, [], {}) or (value == "" and field != "article") or (field == "exit_locked" and not value):
+            record.pop(field, None)
+        else:
+            record[field] = value
+
+
+def _detail_errors(kind: str, details: dict) -> list:
+    """What is wrong with an entry's details (DETAIL_FIELDS), as save_entity_details checks them."""
     fields = DETAIL_FIELDS.get(kind, ())
     unknown = sorted(set(details or {}) - set(fields))
     if unknown:
@@ -950,18 +1487,7 @@ def save_entity_details(kind: str, name: str, details: dict) -> dict:
                                    ("linked_item", items, "item")):
             if point.get(field) and point[field] not in known:
                 errors.append(f"interaction point {number}: {field} `{point[field]}` is not a {what}.")
-    if errors:
-        raise AuthoringError("The details are invalid:\n" + "\n".join(f"- {e}" for e in errors))
-    record = copy.deepcopy(_record(kind, name)[2])
-    for field, value in (details or {}).items():
-        if field == "article" and value == "none":
-            value = ""  # a proper name: no article
-        if value in (None, [], {}) or (value == "" and field != "article") or (field == "exit_locked" and not value):
-            record.pop(field, None)
-        else:
-            record[field] = value
-    save_entity_yaml(kind, name, yaml.safe_dump(record, sort_keys=False, allow_unicode=True))
-    return load_entity_details(kind, name)
+    return errors
 
 
 def load_map() -> dict:
@@ -1010,13 +1536,15 @@ SUGGESTION_FIELDS = {"descriptions": "Descriptions", "goals": "Goals", "tags": "
                      "interact_prompts": "Interact prompts", "dialogue": "Dialogue lines"}
 
 
-def _need_language_model():
-    """RuntimeError (with how to enable it) when the language model cannot be used from here."""
+def _need_language_model(role="judge"):
+    """RuntimeError (with how to enable it) when a role's language model cannot be used from here."""
     from utils import llm_model_loader
 
-    found = llm_model_loader.status()
+    found = llm_model_loader.status(role=role)
     if not found["available"]:
-        raise RuntimeError(f"The language model is not available: {found['reason']} {found['how'] or ''}".strip())
+        what = "The augmentation model" if role == "augmentation" else "The language model"
+        raise RuntimeError(f"{what} ({found['model']}) is not available: {found['reason']} "
+                           f"{found['how'] or ''}".strip())
 
 
 def _world_names():
@@ -1066,12 +1594,51 @@ def world_size() -> dict:
     return {"have": have, "want": want, "enough": all(have[key] >= want[key] for key in want)}
 
 
+def augmentation_state(timeout: float = 3.0) -> dict:
+    """World augmentation: whether it is on (augmentation.enabled: the tick in 🌍 World → ✨ Grow the world,
+    and what python main.py reads) and its language model's status (augmentation.llm: Qwen3.5-4B on vLLM;
+    llm_model_loader.status). {enabled, model: {available, mode, model, server, reason, how}}."""
+    from utils import llm_model_loader
+
+    return {"enabled": bool(config.get("augmentation.enabled", False)),
+            "model": llm_model_loader.status(timeout=timeout, role="augmentation")}
+
+
+def set_augmentation_enabled(enabled: bool) -> dict:
+    """Switch world augmentation on or off (augmentation.enabled in hyperparameters.yaml; the file's
+    comments kept). Returns augmentation_state()."""
+    from . import store
+
+    if not isinstance(enabled, bool):
+        raise AuthoringError("`enabled` must be true or false.")
+    with CONFIG_LOCK:
+        path = store.HYPERPARAMETERS_PATH
+        data = _read_yaml(path)
+        data.setdefault("augmentation", {})["enabled"] = enabled
+        store._write_scalars(path, {"augmentation.enabled": enabled}, data)
+        config.clear_override()  # reloads the configuration
+    return augmentation_state()
+
+
+class AugmentationOff(ConflictError):
+    """World augmentation is switched off (augmentation.enabled)."""
+
+
+def require_augmentation() -> None:
+    """AugmentationOff while world augmentation is switched off."""
+    if not config.get("augmentation.enabled", False):
+        raise AugmentationOff("World augmentation is off: tick *Augment the world* in 🌍 World → ✨ Grow the world "
+                              "(augmentation.enabled) to propose new entries.")
+
+
 def propose_additions() -> dict:
-    """Gemma's proposal of new places, people and items for this world; nothing is written (add
-    the ones wanted with add_world_entries). RuntimeError without a language model."""
+    """The augmentation model's (Qwen3.5-4B on vLLM) proposal of new places, people and items for this
+    world; nothing is written (add the ones wanted with add_world_entries). AugmentationOff while
+    augmentation is switched off; RuntimeError without its language model."""
     from core_engine.augmenter import WorldAugmenter
 
-    _need_language_model()
+    require_augmentation()
+    _need_language_model("augmentation")
     proposal = WorldAugmenter().propose()
     if proposal is None:
         raise RuntimeError("The language model proposed nothing usable; try again.")
@@ -1124,3 +1691,244 @@ def add_world_entries(additions: dict) -> dict:
         config.clear_override()
         config.reload()
     return {"locations": sorted(places), "objects": [e["name"] for e in items], "characters": [e["name"] for e in people]}
+
+
+# ---- deletions and their undo ---------------------------------------------------------------------
+#
+# A deleted entry, action or mission is kept whole (every field, as stored) with its place: its index,
+# its neighbours, and the list it left. Undo (restore_deletion) puts back that record only, never a
+# whole file or configuration: where it was when the list is as the deletion left it, else next to its
+# old neighbour. A name taken again, or an entry no longer there for its action, is a conflict:
+# nothing newer is overwritten. Kept with the saves (deletions.json: the most recent ones), so an undo
+# survives a restart of the API.
+
+DELETIONS: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
+MAX_DELETIONS = 200
+_DELETIONS_LOADED: list = []  # the file the deletions were read from (read once per file)
+
+
+def deletions_path() -> Path:
+    """Where deletions are kept: with the saves (ANE_SAVE_DIR, a volume in Docker)."""
+    base = os.environ.get("ANE_SAVE_DIR") or (Path(__file__).resolve().parent.parent / "saves")
+    return Path(base) / "deletions.json"
+
+
+def _deletions() -> "collections.OrderedDict[str, dict]":
+    """The deletions kept to undo, read from deletions.json the first time (and again if the save
+    folder changed)."""
+    path = deletions_path()
+    if _DELETIONS_LOADED != [path]:
+        DELETIONS.clear()
+        try:
+            DELETIONS.update(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            pass
+        _DELETIONS_LOADED[:] = [path]
+    return DELETIONS
+
+
+def _store_deletions() -> None:
+    path = deletions_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(f".{path.name}.tmp")
+        temp.write_text(json.dumps(DELETIONS, ensure_ascii=False, default=str), encoding="utf-8")
+        os.replace(temp, path)
+    except OSError:  # not kept on disk: undo still works until the API restarts
+        pass
+
+
+def _names_in(records, shape) -> list:
+    return list(records) if shape == "mapping" else [entry.get("name") for entry in records]
+
+
+def world_revision() -> dict:
+    """A fingerprint of the world's entries as stored: their files' size and time of change, and the
+    world of a configuration in use instead of them (an upload). It changes whenever an entry is added,
+    changed, renamed or deleted, by any client, a tool or by hand; cheap enough to be asked often."""
+    parts = []
+    for path, *_ in ENTITY_FILES.values():
+        stat = path.stat() if path.exists() else None
+        parts.append([path.name, stat.st_mtime_ns if stat else None, stat.st_size if stat else None])
+    override = getattr(config, "_override", None)
+    if override is not None:
+        parts.append(_fingerprint((override or {}).get("world_definition")))
+    return {"revision": _fingerprint(parts)}
+
+
+def _fingerprint(value) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, default=str, ensure_ascii=False).encode()).hexdigest()
+
+
+def _entity_known_errors(kind: str, record: dict) -> list:
+    """The problems the world (and the entry) had while the entry was there: a restore is blocked only
+    by problems it would bring that were not there then (an older configuration's are not)."""
+    from .store import _validate_complete_config
+
+    key, shape = ENTITY_FILES[kind][1], ENTITY_FILES[kind][2]
+    world = config.get("world_definition") or {}
+    entries = world.get(key) or ({} if shape == "mapping" else [])
+    return list(dict.fromkeys([*_entry_errors(kind, record), *logic_errors(world),
+                               *_validate_complete_config(entries, None, f"world_definition.{key}")]))
+
+
+def _keep_deletion(deletion: dict, items: list, index: int, remaining: list) -> dict:
+    """Keep a deletion to undo: the record whole, its index among ``items`` (the list before it was
+    deleted), its neighbours there, and the list it left (``remaining``). Returns what the client
+    keeps to undo it: {token, type, name, kind, entry, position, of}."""
+    token = uuid.uuid4().hex
+    kept = {**deletion, "record": copy.deepcopy(deletion["record"]), "index": index, "of": len(items),
+            "before": copy.deepcopy(items[index - 1]) if index > 0 else None,
+            "after": copy.deepcopy(items[index + 1]) if index + 1 < len(items) else None,
+            "context": _fingerprint(remaining)}
+    with CONFIG_LOCK:
+        deletions = _deletions()
+        deletions[token] = kept
+        while len(deletions) > MAX_DELETIONS:
+            deletions.popitem(last=False)
+        _store_deletions()
+    return {"token": token, "type": kept["type"], "name": kept["name"], "kind": kept.get("kind"),
+            "entry": kept.get("entry"), "position": index + 1, "of": len(items)}
+
+
+def _place(current: list, deletion: dict) -> tuple[int, tuple | None]:
+    """Where a restored record goes among ``current``: its old index when the list is as the deletion
+    left it; when it changed since, after its old neighbour before it, else before the one after it,
+    else its old index. Returns (index, the neighbour it was placed by: ("after" | "before", it), or None)."""
+    index, anchor = deletion["index"], None
+    if _fingerprint(current) != deletion["context"]:
+        before, after = deletion.get("before"), deletion.get("after")
+        if before is not None and before in current:
+            index, anchor = current.index(before) + 1, ("after", before)
+        elif after is not None and after in current:
+            index, anchor = current.index(after), ("before", after)
+    return min(index, len(current)), anchor
+
+
+def _insert(entries, shape, name, record, index):
+    if shape == "mapping":
+        items = list(entries.items())
+        items.insert(index, (name, record))
+        entries.clear()
+        entries.update(items)
+    else:
+        entries.insert(index, record)
+
+
+def _not_restorable(what: str, errors) -> AuthoringError:
+    return AuthoringError(f"{what} cannot go back as it was: the world changed since it was deleted, and it would "
+                          "now be invalid:\n" + "\n".join(f"- {e}" for e in dict.fromkeys(errors)))
+
+
+def _restore_entity(deletion: dict) -> int:
+    from .store import _validate_complete_config
+
+    kind, name, record = deletion["kind"], deletion["name"], copy.deepcopy(deletion["record"])
+    path, data, records, shape = _entity_records(kind)
+    names = _names_in(records, shape)
+    if name in names:
+        raise ConflictError(f"An entry named `{name}` is in {kind} again (added or renamed since it was deleted): it "
+                            "is not overwritten. Rename or delete that one, then undo again.")
+    index, anchor = _place(names, deletion)
+    key = ENTITY_FILES[kind][1]
+    current = copy.deepcopy(config.get("world_definition") or {})
+    world = copy.deepcopy(current)
+    entries = world.setdefault(key, {} if shape == "mapping" else [])
+    _insert(entries, shape, name, copy.deepcopy(record), index)
+    known = set(deletion["known_errors"]) | set(logic_errors(current)) | set(
+        _validate_complete_config(current.get(key) or ({} if shape == "mapping" else []), None, f"world_definition.{key}"))
+    errors = [*_entry_errors(kind, record), *_validate_complete_config(entries, None, f"world_definition.{key}"),
+              *logic_errors(world)]
+    new = [error for error in errors if error not in known]
+    if new:
+        raise _not_restorable(f"`{name}`", new)
+    _insert(records, shape, name, record, index)
+    _write_yaml(path, data)
+    config.clear_override()
+    config.reload()
+    return index, anchor
+
+
+def _restore_action(deletion: dict) -> int:
+    kind, entry, name, record = deletion["kind"], deletion["entry"], deletion["name"], copy.deepcopy(deletion["record"])
+    try:
+        path, data, stored = _record(kind, entry)
+    except AuthoringError as exc:
+        raise ConflictError(f"`{entry}` is no longer in {kind} (deleted or renamed since): its action `{name}` cannot "
+                            f"go back. Restore or recreate `{entry}` first.") from exc
+    actions = copy.deepcopy(stored.get("actions") or [])
+    if any(str(action.get("name", "")) == name for action in actions):
+        raise ConflictError(f"`{entry}` has an action named `{name}` again (added or renamed since it was deleted): it "
+                            "is not overwritten. Rename or delete that one, then undo again.")
+    index, anchor = _place(actions, deletion)
+    known = set(deletion["known_errors"]) | set(validate_entity_actions(kind, actions))
+    actions.insert(index, record)
+    new = [error for error in validate_entity_actions(kind, actions) if error not in known]
+    if new:
+        raise _not_restorable(f"The action `{name}` of `{entry}`", new)
+    stored["actions"] = actions
+    _write_yaml(path, data)
+    config.clear_override()
+    config.reload()
+    return index, anchor
+
+
+def _restore_mission(deletion: dict) -> int:
+    key, record = deletion["name"], copy.deepcopy(deletion["record"])
+    missions = _stored_missions()
+    if key in missions:
+        raise ConflictError(f"A mission `{key}` exists again (added or renamed since it was deleted): it is not "
+                            "overwritten. Rename or delete that one, then undo again.")
+    index, anchor = _place(list(missions), deletion)
+    items = list(missions.items())
+    items.insert(index, (key, record))
+    restored = dict(items)
+    known = set(deletion["known_errors"]) | set(validate_missions(missions))
+    new = [error for error in validate_missions(restored) if error not in known]
+    if new:
+        raise _not_restorable(f"The mission `{key}`", new)
+    _store_missions(yaml.safe_dump({"world_definition": {"missions": restored}}, sort_keys=False, allow_unicode=True))
+    return index, anchor
+
+
+def _ordinal(number: int) -> str:
+    suffix = "th" if 10 <= number % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(number % 10, "th")
+    return f"{number}{suffix}"
+
+
+def restore_deletion(token: str) -> dict:
+    """Undo a deletion (``token``: from its response): the record goes back whole, only it. LookupError:
+    no such deletion here (undone already, or this process restarted since); ConflictError: its name is
+    taken again, or its entry is gone (nothing is overwritten); AuthoringError: it would now be invalid.
+    Returns {type, name, kind, entry, position, was, moved, changed_since, message}."""
+    with CONFIG_LOCK:
+        deletion = _deletions().get(token)
+        if deletion is None:
+            raise LookupError("This deletion can no longer be undone: it was undone already, or it is older than "
+                              f"the {MAX_DELETIONS} most recent deletions kept.")
+        restore = {"entity": _restore_entity, "action": _restore_action, "mission": _restore_mission}[deletion["type"]]
+        context = {"entity": lambda: _names_in(*_entity_records(deletion["kind"])[2:]),
+                   "action": lambda: load_entity_actions(deletion["kind"], deletion["entry"]),
+                   "mission": lambda: list(_stored_missions())}[deletion["type"]]
+        try:
+            changed = _fingerprint(context()) != deletion["context"]
+        except AuthoringError:
+            changed = True
+        index, anchor = restore(deletion)
+        DELETIONS.pop(token, None)
+        _store_deletions()
+    what = {"entity": f"**{deletion['name']}** to {deletion.get('kind')}",
+            "action": f"the action **{deletion['name']}** to `{deletion.get('entry')}`",
+            "mission": f"the mission **{deletion['name']}**"}[deletion["type"]]
+    moved = index != deletion["index"]
+    if not changed:
+        where = f"where it was ({_ordinal(index + 1)})"
+    else:
+        side, neighbour = anchor or (None, None)
+        label = neighbour.get("name") if isinstance(neighbour, dict) else neighbour
+        where = (_ordinal(index + 1) + (f", {side} **{label}** as before" if side else "")
+                 + (f" (it was {_ordinal(deletion['index'] + 1)})" if moved else "")
+                 + "; the list changed since it was deleted")
+    return {"type": deletion["type"], "name": deletion["name"], "kind": deletion.get("kind"),
+            "entry": deletion.get("entry"), "position": index + 1, "was": deletion["index"] + 1, "moved": moved,
+            "changed_since": changed, "message": f"Restored {what}, {where}."}

@@ -12,20 +12,13 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 from concurrent.futures.process import BrokenProcessPool
 from utils.config_loader import config
 from utils.config_editor import ConfigEditor
-from utils.tag_similarity import semantic_tag_similarity
-from core_engine import Genome, Location, WorldGraph, Action, Outcome, GameState, Character, Object, Event, Mission
-from core_engine.actions import REPEAT_RULES
-from core_engine.narration import message
-from core_engine import stats, variables
+from core_engine import Genome, GameState
+from core_engine import variables
 from core_engine import players
 from core_engine.evolution import LearningMemory, NarrativeEvolution, evolution_settings
 # World building and fitness live in core_engine (also shipped in offline engine exports).
-from core_engine.builder import (  # noqa: F401  (re-exported for callers of main)
-    _SPAWN_RULES_CACHE, _build_action, _build_outcome, _build_spawn_rules, _coerce_list, _interaction_prompts,
-    _location_distant_descriptions, _location_entered_descriptions, _resolve_outcome_links, _stat_usage_errors,
-    build_world,
-)
-from core_engine.fitness import _fitness_breakdown, fitness  # noqa: F401
+from core_engine.builder import build_world
+from core_engine.fitness import fitness
 
 # ============================
 # CONFIG (loaded from config.yaml)
@@ -104,10 +97,12 @@ def refresh_runtime_settings():
     PARALLEL_BACKEND = config.get("evolution.parallel_backend", "processes")
 
 
-def apply_random_seed(force=False):
-    if not force and not config.get("reproducibility.deterministic", True):
+def apply_random_seed(force=False, seed=None):
+    """Seed every random generator: with ``seed``, or the configured reproducibility seed."""
+    if seed is None and not force and not config.get("reproducibility.deterministic", True):
         return None
-    seed = config.get("reproducibility.seed", config.get("simulation.seed"))
+    if seed is None:
+        seed = config.get("reproducibility.seed", config.get("simulation.seed"))
     if seed is None:
         return None
 
@@ -641,6 +636,55 @@ def prompt_story_setup_editor():
         print("Please choose 1, 2, 3, 4, or 5.")
 
 
+def describe_proposal(proposal):
+    """One line per kind of what a proposal adds."""
+    lines = []
+    for key, kind in (("locations", "places"), ("characters", "people"), ("objects", "items")):
+        entries = proposal.get(key) or ({} if key == "locations" else [])
+        names = list(entries) if isinstance(entries, dict) else [e.get("name") for e in entries if isinstance(e, dict)]
+        if names:
+            lines.append(f"  {len(names)} {kind}: {', '.join(str(n) for n in names)}")
+    return "\n".join(lines)
+
+
+def propose_augmentation():
+    """World augmentation, review first (as the studio's Grow the world): when the world is below the
+    augmentation targets, the language model's proposal of new places, people and items is kept under
+    augmentation.output_dir for review, and the configuration is not changed; this run uses the world as
+    it is. ``python main.py --apply-augmentation FILE`` adds a reviewed proposal. Returns its path, or None."""
+    from core_engine.augmenter import WorldAugmenter
+
+    print("\n--- Checking for World Augmentation ---")
+    augmenter = WorldAugmenter()
+    if augmenter.is_sufficient():
+        print("The world meets the augmentation targets: nothing to propose.")
+        return None
+    proposal = augmenter.propose()
+    if not proposal:
+        print("Augmentation proposed nothing usable.")
+        return None
+    path = augmenter.save_proposal(proposal)
+    print(f"Proposed (nothing written to the configuration; this run uses the world as it is):\n"
+          f"{describe_proposal(proposal)}\nReview it in {path}, then add it with:\n"
+          f"  python main.py --apply-augmentation {path}\n(or in the studio: 🌍 World → ✨ Grow the world).")
+    return path
+
+
+def apply_augmentation(path):
+    """Add a reviewed proposal (augmentations/run_*/proposal.yaml, edited or not): each entry must be new
+    and the whole world is checked with them, as the studio's Grow the world adds them; nothing is
+    written when it is invalid. Returns what was added."""
+    from backend import content
+
+    with open(path, encoding="utf-8") as stream:
+        proposal = yaml.safe_load(stream) or {}
+    added = content.add_world_entries({key: proposal.get(key) for key in ("locations", "objects", "characters")})
+    print("Added to the configuration:\n" + describe_proposal(
+        {"locations": dict.fromkeys(added["locations"]), "objects": [{"name": n} for n in added["objects"]],
+         "characters": [{"name": n} for n in added["characters"]]}))
+    return added
+
+
 def run_story(world_path=None):
     config.reload()
     refresh_runtime_settings()
@@ -658,15 +702,7 @@ def run_story(world_path=None):
         print(f"Created directory: {output_dir}")
 
     if config.get("augmentation.enabled", False):
-        from core_engine.augmenter import WorldAugmenter
-        print("\n--- Checking for World Augmentation ---")
-        augmenter = WorldAugmenter()
-        res = augmenter.augment(update_config=True)
-        if res and res[0]:
-            augmented_data, augmented_path = res
-            print(f"\n[SUCCESS] World expanded! Using augmented configuration found in: {augmented_path}")
-        else:
-            print("Augmentation skipped or failed.")
+        propose_augmentation()
 
     # Print world locations after potential augmentation
     print("\n--- World Locations (Active Configuration) ---")
@@ -719,7 +755,6 @@ def run_story(world_path=None):
     final_world = build_world(best_genome)
     
     # Obtain simulation parameters from config
-    sim_verbose = config.get("simulation.verbose", True)
     sim_interactive = config.get("simulation.interactive", True)
     
     final_state = GameState(final_world, best_genome, store=variables.VariableStore(), 
@@ -833,6 +868,9 @@ def engine_command(argv=None):
     group.add_argument("--play", metavar="ENGINE", help="play a story with it in the terminal")
     group.add_argument("--export-world", metavar="ENGINE", help="write its world and tuning as one YAML file")
     group.add_argument("--list-engines", action="store_true", help="list the recorded engines")
+    group.add_argument("--apply-augmentation", metavar="PROPOSAL",
+                       help="add a reviewed world augmentation proposal (augmentations/run_*/proposal.yaml) to the "
+                            "configuration, checked as the studio checks it")
     group.add_argument("--import-artifacts", metavar="FOLDER", nargs="?", const="",
                        help="record every engine and game in FOLDER (default: the artifacts folder) and move the "
                             "files into the records folder")
@@ -851,6 +889,12 @@ def engine_command(argv=None):
         folder = args.import_artifacts or os.getenv("ANE_ARTIFACT_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "artifacts")
         report = sessions.import_artifacts(folder, move=not args.copy, preview=not args.no_preview)
         print(json.dumps(report, indent=2))
+        return
+    if args.apply_augmentation:
+        try:
+            apply_augmentation(args.apply_augmentation)
+        except Exception as exc:  # an invalid proposal: said, nothing written
+            sys.exit(f"[AUGMENTATION] Not applied, nothing written: {exc}")
         return
     if args.list_engines:
         for engine in records.list_engines(limit=100):

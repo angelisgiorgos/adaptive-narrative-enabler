@@ -47,7 +47,7 @@ from typing import Optional
 from utils.config_loader import config
 
 from . import players
-from .game_state import GameState
+from .game_state import GameState, story_length
 from .genome import TRAIT_BOUNDS, Genome, trait_bounds
 
 LOGGER = logging.getLogger(__name__)
@@ -117,15 +117,38 @@ DEFAULTS = {
 AGGREGATES = ("mean", "mean_minus_std")
 
 
-def evolution_settings(overrides=None):
-    """Evolution settings: DEFAULTS < config ``evolution`` < ``overrides``."""
+def evolution_settings(overrides=None, base=None):
+    """Evolution settings: DEFAULTS < config ``evolution`` (or ``base``, e.g. a recorded engine's) <
+    ``overrides``."""
     settings = dict(DEFAULTS)
-    settings.update({k: v for k, v in (config.get("evolution") or {}).items() if k in DEFAULTS})
+    saved = (config.get("evolution") or {}) if base is None else (base or {})
+    settings.update({k: v for k, v in saved.items() if k in DEFAULTS})
     settings.update({k: v for k, v in (overrides or {}).items() if v is not None})
     return settings
 
 
 # ---- evaluation -------------------------------------------------------------------
+
+def fast_travel_turns():
+    """The turns fast travel can add to a story beyond its end: travel.max_free_turns while fast travel
+    is on (GameState._max_actions does not count them toward the action limit), else 0."""
+    travel = config.get("travel") or {}
+    return max(0, int(travel.get("max_free_turns", 10))) if travel.get("fast_travel", False) else 0
+
+
+def story_turns(steps, full_length, end=None, free=None):
+    """The most turns a training story can take, and whether the ``steps`` asked for decide it:
+    (turns, steps_decide). A story ends after its length (story_length(), or ``end``) plus the turns
+    it spent in fast travel (``free`` at most: fast_travel_turns()), and training plays at most
+    ``steps`` turns of it (NarrativeEvolution._max_steps), or with full-length stories at least its
+    length."""
+    end = story_length() if end is None else int(end)
+    free = fast_travel_turns() if free is None else max(0, int(free))
+    steps = max(1, int(steps))
+    played = max(steps, end) if full_length else steps
+    turns = min(played, end + free)
+    return turns, (not full_length) and steps <= end + free
+
 
 def play_episode(build_world, genome, seed, max_steps, situation=None, player=None):
     """One story told by ``genome`` with the story seed ``seed``; ``situation`` (start, mission)
@@ -368,10 +391,11 @@ class NarrativeEvolution:
         self._judge_unreadable = False   # an unreadable judgement was already logged
 
     def _max_steps(self):
-        """Steps per evaluated story: the whole story with full_length_stories."""
+        """Steps per evaluated story: the whole story with full_length_stories (story_turns says
+        how many a story can then take)."""
         steps = max(1, int(self.settings["max_steps"]))
         if self.settings["full_length_stories"]:
-            steps = max(steps, max(100, int(config.get("narrative_end.max_actions", 100))))
+            steps = max(steps, story_length())
         return steps
 
     def _situations(self):
