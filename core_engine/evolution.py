@@ -129,16 +129,25 @@ def evolution_settings(overrides=None, base=None):
 
 # ---- evaluation -------------------------------------------------------------------
 
-def story_turns(steps, full_length, end=None):
+def fast_travel_turns():
+    """The turns fast travel can add to a story beyond its end: travel.max_free_turns while fast travel
+    is on (GameState._max_actions does not count them toward the action limit), else 0."""
+    travel = config.get("travel") or {}
+    return max(0, int(travel.get("max_free_turns", 10))) if travel.get("fast_travel", False) else 0
+
+
+def story_turns(steps, full_length, end=None, free=None):
     """The most turns a training story can take, and whether the ``steps`` asked for decide it:
-    (turns, steps_decide). With full-length stories every story is played to its end
-    (story_length(), or ``end``), whatever the steps; otherwise ``steps``, though no story outlasts
-    its end."""
+    (turns, steps_decide). A story ends after its length (story_length(), or ``end``) plus the turns
+    it spent in fast travel (``free`` at most: fast_travel_turns()), and training plays at most
+    ``steps`` turns of it (NarrativeEvolution._max_steps), or with full-length stories at least its
+    length."""
     end = story_length() if end is None else int(end)
+    free = fast_travel_turns() if free is None else max(0, int(free))
     steps = max(1, int(steps))
-    if full_length:
-        return end, False
-    return min(steps, end), steps <= end
+    played = max(steps, end) if full_length else steps
+    turns = min(played, end + free)
+    return turns, (not full_length) and steps <= end + free
 
 
 def play_episode(build_world, genome, seed, max_steps, situation=None, player=None):

@@ -1,4 +1,5 @@
 # Building a frontend on the API
+# Building a frontend on the API
 
 This guide is for frontend developers who are building a new client for the Adaptive Narrative
 Studio, for example in React. It also works as input to a code generator. It describes every screen
@@ -2542,6 +2543,9 @@ the API disagree, or when this guide names a request the API does not have.
 | `GET` | `/v1/behaviours/rules` | [behaviour](#behaviour) | The rules that give people and places their behaviour by tags, as data: |
 | `PUT` | `/v1/behaviours/rules/{group}` | [behaviour](#behaviour) | Replace the people's or the places' rules, checked as rules (400 says what is wrong). |
 | `POST` | `/v1/suggestions` | [entries-suggest](#entries-suggest) | Gemma's suggestions for a text field of an entry, in the world's voice (the terminal editor's suggestions): |
+| `GET` | `/v1/augmentation` | [grow](#grow) | World augmentation: whether it is on (the tick) and its own model's status (Qwen3.5-4B on vLLM). |
+| `PUT` | `/v1/augmentation` | [grow](#grow) | Switch world augmentation on or off (augmentation.enabled). |
+| `GET` | `/v1/world/revision` | [entries](#entries) | A fingerprint of the world's entries as stored; the content library lists them again when it changes. |
 | `GET` | `/v1/world/size` | [grow](#grow) | How big the world is against the augmentation targets (augmentation.min_*): |
 | `POST` | `/v1/jobs/world-proposal` | [grow](#grow) | Gemma proposes new places, people and items for this world, in the background (poll GET /v1/jobs/{id}; the… |
 | `POST` | `/v1/world/additions` | [grow](#grow) | Add new places, people and items (e.g. |

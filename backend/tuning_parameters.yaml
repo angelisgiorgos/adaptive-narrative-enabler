@@ -1410,7 +1410,7 @@ evolution.mutation_rate:
   default: 0.22
   source:
   - core_engine/evolution.py:86
-  - core_engine/evolution.py:504
+  - core_engine/evolution.py:513
   - core_engine/genome.py:88
 evolution.elitism_rate:
   label: Share of best storytellers kept unchanged
@@ -1422,7 +1422,7 @@ evolution.elitism_rate:
   default: 0.08
   source:
   - core_engine/evolution.py:82
-  - core_engine/evolution.py:489
+  - core_engine/evolution.py:498
 evolution.crossover_rate:
   label: Chance a child mixes two parents
   explanation: For each child bred, the probability that it is made by crossing two tournament-selected parents;
@@ -1432,7 +1432,7 @@ evolution.crossover_rate:
   default: 0.75
   source:
   - core_engine/evolution.py:83
-  - core_engine/evolution.py:500
+  - core_engine/evolution.py:509
 evolution.blend_crossover_chance:
   label: Chance a crossed trait is blended
   explanation: When two parents are crossed, each trait of the child is, with this probability, a random weighted
@@ -1453,7 +1453,7 @@ evolution.random_immigrant_rate:
   default: 0.08
   source:
   - core_engine/evolution.py:84
-  - core_engine/evolution.py:490
+  - core_engine/evolution.py:499
 evolution.max_immigrant_rate:
   label: Newcomer share when diversity is low
   explanation: When the population's diversity drops below min_diversity, the share of random newcomers for that
@@ -1464,7 +1464,7 @@ evolution.max_immigrant_rate:
   default: 0.3
   source:
   - core_engine/evolution.py:97
-  - core_engine/evolution.py:493
+  - core_engine/evolution.py:502
 evolution.consistency_weight:
   label: Penalty for uneven story quality
   explanation: With score_aggregate 'mean_minus_std', a storyteller's score is the mean score of its stories minus
@@ -1475,8 +1475,8 @@ evolution.consistency_weight:
   default: 0.25
   source:
   - core_engine/evolution.py:102
-  - core_engine/evolution.py:208
-  - core_engine/evolution.py:411
+  - core_engine/evolution.py:217
+  - core_engine/evolution.py:420
 evolution.alternatives_weight:
   label: Reward for telling different stories
   explanation: Adds this many points × how different a storyteller's stories are from one another (mean pairwise
@@ -1487,9 +1487,9 @@ evolution.alternatives_weight:
   default: 0.0
   source:
   - core_engine/evolution.py:103
-  - core_engine/evolution.py:194
-  - core_engine/evolution.py:213
-  - core_engine/evolution.py:412
+  - core_engine/evolution.py:203
+  - core_engine/evolution.py:222
+  - core_engine/evolution.py:421
 evolution.judge_weight:
   label: Weight of the AI judge's engagement rating
   explanation: When above 0, the LLM judge reads one story of each of the judge_top_k best storytellers per generation,
@@ -1500,7 +1500,7 @@ evolution.judge_weight:
   default: 0.0
   source:
   - core_engine/evolution.py:106
-  - core_engine/evolution.py:542
+  - core_engine/evolution.py:551
 fitness.variety.distinct_choice_weight:
   label: Reward for choosing different actions
   explanation: Adds this many points × the share of the story's choices that were distinct (distinct choices ÷ choices

@@ -4706,11 +4706,10 @@ class GameState(StoryBeats, SessionScope):
         failing costs, or None)}; None for an option without a check."""
         failure_tags = set(rules.settings()["failure_tags"])
         check = self.combat.check_for(action)
-        outcome = None
         if not check:
             for candidate in action.outcomes:
                 if not rules.is_failure(candidate, failure_tags) and self.combat.check_for(action, candidate):
-                    outcome, check = candidate, self.combat.check_for(action, candidate)
+                    check = self.combat.check_for(action, candidate)
                     break
         if not check:
             return None

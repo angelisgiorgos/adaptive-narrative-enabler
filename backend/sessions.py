@@ -20,11 +20,12 @@ from numbers import Number
 from pathlib import Path
 import yaml
 import main as engine
-from core_engine import GameState, Genome, Mission
+from core_engine import GameState, Genome
 from core_engine.game_state import MIN_STORY_LENGTH, story_length
 from core_engine import variables as persistent
 from core_engine.variables import VariableStore
-from core_engine.evolution import LearningMemory, NarrativeEvolution, evolution_settings, story_turns
+from core_engine.evolution import (LearningMemory, NarrativeEvolution, evolution_settings, fast_travel_turns,
+                                   story_turns)
 from core_engine.model import EngineModel
 from utils.config_loader import config
 
@@ -843,17 +844,22 @@ def training_work(candidates, generations, episodes, steps, full_length=None, le
     full_length = bool(evolution_settings().get("full_length_stories")) if full_length is None else bool(full_length)
     length = story_length() if length is None else int(length)
     configured = config.get("narrative_end.max_actions", length) if configured is None else configured
-    turns, steps_decide = story_turns(steps, full_length, end=length)
+    free = fast_travel_turns()
+    turns, steps_decide = story_turns(steps, full_length, end=length, free=free)
+    # Fast travel: turns that do not count toward a story's end (travel.max_free_turns), so a story can
+    # outlast its length by them when the steps let it.
+    extra = (f" plus up to {free} turns of fast travel (travel.max_free_turns), which do not count toward it"
+             if free else "")
     override = None
     if full_length:
         override = {"setting": "evolution.full_length_stories",
                     "reason": f"Full-length stories are on (evolution.full_length_stories): every story is played to "
-                              f"its end, {turns} turns (narrative_end.max_actions), so the {steps} steps asked for "
-                              "do not set how long a story is."}
+                              f"its end, {length} turns (narrative_end.max_actions){extra}: {turns} at most, so the "
+                              f"{steps} steps asked for do not set how long a story is."}
     elif not steps_decide:
         override = {"setting": "narrative_end.max_actions",
-                    "reason": f"A story ends by itself after {length} turns (narrative_end.max_actions), so no story "
-                              f"takes the {steps} steps asked for: {turns} at most."}
+                    "reason": f"A story ends by itself after {length} turns (narrative_end.max_actions){extra}, so no "
+                              f"story takes the {steps} steps asked for: {turns} at most."}
     if override and configured != length:
         override["reason"] += f" (narrative_end.max_actions is {configured}; a story lasts at least {length} turns.)"
     work = candidates * generations * episodes * turns
@@ -861,6 +867,7 @@ def training_work(candidates, generations, episodes, steps, full_length=None, le
             "over_by": max(0, work - MAX_SIMULATION_WORK),
             "requested_steps": steps, "effective_max_turns": turns, "story_turns": turns,
             "full_length_stories": full_length, "story_length": length, "steps_decide": steps_decide,
+            "fast_travel_turns": free,
             "override": override,
             "factors": {"storytellers": candidates, "generations": generations,
                         "stories_per_storyteller": episodes, "turns_per_story": turns}}

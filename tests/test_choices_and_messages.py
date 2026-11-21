@@ -16,6 +16,8 @@ import api
 from backend import content, sessions, store
 import main as engine
 from core_engine import Action, Character, GameState, Genome, Location, Outcome, WorldGraph
+from core_engine.builder import _build_action
+from core_engine.fitness import _fitness_breakdown
 from core_engine.narration import DEFAULT_MESSAGES, Narrator, validate_messages
 from utils.config_loader import config
 
@@ -122,7 +124,7 @@ class RepeatAndExclusiveTests(unittest.TestCase):
 
     def test_invalid_repeat_rule_is_rejected(self):
         with self.assertRaises(ValueError):
-            engine._build_action({"name": "x", "repeat": "sometimes"}, [Outcome("x")], {})
+            _build_action({"name": "x", "repeat": "sometimes"}, [Outcome("x")], {})
 
 
 class MessageTests(unittest.TestCase):
@@ -161,7 +163,7 @@ class MessageTests(unittest.TestCase):
         self.assertEqual(state.history[-1], "[END] Nothing happens any more.")
         self.assertEqual(state.end_reason, "Nothing happens any more.")
         penalty = config.get("fitness.base.stall_penalty")
-        self.assertLessEqual(engine._fitness_breakdown(state)["ending"], config.get("fitness.base.completion_bonus") - penalty)
+        self.assertLessEqual(_fitness_breakdown(state)["ending"], config.get("fitness.base.completion_bonus") - penalty)
 
     def test_shipped_file_matches_defaults(self):
         shipped = yaml.safe_load((store.CONFIG_DIR / "messages.yaml").read_text())["messages"]
@@ -234,9 +236,9 @@ class GenomeDrivenChoiceTests(unittest.TestCase):
     def test_variety_fitness_penalises_repeated_outcomes(self):
         state = _state()
         _choose(state, "(Guard) Salute")
-        once = engine._fitness_breakdown(state)["variety"]
+        once = _fitness_breakdown(state)["variety"]
         _choose(state, "(Guard) Salute")
-        self.assertLess(engine._fitness_breakdown(state)["variety"], once)
+        self.assertLess(_fitness_breakdown(state)["variety"], once)
 
     def test_old_bundles_without_novelty_bias_load(self):
         values = {key: 0.5 for key in vars(Genome()) if key not in ("novelty_bias", "goal_bias")}

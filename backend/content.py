@@ -14,8 +14,8 @@ from numbers import Number
 import yaml
 import main as engine
 from core_engine import Mission, conditions, content_rules, effects, starts
-from core_engine.builder import (EVENT_POLICY_FIELDS, ITEM_POLICY_FIELDS, event_policy_errors, item_policy_errors,
-                                 logic_errors, route_errors)
+from core_engine.builder import (EVENT_POLICY_FIELDS, ITEM_POLICY_FIELDS, _stat_usage_errors, event_policy_errors,
+                                 item_policy_errors, logic_errors, route_errors)
 from core_engine.actions import REPEAT_RULES, repetition_errors
 from core_engine.stats import MODES as STAT_MODES, CharacterStats, stats_config, validate_settings as validate_stat_settings
 from core_engine.narration import DEFAULT_MESSAGES, validate_messages
@@ -177,7 +177,7 @@ def _apply_stat_bonus(record: dict, stat_bonus) -> None:
             stat_bonus = yaml.safe_load(stat_bonus) if stat_bonus.strip() else None
         except yaml.YAMLError as exc:
             raise AuthoringError(f"`Stat bonus` is not valid YAML: {exc}") from exc
-    errors = engine._stat_usage_errors({"stat_bonus": stat_bonus}, list(stats_config().get("stats") or {}), "Item")
+    errors = _stat_usage_errors({"stat_bonus": stat_bonus}, list(stats_config().get("stats") or {}), "Item")
     if errors:
         raise AuthoringError("\n".join(errors))
     if stat_bonus:
@@ -358,11 +358,20 @@ def save_entity(kind: str, selected_name: str, name: str, tags, descriptions: st
             records[name] = record
         else:
             _place_record(records, shape, selected_name if selected_name in names else None, name, record)
-        _write_yaml(path, data)
+        counts = {}
+        if selected_name in names and selected_name != name and not rename_ambiguity(kind, selected_name):
+            plan = reference_rename_plan(kind, selected_name, name, skip=[path])  # what refers to it follows
+            data, own = _renamed(data, selected_name, name)
+            records = data["world_definition"][ENTITY_FILES[kind][1]]
+            counts = {**({path.name: own} if own else {}), **plan["counts"]}
+            _write_yaml(path, data)
+            _write_rename_plan(plan)
+        else:
+            _write_yaml(path, data)
         config.clear_override()
         config.reload()
         choices = list(records) if shape == "mapping" else [entry["name"] for entry in records]
-    return choices, name, f"Saved **{name}** to `{path.name}`."
+    return choices, name, f"Saved **{name}** to `{path.name}`." + references_said(selected_name, name, counts)
 
 def delete_entity(kind: str, selected_name: str):
     """Delete an entry (at least one location, NPC and item remains; events may all go). Returns (the
@@ -370,6 +379,142 @@ def delete_entity(kind: str, selected_name: str):
     result = remove_entity(kind, selected_name)
     choices = result["entities"]
     return choices, (choices[0] if choices else None), result["message"]
+
+
+# ---- a rename that follows its references -----------------------------------------------------------
+#
+# Renaming an entry renames what refers to it: every YAML key or string that is exactly its old name, in
+# the files a world's references can be in (the entries', the missions', the variables' and the tuning
+# parameters': a place's penalties, the arrest location). The other files are edited in place, scalar by
+# scalar, so their comments and layout stay. A name that also names something of another kind (a person
+# and a place both called Lantern) is ambiguous: nothing else is renamed, and a rename that would leave
+# references dangling is refused as before.
+
+KIND_NAMES = {"Locations": "a location", "NPCs": "an NPC", "Items": "an item", "Events": "an event"}
+
+
+def _reference_files() -> list:
+    from . import store
+
+    return list(dict.fromkeys([path for path, *_ in ENTITY_FILES.values()]
+                              + [MISSIONS_PATH, VARIABLES_PATH, store.HYPERPARAMETERS_PATH]))
+
+
+def _renamed(value, old: str, new: str):
+    """(a copy of ``value`` with every mapping key and string equal to ``old`` made ``new``, how many)."""
+    if isinstance(value, dict):
+        out, count = {}, 0
+        for key, item in value.items():
+            item, found = _renamed(item, old, new)
+            if key == old:
+                key, found = new, found + 1
+            out[key] = item
+            count += found
+        return out, count
+    if isinstance(value, list):
+        pairs = [_renamed(item, old, new) for item in value]
+        return [item for item, _ in pairs], sum(found for _, found in pairs)
+    return (new, 1) if isinstance(value, str) and value == old else (value, 0)
+
+
+def rename_ambiguity(kind: str, old: str, world: dict | None = None) -> str | None:
+    """Why the references to ``old`` (an entry of ``kind``) cannot be told apart, or None: the name
+    also names something else (another kind's entry, a mission, a variable)."""
+    world = world if world is not None else (config.get("world_definition") or {})
+    others = []
+    for other, (_, key, shape) in ENTITY_FILES.items():
+        records = world.get(key) or ({} if shape == "mapping" else [])
+        if other != kind and old in _names_in(records, shape):
+            others.append(KIND_NAMES[other])
+    for key, what in (("missions", "a mission"), ("variables", "a variable")):
+        if old in (world.get(key) or {}):
+            others.append(what)
+    if not others:
+        return None
+    return (f"`{old}` also names {' and '.join(others)}, so the references to it cannot be told apart: "
+            "they are not renamed")
+
+
+def _yaml_scalar(text: str) -> str:
+    """``text`` as a YAML string scalar that reads back as itself, in block or flow context."""
+    plain = yaml.safe_dump(text, width=1 << 16).splitlines()[0]
+    if any(c in text for c in ",[]{}#:&*!|>'\"%@`") or text != text.strip() or yaml.safe_load(plain) != text:
+        return json.dumps(text, ensure_ascii=False)
+    return plain
+
+
+def _rename_in_text(text: str, old: str, new: str) -> tuple[str, int]:
+    """``text`` (a YAML document) with every string scalar, key or value, equal to ``old`` written as
+    ``new`` and nothing else changed (comments and layout kept), and how many."""
+    root = yaml.compose(text)
+    spans = set()
+
+    def walk(node):
+        if isinstance(node, yaml.ScalarNode):
+            if node.value == old and node.tag == "tag:yaml.org,2002:str":
+                spans.add((node.start_mark.index, node.end_mark.index))
+        elif isinstance(node, yaml.SequenceNode):
+            for child in node.value:
+                walk(child)
+        elif isinstance(node, yaml.MappingNode):
+            for key, value in node.value:
+                walk(key)
+                walk(value)
+
+    if root is not None:
+        walk(root)
+    scalar = _yaml_scalar(new)
+    for start, end in sorted(spans, reverse=True):
+        text = text[:start] + scalar + text[end:]
+    return text, len(spans)
+
+
+def reference_rename_plan(kind: str, old: str, new: str, skip=()) -> dict:
+    """What renaming ``old`` to ``new`` changes in the reference files other than ``skip``: {files:
+    [(path, text or None, data, count)], counts: {file name: count}, ambiguous: why not, or None}. A
+    file's text is None when it cannot be edited in place (it is then written whole from ``data``)."""
+    ambiguous = rename_ambiguity(kind, old)
+    plan = {"files": [], "counts": {}, "ambiguous": ambiguous}
+    if ambiguous or old == new:
+        return plan
+    skip = {Path(path) for path in skip}
+    for path in _reference_files():
+        path = Path(path)
+        if path in skip or not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(text) or {}
+        expected, count = _renamed(data, old, new)
+        if not count:
+            continue
+        try:
+            edited, found = _rename_in_text(text, old, new)
+            if yaml.safe_load(edited) != expected:
+                raise ValueError("the edited file does not read back as expected")
+        except (ValueError, yaml.YAMLError):
+            edited = None
+        plan["files"].append((path, edited, expected, count))
+        plan["counts"][path.name] = count
+    return plan
+
+
+def _write_rename_plan(plan: dict) -> None:
+    for path, text, data, _ in plan["files"]:
+        if text is None:
+            _write_yaml(path, data)
+            continue
+        temp = path.with_name(f".{path.name}.tmp")
+        temp.write_text(text, encoding="utf-8")
+        os.replace(temp, path)
+
+
+def references_said(old: str, new: str, counts: dict) -> str:
+    """The message part saying which references a rename updated."""
+    total = sum(counts.values())
+    if not total:
+        return ""
+    where = ", ".join(f"`{name}` {count}" for name, count in counts.items())
+    return f" Updated {total} reference(s) to `{old}` → `{new}`: {where}."
 
 
 def entity_references(kind: str, name: str) -> list[str]:
@@ -650,8 +795,16 @@ def compose_entry_draft(kind: str, name: str | None, draft: dict) -> dict:
     from .store import _validate_complete_config
 
     problems.extend(f"The entry: {e}" for e in _validate_complete_config(entries, None, f"world_definition.{key}"))
+    # A rename renames what refers to the entry (reference_rename_plan); checked with them renamed.
+    renaming = name is not None and final != name
+    ambiguous = rename_ambiguity(kind, name) if renaming else None
+    if renaming and not ambiguous:
+        world = _renamed(world, name, final)[0]
     earlier = list(dict.fromkeys(logic_errors(config.get("world_definition") or {})))
-    problems.extend(f"The world: {e}" for e in logic_errors(world) if e not in earlier)
+    dangling = [f"The world: {e}" for e in logic_errors(world) if e not in earlier]
+    problems.extend(dangling)
+    if dangling and ambiguous:
+        problems.append(f"The world: {ambiguous}.")
     return {"name": final, "selected": name, "record": record, "problems": list(dict.fromkeys(problems)),
             "world": world, "path": path, "data": data, "records": records, "shape": shape,
             "sections": [section for section in DRAFT_SECTIONS if section in draft]}
@@ -671,12 +824,22 @@ def save_entry_draft(kind: str, name: str | None, draft: dict) -> dict:
             raise AuthoringError("Nothing was saved; the entry is invalid:\n"
                                  + "\n".join(f"- {p}" for p in problems))
         _place_record(records, shape, name, final, record)
-        _write_yaml(path, data)
+        counts = {}
+        if name is not None and final != name and not rename_ambiguity(kind, name):
+            plan = reference_rename_plan(kind, name, final, skip=[path])
+            data, own = _renamed(data, name, final)  # the entry itself is renamed already: its references
+            counts = {**({path.name: own} if own else {}), **plan["counts"]}
+            _write_yaml(path, data)
+            _write_rename_plan(plan)
+        else:
+            _write_yaml(path, data)
         config.clear_override()
         config.reload()
     saved = [DRAFT_SECTION_NAMES[section] for section in DRAFT_SECTIONS if section in draft]
     return {"name": final, "saved": [section for section in DRAFT_SECTIONS if section in draft],
-            "message": f"Saved **{final}** ({', '.join(saved)}) to `{path.name}` at once."}
+            "references": counts,
+            "message": f"Saved **{final}** ({', '.join(saved)}) to `{path.name}` at once."
+                       + references_said(name, final, counts)}
 
 
 
@@ -1373,13 +1536,15 @@ SUGGESTION_FIELDS = {"descriptions": "Descriptions", "goals": "Goals", "tags": "
                      "interact_prompts": "Interact prompts", "dialogue": "Dialogue lines"}
 
 
-def _need_language_model():
-    """RuntimeError (with how to enable it) when the language model cannot be used from here."""
+def _need_language_model(role="judge"):
+    """RuntimeError (with how to enable it) when a role's language model cannot be used from here."""
     from utils import llm_model_loader
 
-    found = llm_model_loader.status()
+    found = llm_model_loader.status(role=role)
     if not found["available"]:
-        raise RuntimeError(f"The language model is not available: {found['reason']} {found['how'] or ''}".strip())
+        what = "The augmentation model" if role == "augmentation" else "The language model"
+        raise RuntimeError(f"{what} ({found['model']}) is not available: {found['reason']} "
+                           f"{found['how'] or ''}".strip())
 
 
 def _world_names():
@@ -1429,12 +1594,51 @@ def world_size() -> dict:
     return {"have": have, "want": want, "enough": all(have[key] >= want[key] for key in want)}
 
 
+def augmentation_state(timeout: float = 3.0) -> dict:
+    """World augmentation: whether it is on (augmentation.enabled: the tick in 🌍 World → ✨ Grow the world,
+    and what python main.py reads) and its language model's status (augmentation.llm: Qwen3.5-4B on vLLM;
+    llm_model_loader.status). {enabled, model: {available, mode, model, server, reason, how}}."""
+    from utils import llm_model_loader
+
+    return {"enabled": bool(config.get("augmentation.enabled", False)),
+            "model": llm_model_loader.status(timeout=timeout, role="augmentation")}
+
+
+def set_augmentation_enabled(enabled: bool) -> dict:
+    """Switch world augmentation on or off (augmentation.enabled in hyperparameters.yaml; the file's
+    comments kept). Returns augmentation_state()."""
+    from . import store
+
+    if not isinstance(enabled, bool):
+        raise AuthoringError("`enabled` must be true or false.")
+    with CONFIG_LOCK:
+        path = store.HYPERPARAMETERS_PATH
+        data = _read_yaml(path)
+        data.setdefault("augmentation", {})["enabled"] = enabled
+        store._write_scalars(path, {"augmentation.enabled": enabled}, data)
+        config.clear_override()  # reloads the configuration
+    return augmentation_state()
+
+
+class AugmentationOff(ConflictError):
+    """World augmentation is switched off (augmentation.enabled)."""
+
+
+def require_augmentation() -> None:
+    """AugmentationOff while world augmentation is switched off."""
+    if not config.get("augmentation.enabled", False):
+        raise AugmentationOff("World augmentation is off: tick *Augment the world* in 🌍 World → ✨ Grow the world "
+                              "(augmentation.enabled) to propose new entries.")
+
+
 def propose_additions() -> dict:
-    """Gemma's proposal of new places, people and items for this world; nothing is written (add
-    the ones wanted with add_world_entries). RuntimeError without a language model."""
+    """The augmentation model's (Qwen3.5-4B on vLLM) proposal of new places, people and items for this
+    world; nothing is written (add the ones wanted with add_world_entries). AugmentationOff while
+    augmentation is switched off; RuntimeError without its language model."""
     from core_engine.augmenter import WorldAugmenter
 
-    _need_language_model()
+    require_augmentation()
+    _need_language_model("augmentation")
     proposal = WorldAugmenter().propose()
     if proposal is None:
         raise RuntimeError("The language model proposed nothing usable; try again.")
@@ -1536,6 +1740,20 @@ def _store_deletions() -> None:
 
 def _names_in(records, shape) -> list:
     return list(records) if shape == "mapping" else [entry.get("name") for entry in records]
+
+
+def world_revision() -> dict:
+    """A fingerprint of the world's entries as stored: their files' size and time of change, and the
+    world of a configuration in use instead of them (an upload). It changes whenever an entry is added,
+    changed, renamed or deleted, by any client, a tool or by hand; cheap enough to be asked often."""
+    parts = []
+    for path, *_ in ENTITY_FILES.values():
+        stat = path.stat() if path.exists() else None
+        parts.append([path.name, stat.st_mtime_ns if stat else None, stat.st_size if stat else None])
+    override = getattr(config, "_override", None)
+    if override is not None:
+        parts.append(_fingerprint((override or {}).get("world_definition")))
+    return {"revision": _fingerprint(parts)}
 
 
 def _fingerprint(value) -> str:

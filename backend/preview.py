@@ -153,6 +153,55 @@ def _json_safe(values: dict) -> dict:
     return {key: value for key, value in values.items() if isinstance(value, (int, float, str, bool, type(None)))}
 
 
+def scene_snapshot(st) -> dict:
+    """What an action of the sample scene can change, before or after it: the place, health, coins, items,
+    variables, the end, and the map as this story has it: its routes (from, to), the places a confined
+    player may leave and where the player is held."""
+    return {"place": st.current.name, "health": st.health, "coins": st.coins, "inventory": sorted(st.inventory),
+            "variables": {k: v for k, v in st.variables.items() if k != "playthroughs"}, "ended": bool(st.ended),
+            "routes": sorted((loc.name, other) for loc in st.world.locations.values() for other in loc.connected),
+            "unlocked": sorted(getattr(st, "unlocked_locations", ()) or ()),
+            "confined": getattr(st, "confined_in", None)}
+
+
+def _route_changes(before, after, verb):
+    """The routes in ``after`` and not in ``before``, said once per pair: both ways, or one way."""
+    new = set(map(tuple, after)) - set(map(tuple, before))
+    said = []
+    for a, b in sorted(new):
+        if (b, a) in new:
+            if a < b:
+                said.append(f"a path {verb} between {a} and {b}")
+        else:
+            said.append(f"a path {verb} from {a} to {b}")
+    return said
+
+
+def scene_changes(before: dict, after: dict) -> list[str]:
+    """What an action changed (scene_snapshot before and after), said plainly; map changes included."""
+    found = []
+    if after["place"] != before["place"]:
+        found.append(f"moves to {after['place']}")
+    for field in ("health", "coins"):
+        if after[field] != before[field]:
+            found.append(f"{field} {before[field]} → {after[field]}")
+    gained = sorted(set(after["inventory"]) - set(before["inventory"]))
+    lost = sorted(set(before["inventory"]) - set(after["inventory"]))
+    found += [f"gains {item}" for item in gained] + [f"loses {item}" for item in lost]
+    found += [f"`{key}` {before['variables'].get(key)} → {value}" for key, value in after["variables"].items()
+              if before["variables"].get(key) != value]
+    found += _route_changes(before.get("routes", ()), after.get("routes", ()), "opens")
+    found += _route_changes(after.get("routes", ()), before.get("routes", ()), "closes")
+    found += [f"{place} can be left (unlocked)" for place in after.get("unlocked", ())
+              if place not in before.get("unlocked", ())]
+    if after.get("confined") != before.get("confined"):
+        found.append(f"held in {after['confined']}" if after.get("confined") else
+                     f"no longer held in {before['confined']}")
+    if after["ended"] and not before["ended"]:
+        found.append("the story ends")
+    return found
+
+
 def _simulate(config_data, tag_vectors, kind, name, record, seed):
     """Run in a spawned process: the sample scene and the entry's actions tried (see the module's doc)."""
     import random
@@ -190,25 +239,7 @@ def _simulate(config_data, tag_vectors, kind, name, record, seed):
     options = state.player_options()  # also sets the scene up (people, items, encounters)
     description, people, items = state._describe_visible_scene()
 
-    def snapshot(st):
-        return {"place": st.current.name, "health": st.health, "coins": st.coins, "inventory": sorted(st.inventory),
-                "variables": {k: v for k, v in st.variables.items() if k != "playthroughs"}, "ended": bool(st.ended)}
-
-    def changes(before, after):
-        found = []
-        if after["place"] != before["place"]:
-            found.append(f"moves to {after['place']}")
-        for field in ("health", "coins"):
-            if after[field] != before[field]:
-                found.append(f"{field} {before[field]} → {after[field]}")
-        gained = sorted(set(after["inventory"]) - set(before["inventory"]))
-        lost = sorted(set(before["inventory"]) - set(after["inventory"]))
-        found += [f"gains {item}" for item in gained] + [f"loses {item}" for item in lost]
-        found += [f"`{key}` {before['variables'].get(key)} → {value}" for key, value in after["variables"].items()
-                  if before["variables"].get(key) != value]
-        if after["ended"] and not before["ended"]:
-            found.append("the story ends")
-        return found
+    snapshot, changes = scene_snapshot, scene_changes
 
     available = state._actions_now()
     shown = {option.name for option in options}

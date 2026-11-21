@@ -9,6 +9,7 @@ from unittest.mock import patch
 from backend import sessions
 import main as engine
 from core_engine import Action, Character, Event, GameState, Genome, Location, Mission, Object, Outcome, WorldGraph
+from core_engine.fitness import _fitness_breakdown
 from utils.config_loader import config
 
 
@@ -151,9 +152,9 @@ class MissionTests(unittest.TestCase):
         min_steps = config.get("fitness.base.mission_win_min_steps")
         state = self._state(Mission("browse", {"action": "Browse the stalls"}))
         _choose(state, "Browse the stalls")  # won after 1 step
-        rushed = engine._fitness_breakdown(state)["ending"]
+        rushed = _fitness_breakdown(state)["ending"]
         state.actions_taken = min_steps
-        full = engine._fitness_breakdown(state)["ending"]
+        full = _fitness_breakdown(state)["ending"]
         self.assertAlmostEqual(full - rushed, bonus * (1 - 1 / min_steps))
 
     def test_invalid_goals_are_rejected(self):

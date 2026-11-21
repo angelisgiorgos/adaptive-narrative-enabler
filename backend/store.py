@@ -174,6 +174,8 @@ OPTIONAL_CONFIG_PATHS = {
     "session_scope",
     "start_selection.recency_factors",
     "start_selection.mission_variety",
+    # Added with world augmentation on its own model (Qwen3.5-4B on vLLM).
+    "augmentation.llm",
 }
 
 CONFIG_LOCK = threading.RLock()
