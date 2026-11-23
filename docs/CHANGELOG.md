@@ -7,6 +7,41 @@ that introduces them.
 
 ## [Unreleased]
 
+### Settings say when they take effect
+
+#### Added
+- ⚙ Advanced → App & jobs: each parameter says who reads it (the API, the studio, or both, when they
+  start), and a table shows it saved, running in the API, running in this studio, and after which restart
+  it takes effect, with a **⏳ Restart pending** notice where saved and running differ. The studio's
+  `ANE_UI_HOST`, `ANE_UI_PORT` and `ANE_UI_SHARE` are shown where they set a launch setting instead of the
+  saved value (no restart pending for those). `GET`/`PUT /v1/app-settings` add `running` and `parameters`.
+- The configuration's forms (Story rules, Simulation, Weights, Engine logic) carry a note on when a save
+  takes effect (`GET /v1/reference`'s `activation`).
+
+#### Changed
+- Save confirmations say when they take effect, without implying that anything running changed: the
+  configuration's saves (at once for new games, runs, evaluations and jobs still queued; a game in
+  progress or a running job is not restarted; an uploaded or engine configuration set aside, said when it
+  was), the app parameters (nothing running changes; what a restart of the API and of the studio would
+  use; the environment kept), an uploaded configuration (in memory until the next save, *Use built-in
+  config*, a game with a trained engine, or an API restart) and Grow the world's tick.
+- The studio launches with an empty `ANE_UI_HOST`, `ANE_UI_PORT` or `ANE_UI_SHARE` treated as unset (it
+  used to take the empty value), as the activation table shows it.
+
+### The judge and the augmenter take turns on one GPU
+
+#### Added
+- `llm_sharing` (on by default; `ANE_LLM_SHARING`): the judge (Gemma 4) and the augmenter (Qwen3.5-4B)
+  take turns on one GPU. The model not running sleeps in CPU memory (vLLM sleep level 1) and is woken
+  when it is needed (1–2 s); a model idle for `idle_seconds` goes to sleep. Off when each model has a GPU
+  of its own (several sessions).
+- `compose.yaml`: both services in sleep mode on GPU 0 by default, started through
+  `packaging/vllm_turn_start.py` (the other put to sleep before loading). The judge's GPU memory share
+  is 0.72 (was 0.85) and the augmenter's 0.6 (was 0.75), so each fits beside the other asleep.
+- The judge's and the augmenter's status say whether the model is asleep.
+- World augmentation asks vLLM for valid JSON (`augmentation.llm.json_output`, structured output): a
+  small model's occasional malformed reply (a missing comma) no longer fails a proposal.
+
 ### World augmentation: a tick, and its own model (Qwen3.5-4B on vLLM)
 
 #### Added
@@ -18,6 +53,9 @@ that introduces them.
   its thinking), a role of its own in `utils/llm_model_loader.py` (`augmentation.llm.*`,
   `ANE_AUGMENT_URL`/`_MODEL`/`_API_KEY`/`_MODEL_PATH`). The judge and the editor's suggestions stay on
   Gemma 4.
+- The augmentation prompt spells out the engine's action shape, with one of the world's own actions as
+  the example, and a small model's common deviations are put into that shape, so its proposals can be
+  added (before, every proposed action was refused: the prompt said only `"actions": [...]`).
 - `compose.yaml`: the `augmenter` service (profile `augmenter`), serving the weights from
   `/data/angelisg/llm_models/Qwen3.5-4B` (read-only) with the judge's vLLM image, on GPU 0; the API
   finds it at `http://hamlet-ane-augmenter:8000/v1`.

@@ -145,13 +145,15 @@
 ],
 "augmentation": [
 "4810794ccae9814f",
-"7368ef0ed658da41"
+"7368ef0ed658da41",
+"ca30781a674a4b9e"
 ],
 "augmentation.enabled": [
 "b5bea41b6c623f7c"
 ],
 "augmentation.llm": [
-"018a4a3ab50169e3"
+"018a4a3ab50169e3",
+"18bb1c8d0b5231cc"
 ],
 "augmentation.llm.api_key": [
 "8619dfb2c4555eb0"
@@ -166,7 +168,11 @@
 "fcbcf165908dd18a"
 ],
 "augmentation.llm.gpu_memory_utilization": [
+"b4af4e0d40391d3a",
 "ce5d3aa79ae56155"
+],
+"augmentation.llm.json_output": [
+"b5bea41b6c623f7c"
 ],
 "augmentation.llm.limit_mm_per_prompt": [
 "77920d1d2fc284d8"
@@ -1317,6 +1323,21 @@
 ],
 "llm_judge.temperature": [
 "221764976efe0413"
+],
+"llm_sharing": [
+"c87a37bd76a9ec97"
+],
+"llm_sharing.enabled": [
+"b5bea41b6c623f7c"
+],
+"llm_sharing.idle_seconds": [
+"ef2d127de37b942b"
+],
+"llm_sharing.level": [
+"6b86b273ff34fce1"
+],
+"llm_sharing.wait_seconds": [
+"bdc5d8a48c238979"
 ],
 "location_behaviour": [
 "8f989528318e902f"
@@ -3275,7 +3296,7 @@
 "action_selection.spawn_weight": 1.5,
 "action_selection.stay_penalty_power": 2.2,
 "action_selection.threat_weight": 1.0,
-"augmentation.llm.gpu_memory_utilization": 0.75,
+"augmentation.llm.gpu_memory_utilization": 0.6,
 "augmentation.llm.limit_mm_per_prompt.image": 0,
 "augmentation.llm.limit_mm_per_prompt.video": 0,
 "augmentation.llm.max_model_len": 8192,
@@ -3491,6 +3512,9 @@
 "llm_judge.pair_max_chars": 11000,
 "llm_judge.samples": 2,
 "llm_judge.temperature": 0.3,
+"llm_sharing.idle_seconds": 5,
+"llm_sharing.level": 1,
+"llm_sharing.wait_seconds": 900,
 "mission_selection.recent_missions": 3,
 "mission_selection.repeat_factor": 0.3,
 "mission_settings.discovery_route_cost": 2,

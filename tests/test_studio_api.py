@@ -2812,6 +2812,115 @@ class ContentLibraryTests(_Sandbox):
         self.assertIn("library_more_ui", listeners(by["library-more"], "click"))
 
 
+class ActivationTests(_Sandbox):
+    """When saved settings take effect, said where they are set and when they are saved: the configuration
+    (in use at once for what starts afterwards; nothing running restarted) and the app parameters (read
+    when the API or the studio starts: saved and running values told apart, a pending restart, and the
+    studio's ANE_UI_HOST, ANE_UI_PORT and ANE_UI_SHARE)."""
+
+    def test_app_parameters_saved_against_running_and_the_pending_restart(self):
+        import app
+
+        running = dict(store.APP_SETTINGS)
+        with patch.object(store, "APP_SETTINGS_PATH", self.dir / "ui.yml"):
+            before = self.client.get("/v1/app-settings").json()
+            rows = {row["key"]: row for row in before["parameters"]}
+            self.assertEqual(before["running"], running)
+            self.assertEqual(rows["max_simulation_work"]["readers"], ["API"])
+            self.assertEqual(rows["candidate_limit"]["readers"], ["API", "studio"])
+            self.assertEqual(rows["server_port"]["readers"], ["studio"])
+            self.assertEqual(rows["server_port"]["environment"], "ANE_UI_PORT")
+            self.assertFalse(any(row["pending"] for row in before["parameters"]))
+            # Saved: nothing running changes; the API says what its restart would use.
+            saved = self.client.put("/v1/app-settings", json={"settings": {
+                "max_simulation_work": running["max_simulation_work"] * 2, "server_port": 7999}}).json()
+            self.assertIn("Nothing that is running changes", saved["message"])
+            self.assertIn(f"A restart of the API will use: max_simulation_work {running['max_simulation_work']!r} → "
+                          f"{running['max_simulation_work'] * 2!r}", saved["message"])
+            self.assertEqual(store.APP_SETTINGS, running)                       # not applied: the API runs as before
+            self.assertEqual(sessions.training_work(1, 1, 1, 1)["limit"], running["max_simulation_work"])
+            rows = {row["key"]: row for row in saved["parameters"]}
+            self.assertTrue(rows["max_simulation_work"]["pending"])
+            self.assertEqual(rows["max_simulation_work"]["running_api"], running["max_simulation_work"])
+            self.assertFalse(rows["server_port"]["pending"])                    # the API does not read it
+            # The studio: its own running values; the environment over the saved launch settings.
+            studio = app.studio_launch_values({**before["settings"]}, environ={"ANE_UI_PORT": "7871",
+                                                                               "ANE_UI_SHARE": "yes", "ANE_UI_HOST": ""})
+            self.assertEqual(studio["server_port"], (7871, "ANE_UI_PORT"))
+            self.assertEqual(studio["share"], (True, "ANE_UI_SHARE"))
+            self.assertEqual(studio["server_host"], (before["settings"]["server_host"], "saved"))  # empty: unset
+            shown = app.app_activation_markdown(saved, running=studio, launched=True,
+                                                environ={"ANE_UI_PORT": "7871", "ANE_UI_SHARE": "yes"})
+            self.assertIn("⏳ **Restart pending.** The API runs other values than the saved ones for "
+                          "max_simulation_work: restart the API.", shown)
+            self.assertIn("| server_port | `7999` | — | `7871` (from ANE_UI_PORT) |", shown)
+            self.assertIn("set by ANE_UI_PORT", shown)
+            self.assertIn("**ANE_UI_PORT** is set in the studio's environment (7871): the studio uses it instead of "
+                          "the saved server_port (7999)", shown)
+            self.assertNotIn("restart the studio", shown)                       # the environment decides it
+            # Without the environment: the studio runs 7860, the saved 7999 waits for its restart.
+            plain = app.studio_launch_values(before["settings"], environ={})
+            shown = app.app_activation_markdown(saved, running=plain, launched=True, environ={})
+            self.assertIn("This studio runs other values than the saved ones for server_port: restart the studio.", shown)
+            # The studio's save: the API's message, what this studio's restart would use, the environment kept.
+            with patch.object(app, "STUDIO_RUNNING", {**plain, "server_host": ("127.0.0.1", "ANE_UI_HOST")}):
+                values = [saved["settings"][key] for key in app.APP_PARAMETER_KEYS]
+                values[app.APP_PARAMETER_KEYS.index("server_port")] = 7998
+                values[app.APP_PARAMETER_KEYS.index("server_host")] = "0.0.0.0"
+                message, table = app.save_app_parameters(*values)
+            self.assertIn("A restart of the studio will use: server_port 7860 → 7998", message)
+            self.assertIn("ANE_UI_HOST is set ('127.0.0.1'): this studio keeps using it instead of the saved "
+                          "server_host ('0.0.0.0')", message)
+            self.assertIn("| Parameter | Saved | Running in the API | Running in this studio |", table)
+        # The fields say who reads them and which environment variable sets them instead.
+        self.assertIn("Read by the API and the studio when it starts", app.app_parameter_info("candidate_limit",
+                                                                                           ["API", "studio"]))
+        with patch.dict(os.environ, {"ANE_UI_PORT": "7871"}):
+            self.assertIn("ANE_UI_PORT is set (7871) and is used instead.", app.app_parameter_info("server_port", ["studio"]))
+
+    def test_configuration_saves_say_what_they_change_and_what_they_do_not(self):
+        from backend import activation
+
+        weights = self.client.get("/v1/weights").json()
+        path = "fitness.base.npc_goal_bonus"
+        value = weights["values"][path]
+        saved = self.client.put("/v1/weights", json={"values": {path: value + 1}, "expected": {path: value}})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        said = saved.json()["message"]
+        self.assertIn("to `hyperparameters.yaml`. In use now for what starts from here: new games, training runs and "
+                      "evaluations, and jobs still queued (they read it when they start).", said)
+        self.assertIn("A game in progress or a job already running is not restarted", said)
+        self.assertNotIn("set aside", said)                                     # nothing else was in use
+        # An uploaded (or a trained engine's) configuration in use: the save sets it aside, and says so.
+        store.config.use_override(store.config.as_dict())
+        self.addCleanup(lambda: setattr(store.config, "_override", None))
+        self.assertTrue(activation.override_active())
+        said = store.save_rules({})
+        self.assertIn("Saved the story rules to `hyperparameters.yaml`.", said)
+        self.assertIn("An uploaded configuration (or a trained engine's) that was in use is set aside", said)
+        # The forms carry the same note (GET /v1/reference), and the uploaded configuration says how long it lasts.
+        self.assertEqual(self.client.get("/v1/reference").json()["activation"]["configuration"], activation.CONFIG_NOTE)
+        uploaded = self.client.post("/v1/config/upload", files={
+            "file": ("all.yaml", yaml.safe_dump(store.config.as_dict()).encode(), "application/x-yaml")})
+        self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        self.assertIn("in use now for what starts from here", uploaded.json()["message"])
+        self.assertIn("kept in the API's memory only (config/ is not changed) until the next save of any setting",
+                      uploaded.json()["message"])
+        reset = self.client.post("/v1/config/reset").json()["message"]
+        self.assertIn("The saved configuration files (config/) are in use again", reset)
+
+    def test_the_forms_show_when_their_settings_take_effect(self):
+        import app
+
+        demo = app.build_app()
+        notes = [b for b in demo.blocks.values() if "activation-note" in (getattr(b, "elem_classes", None) or [])]
+        self.assertGreaterEqual(len(notes), 4)                                  # story rules, simulation, weights, logic
+        self.assertTrue(all(note.value == app.REFERENCE["activation"]["configuration"] for note in notes))
+        by = {b.elem_id: b for b in demo.blocks.values() if getattr(b, "elem_id", None)}
+        (loaded,) = [fn for fn in demo.fns.values() if fn.fn is app.app_activation_ui]
+        self.assertIn(by["app-activation"], loaded.outputs)
+
+
 class LibraryWatchTests(_Sandbox):
     """The content library follows changes made elsewhere (another browser, a tool, an import, by hand)
     without ↻ Refresh: the studio looks at the world's revision now and then and lists it again only when
@@ -4602,6 +4711,47 @@ class LanguageModelEditorTests(_Sandbox):
         self.assertEqual([c["name"] for c in proposal["characters"]], ["Lamplighter"])
         saved.assert_not_called()
         written.assert_not_called()
+
+    def test_a_proposal_s_actions_take_the_engine_s_shape(self):
+        """The prompt shows a real action of the world as the shape to follow, and the common deviations
+        of small models (Qwen3.5-4B) are put into it, so the proposal can be added."""
+        from core_engine.augmenter import WorldAugmenter
+
+        example = WorldAugmenter.example_action(store.config.get("world_definition"))
+        self.assertTrue(example["name"] and example["outcomes"] and all(o["desc"] for o in example["outcomes"]))
+        fixed = WorldAugmenter.normalize_actions([
+            {"action": "calibrate_gears", "target_tags": ["science"], "outcome": "A hidden dial turns."},
+            {"name": "Ask around", "text": "Nobody saw anything.", "colour": "red"},
+            {"name": "Search", "outcomes": ["You find dust.", {"desc": "A key!", "tags": ["discovery"], "odd": 1}]},
+            "Wait", {"name": "Empty", "outcomes": []}, 7])
+        self.assertEqual(fixed, [
+            {"name": "Calibrate gears", "outcomes": [{"desc": "A hidden dial turns.", "tags": [], "target_tags": ["science"]}]},
+            {"name": "Ask around", "outcomes": [{"desc": "Nobody saw anything.", "tags": []}]},
+            {"name": "Search", "outcomes": [{"desc": "You find dust.", "tags": []},
+                                            {"desc": "A key!", "tags": ["discovery"]}]}])
+
+        class Model:
+            asked = []
+
+            def generate(self, prompt):
+                Model.asked.append(prompt)
+                return "{}"
+
+            def extract_json(self, text):
+                return {"locations": {"Clock Tower": {"tags": ["urban", "guarded"], "descriptions": ["Gears."],
+                                                      "actions": [{"action": "climb_stairs", "outcome": "Wind."}]}},
+                        "objects": [], "characters": [{"name": "Tinker", "associated_tags": ["urban"],
+                                                       "actions": [{"name": "Talk", "text": "She hums."}]}]}
+
+        augmenter = WorldAugmenter()
+        augmenter._llm = Model()
+        proposal = augmenter.propose()
+        self.assertIn('"outcomes"', Model.asked[0])
+        self.assertIn(example["name"], Model.asked[0])                          # the world's own action as example
+        added = self.client.post("/v1/world/additions", json=proposal)          # the engine accepts it
+        self.assertEqual(added.status_code, 200, added.text)
+        self.assertEqual(self._yaml("locations.yaml")["world_definition"]["locations"]["Clock Tower"]["actions"],
+                         [{"name": "Climb stairs", "outcomes": [{"desc": "Wind.", "tags": []}]}])
 
     def test_augmentation_is_switched_by_a_saved_tick_and_runs_on_its_own_model(self):
         """🌍 World → ✨ Grow the world: the tick is augmentation.enabled (saved, the file's comments kept);

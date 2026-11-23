@@ -22,6 +22,7 @@ from core_engine.narration import DEFAULT_MESSAGES, validate_messages
 from core_engine.variables import PROFILE_PATTERN, VariableStore, clamp, validate_changes, validate_definitions
 from utils.config_loader import config
 
+from .activation import config_saved, override_active
 from .errors import AuthoringError, ConflictError
 from .store import CONFIG_DIR, CONFIG_LOCK, _lines, _read_yaml, _write_yaml
 
@@ -1074,12 +1075,13 @@ def save_variable_definitions(specs: dict) -> str:
 
 def save_variables_yaml(yaml_text: str):
     """Validate and save the variable definitions editor, keeping its comments."""
+    override_was_active = override_active()  # before the files are made active again
     specs = _parse_variable_definitions(yaml_text)
     with CONFIG_LOCK:
         VARIABLES_PATH.write_text(yaml_text, encoding="utf-8")
         config.clear_override()
         config.reload()
-    return yaml_text, f"Saved {len(specs)} persistent variable definition(s)."
+    return yaml_text, config_saved(f"{len(specs)} persistent variable definition(s)", "variables.yaml", override_was_active)
 
 def _profile(profile: str | None = None) -> str:
     profile = (profile or "").strip() or config.get("persistence.profile", "default")
@@ -1167,13 +1169,15 @@ def _store_stats(text: str) -> None:
 
 def save_stats_settings(settings: dict) -> str:
     """Validate and save the character stat definitions (used by the API)."""
+    override_was_active = override_active()  # before the files are made active again
     errors = validate_stat_settings(settings)
     if errors:
         raise AuthoringError("The character stats are invalid:\n" + "\n".join(f"- {e}" for e in errors))
     _store_stats(yaml.safe_dump({"world_definition": {"character_stats": settings}}, sort_keys=False, allow_unicode=True))
-    return f"Saved {len(settings.get('stats') or {})} character stat(s)."
+    return config_saved(f"{len(settings.get('stats') or {})} character stat(s)", "stats.yaml", override_was_active)
 
 def save_stats_yaml(yaml_text: str):
+    override_was_active = override_active()  # before the files are made active again
     try:
         data = yaml.safe_load(yaml_text) or {}
     except yaml.YAMLError as exc:
@@ -1185,7 +1189,7 @@ def save_stats_yaml(yaml_text: str):
     if errors:
         raise AuthoringError("The character stats are invalid:\n" + "\n".join(f"- {e}" for e in errors))
     _store_stats(yaml_text)
-    return yaml_text, f"Saved {len(settings.get('stats') or {})} character stat(s). New games use them."
+    return yaml_text, config_saved(f"{len(settings.get('stats') or {})} character stat(s)", "stats.yaml", override_was_active)
 
 def allocate_stats(mode: str | None = None, points: dict | None = None) -> dict:
     """Preview or check a player's stats: points, 1-100 values, and problems."""
@@ -1292,14 +1296,16 @@ def _store_messages(text: str) -> None:
 
 def save_messages(messages: dict) -> str:
     """Validate and save story messages given as a mapping (used by the API)."""
+    override_was_active = override_active()  # before the files are made active again
     errors = validate_messages(messages)
     if errors:
         raise AuthoringError("The story messages are invalid:\n" + "\n".join(f"- {e}" for e in errors))
     _store_messages(yaml.safe_dump({"messages": messages}, sort_keys=False, allow_unicode=True))
-    return f"Saved {len(messages)} story message(s) to `messages.yaml`."
+    return config_saved(f"{len(messages)} story message(s)", "messages.yaml", override_was_active)
 
 def save_messages_yaml(yaml_text: str):
     """Validate and save the story messages editor, keeping its comments."""
+    override_was_active = override_active()  # before the files are made active again
     try:
         data = yaml.safe_load(yaml_text) or {}
     except yaml.YAMLError as exc:
@@ -1311,7 +1317,7 @@ def save_messages_yaml(yaml_text: str):
     if errors:
         raise AuthoringError("The story messages are invalid:\n" + "\n".join(f"- {e}" for e in errors))
     _store_messages(yaml_text)
-    return yaml_text, f"Saved {len(messages)} story message(s). New stories use them straight away."
+    return yaml_text, config_saved(f"{len(messages)} story message(s)", "messages.yaml", override_was_active)
 
 
 # ---- the studio's forms: one action, one quest, an entry's details, the map (JSON) ------------------
@@ -1611,13 +1617,19 @@ def set_augmentation_enabled(enabled: bool) -> dict:
 
     if not isinstance(enabled, bool):
         raise AuthoringError("`enabled` must be true or false.")
+    override_was_active = override_active()  # before the files are made active again
     with CONFIG_LOCK:
         path = store.HYPERPARAMETERS_PATH
         data = _read_yaml(path)
         data.setdefault("augmentation", {})["enabled"] = enabled
         store._write_scalars(path, {"augmentation.enabled": enabled}, data)
         config.clear_override()  # reloads the configuration
-    return augmentation_state()
+    set_aside = (" An uploaded configuration (or a trained engine's) that was in use is set aside: the saved files "
+                 "are the active configuration again." if override_was_active else "")
+    message = (f"Saved: world augmentation is {'on' if enabled else 'off'} (augmentation.enabled in "
+               "`hyperparameters.yaml`). Proposals asked for from now on follow it, in the studio and in python "
+               "main.py runs started after this; a proposal already running is not stopped." + set_aside)
+    return {**augmentation_state(), "message": message}
 
 
 class AugmentationOff(ConflictError):

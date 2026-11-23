@@ -465,8 +465,8 @@ def upload_config(file: UploadFile = File(...)):
 
 @api.post("/v1/config/reset", tags=["Configuration"])
 def reset_config():
-    store.use_builtin_config()
-    return {"message": "Built-in configuration restored.", "settings": _settings()}
+    message = store.use_builtin_config()[-1]
+    return {"message": message, "settings": _settings()}
 
 
 @api.get("/v1/settings", response_model=Settings, tags=["Configuration"])
@@ -1657,6 +1657,8 @@ def get_reference():
         "documents": {name: description for name, (description, _, _) in DOCUMENTS.items()},
         "npc_roles": content.role_names(),
         "judge_criteria": _judge_criteria(),
+        # When saved settings take effect (backend/activation.py): the configuration's note for its forms.
+        "activation": {"configuration": __import__("backend.activation", fromlist=["CONFIG_NOTE"]).CONFIG_NOTE},
         "defaults": {
             "episodes_per_genome": int(config.get("evolution.episodes_per_genome", 3)),
             "warm_start": bool(config.get("evolution.warm_start", True)),
@@ -1677,13 +1679,26 @@ class AppSettingsBody(BaseModel):
 
 @api.get("/v1/app-settings", tags=["Studio"])
 def get_app_settings():
-    """The studio's app parameters (config/ui_settings.yml): limits, defaults, queue, launch."""
-    return {"settings": store.load_app_settings(), "defaults": store.APP_DEFAULTS}
+    """The studio's app parameters (config/ui_settings.yml): limits, defaults, queue, launch, and when
+    each takes effect. ``settings``: the saved values. ``running``: the values this API process uses (read
+    when it started). ``parameters``: per parameter {key, purpose, saved, readers (API, studio: who reads
+    it, when it starts), takes_effect, running_api, environment (the studio's variable that can set it
+    instead: ANE_UI_HOST, ANE_UI_PORT, ANE_UI_SHARE), pending (the API runs another value than the
+    saved one: a restart of the API is pending)}. The studio's own running values are the studio's."""
+    from backend import activation
+
+    saved = store.load_app_settings()
+    return {"settings": saved, "defaults": store.APP_DEFAULTS, "running": dict(store.APP_SETTINGS),
+            "parameters": activation.app_parameters_state(saved, store.APP_SETTINGS)}
 
 
 @api.put("/v1/app-settings", tags=["Studio"])
 def put_app_settings(body: AppSettingsBody):
-    """Validate and save app parameters; they apply when the studio and the API restart."""
+    """Validate and save app parameters. Nothing running changes: the API and the studio read them when
+    they start (a restart of the API, or the studio, or both, as ``parameters`` says). Returns
+    {message, settings, running, parameters} as GET /v1/app-settings."""
+    from backend import activation
+
     retired = sorted(set(body.settings) & set(store.RETIRED_APP_SETTINGS))
     unknown = sorted(set(body.settings) - set(store.APP_DEFAULTS) - set(retired))
     if unknown:
@@ -1694,8 +1709,9 @@ def put_app_settings(body: AppSettingsBody):
         _fail(exc)
     note = (f" Ignored {', '.join(retired)}: a run's defaults are the saved engine defaults (evolution.*, "
             "crossover included: evolution.crossover_rate), and each run may set its own sizes." if retired else "")
-    return {"message": "App parameters saved. Restart the studio and the API to apply them." + note,
-            "settings": store.load_app_settings()}
+    saved = store.load_app_settings()
+    return {"message": activation.app_saved_message(store.APP_SETTINGS, saved) + note, "settings": saved,
+            "running": dict(store.APP_SETTINGS), "parameters": activation.app_parameters_state(saved, store.APP_SETTINGS)}
 
 
 # YAML documents edited as text, comments kept: (description, load(profile), save(profile, text) -> (yaml, message))

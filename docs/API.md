@@ -78,9 +78,13 @@ state.
 - **Atomic.** Files are replaced in one step (a temporary file, then a
   rename) under one lock. Concurrent writes do not interleave, and an
   interrupted write leaves the previous file.
-- **Immediate.** After a save the configuration is reloaded, and new
-  simulations and games use it at once. App parameters
-  (`PUT /v1/app-settings`) apply when the API and the studio restart.
+- **Immediate, for what starts afterwards.** After a save the configuration is reloaded (an uploaded
+  configuration, or a trained engine's, in use until then is set aside, and the message says so). New
+  games, training runs and evaluations, and jobs still queued (a job reads the configuration when it
+  starts), use it. Nothing running is restarted: a game in progress or a running job keeps going, and
+  values it reads as it goes may change mid-way. Every save's `message` says this
+  (`backend/activation.py`; the forms' note is `GET /v1/reference`'s `activation.configuration`). App
+  parameters (`PUT /v1/app-settings`) apply only when the API, or the studio, restarts.
 
 ### Status codes
 
@@ -299,7 +303,12 @@ one); `tests/test_studio_coverage.py` checks it.
 - `GET|PUT /v1/app-settings`: the studio's app parameters
   (`config/ui_settings.yml`: limits, defaults, queue, launch) with their
   `defaults`. A `PUT` (`{"settings": {...}}`) changes the parameters it names,
-  validates all of them, and rejects unknown ones. They apply after a restart.
+  validates all of them, and rejects unknown ones. They apply after a restart: the API reads its own
+  when it starts, the studio its own. `running` is what this API process uses; `parameters` says, per
+  parameter, `readers` (API, studio), `takes_effect`, `running_api`, `environment` (the studio's
+  `ANE_UI_HOST`, `ANE_UI_PORT`, `ANE_UI_SHARE`, which set its launch settings instead of the saved
+  values; only the studio sees them) and `pending` (the API runs another value than the saved one). A
+  `PUT`'s `message` says that nothing running changes and what a restart of the API would use.
 - `GET /v1/documents` lists the configuration documents edited as YAML text
   with their comments kept: `missions`, `messages`, `variables`, `map` (the world's
   map, `world_definition.routes`: `{routes: {place: [neighbours]}}`, or `routes: null`

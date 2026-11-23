@@ -19,6 +19,7 @@ from core_engine.variables import PROFILE_PATTERN, validate_definitions
 from utils.config_loader import config
 
 from . import tuning
+from .activation import config_saved, override_active
 from .errors import AuthoringError
 
 
@@ -176,6 +177,8 @@ OPTIONAL_CONFIG_PATHS = {
     "start_selection.mission_variety",
     # Added with world augmentation on its own model (Qwen3.5-4B on vLLM).
     "augmentation.llm",
+    # Added with the judge and the augmenter taking turns on one GPU.
+    "llm_sharing",
 }
 
 CONFIG_LOCK = threading.RLock()
@@ -364,6 +367,7 @@ def save_weights(paths, *values):
     a whole number for an integer parameter, never cut down; within the bounds the engine defines:
     backend/tuning.py), and nothing is written if one is wrong. A value that did not change is kept
     exactly as it is written."""
+    override_was_active = override_active()  # before the files are made active again
     if len(paths) != len(values):
         raise AuthoringError("The weights form is out of sync; reload the app and try again.")
     path = HYPERPARAMETERS_PATH
@@ -392,7 +396,7 @@ def save_weights(paths, *values):
         _write_scalars(path, changes, data)
     config.clear_override()
     engine.refresh_runtime_settings()
-    return f"Saved {len(paths)} configured weights and scoring controls ({changed} changed)."
+    return config_saved(f"{len(paths)} configured weights and scoring controls ({changed} changed)", "hyperparameters.yaml", override_was_active)
 
 # Mappings whose keys are chosen by the writer (location names, stat names, ...).
 FREE_FORM_PATHS = {
@@ -590,12 +594,18 @@ def upload_config(uploaded_file):
     config.use_override(uploaded)
     engine.refresh_runtime_settings()
     note = f" Taken from the built-in configuration: {', '.join(filled)}." if filled else ""
-    return (*load_settings(), "✅ Uploaded configuration validated and activated for simulations." + note)
+    return (*load_settings(), "✅ Uploaded configuration validated and in use now for what starts from here (new "
+            "games, training runs, evaluations, and jobs still queued: they read it when they start); a game in "
+            "progress or a running job is not restarted. It is kept in the API's memory only (config/ is not "
+            "changed) until the next save of any setting, *Use built-in config*, a game with a trained engine "
+            "(it uses its own), or a restart of the API." + note)
 
 def use_builtin_config():
     config.clear_override()
     engine.refresh_runtime_settings()
-    return (*load_settings(), "Built-in configuration restored.")
+    return (*load_settings(), "The saved configuration files (config/) are in use again for what starts from "
+            "here (new games, training runs, evaluations, and jobs still queued); a game in progress or a running "
+            "job is not restarted.")
 
 def load_settings():
     config.reload()
@@ -614,6 +624,7 @@ def load_settings():
 
 def save_settings(pop_size, generations, episodes, max_steps, health, coins, max_actions, deterministic, seed,
                   max_health=None):
+    override_was_active = override_active()  # before the files are made active again
     if any(value is None for value in (pop_size, generations, episodes, max_steps, health, coins, max_actions)):
         raise AuthoringError("Every simulation setting needs a numeric value.")
     if max_health is None:
@@ -645,7 +656,7 @@ def save_settings(pop_size, generations, episodes, max_steps, health, coins, max
         config.clear_override()
         config.reload()
         engine.refresh_runtime_settings()
-    return "Simulation settings saved to `hyperparameters.yaml`."
+    return config_saved("the simulation settings (training defaults)", "hyperparameters.yaml", override_was_active)
 
 HYPERPARAMETERS_PATH = CONFIG_DIR / "hyperparameters.yaml"
 
@@ -711,6 +722,7 @@ def load_rules() -> dict:
     }
 
 def save_rules(rules: dict) -> str:
+    override_was_active = override_active()  # before the files are made active again
     rules = {**load_rules(), **{k: v for k, v in rules.items() if v is not None}}
     errors = []
     for field in ("repeat_location", "repeat_npc", "repeat_item", "repeat_event"):
@@ -768,7 +780,7 @@ def save_rules(rules: dict) -> str:
         config.clear_override()
         config.reload()
         engine.refresh_runtime_settings()
-    return "Story rules saved to `hyperparameters.yaml`. New stories use them."
+    return config_saved("the story rules", "hyperparameters.yaml", override_was_active)
 
 RULE_FIELDS = [
     "missions_enabled", "end_on_goal", "pursuit_start_step", "pursuit_full_step", "route_weight",
@@ -899,6 +911,7 @@ def set_term_weights(weights: dict) -> str:
 def save_logic_section(name: str, section_text: str) -> str:
     """Validate a section against the current one (same keys and value types) and
     replace it in hyperparameters.yaml, keeping every other section untouched."""
+    override_was_active = override_active()  # before the files are made active again
     try:
         parsed = yaml.safe_load(section_text) or {}
     except yaml.YAMLError as exc:
@@ -919,7 +932,7 @@ def save_logic_section(name: str, section_text: str) -> str:
         config.clear_override()
         config.reload()
         engine.refresh_runtime_settings()
-    return f"Saved the `{name}` engine logic. New simulations and games use it."
+    return config_saved(f"the `{name}` engine logic", "hyperparameters.yaml", override_was_active)
 
 
 # ---- what people and places do, by their tags, as data (the studio's tables) -------------------------

@@ -75,6 +75,7 @@ augmentation:
     max_model_len: 8192
     limit_mm_per_prompt: {image: 0, video: 0}   # Qwen3.5 is multimodal: text only here
     enable_thinking: false     # answers directly (JSON), without its reasoning
+    json_output: true          # vLLM holds the reply to valid JSON (structured output)
     max_new_tokens: 3072
     temperature: 0.7
 ```
@@ -94,8 +95,46 @@ augmentation:
 - **Is it there?** `GET /v1/augmentation` says whether augmentation is on and whether its model can be
   used (`{enabled, model: {available, mode, model, server, reason, how}}`); the studio shows it beside
   the tick in Grow the world.
+- **What it is asked**: the prompt spells out the engine's action shape (`name`; `outcomes` with
+  `desc`, `tags`, optionally `target_tags` or `reveal_location`) and shows one of the world's own actions
+  as the example. The common deviations of a small model (an `action`/`outcome` pair, snake_case names,
+  `target_tags` on the action) are put into that shape (`WorldAugmenter.normalize_actions`); only fields
+  the engine knows are kept, and an action left without a name or an outcome is dropped. The proposal is
+  still checked whole when it is added. Measured here: a proposal of 2–3 places, items and people in
+  35–45 s on a TITAN RTX, accepted as proposed.
 - **Off** (the tick unticked, `augmentation.enabled: false`): the studio's *Propose* is disabled,
   `POST /v1/jobs/world-proposal` is refused (409), and `python main.py` proposes nothing.
+
+## Both on one GPU: taking turns
+
+The judge (Gemma 4) and the augmenter (Qwen3.5-4B) do not both fit awake on one 24 GB GPU, so in one
+session they **take turns** (`llm_sharing`, on by default; `utils/llm_model_loader.Turns`):
+
+- Before a model generates, the other is put to sleep once nothing of its is running (vLLM's sleep
+  level 1: its weights go to CPU memory and its GPU memory is freed), and its own is woken.
+- A model that has stopped running is put to sleep after `idle_seconds` (5), so it waits in CPU memory.
+- Requests of the same model at the same time (a judge benchmark) share one wake; a request of the
+  other model waits until they have finished (`wait_seconds`, 900, at most).
+- Measured on a TITAN RTX: waking takes 1–2 s and going to sleep about 1 s; the first switch after the
+  servers start takes about a minute (each model's first sleep sets up its CPU memory). Through the API:
+  a proposal, three judge requests at once, a proposal again: the second switch round took 8 s, and both
+  models were asleep 5 s after the last request (GPU memory back to about 2 GB). Asleep, each keeps about 1 GB of the GPU; awake, Gemma takes about
+  18 GB and Qwen about 13 GB. The sleeping model's weights take host memory (Gemma about 15 GB, Qwen
+  about 9 GB).
+- The servers need `--enable-sleep-mode` and `VLLM_SERVER_DEV_MODE=1` (for `/sleep`, `/wake_up` and
+  `/is_sleeping`). Those endpoints do **not** check the API key: keep the servers off published ports
+  (the compose services are on the internal network only). An embedded engine is built with sleep mode
+  when sharing is on. A server without sleep mode is left awake.
+- **compose.yaml**: both services default to GPU 0 (`ANE_JUDGE_GPU`, `ANE_AUGMENT_GPU`) with memory
+  shares that fit beside the other asleep (`ANE_JUDGE_GPU_MEMORY` 0.72, `ANE_AUGMENT_GPU_MEMORY` 0.6).
+  Each starts through `packaging/vllm_turn_start.py`, which puts the other to sleep before loading its
+  model (if both start at once, the one that runs out of memory restarts and loads then).
+- `GET /v1/judge/status` and `GET /v1/augmentation` say whether a model is asleep (`sleeping`); the
+  studio shows it.
+- **Several sessions**: give each model its own GPU (`ANE_JUDGE_GPU`, `ANE_AUGMENT_GPU`, larger memory
+  shares) and set `ANE_LLM_SHARING=off` (or `llm_sharing.enabled: false`): nothing is put to sleep then.
+  Turns are kept within one API process; another process using the same servers (a terminal run) is
+  not part of them.
 
 ### Gemma 4 as the judge of a story, from the view of a video game
 

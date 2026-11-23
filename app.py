@@ -3244,9 +3244,18 @@ def judge_status_ui():
     status = API.get("/v1/judge/status")
     if status.get("available"):
         where = f" at `{status['server']}`" if status.get("server") else " (in the API's process)"
-        return f"✅ **The judge is ready:** {status.get('model')}{where}."
+        return f"✅ **The judge is ready:** {status.get('model')}{where}.{model_sleep_note(status)}"
     return (f"⚠ **The judge is not available here.** {status.get('reason') or ''}\n\n"
             f"{status.get('how') or ''}")
+
+
+def model_sleep_note(model):
+    """A model that takes turns on the GPU (llm_sharing): asleep in CPU memory, or awake on the GPU."""
+    if model.get("sleeping") is True:
+        return " It is asleep in CPU memory (taking turns on the GPU): it wakes in a few seconds when asked."
+    if model.get("sleeping") is False:
+        return " It is awake on the GPU."
+    return ""
 
 
 def augmentation_markdown(state):
@@ -3259,7 +3268,7 @@ def augmentation_markdown(state):
         head = "☑ **World augmentation is on.**"
     if model.get("available"):
         where = f" at `{model['server']}`" if model.get("server") else " (in the API's process)"
-        return f"{head}  \n✅ **Its model is ready:** {model.get('model')}{where}."
+        return f"{head}  \n✅ **Its model is ready:** {model.get('model')}{where}.{model_sleep_note(model)}"
     return (f"{head}  \n⚠ **Its model ({model.get('model')}) is not available here.** {model.get('reason') or ''}"
             f"\n\n{model.get('how') or ''}")
 
@@ -3275,9 +3284,11 @@ def augmentation_ui():
 
 @ui
 def set_augmentation_ui(enabled):
-    """The tick: world augmentation switched on or off, saved (PUT /v1/augmentation); *Propose* follows."""
+    """The tick: world augmentation switched on or off, saved (PUT /v1/augmentation); *Propose* follows,
+    and the confirmation says when it takes effect."""
     state = API.put("/v1/augmentation", {"enabled": bool(enabled)})
-    return augmentation_markdown(state), gr.Button(interactive=bool(state["enabled"]))
+    said = augmentation_markdown(state) + (f"  \n_{state['message']}_" if state.get("message") else "")
+    return said, gr.Button(interactive=bool(state["enabled"]))
 
 
 def judgement_markdown(result, title="Judgement"):
@@ -6294,10 +6305,129 @@ def save_logic_section(section, text):
     return API.put(_path("/v1/logic", section), {"parameters": text})["message"]
 
 
+# ---- ⚙ Advanced → App & jobs: when the app parameters take effect -----------------------------------------
+#
+# The API reads its parameters when it starts, the studio its own when it starts: a save changes nothing
+# that is running. The studio's launch settings come from its own environment first (ANE_UI_HOST,
+# ANE_UI_PORT, ANE_UI_SHARE); only the studio can see that environment, so it says so itself.
+
+UI_ENVIRONMENT = {"server_host": "ANE_UI_HOST", "server_port": "ANE_UI_PORT", "share": "ANE_UI_SHARE"}
+STUDIO_PARAMETERS = ("candidate_limit", "generation_limit", "simulation_step_limit", "queue_concurrency",
+                     "queue_max_size", "server_host", "server_port", "share")
+STUDIO_RUNNING = {}  # {parameter: (value, source)} this studio runs with: built (limits) and launched (__main__)
+STUDIO_LAUNCHED = False
+
+
+def studio_environment(key, environ=None):
+    """(variable, value as the studio uses it) when the studio's environment sets ``key``, else None."""
+    name = UI_ENVIRONMENT.get(key)
+    environ = os.environ if environ is None else environ
+    raw = (environ.get(name) or "").strip() if name else ""
+    if not raw:
+        return None
+    if key == "server_port":
+        return (name, int(raw)) if raw.isdigit() else (name, raw)
+    if key == "share":
+        return name, raw.lower() in {"1", "true", "yes"}
+    return name, raw
+
+
+def studio_launch_values(saved, environ=None):
+    """What the studio launches with: {parameter: (value, source)}, the source the environment variable
+    that set it, or "saved" (config/ui_settings.yml as the API had it when the studio started)."""
+    values = {}
+    for key in STUDIO_PARAMETERS:
+        env = studio_environment(key, environ)
+        values[key] = (env[1], env[0]) if env else (saved[key], "saved")
+    return values
+
+
+def app_activation_markdown(state, running=None, launched=None, environ=None):
+    """App & jobs: each parameter saved and running (in the API, in this studio), when a saved value
+    takes effect, and a pending-restart notice where they differ (GET /v1/app-settings for the API's
+    side; the studio's own values and environment for the studio's)."""
+    running = STUDIO_RUNNING if running is None else running
+    launched = STUDIO_LAUNCHED if launched is None else launched
+    rows, api_pending, studio_pending, env_notes = [], [], [], []
+    for row in state["parameters"]:
+        key, saved, readers = row["key"], row["saved"], row["readers"]
+        api_now = f"`{row['running_api']!r}`" if "API" in readers else "—"
+        studio_now, status = "—", []
+        if row.get("pending"):
+            api_pending.append(key)
+            status.append("⏳ restart the API")
+        if "studio" in readers:
+            value, source = running.get(key, (None, None))
+            studio_now = f"`{value!r}`" + (f" (from {source})" if source not in (None, "saved") else "")
+            if source not in (None, "saved"):
+                if value != saved:
+                    env_notes.append(f"**{source}** is set in the studio's environment ({value!r}): the studio uses it "
+                                     f"instead of the saved {key} ({saved!r}), now and after a restart, until it is "
+                                     "unset.")
+                status.append(f"set by {source}")
+            elif value != saved:
+                studio_pending.append(key)
+                status.append("⏳ restart the studio")
+        rows.append(f"| {key} | `{saved!r}` | {api_now} | {studio_now} | {row['takes_effect']} | "
+                    f"{' · '.join(status) or '✓ in use'} |")
+    for key, name in UI_ENVIRONMENT.items():  # set, but equal to the saved value: still worth knowing
+        env = studio_environment(key, environ)
+        if env and not any(name in note for note in env_notes):
+            env_notes.append(f"**{name}** is set in the studio's environment ({env[1]!r}): it decides {key}, "
+                             "whatever is saved here, until it is unset.")
+    if api_pending or studio_pending:
+        notice = "⏳ **Restart pending.** " + " ".join(part for part in (
+            f"The API runs other values than the saved ones for {', '.join(api_pending)}: restart the API." if api_pending
+            else "",
+            f"This studio runs other values than the saved ones for {', '.join(studio_pending)}: restart the studio."
+            if studio_pending else "") if part)
+    else:
+        notice = "✓ **Every saved value is in use** (or set by the studio's environment, as said below)."
+    if not launched:
+        notice += " (This studio was not started as a server here: its launch values are those it would use.)"
+    table = ["| Parameter | Saved | Running in the API | Running in this studio | Takes effect after | Now |",
+             "|---|---|---|---|---|---|", *rows]
+    return "\n\n".join([notice, "\n".join(table), *env_notes])
+
+
+def app_parameter_info(key, readers):
+    """The note under an app parameter's field: who reads it (when it starts), and its environment variable."""
+    who = " and the studio" if len(readers) > 1 else ""
+    text = f"Read by the {readers[0]}{who} when it starts: saving changes nothing running until a restart."
+    env = studio_environment(key)
+    if env:
+        text += f" {env[0]} is set ({env[1]!r}) and is used instead."
+    elif key in UI_ENVIRONMENT:
+        text += f" {UI_ENVIRONMENT[key]}, if set in the studio's environment, is used instead."
+    return text
+
+
+@ui
+def app_activation_ui():
+    """App & jobs, on loading: when each parameter takes effect (GET /v1/app-settings)."""
+    return app_activation_markdown(API.get("/v1/app-settings"))
+
+
 @ui
 def save_app_parameters(*values):
-    message = API.put("/v1/app-settings", {"settings": dict(zip(APP_PARAMETER_KEYS, values))})["message"]
-    return message + " ANE_UI_HOST, ANE_UI_PORT and ANE_UI_SHARE environment variables override launch settings."
+    """Save the app parameters (PUT /v1/app-settings): the API's confirmation (nothing running changes;
+    what a restart of the API would change), what a restart of this studio would change, and what its
+    environment keeps as it is. Returns (the confirmation, the activation table)."""
+    state = API.put("/v1/app-settings", {"settings": dict(zip(APP_PARAMETER_KEYS, values))})
+    saved = state["settings"]
+    studio_changes, env_kept = [], []
+    for key in STUDIO_PARAMETERS:
+        value, source = STUDIO_RUNNING.get(key, (None, None))
+        if source not in (None, "saved"):
+            if value != saved[key]:
+                env_kept.append(f"{source} is set ({value!r}): this studio keeps using it instead of the saved {key} "
+                                f"({saved[key]!r}), after a restart too, until it is unset.")
+        elif value != saved[key]:
+            studio_changes.append(f"{key} {value!r} → {saved[key]!r}")
+    message = state["message"]
+    message += (" A restart of the studio will use: " + ", ".join(studio_changes) + "." if studio_changes
+                else " This studio already runs every value it reads.")
+    return " ".join([message, *env_kept]), app_activation_markdown(state)
 
 
 APP_PARAMETER_KEYS = []
@@ -6310,6 +6440,9 @@ def build_app():
     app_settings = API.get("/v1/app-settings")
     limits, app_defaults = app_settings["settings"], app_settings["defaults"]
     APP_PARAMETER_KEYS = list(limits)
+    if not STUDIO_LAUNCHED:  # what this studio runs with (its sliders now; its launch settings when it starts)
+        STUDIO_RUNNING.update(studio_launch_values(limits))
+    parameter_readers = {row["key"]: row["readers"] for row in app_settings.get("parameters") or []}
     settings = API.get("/v1/settings")
     profiles = API.get("/v1/variables/profiles")
     character_stats = API.get("/v1/stats")["character_stats"]
@@ -6738,6 +6871,7 @@ def build_app():
                                 reload_missions_button = gr.Button("Reload from disk")
 
                     with gr.Tab(WORLD_SECTIONS["story-rules"], id="story-rules") as section_story_rules:
+                        gr.Markdown(REFERENCE["activation"]["configuration"], elem_classes="activation-note")  # rules, messages, variables, stats
                         rules_profile = gr.State(profiles["default"])  # the profile whose stored values are shown
                         (rules_draft_status, rules_prompt, rules_prompt_text, rules_save, rules_discard, rules_stay,
                          rules_pending_state) = form_panels("rules")
@@ -7881,6 +8015,7 @@ def build_app():
                                 minimum=100, info="Turns before a story ends (narrative_end.max_actions, at least 100); "
                                 "full-length training stories are this long.",
                             )
+                        gr.Markdown(REFERENCE["activation"]["configuration"], elem_classes="activation-note")
                         save_config = gr.Button("Save settings", variant="primary")
                         config_status = gr.Markdown()
                         setting_components = [pop_size, generations, episodes, max_steps, health, coins, max_actions,
@@ -7969,6 +8104,7 @@ def build_app():
                                             for info in weight_group[index:index + 3]:
                                                 weight_components.append(weight_field(
                                                     info, weights_meta_value["basic"].get(info["path"])))
+                        gr.Markdown(REFERENCE["activation"]["configuration"], elem_classes="activation-note")
                         with gr.Row():
                             save_weights_button = gr.Button("Save changes", variant="primary",
                                                             elem_id="weights-save")
@@ -8024,8 +8160,9 @@ def build_app():
                         gr.Markdown(
                             "The engine's logic runs in the backend scripts; here you change **how it behaves** "
                             "through its parameters, section by section. Every section is checked (same settings, "
-                            "same value types) before it is saved, and new simulations and games use it at once."
+                            "same value types) before it is saved."
                         )
+                        gr.Markdown(REFERENCE["activation"]["configuration"], elem_classes="activation-note")
                         sections = API.get("/v1/logic")["sections"]
                         descriptions_by_section = {item["section"]: item["description"] for item in sections}
                         logic_section = gr.Dropdown(list(descriptions_by_section), value="evolution", label="Logic section")
@@ -8044,21 +8181,29 @@ def build_app():
                     with gr.Tab("App & jobs"):
                         with gr.Accordion("App parameters", open=True):
                             gr.Markdown("Saved in config/ui_settings.yml. Upload limits are in bytes. A training's crossover is "
-                                        "evolution.crossover_rate (⚙ Advanced → Weights → Training).")
+                                        "evolution.crossover_rate (⚙ Advanced → Weights → Training).  \n"
+                                        "**When they take effect:** the API reads its parameters when it starts, and the "
+                                        "studio its own when it starts. Saving changes nothing that is running: games in "
+                                        "progress, submitted jobs and this studio go on with the values they started with, "
+                                        "until the API or the studio is restarted (the table below says which).")
                             parameter_inputs = []
                             for key, value in limits.items():
                                 label = key.replace("_", " ").title()
+                                info = app_parameter_info(key, parameter_readers.get(key, ["API"]))
                                 if isinstance(value, bool):
-                                    component = gr.Checkbox(value=value, label=label)
+                                    component = gr.Checkbox(value=value, label=label, info=info)
                                 elif isinstance(value, str):
-                                    component = gr.Textbox(value=value, label=label)
+                                    component = gr.Textbox(value=value, label=label, info=info)
                                 else:
-                                    component = gr.Number(value=value, label=label,
+                                    component = gr.Number(value=value, label=label, info=info,
                                                           precision=0 if isinstance(app_defaults[key], int) else None)
                                 parameter_inputs.append(component)
                             save_parameters = gr.Button("Save app parameters", variant="primary")
-                            parameters_status = gr.Markdown()
-                            save_parameters.click(save_app_parameters, parameter_inputs, parameters_status)
+                            parameters_status = gr.Markdown(elem_id="app-parameters-status")
+                            app_activation = gr.Markdown(elem_id="app-activation")
+                            save_parameters.click(save_app_parameters, parameter_inputs,
+                                                  [parameters_status, app_activation])
+                            demo.load(app_activation_ui, None, app_activation)
                         with gr.Accordion("Background jobs", open=False):
                             gr.Markdown("Evolutions, continued trainings and judge runs started from here or by any client "
                                         "of the API, newest first.")
@@ -8304,12 +8449,15 @@ def patient_startup_check(wait=STARTUP_WAIT):
 
 
 if __name__ == "__main__":
-    launch = demo.launch_settings
+    launched = studio_launch_values(demo.launch_settings)  # the environment first, then the saved values
+    STUDIO_RUNNING.update(launched)
+    STUDIO_LAUNCHED = True
     patient_startup_check()
-    demo.queue(default_concurrency_limit=launch["queue_concurrency"], max_size=launch["queue_max_size"]).launch(
-        server_name=os.getenv("ANE_UI_HOST", launch["server_host"]),
-        server_port=int(os.getenv("ANE_UI_PORT", str(launch["server_port"]))),
-        share=os.getenv("ANE_UI_SHARE", str(launch["share"])).lower() in {"1", "true", "yes"},
+    demo.queue(default_concurrency_limit=launched["queue_concurrency"][0],
+               max_size=launched["queue_max_size"][0]).launch(
+        server_name=launched["server_host"][0],
+        server_port=int(launched["server_port"][0]),
+        share=bool(launched["share"][0]),
         css=CSS,
         theme=THEME,
         head=DRAFT_HEAD,  # with unsaved changes in the entry editor, the browser asks before leaving the page

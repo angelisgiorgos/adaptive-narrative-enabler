@@ -676,6 +676,11 @@ vllm:
   base_url: http://127.0.0.1:8000/v1   # server mode
   api_key: local-vllm                  # server mode
   timeout_seconds: 180                 # server mode
+llm_sharing:                   # the judge (vllm) and the augmenter (augmentation.llm) on one GPU
+  enabled: true                # take turns: the one not running sleeps in CPU memory (ANE_LLM_SHARING)
+  idle_seconds: 5              # a model that has stopped running goes to sleep after this
+  level: 1                     # vLLM sleep level 1: weights to CPU memory, GPU memory freed
+  wait_seconds: 900            # the longest a model waits for the other to finish
 llm_judge:
   # Gemma 4 as a game critic (evaluator/game_judge.py): it reads a playthrough's turns and
   # scores agency, pacing, surprise, payoff, exploration, stakes, coherence, replayability
@@ -721,10 +726,11 @@ augmentation:
     model_name: Qwen/Qwen3.5-4B          # the name the server serves it under
     model_path: /data/angelisg/llm_models/Qwen3.5-4B   # its weights (float16, not quantized)
     dtype: float16             # TITAN RTX (Turing): no bfloat16
-    gpu_memory_utilization: 0.75
+    gpu_memory_utilization: 0.6          # fits beside the judge asleep (llm_sharing)
     max_model_len: 8192
     limit_mm_per_prompt: {image: 0, video: 0}   # text only
     enable_thinking: false     # Qwen3.5 answers directly (JSON), without its reasoning
+    json_output: true          # vLLM holds the reply to valid JSON (structured output)
     max_new_tokens: 3072
     temperature: 0.7
 director:                      # how a story builds over its course, like a game's director

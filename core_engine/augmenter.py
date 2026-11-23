@@ -73,8 +73,64 @@ class WorldAugmenter:
             config.set_world_definition(final_world)
         return final_world, filepath
 
+    @staticmethod
+    def example_action(world):
+        """A real action of this world, cut to what the engine needs (name; outcomes with desc and
+        tags; target_tags or reveal_location where it has them): the shape a proposal must follow."""
+        for place in (world.get("locations") or {}).values():
+            for action in (place or {}).get("actions") or []:
+                outcomes = [{key: o[key] for key in ("desc", "tags", "target_tags", "reveal_location") if key in o}
+                            for o in (action.get("outcomes") or [])[:2] if isinstance(o, dict) and o.get("desc")]
+                if action.get("name") and outcomes:
+                    return {"name": action["name"], "outcomes": outcomes}
+        return {"name": "Listen to the sailors", "outcomes": [
+            {"desc": "They speak of a cove beyond the cliffs.", "tags": ["social", "discovery"],
+             "target_tags": ["nature", "secluded"]},
+            {"desc": "Talk of the weather, nothing more.", "tags": ["neutral"]}]}
+
+    @staticmethod
+    def normalize_actions(actions):
+        """A proposal's actions in the engine's shape, from what small models commonly write instead:
+        a string, {action, outcome} or {name, text}, snake_case names, target_tags on the action. Only
+        fields the engine knows are kept; an action left without a name or an outcome is dropped."""
+        from .content_rules import ACTION_FIELDS, OUTCOME_FIELDS
+
+        def readable(name):
+            name = str(name or "").strip()
+            return name.replace("_", " ").capitalize() if "_" in name and " " not in name else name
+
+        fixed = []
+        for action in actions if isinstance(actions, list) else []:
+            if isinstance(action, str):
+                action = {"name": action}
+            if not isinstance(action, dict):
+                continue
+            name = readable(action.get("name") or action.get("action") or action.get("title"))
+            outcomes = action.get("outcomes")
+            if not isinstance(outcomes, list) or not outcomes:
+                text = action.get("outcome") or action.get("result") or action.get("text") or action.get("desc")
+                outcomes = [text] if text else []
+            shaped = []
+            for outcome in outcomes:
+                outcome = {"desc": outcome} if isinstance(outcome, str) else outcome
+                if not isinstance(outcome, dict):
+                    continue
+                outcome = {key: value for key, value in outcome.items() if key in OUTCOME_FIELDS}
+                outcome.setdefault("desc", "")
+                if outcome["desc"]:
+                    outcome.setdefault("tags", [])
+                    shaped.append(outcome)
+            if shaped and action.get("target_tags") and not any("target_tags" in o for o in shaped):
+                shaped[0]["target_tags"] = list(action["target_tags"]) if isinstance(action["target_tags"], list) \
+                    else [action["target_tags"]]
+            if name and shaped:
+                kept = {key: value for key, value in action.items()
+                        if key in ACTION_FIELDS and key not in ("name", "outcomes")}
+                fixed.append({"name": name, **kept, "outcomes": shaped})
+        return fixed
+
     def propose(self):
-        """Gemma's proposal of new places, people and items for the active world, nothing written:
+        """The augmentation model's (augmentation.llm) proposal of new places, people and items for the active world, nothing written:
         {locations: {name: entry}, objects: [entry], characters: [entry]} (only places that are new
         scenarios), or None when it proposed nothing usable."""
         current_world = config.get("world_definition", {})
@@ -100,24 +156,33 @@ class WorldAugmenter:
 3. **ONLY NEW NODES**: Return ONLY new characters, items, and locations. Do NOT re-define Harbor or other existing items.
 4. **PARAMETERIZED LOCATIONS**: Give every new location a `template_id` (its kind of place) and `parameters` (what makes this one differ). Variants of one template are welcome; the same template with the same parameters twice is rejected.
 5. **TAG-LED DISCOVERY**: An outcome that opens a new path should say what kind of place it leads to with `target_tags` (e.g. ["nature", "secluded"]) rather than naming a place.
-6. **FORMAT**:
+6. **ACTIONS**: Every action is an object with a readable `name` (what the player does, e.g. "Search the shelves")
+   and a list of `outcomes`; every outcome has a `desc` (one or two sentences, what happens) and `tags`
+   (from the TAG CLOUD, plus "success", "failure", "discovery" or "neutral"). An outcome may add `target_tags`
+   (the kind of place it opens a path to) or `reveal_location` (an existing location's name). Give each new
+   location and character 2 actions with 2 outcomes each. An action of this world, exactly in that shape:
+{json.dumps(self.example_action(current_world), ensure_ascii=False)}
+7. **FORMAT**:
 {{
   "locations": {{
-    "Alchemy Lab": {{ "tags": ["urban", "research"], "actions": [...] }}
+    "Alchemy Lab": {{ "tags": ["urban", "research"], "descriptions": ["Shelves of bubbling flasks."],
+                     "template_id": "laboratory", "parameters": {{"focus": "potions"}}, "actions": [ACTION, ACTION] }}
   }},
   "objects": [
-    {{ "name": "Rare Herb", "associated_tags": ["nature", "research"] }}
+    {{ "name": "Rare Herb", "associated_tags": ["nature", "research"], "descriptions": ["A bitter, silver leaf."] }}
   ],
   "characters": [
-    {{ 
+    {{
       "name": "Alchemist",
       "associated_tags": ["urban", "social", "discovery"],
+      "descriptions": ["A soot-stained woman with quick hands."],
       "known_locations": ["Alchemy Lab", "Secret Garden"],
       "known_objects": ["Rare Herb"],
-      "actions": [...]
+      "actions": [ACTION, ACTION]
     }}
   ]
 }}
+(ACTION: an action object as in 6.)
 
 ### YOUR RESPONSE (JSON ONLY):
 """
@@ -142,6 +207,9 @@ class WorldAugmenter:
         raw_chars = new_data.get('characters', new_data.get('new_characters', []))
 
         raw_locs = self._new_scenarios(current_world.get("locations", {}), raw_locs)
+        for entry in [*raw_locs.values(), *(raw_chars if isinstance(raw_chars, list) else [])]:
+            if isinstance(entry, dict) and "actions" in entry:  # the engine's action shape (normalize_actions)
+                entry["actions"] = self.normalize_actions(entry["actions"])
 
         if not raw_locs and not raw_objs and not raw_chars:
             print("  WARNING: Augmented data is empty. Skipping file update to prevent corruption.")
