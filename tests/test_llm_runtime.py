@@ -39,11 +39,23 @@ def _fake_vllm():
     return module
 
 
+def _own_turns(test):
+    """A test's own turn coordinator, its idle timers cancelled when the test ends: a timer of one test
+    must not put to sleep the servers another test points at (they are found by the settings in force)."""
+    turns = llm_model_loader.Turns()
+    patcher = patch.object(llm_model_loader, "TURNS", turns)
+    patcher.start()
+    test.addCleanup(patcher.stop)
+    test.addCleanup(turns.close)
+    return turns
+
+
 class RuntimeTests(unittest.TestCase):
     def setUp(self):
         patcher = patch.dict(llm_model_loader._RUNTIMES, {}, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
+        _own_turns(self)
 
     def test_embedded_gemma4_is_text_only_and_bounded(self):
         fake = _fake_vllm()
@@ -116,6 +128,7 @@ class JudgeStatusTests(unittest.TestCase):
         patcher = patch.dict(llm_model_loader._RUNTIMES, {}, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
+        _own_turns(self)
 
     def _server(self, handler_code=200, models=("google/gemma-4-E4B-it",)):
         import http.server
@@ -273,10 +286,10 @@ class SharingTests(unittest.TestCase):
     its own is woken; idle, it goes to sleep too. Two fake vLLM servers record what they are asked."""
 
     def setUp(self):
-        for patcher in (patch.dict(llm_model_loader._RUNTIMES, {}, clear=True),
-                        patch.object(llm_model_loader, "TURNS", llm_model_loader.Turns())):
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        patcher = patch.dict(llm_model_loader._RUNTIMES, {}, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        _own_turns(self)
         self.events = []
         self.judge, self.augmenter = self._server("judge"), self._server("augmenter")
         env = {"ANE_JUDGE_URL": self.judge + "/v1", "ANE_JUDGE_MODEL": "google/gemma-4-E4B-it",
