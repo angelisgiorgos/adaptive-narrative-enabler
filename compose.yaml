@@ -168,6 +168,8 @@ services:
       ANE_LLM_SHARING: ${ANE_LLM_SHARING:-on}
       ANE_LLM_PEERS: http://hamlet-ane-judge:8000
       ANE_LLM_PEER_API_KEY: ${ANE_JUDGE_API_KEY:-local-vllm}
+      # Started together with the judge: wait for it to serve (it loads first), then put it to sleep.
+      ANE_LLM_WAIT_FOR_PEERS: ${ANE_LLM_WAIT_FOR_PEERS:-900}
     volumes:
       - ${ANE_AUGMENT_MODELS:-/data/angelisg/llm_models}:/models:ro
       - ./packaging/vllm_turn_start.py:/ane/vllm_turn_start.py:ro

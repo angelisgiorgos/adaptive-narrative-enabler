@@ -2812,6 +2812,64 @@ class ContentLibraryTests(_Sandbox):
         self.assertIn("library_more_ui", listeners(by["library-more"], "click"))
 
 
+class StudioSpeedTests(_Sandbox):
+    """What keeps the studio's page responsive, with every event doing what it did: its events are left out
+    of Gradio's API description (11 MB in every page), the page's loading-status bookkeeping is kept small
+    (Gradio updates every registered component on every status message), and the page and its config are
+    sent compressed."""
+
+    def test_the_page_carries_no_api_description_and_its_events_still_run(self):
+        import app
+
+        demo = app.build_app()
+        self.assertTrue(all(fn.api_visibility != "public" for fn in demo.fns.values()))
+        self.assertEqual(demo.get_api_info()["named_endpoints"], {})            # nothing embedded in the page
+        undocumented = demo.get_api_info(all_endpoints=True)["named_endpoints"]
+        self.assertGreater(len(undocumented), 100)                              # still callable by the page
+
+    def test_loading_status_is_kept_on_what_can_show_it(self):
+        import app
+
+        demo = app.build_app()
+        by = {b.elem_id: b for b in demo.blocks.values() if getattr(b, "elem_id", None)}
+        for fn in demo.fns.values():
+            with self.subTest(fn=getattr(fn.fn, "__name__", "?")):
+                if fn.show_progress == "hidden":
+                    self.assertEqual(fn.show_progress_on, [])                   # it shows nothing: it registers nothing
+                elif fn.show_progress_on is not None:
+                    self.assertFalse([o for o in fn.show_progress_on if type(o).__name__ in app.NO_PROGRESS_SHOWN])
+        loads = {getattr(fn.fn, "__name__", "?"): fn for fn in demo.fns.values()
+                 if any(event == "load" for _, event in fn.targets)}
+        self.assertEqual(loads["reload_weights_ui"].show_progress_on, [by["weights-draft-status"]])
+        self.assertEqual(loads["load_selection_ui"].show_progress_on, [by["draft-status"]])
+        # A click's progress stays where it was: Weights' Discard (its fields), a training's follow (its result).
+        (discard,) = [fn for fn in demo.fns.values() if getattr(fn.fn, "__name__", "") == "reload_weights_ui"
+                      and any(event == "click" for _, event in fn.targets)]
+        self.assertGreater(len(discard.show_progress_on), 200)
+        config = demo.get_config_file()
+        self.assertEqual(len(config["dependencies"]), len(demo.fns))
+        self.assertTrue(any(dep.get("show_progress_on") == [] for dep in config["dependencies"]))
+
+    def test_pages_are_compressed_and_streams_and_assets_left_as_they_are(self):
+        import app
+        from starlette.applications import Starlette
+        from starlette.middleware import Middleware
+        from starlette.responses import PlainTextResponse, StreamingResponse
+        from starlette.routing import Route
+
+        body = "x" * 5000
+        site = Starlette(routes=[
+            Route("/", lambda request: PlainTextResponse(body)),
+            Route("/assets/a.js", lambda request: PlainTextResponse(body)),
+            Route("/stream", lambda request: StreamingResponse(iter([b"data: 1\n\n"] * 300), media_type="text/event-stream")),
+        ], middleware=[Middleware(app.CompressPages)])
+        client = TestClient(site)
+        page = client.get("/", headers={"Accept-Encoding": "gzip"})
+        self.assertEqual((page.headers.get("content-encoding"), page.text), ("gzip", body))
+        self.assertIsNone(client.get("/assets/a.js", headers={"Accept-Encoding": "gzip"}).headers.get("content-encoding"))
+        self.assertIsNone(client.get("/stream", headers={"Accept-Encoding": "gzip"}).headers.get("content-encoding"))
+
+
 class ActivationTests(_Sandbox):
     """When saved settings take effect, said where they are set and when they are saved: the configuration
     (in use at once for what starts afterwards; nothing running restarted) and the app parameters (read

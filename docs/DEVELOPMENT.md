@@ -99,6 +99,30 @@ built on those systems: CI builds them, and a `v*` tag attaches them to a GitHub
 ([`release.yml`](../.github/workflows/release.yml)); put the ones of the same commit in `runtimes/`
 before building the image.
 
+## Keeping the studio fast
+
+The studio is one large Gradio page (about 1,500 components and 570 events), and Gradio's page does
+work in proportion to that size. Three things keep it responsive (`app.py`, end of `build_app` and the
+launch):
+
+- **No API description in the page.** Gradio embeds a description of every public event in each page
+  (`gradio_api_info`: 11 MB here). The studio's events are its own page's (the API is the API to call),
+  so they are `api_visibility="undocumented"`: callable by the page, left out of that description.
+- **Small loading-status bookkeeping** (`lighten_loading_status`). Gradio's page keeps a loading status
+  for every component an event has ever shown progress on, and updates all of them, searching the whole
+  component tree for each, on every status message of any event. Events whose progress is hidden show
+  it on nothing (`show_progress_on=[]`); the others on their outputs that can show it (not states,
+  timers or layout blocks). The Weights load and the entry editor's first load, on opening the page,
+  show their progress on their status lines.
+- **Compressed pages** (`CompressPages`). Gradio compresses files with an extension (`.js`, `.css`);
+  the page and its `/config` (about 2 MB each) are gzipped too. Event streams are never compressed.
+
+Measured in headless Firefox on the studio's server (no GPU for the browser): the page went from 13 MB
+to 0.2 MB, ready from 18 s to 3.5 s, a click to another destination from 4–38 s to 1.3–2.6 s, and the
+page's main thread from busy all the time to idle between events. A new event with many outputs and a
+visible progress keeps adding to the bookkeeping: give it `show_progress_on` (the components where its
+progress means something) when its outputs are many.
+
 ## Notes
 
 - Record every change in [CHANGELOG.md](CHANGELOG.md) under **Unreleased**, in the section of

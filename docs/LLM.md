@@ -128,7 +128,9 @@ session they **take turns** (`llm_sharing`, on by default; `utils/llm_model_load
 - **compose.yaml**: both services default to GPU 0 (`ANE_JUDGE_GPU`, `ANE_AUGMENT_GPU`) with memory
   shares that fit beside the other asleep (`ANE_JUDGE_GPU_MEMORY` 0.72, `ANE_AUGMENT_GPU_MEMORY` 0.6).
   Each starts through `packaging/vllm_turn_start.py`, which puts the other to sleep before loading its
-  model (if both start at once, the one that runs out of memory restarts and loads then).
+  model. Started together, the augmenter first waits until the judge is serving
+  (`ANE_LLM_WAIT_FOR_PEERS`, 900 s at most; a judge that was not started is not waited for), so the judge
+  loads first and neither runs out of memory.
 - `GET /v1/judge/status` and `GET /v1/augmentation` say whether a model is asleep (`sleeping`); the
   studio shows it.
 - **Several sessions**: give each model its own GPU (`ANE_JUDGE_GPU`, `ANE_AUGMENT_GPU`, larger memory

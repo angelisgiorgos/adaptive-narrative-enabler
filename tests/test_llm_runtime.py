@@ -392,3 +392,13 @@ class SharingTests(unittest.TestCase):
         with patch.dict("os.environ", {"ANE_LLM_PEERS": self.judge, "ANE_LLM_SHARING": "off"}), patch("os.execvp"):
             vllm_turn_start.main([])
         self.assertEqual(self.events, [("judge", "sleep")])                      # off: not asked
+        # Started together: it waits for a peer that exists until it serves; one that does not, it skips.
+        self.assertEqual(vllm_turn_start.wait_for_peer(self.judge, 1), "serving")
+        self.assertEqual(vllm_turn_start.wait_for_peer("http://no-such-peer.invalid:8000", 1), "absent")
+        self.assertEqual(vllm_turn_start.wait_for_peer("http://127.0.0.1:9", 0.5, step=0.1), "not serving")
+        with patch.dict("os.environ", {"ANE_LLM_PEERS": f"{self.judge},http://no-such-peer.invalid:8000",
+                                       "ANE_LLM_SHARING": "on", "ANE_LLM_WAIT_FOR_PEERS": "2"}), \
+                patch("os.execvp"), patch("sys.stdout", new_callable=io.StringIO) as said:
+            vllm_turn_start.main([])
+        self.assertEqual(self.events[-1], ("judge", "sleep"))
+        self.assertIn("no-such-peer.invalid:8000: absent", said.getvalue())
