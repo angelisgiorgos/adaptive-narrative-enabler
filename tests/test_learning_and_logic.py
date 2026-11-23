@@ -20,7 +20,12 @@ from backend import sessions, store
 from core_engine import Genome
 from core_engine.evolution import LearningMemory, NarrativeEvolution
 
-SMALL = {"pop_size": 12, "generations": 8, "episodes_per_genome": 1, "max_steps": 1, "validation_episodes": 1}
+# Short stories and a one-story benchmark: what these tests check does not depend on a story's length,
+# and the saved defaults (full-length stories, a benchmark covering every start x mission situation)
+# make each run about 20 times slower.
+FAST_STORIES = {"full_length_stories": False, "cover_situations": False}
+SMALL = {"pop_size": 12, "generations": 8, "episodes_per_genome": 1, "max_steps": 1, "validation_episodes": 1,
+         **FAST_STORIES}
 
 
 def goal_seeking_fitness(state):
@@ -144,6 +149,15 @@ class NoPythonInTheUITests(unittest.TestCase):
 
 
 class LearningInPlayTests(_TempSaves):
+    def setUp(self):
+        super().setUp()
+        # Runs started through the API and the studio take everything they do not set from the saved
+        # configuration: keep its stories short (simulation_steps does not shorten full-length stories).
+        world = store.config.as_dict()
+        world["evolution"].update({**FAST_STORIES, "validation_episodes": 1})
+        store.config.use_override(world)
+        self.addCleanup(store.config.clear_override)
+
     def test_games_come_from_evolution_and_report_learning(self):
         client = TestClient(api.api, headers={"X-ANE-User": "api-tests"})  # a backend calling the API, for its user
         body = {"candidate_count": 4, "generations": 3, "simulation_steps": 3, "episodes": 1, "deterministic": False}
@@ -160,9 +174,14 @@ class LearningInPlayTests(_TempSaves):
 
     def test_studio_shows_the_learning_curve(self):
         import app
-        outputs = app.run_simulation_ui(4, 2, 3, False, 1, False, progress=lambda *a, **k: None)
+        # The form sets the whole run: 4 storytellers, 2 generations, 1 story, 3 steps, random, no warm start.
+        outputs = app.run_simulation_ui(True, 4, True, 2, True, 1, True, 3, "off", False, None, "off",
+                                        progress=lambda *a, **k: None)
         curve, traits = outputs[3], outputs[4]  # after the report and the run's files: training only, no game
-        self.assertIn("▶ Play", outputs[0])     # the trained AI is played there
+        done, card = outputs[-5], outputs[-4]   # the completed engine, played, judged or exported from its card
+        self.assertIn("Completed engine", card)
+        self.assertIn(f"engine `{done['engine_id']}`", card)
+        self.assertIn("No game has been started", card)
         self.assertEqual(set(curve["series"]), {"benchmark (champion)", "best this generation", "population average"})
         self.assertIn("goal_bias", set(traits["trait"]))
 

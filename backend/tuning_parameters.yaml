@@ -1,0 +1,2265 @@
+# Presentation of the tuning parameters (⚙ Advanced → Weights): read by backend/tuning.py.
+# Derived from the engine's code: what it does with each parameter (explanation), its unit, the value
+# it uses when the parameter is left out (default), its numeric type, the bounds it clamps or checks
+# (minimum, maximum: only where the engine defines them), and the code that reads it (source).
+# A parameter left out here is presented by its name and path. `*`: any one path segment.
+story_rules.repetition_power:
+  label: How fast repeated choices lose appeal
+  explanation: Each option the storyteller has already used loses (earlier uses ^ this power) x novelty bias x action_selection.repetition_penalty
+    from its score, so raising it makes the third, fourth... repeat drop away much faster (the first repeat always
+    costs the same). It feeds the storyteller's ranking of options (GameState._rank_actions), which decides what
+    a simulated storyteller does and which choices, and in what order, a real player is shown.
+  unit: exponent on the number of earlier uses
+  type: float
+  minimum: 1
+  default: 1.5
+  source:
+  - core_engine/game_state.py:2385
+  - core_engine/rules.py:41
+  - core_engine/rules.py:67
+story_rules.backtrack_penalty:
+  label: Penalty for going straight back
+  explanation: Travel back to the place the player just came from (A -> B -> A) loses this x the storyteller's novelty
+    bias from its score, so raising it makes such back-and-forth trips less likely to be picked or shown. It feeds
+    the storyteller's ranking of options (GameState._rank_actions), which decides what a simulated storyteller does
+    and which choices, and in what order, a real player is shown.
+  unit: relative weight
+  type: float
+  minimum: 0
+  default: 1.5
+  source:
+  - core_engine/game_state.py:2391
+  - core_engine/rules.py:42
+  - core_engine/rules.py:51
+story_rules.collect_weight:
+  label: Appeal of picking up items
+  explanation: 'An option that picks up an obtainable item not yet held gains this x the storyteller''s discovery
+    bias (x1.5 for useful items: stat bonuses, needed by other actions, or the quest item), so raising it makes
+    item pickups rank higher. It feeds the storyteller''s ranking of options (GameState._rank_actions), which decides
+    what a simulated storyteller does and which choices, and in what order, a real player is shown.'
+  unit: relative weight
+  type: float
+  minimum: 0
+  default: 1.0
+  source:
+  - core_engine/game_state.py:2364
+  - core_engine/rules.py:44
+  - core_engine/rules.py:51
+story_rules.payoff_weight:
+  label: Appeal of paying off an open clue
+  explanation: While clues are open, an option with a payoff outcome gains this x setup probability x the number
+    of open clues (at most 2), more near the end when the director closes threads, so raising it makes the story
+    resolve its planted clues sooner. It feeds the storyteller's ranking of options (GameState._rank_actions), which
+    decides what a simulated storyteller does and which choices, and in what order, a real player is shown.
+  unit: relative weight
+  type: float
+  minimum: 0
+  default: 2.0
+  source:
+  - core_engine/game_state.py:2361
+  - core_engine/rules.py:45
+  - core_engine/rules.py:52
+story_rules.payoff_route_weight:
+  label: Pull toward places where a clue pays off
+  explanation: While a clue is open, travel to a place where it can be paid off gains this x setup probability,
+    both when ranking travel options and when the storyteller picks a destination, so raising it steers the story
+    toward resolving clues.
+  unit: relative weight
+  type: float
+  minimum: 0
+  default: 1.5
+  source:
+  - core_engine/game_state.py:2433
+  - core_engine/game_state.py:2085
+  - core_engine/rules.py:46
+  - core_engine/rules.py:52
+game_state.low_health_threshold:
+  label: Low health level
+  explanation: 'At or below this many health points the player counts as badly hurt: Power drops by power_model.low_health_penalty
+    (harder fights), the storyteller avoids threats and favours healing, and fewer, more focused choices are shown.
+    Raising it makes the ''low health'' state start earlier.'
+  unit: health points
+  type: integer
+  default: 4
+  source:
+  - core_engine/health.py:28
+  - core_engine/actions.py:128
+game_state.auto_travel_on_spawn_threshold:
+  label: Threshold to follow a newly discovered path
+  explanation: When an outcome opens a new path, the storyteller moves the player along it at once if its commitment
+    score (tag fit 0-1 + voyage bias + discovery bias x commit_discovery_weight - visits x commit_revisit_penalty
+    + pull toward the quest) reaches this; raising it means fewer automatic moves.
+  unit: commitment score points
+  type: float
+  default: 1.5
+  source:
+  - core_engine/game_state.py:4438
+game_state.auto_travel_commit_threshold:
+  label: Threshold to follow an NPC's lead
+  explanation: When an NPC's hint opens a path, the storyteller moves the player along it at once if the path's
+    commitment score reaches this; raising it means NPC leads less often carry the player off.
+  unit: commitment score points
+  type: float
+  default: 1.2
+  source:
+  - core_engine/game_state.py:2038
+game_state.commit_discovery_weight:
+  label: Curiosity boost for following new paths
+  explanation: Adds this x the storyteller's discovery bias to the commitment score of a newly opened path, so raising
+    it makes the storyteller more ready to follow fresh paths automatically.
+  unit: relative weight
+  type: float
+  default: 0.4
+  source:
+  - core_engine/game_state.py:2023
+game_state.commit_revisit_penalty:
+  label: Reluctance to follow a path to a visited place
+  explanation: Subtracts this per earlier visit to the destination from a new path's commitment score, so raising
+    it makes automatic travel back to known places rarer; negative values would favour revisits.
+  unit: commitment score points per earlier visit
+  type: float
+  default: 0.6
+  source:
+  - core_engine/game_state.py:2024
+mission_settings.route_weight:
+  label: Pull toward the mission's route
+  explanation: Places and discoveries closer to where the mission can advance (route score 1/(1+distance)) gain
+    this x the storyteller's goal drive (goal bias x pacing between pursuit_start_step and pursuit_full_step) when
+    choosing destinations, which new path opens and which outcome to tell; raising it makes the story head for the
+    quest more directly.
+  unit: relative weight
+  type: float
+  default: 6.0
+  source:
+  - core_engine/game_state.py:1510
+  - core_engine/game_state.py:2174
+discovery_nodes.location_voyage_weight:
+  label: Hints favour places (travel-minded storyteller)
+  explanation: 'When an NPC gives a lead, the engine picks what it reveals by the highest score: place = location_base
+    + voyage bias x this, person = npc_base + social bias x npc_social_weight, item = item_base + discovery bias
+    x item_discovery_weight. Raising this makes leads reveal places more often.'
+  unit: relative weight
+  type: float
+  default: 0.4
+  source:
+  - core_engine/game_state.py:4188
+discovery_nodes.npc_social_weight:
+  label: Hints favour people (social storyteller)
+  explanation: In the same lead choice, a person's score is npc_base + the storyteller's social bias x this; raising
+    it makes NPC leads reveal hidden people more often instead of places or items.
+  unit: relative weight
+  type: float
+  default: 0.3
+  source:
+  - core_engine/game_state.py:4189
+discovery_nodes.item_discovery_weight:
+  label: Hints favour items (curious storyteller)
+  explanation: In the same lead choice, an item's score is item_base + the storyteller's discovery bias x this;
+    raising it makes NPC leads reveal hidden items more often.
+  unit: relative weight
+  type: float
+  default: 0.3
+  source:
+  - core_engine/game_state.py:4190
+npc_leads.shared_tag_weight:
+  label: Guide prefers places matching the NPC
+  explanation: When an NPC leads the player somewhere they know (an outcome with lead_to_known), each candidate
+    place scores base_score + this per tag it shares with the NPC + tag similarity + biases + quest pull; raising
+    it makes guides take the player to places that suit them.
+  unit: relative weight per shared tag
+  type: float
+  default: 0.5
+  source:
+  - core_engine/game_state.py:4544
+npc_leads.quest_weight:
+  label: Guide prefers places on the way to the quest
+  explanation: Adds this / (1 + steps from the place to where the quest can advance) to a guide's choice of destination,
+    and orders which known place an ally reveals as a reward; raising it makes guides and allies point toward the
+    quest.
+  unit: relative weight
+  type: float
+  default: 3.0
+  source:
+  - core_engine/game_state.py:4649
+skill_check_resolution.difficulty_penalty:
+  label: Base check difficulty
+  explanation: Subtracted from every skill check's target (the highest passing roll), so raising it makes all checks
+    harder; negative values make them easier. The roll has roll_sides sides (default 100).
+  unit: roll-target points (1–100 roll)
+  type: float
+  default: 0
+  source:
+  - core_engine/combat.py:80
+skill_check_resolution.difficulty_rate_per_step:
+  label: Difficulty increase per turn
+  explanation: After difficulty_rate_start_step, every turn taken adds this to the difficulty of all checks; negative
+    makes checks easier over time.
+  unit: roll-target points per turn (1-100 roll)
+  type: float
+  default: 0.0
+  source:
+  - core_engine/combat.py:82
+skill_check_resolution.difficulty_rate_start_step:
+  label: Turn when difficulty starts to change
+  explanation: The per-turn difficulty change only counts turns after this one (max(0, turn - this)), so raising
+    it delays the ramp.
+  unit: turns
+  type: integer
+  default: 0
+  source:
+  - core_engine/combat.py:81
+skill_check_resolution.min_chance:
+  label: Minimum success chance
+  explanation: A check's target never goes below this share of the roll, so even a hopeless check keeps this chance;
+    raising it makes failure-prone checks more forgiving.
+  unit: percent of the roll (0-100 scale)
+  type: float
+  default: 5
+  source:
+  - core_engine/combat.py:90
+skill_check_resolution.max_chance:
+  label: Maximum success chance
+  explanation: A check's target never goes above this share of the roll, so even a sure thing can fail; lowering
+    it keeps every check risky.
+  unit: percent of the roll (0-100 scale)
+  type: float
+  default: 95
+  source:
+  - core_engine/combat.py:91
+skill_check_resolution.damage_mitigation_per_point:
+  label: Defence needed per point of damage blocked
+  explanation: Combat or threat damage is reduced by 1 health point for every this-many points of the damage-reduction
+    stat (defence, items included), never into healing; raising it means defence blocks less.
+  unit: stat points (1–100) per health point saved
+  type: float
+  default: 25
+  source:
+  - core_engine/combat.py:115
+skill_check_resolution.failure_mitigation_threshold:
+  label: Defence that negates failure damage
+  explanation: A failed dangerous action (combat, threat, guards) with no authored failure outcome costs no health
+    when the damage-reduction stat (defence, items included) is at least this; raising it makes that immunity harder
+    to reach.
+  unit: damage-reduction stat value (1-100 scale)
+  type: float
+  default: 80
+  source:
+  - core_engine/combat.py:122
+power_model.base_power:
+  label: Base power
+  explanation: Starting amount added to the player's Power (fighting strength) before health and skills; in practice
+    it only shifts Power relative to min_power/max_power.
+  unit: power points
+  type: float
+  default: 0.0
+  source:
+  - core_engine/health.py:111
+power_model.health_weight:
+  label: Power from health
+  explanation: Power gains this x current health / max health, so wounds lower Power and make fight checks harder
+    (via check_weight); raising it makes health matter more in fights.
+  unit: power points at full health
+  type: float
+  default: 1.5
+  source:
+  - core_engine/health.py:112
+power_model.stat_weight:
+  label: Power from skills
+  explanation: Power gains this x the average skill value / 100 (items included), so better skills and gear give
+    a fight bonus as they improve during the story.
+  unit: power points at an average skill of 100
+  type: float
+  default: 1.5
+  source:
+  - core_engine/health.py:113
+power_model.low_health_penalty:
+  label: Power lost at low health
+  explanation: Subtracted from Power while health is at or below game_state.low_health_threshold, making fights
+    harder for a badly hurt player.
+  unit: power points
+  type: float
+  default: 0.5
+  source:
+  - core_engine/health.py:115
+power_model.min_power:
+  label: Minimum power
+  explanation: Power is never below this, which limits how much wounds can weaken the player in fights.
+  unit: power points
+  type: float
+  default: 0.0
+  source:
+  - core_engine/health.py:116
+power_model.max_power:
+  label: Maximum power
+  explanation: Power is never above this, which caps the fight bonus from health, skills and gear.
+  unit: power points
+  type: float
+  default: 5.0
+  source:
+  - core_engine/health.py:116
+power_model.check_weight:
+  label: Fight bonus per point of power gained
+  explanation: In a fight (a check on a combat stat, or an action tagged combat or threat), each point of Power
+    gained since the story began adds this to the check's target (lost Power subtracts), so raising it makes gear
+    and health swing fights more.
+  unit: target points per Power point (1–100 roll)
+  type: float
+  default: 6
+  source:
+  - core_engine/game_state.py:4684
+npc_goals.ally_check_bonus:
+  label: Check bonus with allies
+  explanation: Checks on actions with an NPC who became an ally (by being helped with their goal) get this added
+    to their target, so raising it makes allies easier to deal with.
+  unit: points added to a 1-100 roll target
+  type: integer
+  default: 15
+  source:
+  - core_engine/game_state.py:4686
+npc_goals.action_weight:
+  label: Appeal of helping NPCs with their goals
+  explanation: Options that would advance an NPC's goal gain this x (0.5 + the storyteller's social bias), so raising
+    it makes helping people rank higher. It feeds the storyteller's ranking of options (GameState._rank_actions),
+    which decides what a simulated storyteller does and which choices, and in what order, a real player is shown.
+  unit: relative weight
+  type: float
+  default: 0.5
+  source:
+  - core_engine/game_state.py:2397
+world_definition.similarity_threshold:
+  label: Place similarity needed for a path
+  explanation: 'With spawn_strategy: similarity, two places can open onto each other when their tag similarity is
+    at least this; raising it gives fewer, more fitting connections.'
+  unit: tag similarity (0-1)
+  type: float
+  default: 0.2
+  source:
+  - core_engine/builder.py:202
+climax.ally_choice.bonus:
+  label: Showdown bonus for calling an ally
+  explanation: In the climax, the 'Call on <ally>' choice (offered only if the player has an ally) gets this added
+    to its check target on top of climax.check_modifier, so raising it makes allies a surer way to win.
+  unit: points added to a 1-100 roll target
+  type: integer
+  default: 20
+  source:
+  - core_engine/story_beats.py:125
+variation.repeat_check_penalty:
+  label: Difficulty increase per repeated success
+  explanation: Each earlier success of the same action makes its check harder by this (up to max_repeat_penalty),
+    so repeating a winning trick gets harder; negative would make repeats easier.
+  unit: roll-target points per prior success (1–100)
+  type: integer
+  default: 0
+  source:
+  - core_engine/story_beats.py:273
+  requires: variation.enabled
+variation.max_repeat_penalty:
+  label: Cap on repeat difficulty
+  explanation: The extra difficulty from repeated successes never exceeds this.
+  unit: roll-target points (1-100 roll)
+  type: integer
+  default: 20
+  source:
+  - core_engine/story_beats.py:273
+  requires: variation.enabled
+travel.first_trip.chance:
+  label: Chance of a scene on a first trip
+  explanation: The first time the player travels to a place, a short scene on the way (chosen by the destination's
+    tags, sometimes with a small gain) is told with this chance; raising it makes travel scenes more frequent.
+  unit: probability per first trip to a place (0–1)
+  type: float
+  default: 0.5
+  source:
+  - core_engine/story_beats.py:357
+  requires: travel.first_trip.enabled
+stakes.alert.check_penalty:
+  label: Guard check penalty per alert level
+  explanation: Checks against guards (a guard NPC, 'guard' in the action, or a guards tag) are harder by this per
+    current alert level, so raising it makes a raised alert more dangerous.
+  unit: roll-target points per alert level (1–100)
+  type: integer
+  default: 0
+  source:
+  - core_engine/story_beats.py:436
+  requires: stakes.alert.enabled
+session_scope.relevance_weight:
+  label: 'Session cast: fit with the goal'
+  explanation: Optional places, people, items and random events get a value = this x tag fit with the goal's places
+    and people + richness_weight x things to do + variety_weight x a per-session draw; the most valuable keep_share
+    of each kind stays, so raising this keeps the cast closer to the goal.
+  unit: relative weight
+  type: float
+  default: 1.0
+  source:
+  - core_engine/scope.py:136
+session_scope.richness_weight:
+  label: 'Session cast: things to do'
+  explanation: Adds this x how much there is to do with an entry (its actions, full at 3; hostile NPCs at least
+    0.67) to its session value, so raising it keeps content-rich entries in the cast.
+  unit: relative weight
+  type: float
+  default: 0.5
+  source:
+  - core_engine/scope.py:136
+session_scope.variety_weight:
+  label: 'Session cast: variety between sessions'
+  explanation: Adds this x a per-session random draw (0-1) to each entry's value, so raising it makes the cast differ
+    more from session to session.
+  unit: relative weight
+  type: float
+  default: 0.6
+  source:
+  - core_engine/scope.py:137
+outcome_objective.success_threshold:
+  label: Success cutoff for unchecked outcomes
+  explanation: An outcome with no skill check succeeds only if its success probability is at least this value; there
+    is no dice roll. Raising it makes more unchecked outcomes fail (above the 0.95 probability ceiling none succeed;
+    at or below the probability floor all do).
+  unit: probability (0–1 scale)
+  type: float
+  default: 0.5
+  source:
+  - core_engine/game_state.py:2250
+outcome_objective.health_weight:
+  label: Preference for health gain
+  explanation: Each point of health an outcome would really change (after clamping to max health) adds this much
+    to its preference score, so healing is favoured and damage avoided more strongly. A negative value would make
+    the storyteller prefer harmful outcomes.
+  unit: preference points per health point
+  type: float
+  default: 1.5
+  source:
+  - core_engine/game_state.py:2137
+outcome_objective.repetition_penalty:
+  label: Penalty for repeating an outcome
+  explanation: Each earlier showing of the same outcome text lowers its preference score by this much times the
+    storyteller's novelty trait, so the story rotates through outcomes. Negative values would favour repeats. The
+    novelty trait is on a 0–1 scale.
+  unit: preference points per earlier showing
+  type: float
+  default: 1.5
+  source:
+  - core_engine/game_state.py:2142
+outcome_objective.coin_weight:
+  label: Preference for coin gain
+  explanation: Each coin an outcome gives adds this much to its preference score (each coin lost subtracts it),
+    steering the storyteller toward lucrative outcomes.
+  unit: preference points per coin
+  type: float
+  default: 0.15
+  source:
+  - core_engine/game_state.py:2144
+outcome_objective.success_probability_weight:
+  label: Preference for likely success
+  explanation: The outcome's chance of success (its skill-check pass chance, or its success probability if unchecked)
+    times this is added to its preference score, so likelier outcomes are favoured as the attempt.
+  unit: preference points × success chance (0–1)
+  type: float
+  default: 2.0
+  source:
+  - core_engine/game_state.py:2146
+outcome_objective.discovery_weight:
+  label: Preference for discoveries
+  explanation: Outcomes that reveal or spawn a place, person or item gain this times the storyteller's discovery
+    trait (0–1) in preference score.
+  unit: preference points (x discovery trait 0–1)
+  type: float
+  default: 2.0
+  source:
+  - core_engine/game_state.py:2149
+outcome_objective.movement_weight:
+  label: Preference for travel outcomes
+  explanation: Outcomes that move or send the player elsewhere (or lead to a known place) gain this times the storyteller's
+    travel trait (0–1) in preference score.
+  unit: preference points (x travel trait 0–1)
+  type: float
+  default: 2.5
+  source:
+  - core_engine/game_state.py:2151
+outcome_objective.threat_interest_weight:
+  label: Preference for danger
+  explanation: Outcomes tagged threat or combat gain this times the storyteller's threat trait (0–1) in preference
+    score; raising it makes dangerous outcomes the favoured attempt more often.
+  unit: preference points (x threat trait 0–1)
+  type: float
+  default: 1.0
+  source:
+  - core_engine/game_state.py:2153
+outcome_objective.low_health_risk_penalty:
+  label: Avoid danger at low health
+  explanation: When the player's health is low, outcomes tagged threat or combat lose this much preference score,
+    so a weakened player is spared risky outcomes. Negative values would push toward danger instead.
+  unit: preference points
+  type: float
+  default: 3.0
+  source:
+  - core_engine/game_state.py:2155
+outcome_objective.success_tag_bonus:
+  label: Preference for success-tagged outcomes
+  explanation: Outcomes tagged 'success' gain this flat amount of preference score.
+  unit: preference points
+  type: float
+  default: 1.0
+  source:
+  - core_engine/game_state.py:2157
+outcome_objective.setup_weight:
+  label: Preference for planting clues early
+  explanation: In the first 5 turns, while fewer than the maximum clues are open, outcomes that plant a clue (setup_
+    tags) gain this times the storyteller's setup trait (0–1) in preference score.
+  unit: preference points (x setup trait 0–1)
+  type: float
+  default: 1.5
+  source:
+  - core_engine/game_state.py:2161
+outcome_objective.payoff_weight:
+  label: Preference for paying off clues
+  explanation: From turn 4 on, while any clue is open, outcomes that pay off a clue (payoff_ tags) gain this flat
+    amount of preference score.
+  unit: preference points
+  type: float
+  default: 2.0
+  source:
+  - core_engine/game_state.py:2163
+unexpected_events.objective.low_health_healing_weight:
+  label: Event healing preference at low health
+  explanation: While the player's health is low, each point of health a candidate event effect would really change
+    adds this much to that effect's score, so wounded players tend to get healing events (and harmful ones are avoided).
+  unit: preference points per health point
+  type: float
+  default: 2.0
+  source:
+  - core_engine/game_state.py:3436
+  requires: unexpected_events.enabled
+unexpected_events.objective.healing_weight:
+  label: Event healing preference
+  explanation: While the player's health is not low, each point of health a candidate event effect would really
+    change adds this much to that effect's score (damage subtracts it).
+  unit: preference points per health point
+  type: float
+  default: 0.5
+  source:
+  - core_engine/game_state.py:3437
+  requires: unexpected_events.enabled
+unexpected_events.objective.coin_weight:
+  label: Event coin preference
+  explanation: Each coin a candidate event effect gives adds this much to its score (coin losses subtract), making
+    windfall events likelier when the story's coin budget allows them.
+  unit: preference points per coin
+  type: float
+  default: 0.1
+  source:
+  - core_engine/game_state.py:3439
+  requires: unexpected_events.enabled
+unexpected_events.objective.low_health_threat_penalty:
+  label: Avoid threatening events at low health
+  explanation: While the player's health is low, event effects tagged threat lose this much score, so a weakened
+    player is less likely to be ambushed by a random event.
+  unit: preference points
+  type: float
+  default: 2.0
+  source:
+  - core_engine/game_state.py:3445
+  requires: unexpected_events.enabled
+unexpected_events.base_chance:
+  label: Base unexpected-event pressure
+  explanation: Starting level of the 'event pressure' that is compared each turn with the trigger threshold; a random
+    event fires whenever the pressure reaches the threshold (no dice roll). Raising it makes events fire for more
+    storytellers and sooner. It is on the trigger threshold's scale, not a random chance.
+  unit: event pressure (not a probability)
+  type: float
+  default: 0.12
+  source:
+  - core_engine/game_state.py:3394
+  requires: unexpected_events.enabled
+unexpected_events.genome_weight:
+  label: Event pressure from the storyteller's event trait
+  explanation: The storyteller's event trait (about 0.08–0.4) times this is added to the event pressure, so event-loving
+    storytellers trigger random events more readily.
+  unit: event pressure per unit of event trait
+  type: float
+  default: 0.35
+  source:
+  - core_engine/game_state.py:3396
+  requires: unexpected_events.enabled
+unexpected_events.chaos_weight:
+  label: Event pressure from the storyteller's chaos trait
+  explanation: The storyteller's chaos trait (about 0.1–0.75) times this is added to the event pressure, so chaotic
+    storytellers trigger random events more readily.
+  unit: event pressure per unit of chaos trait
+  type: float
+  default: 0.2
+  source:
+  - core_engine/game_state.py:3398
+  requires: unexpected_events.enabled
+unexpected_events.objective_threshold:
+  label: Unexpected-event trigger threshold
+  explanation: A random event fires only on turns when the event pressure is at least this value; raising it means
+    fewer storytellers and situations produce events.
+  unit: event pressure (same scale as base_chance)
+  type: float
+  default: 0.24
+  source:
+  - core_engine/game_state.py:3407
+  requires: unexpected_events.enabled
+unexpected_events.effect_repeat_penalty:
+  label: Penalty for repeating an event effect
+  explanation: Each earlier use of an event effect in the story lowers its score by this much when the next event
+    picks its effect, so events rotate through different effects. Negative values would make the same effect recur.
+  unit: preference points per earlier use
+  type: float
+  default: 1.0
+  source:
+  - core_engine/game_state.py:3464
+  requires: unexpected_events.enabled
+unexpected_events.cooldown_steps:
+  label: Turns between unexpected events
+  explanation: After an unexpected event (or the payoff of a mystery one planted), no other happens until this many
+    turns have passed, whatever the event pressure. Raising it spaces events out; 0 lets one come every turn.
+  unit: turns
+  type: integer
+  default: 2
+  source:
+  - core_engine/game_state.py:3385
+  requires: unexpected_events.enabled
+unexpected_events.max_per_story:
+  label: Most unexpected events per story
+  explanation: Once a story has had this many unexpected events, no new one starts (the payoff of a mystery planted
+    earlier is still told). Raising it allows more events in a long story.
+  unit: events per story
+  type: integer
+  default: 4
+  source:
+  - core_engine/game_state.py:3391
+  requires: unexpected_events.enabled
+outcome_resolution.probability_floor:
+  label: Lowest success chance of unchecked outcomes
+  explanation: The success probability of any outcome without a skill check is raised to at least this value. Because
+    success is decided by comparing with the success cutoff (0.5 by default) rather than rolling, it only changes
+    results if set at or above the cutoff (then every unchecked outcome succeeds); it also nudges which outcome
+    the storyteller prefers.
+  unit: probability (0–1 scale)
+  type: float
+  default: 0.05
+  source:
+  - core_engine/actions.py:116
+outcome_resolution.success_bias_weight:
+  label: Storyteller optimism effect on success
+  explanation: 'Hidden adjustment: adds (storyteller''s success trait − 0.5) × this to every unchecked outcome''s
+    success probability, so optimistic storytellers make outcomes succeed more. Applies only when `outcome_resolution.hidden_adjustments`
+    is on.'
+  unit: probability per trait unit above 0.5 (0–1)
+  type: float
+  default: 0.3
+  source:
+  - core_engine/actions.py:158
+  requires: outcome_resolution.hidden_adjustments
+outcome_resolution.discovery_weight:
+  label: Discovery-trait effect on success
+  explanation: 'Hidden adjustment: outcomes that reveal a place, person or item get (storyteller''s discovery trait
+    − 0.5) × this added to their success probability. Applies only when `outcome_resolution.hidden_adjustments`
+    is on.'
+  unit: probability per trait unit above 0.5 (0–1)
+  type: float
+  default: 0.16
+  source:
+  - core_engine/actions.py:180
+  requires: outcome_resolution.hidden_adjustments
+outcome_resolution.lead_weight:
+  label: Lead-trait effect on success
+  explanation: 'Hidden adjustment: outcomes that lead to a known place get (storyteller''s lead trait − 0.5) × this
+    added to their success probability. Applies only when `outcome_resolution.hidden_adjustments` is on.'
+  unit: probability per trait unit above 0.5 (0–1)
+  type: float
+  default: 0.16
+  source:
+  - core_engine/actions.py:182
+  requires: outcome_resolution.hidden_adjustments
+outcome_resolution.voyage_weight:
+  label: Travel-trait effect on success
+  explanation: 'Hidden adjustment: outcomes that move the player get (storyteller''s travel trait − 0.5) × this
+    added to their success probability. Applies only when `outcome_resolution.hidden_adjustments` is on.'
+  unit: probability per trait unit above 0.5 (0–1)
+  type: float
+  default: 0.18
+  source:
+  - core_engine/actions.py:184
+  requires: outcome_resolution.hidden_adjustments
+outcome_resolution.recovery_weight:
+  label: Recovery-trait effect on success
+  explanation: 'Hidden adjustment: outcomes that heal or give coins get (storyteller''s recovery trait − 0.5) ×
+    this added to their success probability. Applies only when `outcome_resolution.hidden_adjustments` is on.'
+  unit: probability per trait unit above 0.5 (0–1)
+  type: float
+  default: 0.12
+  source:
+  - core_engine/actions.py:186
+  requires: outcome_resolution.hidden_adjustments
+outcome_resolution.low_health_recovery_bonus:
+  label: Healing success boost at low health
+  explanation: 'Hidden adjustment: when the player''s health is low, healing outcomes get this added to their success
+    probability. Applies only when `outcome_resolution.hidden_adjustments` is on.'
+  unit: probability added to success chance (0–1)
+  type: float
+  default: 0.08
+  source:
+  - core_engine/actions.py:130
+  requires: outcome_resolution.hidden_adjustments
+outcome_resolution.stagnation_threshold:
+  label: Turns in one place before travel is helped
+  explanation: 'Hidden adjustment: once the player has stayed this many turns in a row in one place, outcomes that
+    move on or open a new place get the stagnation travel bonus. Applies only when `outcome_resolution.hidden_adjustments`
+    is on.'
+  unit: turns
+  type: integer
+  default: 2
+  source:
+  - core_engine/actions.py:133
+  requires: outcome_resolution.hidden_adjustments
+outcome_resolution.stagnation_movement_bonus:
+  label: Travel success boost when stuck
+  explanation: 'Hidden adjustment: after the player has lingered in one place for the stagnation threshold, outcomes
+    that move, spawn a place or reveal a location get this added to their success probability. Applies only when
+    `outcome_resolution.hidden_adjustments` is on.'
+  unit: probability added to success chance (0–1)
+  type: float
+  default: 0.1
+  source:
+  - core_engine/actions.py:136
+  requires: outcome_resolution.hidden_adjustments
+outcome_resolution.early_setup_bonus:
+  label: Early clue success boost
+  explanation: 'Hidden adjustment: early in the story (before max(3, 40% of the target story length) turns), outcomes
+    that plant a clue get this added to their success probability. Applies only when `outcome_resolution.hidden_adjustments`
+    is on.'
+  unit: probability added to success chance (0–1)
+  type: float
+  default: 0.05
+  source:
+  - core_engine/actions.py:142
+  requires: outcome_resolution.hidden_adjustments
+outcome_resolution.severe_risk_penalty:
+  label: Harsh-outcome damping at low health
+  explanation: 'Hidden adjustment: when the player''s health is low, outcomes that would deal more than 2 damage
+    have this subtracted from their success probability. A negative value would make them likelier instead. Applies
+    only when `outcome_resolution.hidden_adjustments` is on.'
+  unit: probability taken off success chance (0–1)
+  type: float
+  default: 0.08
+  source:
+  - core_engine/actions.py:146
+  requires: outcome_resolution.hidden_adjustments
+outcome_resolution.navigation_floor:
+  label: Minimum success chance for travel
+  explanation: Outcomes of travel (navigation) actions get at least this success probability, so ordinary travel
+    is reliable; this applies even without hidden adjustments.
+  unit: probability (0–1 scale)
+  type: float
+  default: 0.98
+  source:
+  - core_engine/actions.py:204
+outcome_resolution.tag_weights.threat:
+  label: Threat-trait effect on threat outcomes
+  explanation: 'Hidden adjustment: each threat or combat-tagged outcome gets (storyteller''s threat trait − 0.5)
+    × this added to its success probability. Applies only when `outcome_resolution.hidden_adjustments` is on.'
+  unit: probability per trait unit above 0.5 (0–1)
+  type: float
+  default: -0.18
+  source:
+  - core_engine/actions.py:163
+  requires: outcome_resolution.hidden_adjustments
+outcome_resolution.tag_weights.spawn:
+  label: Spawn-trait effect on new-place outcomes
+  explanation: 'Hidden adjustment: each spawn-tagged outcome gets (storyteller''s spawn trait − 0.5) × this added
+    to its success probability. Applies only when `outcome_resolution.hidden_adjustments` is on.'
+  unit: probability per trait unit above 0.5 (0–1)
+  type: float
+  default: 0.18
+  source:
+  - core_engine/actions.py:165
+  requires: outcome_resolution.hidden_adjustments
+outcome_resolution.tag_weights.social:
+  label: Social-trait effect on social outcomes
+  explanation: 'Hidden adjustment: each social-tagged outcome gets (storyteller''s social trait − 0.5) × this added
+    to its success probability. Applies only when `outcome_resolution.hidden_adjustments` is on.'
+  unit: probability per trait unit above 0.5 (0–1)
+  type: float
+  default: 0.12
+  source:
+  - core_engine/actions.py:167
+  requires: outcome_resolution.hidden_adjustments
+outcome_resolution.tag_weights.stealth:
+  label: Stealth-trait effect on stealth outcomes
+  explanation: 'Hidden adjustment: each stealth-tagged outcome gets (storyteller''s stealth trait − 0.5) × this
+    added to its success probability. Applies only when `outcome_resolution.hidden_adjustments` is on.'
+  unit: probability per trait unit above 0.5 (0–1)
+  type: float
+  default: 0.12
+  source:
+  - core_engine/actions.py:169
+  requires: outcome_resolution.hidden_adjustments
+outcome_resolution.tag_weights.urban:
+  label: Urban-trait effect on city outcomes
+  explanation: 'Hidden adjustment: each urban-tagged outcome gets (storyteller''s urban trait − 0.5) × this added
+    to its success probability. Applies only when `outcome_resolution.hidden_adjustments` is on.'
+  unit: probability per trait unit above 0.5 (0–1)
+  type: float
+  default: 0.08
+  source:
+  - core_engine/actions.py:171
+  requires: outcome_resolution.hidden_adjustments
+outcome_resolution.tag_weights.maritime:
+  label: Maritime-trait effect on sea outcomes
+  explanation: 'Hidden adjustment: each maritime-tagged outcome gets (storyteller''s maritime trait − 0.5) × this
+    added to its success probability. Applies only when `outcome_resolution.hidden_adjustments` is on.'
+  unit: probability per trait unit above 0.5 (0–1)
+  type: float
+  default: 0.08
+  source:
+  - core_engine/actions.py:173
+  requires: outcome_resolution.hidden_adjustments
+outcome_resolution.tag_weights.luxury:
+  label: Luxury-trait effect on luxury outcomes
+  explanation: 'Hidden adjustment: each luxury or palace-tagged outcome gets (storyteller''s luxury trait − 0.5)
+    × this added to its success probability. Applies only when `outcome_resolution.hidden_adjustments` is on.'
+  unit: probability per trait unit above 0.5 (0–1)
+  type: float
+  default: 0.08
+  source:
+  - core_engine/actions.py:175
+  requires: outcome_resolution.hidden_adjustments
+outcome_resolution.tag_weights.setup:
+  label: Setup-trait effect on clue outcomes
+  explanation: 'Hidden adjustment: each setup_ (clue-planting)-tagged outcome gets (storyteller''s setup trait −
+    0.5) × this added to its success probability. Applies only when `outcome_resolution.hidden_adjustments` is on.'
+  unit: probability per trait unit above 0.5 (0–1)
+  type: float
+  default: 0.12
+  source:
+  - core_engine/actions.py:177
+  requires: outcome_resolution.hidden_adjustments
+director.threat_weight:
+  label: Threat pull growth as the story escalates
+  explanation: The storyteller's pull toward threatening options is multiplied by (1 + this × escalation), where
+    escalation rises from 0 to 1 over the later part of the story; raising it makes danger increasingly favoured
+    toward the end.
+  unit: extra share of threat pull at full escalation
+  type: float
+  default: 0.0
+  source:
+  - core_engine/game_state.py:2352
+  requires: director.enabled
+director.escape_bonus:
+  label: Escape check bonus per failed escape
+  explanation: Each failed escape attempt adds this to the skill-check modifier of the next escape attempt, so a
+    prisoner eventually breaks out. On the default 1–100 roll each point is one percent of the roll.
+  unit: roll points per failed attempt (1–100 roll)
+  type: integer
+  default: 15
+  source:
+  - core_engine/game_state.py:2220
+  requires: director.enabled
+director.boredom_weight:
+  label: Pull toward novelty when the story is dull
+  explanation: After director.boredom_turns turns with nothing new, options that bring something new rank higher
+    by this for every further dull turn.
+  unit: ranking points per turn of boredom
+  type: float
+  default: 0.0
+  source:
+  - core_engine/game_state.py:2416
+  requires: director.enabled
+director.payoff_due_weight:
+  label: Pull toward overdue clue payoffs
+  explanation: When clues have been open for director.payoff_delay turns or more, options that pay one off (or travel
+    to where one can be paid off) rank higher by this per overdue clue, counting at most 2.
+  unit: ranking points per overdue clue (max 2)
+  type: float
+  default: 0.0
+  source:
+  - core_engine/game_state.py:2419
+  requires: director.enabled
+director.explore_weight:
+  label: Pull toward unvisited places
+  explanation: Travel to a place not yet visited ranks higher by this × (0.5 + the storyteller's travel trait),
+    reaching full strength once 5 turns have passed since the last new place.
+  unit: ranking points (at full strength)
+  type: float
+  default: 0.0
+  source:
+  - core_engine/game_state.py:2426
+  requires: director.enabled
+director.dead_end_penalty:
+  label: Penalty for revisiting exhausted places
+  explanation: Travel back to an already visited place with nothing left (no quest step, clue payoff, untold outcome
+    or unmet person) ranks lower by this.
+  unit: ranking points
+  type: float
+  default: 0.0
+  source:
+  - core_engine/game_state.py:2423
+  requires: director.enabled
+director.retry_bonus:
+  label: Check bonus per failed retry
+  explanation: Each earlier failed attempt at the same action adds this to its next skill-check modifier, so persistence
+    pays off; a success clears the count. On the default 1–100 roll each point is one percent of the roll.
+  unit: roll points per failed attempt (1–100 roll)
+  type: integer
+  default: 15
+  source:
+  - core_engine/game_state.py:2223
+  requires: director.enabled
+director.retry_cooldown_penalty:
+  label: Penalty for retrying a just-failed action
+  explanation: For director.retry_cooldown turns after an action fails, it ranks lower by this (only when there
+    is something else to do there), so other things happen before a retry.
+  unit: ranking points
+  type: float
+  default: 3.0
+  source:
+  - core_engine/game_state.py:2406
+  requires: director.enabled
+director.ping_pong_penalty:
+  label: Penalty for going straight back
+  explanation: Travelling straight back to the place left on the previous turn (A → B → A, right after a travel
+    turn) ranks lower by this.
+  unit: ranking points
+  type: float
+  default: 2.5
+  source:
+  - core_engine/game_state.py:2410
+  requires: director.enabled
+transition_objective.intent_similarity_weight:
+  label: Pull of destinations matching the move's purpose
+  explanation: When the storyteller chooses a destination, each candidate place scores tag similarity (0–1) between
+    what the move is about (an outcome's move_to_tags or tags, or the current place's tags when it moves the player
+    on by itself) and the place's tags, times this. Raising it makes moves land on places that fit their purpose
+    more strongly; a negative value pushes moves away from fitting places.
+  unit: score points × tag similarity (0–1)
+  type: float
+  default: 4.0
+  source:
+  - core_engine/game_state.py:2049-2051
+  - core_engine/game_state.py:2050
+transition_objective.exact_intent_weight:
+  label: Bonus per destination tag matching the move's purpose
+  explanation: Adds this many points for every tag a candidate destination shares exactly with the move's intent
+    tags. Raising it makes exact tag matches dominate the choice of destination over looser semantic similarity.
+  unit: score points per shared tag
+  type: float
+  default: 2.0
+  source:
+  - core_engine/game_state.py:2055
+transition_objective.novelty_weight:
+  label: Preference for destinations unlike the current place
+  explanation: Adds (1 − tag similarity between the current place and the candidate) × this to each destination,
+    so places that feel different from here score higher. Raising it makes the storyteller favour contrasting scenery;
+    negative values favour similar places.
+  unit: score points × tag dissimilarity (0–1)
+  type: float
+  default: 2.0
+  source:
+  - core_engine/game_state.py:2052-2054
+  - core_engine/game_state.py:2053
+transition_objective.available_action_weight:
+  label: Preference for destinations with more to do
+  explanation: Adds this many points per action the candidate place itself offers. Raising it steers moves toward
+    places with many activities.
+  unit: score points per action offered at the place
+  type: float
+  default: 0.2
+  source:
+  - core_engine/game_state.py:2056
+transition_objective.revisit_penalty:
+  label: Penalty per earlier visit to a destination
+  explanation: Subtracts this many points for each time the player has already been at the candidate place. Raising
+    it makes the storyteller avoid sending the player back to familiar places; a negative value would favour returning.
+  unit: score points subtracted per earlier visit
+  type: float
+  default: 2.5
+  source:
+  - core_engine/game_state.py:2057-2059
+  - core_engine/game_state.py:2058
+transition_objective.story_phase_weight:
+  label: Pull of destinations suiting the story phase
+  explanation: 'Adds this many points per destination tag that is in the current phase''s tag list (transition_objective.story_phases:
+    opening, middle or climax, by share of the story''s action limit played). Raising it makes the travel choice
+    follow the opening/middle/climax arc more strictly.'
+  unit: score points per tag matching current phase
+  type: float
+  default: 0.8
+  source:
+  - core_engine/game_state.py:2061-2070
+  - core_engine/game_state.py:2070
+transition_objective.voyage_weight:
+  label: Travel-minded storyteller's pull toward outcomes that go somewhere
+  explanation: Adds the storyteller's travel trait (genome voyage_bias) × this to every destination's score. Because
+    it is the same for every candidate it does not change which destination is picked; it only makes action outcomes
+    that move to or reveal a place more attractive than outcomes that do not.
+  unit: score points × storyteller's travel trait
+  type: float
+  default: 1.0
+  source:
+  - core_engine/game_state.py:2081
+transition_objective.discovery_weight:
+  label: Discovery-minded storyteller's pull toward outcomes that go somewhere
+  explanation: Adds the storyteller's discovery trait (genome discovery_bias) × this to every destination's score.
+    Because it is the same for every candidate it does not change which destination is picked; it only makes action
+    outcomes that move to or reveal a place more attractive than other outcomes.
+  unit: score points × storyteller's discovery trait
+  type: float
+  default: 0.8
+  source:
+  - core_engine/game_state.py:2082
+scene.visibility.npc_social_bias_weight:
+  label: Prominence of social NPCs
+  explanation: NPCs tagged 'social' get the storyteller's social trait (genome bias_social) × this added to their
+    visibility score, which decides which generic NPCs fill a scene's limited slots and which hidden NPC is found
+    first. Raising it makes social characters show up more often.
+  unit: score points × storyteller's social trait
+  type: float
+  default: 1.0
+  source:
+  - core_engine/game_state.py:1745-1746
+  - core_engine/game_state.py:1742-1751
+scene.visibility.npc_threat_bias_weight:
+  label: Prominence of threatening NPCs
+  explanation: NPCs tagged 'threat' get the storyteller's threat trait (genome bias_threat) × this added to their
+    visibility score. Raising it makes threatening characters claim scene slots more often.
+  unit: score points × storyteller's threat trait
+  type: float
+  default: 0.5
+  source:
+  - core_engine/game_state.py:1747-1748
+  - core_engine/game_state.py:1742-1751
+scene.visibility.npc_urban_bias_weight:
+  label: Prominence of city NPCs
+  explanation: NPCs tagged 'urban' get the storyteller's urban trait (genome bias_urban) × this added to their visibility
+    score. Raising it makes city characters claim scene slots more often.
+  unit: score points × storyteller's urban trait
+  type: float
+  default: 0.25
+  source:
+  - core_engine/game_state.py:1749-1750
+  - core_engine/game_state.py:1742-1751
+scene.visibility.item_similarity_weight:
+  label: Prominence of items that fit the place
+  explanation: An item's visibility score starts at tag similarity between the item and the place (0–1) × this.
+    Raising it makes items that suit the location win the limited display slots over items favoured by the storyteller's
+    tastes.
+  unit: score points × tag similarity (0–1)
+  type: float
+  default: 2.0
+  source:
+  - core_engine/game_state.py:2009
+  - core_engine/game_state.py:2006-2016
+scene.visibility.item_urban_bias_weight:
+  label: Prominence of city items
+  explanation: Items tagged 'urban' get the storyteller's urban trait (genome bias_urban) × this added to their
+    visibility score. Raising it puts city items on show more often.
+  unit: score points × storyteller's urban trait
+  type: float
+  default: 0.4
+  source:
+  - core_engine/game_state.py:2010-2011
+  - core_engine/game_state.py:2006-2016
+scene.visibility.item_maritime_bias_weight:
+  label: Prominence of seafaring items
+  explanation: Items tagged 'maritime' get the storyteller's maritime trait (genome bias_maritime) × this added
+    to their visibility score. Raising it puts seafaring items on show more often.
+  unit: score points × storyteller's maritime trait
+  type: float
+  default: 0.4
+  source:
+  - core_engine/game_state.py:2012-2013
+  - core_engine/game_state.py:2006-2016
+scene.visibility.item_combat_bias_weight:
+  label: Prominence of combat items
+  explanation: Items tagged 'combat' get the storyteller's threat trait (genome bias_threat) × this added to their
+    visibility score. Raising it puts weapons and combat gear on show more often.
+  unit: score points × storyteller's threat trait
+  type: float
+  default: 0.2
+  source:
+  - core_engine/game_state.py:2014-2015
+  - core_engine/game_state.py:2006-2016
+scene.npc_similarity_threshold:
+  label: How closely an NPC must fit a place to appear there
+  explanation: For places without a configured NPC tag list, an NPC that shares no distinctive tag with the place
+    may still appear there (and a unique NPC may live there) if the similarity of their distinctive tags is at least
+    this. Raising it confines NPCs to closely matching places; lowering it lets them turn up more widely. Similarity
+    is cosine similarity rescaled to 0–1 as (cos+1)/2.
+  unit: similarity (0–1; 0.5 = unrelated)
+  type: float
+  default: 0.68
+  source:
+  - core_engine/game_state.py:1809
+scene.npc_exact_tag_weight:
+  label: Bonus per distinctive tag an NPC shares with a place
+  explanation: Adds this many points per non-generic tag shared by an NPC and a place, raising that NPC's ranking
+    for the scene's slots and its chance of having that place as its home. Raising it makes exact tag matches decide
+    who appears where.
+  unit: score points per shared distinctive tag
+  type: float
+  default: 1.25
+  source:
+  - core_engine/game_state.py:1768
+scene.npc_semantic_weight:
+  label: Weight of NPC–place tag similarity
+  explanation: Adds similarity between the NPC's and the place's distinctive tags (0–1) × this to the NPC's fit
+    for the place. Raising it lets loosely related NPCs rank higher in scenes and in home selection.
+  unit: score points × tag similarity (0–1)
+  type: float
+  default: 1.0
+  source:
+  - core_engine/game_state.py:1769-1772
+  - core_engine/game_state.py:1772
+scene.npc_known_location_bonus:
+  label: Bonus for an NPC at a place they know
+  explanation: Adds this flat bonus when the place is one of the NPC's known_locations, so they rank higher in that
+    scene and are more likely to be given it as home. Raising it ties characters more firmly to the places written
+    for them.
+  unit: score points (flat bonus)
+  type: float
+  default: 3.0
+  source:
+  - core_engine/game_state.py:1776-1777
+  - core_engine/game_state.py:1777
+scene.npc_generic_tag_weight:
+  label: Bonus per generic tag an NPC shares with a place
+  explanation: Adds this many points per generic tag (scene.generic_npc_tags, e.g. urban, social) shared by an NPC
+    and a place. Kept small so common tags only break ties; raising it lets broad tags influence who appears.
+  unit: score points per shared generic tag
+  type: float
+  default: 0.05
+  source:
+  - core_engine/game_state.py:1773-1775
+  - core_engine/game_state.py:1774
+scene.location_tag_match_bonus:
+  label: Bonus per tag matching the place's NPC list
+  explanation: Adds this many points per NPC tag that appears in the place's configured NPC tag list (scene.location_npc_tags).
+    Raising it makes those hand-listed character types dominate the scene and home selection.
+  unit: score points per matching listed tag
+  type: float
+  default: 4.0
+  source:
+  - core_engine/game_state.py:1778-1782
+  - core_engine/game_state.py:1782
+spawn_selection.target_tag_weight:
+  label: Weight of the asked-for tags in a tag-led discovery
+  explanation: When a discovery asks for particular tags, each candidate place gets (tag similarity 0–1 + number
+    of exactly matching tags) × this, on top of its normal discovery score. Raising it makes the requested kind
+    of place win more reliably over contrast, phase and revisit preferences.
+  unit: score points per unit of tag fit
+  type: float
+  default: 10.0
+  source:
+  - core_engine/world.py:321-326
+  - core_engine/world.py:325
+spawn_selection.story_phases.intro_weight:
+  label: Pull of opening-style places early on
+  explanation: During the opening phase, each newly discoverable place gets this many points per tag it has from
+    the opening tag list. Raising it makes early discoveries match the opening mood more strictly.
+  unit: score points per matching phase tag
+  type: float
+  default: 1.5
+  source:
+  - core_engine/world.py:305-315
+  - core_engine/world.py:315
+spawn_selection.story_phases.middle_weight:
+  label: Pull of middle-act places mid-story
+  explanation: During the middle phase, each newly discoverable place gets this many points per tag it has from
+    the middle tag list. Raising it makes mid-story discoveries lean harder toward threatening or social places.
+  unit: score points per matching phase tag
+  type: float
+  default: 1.75
+  source:
+  - core_engine/world.py:316-317
+  - core_engine/world.py:317
+spawn_selection.story_phases.climax_weight:
+  label: Pull of climax places late in the story
+  explanation: During the climax phase, each newly discoverable place gets this many points per tag it has from
+    the climax tag list. Raising it makes late discoveries lean harder toward grand payoff places.
+  unit: score points per matching phase tag
+  type: float
+  default: 2.0
+  source:
+  - core_engine/world.py:318
+spawn_selection.fallback_similarity_threshold:
+  label: Minimum similarity for fallback discoveries
+  explanation: When no discovery rule or map offers an unconnected place, the engine falls back to places whose
+    tags are more similar to the current place than this (then keeps the most similar few). Raising it restricts
+    fallback discoveries to related places; lowering it allows anything. Similarity is cosine similarity rescaled
+    to 0–1 as (cos+1)/2.
+  unit: similarity (0–1; 0.5 = unrelated)
+  type: float
+  default: 0.2
+  source:
+  - core_engine/world.py:391
+spawn_selection.contrast_weight:
+  label: Preference for discoveries unlike the current place
+  explanation: Each candidate for a newly discovered place gets (1 − tag similarity to the current place) × this.
+    Raising it makes discoveries open onto contrasting places; negative values favour similar ones.
+  unit: score points × tag dissimilarity (0–1)
+  type: float
+  default: 2.5
+  source:
+  - core_engine/world.py:327-329
+  - core_engine/world.py:329
+spawn_selection.repeat_visit_penalty:
+  label: Penalty per earlier visit to a discovered place
+  explanation: Subtracts this many points per earlier visit from a candidate place when the engine picks which place
+    a discovery opens. Raising it makes discoveries favour places the player has not been to.
+  unit: score points subtracted per earlier visit
+  type: float
+  default: 3.0
+  source:
+  - core_engine/world.py:336
+spawn_selection.immediate_repeat_penalty:
+  label: Penalty for discovering the place just left
+  explanation: A candidate for a newly discovered path that is the place the player just came from (the place before
+    this one on the path) loses this from its score, so a discovery rarely leads straight back.
+  unit: score points subtracted
+  type: float
+  default: 10.0
+  source:
+  - core_engine/world.py:339
+action_selection.base_weight:
+  label: Base appeal of every action
+  explanation: Every action starts its score at this value before bonuses and penalties. Since it is the same for
+    all actions it mostly shifts everything equally, but travel/discovery actions are then multiplied by the stay-put
+    factor, so a larger base strengthens the urge to move on after lingering.
+  unit: score points (flat, every action)
+  type: float
+  default: 0.1
+  source:
+  - core_engine/game_state.py:2349
+action_selection.threat_weight:
+  label: Pull of dangerous actions
+  explanation: Actions with an outcome tagged 'threat' or 'guards' (including outcomes of the event they trigger)
+    gain the storyteller's threat trait (genome threat_prob) × this, further scaled up by the director's escalation
+    late in the story. Raising it makes the storyteller seek danger more.
+  unit: score points × storyteller's threat trait
+  type: float
+  default: 1.0
+  source:
+  - core_engine/game_state.py:2351
+action_selection.spawn_weight:
+  label: Pull of actions tagged as opening new places
+  explanation: Actions with an outcome tagged 'spawn' gain the storyteller's spawn trait (genome spawn_prob) × this.
+    Raising it makes the storyteller favour actions labelled as opening new places.
+  unit: score points × storyteller's spawn trait
+  type: float
+  default: 1.2
+  source:
+  - core_engine/game_state.py:2354
+action_selection.setup_weight:
+  label: Pull of actions that plant clues
+  explanation: Actions with an outcome tagged setup_* gain the storyteller's setup trait (genome setup_prob) × this,
+    while there is room for more open clues and outside the finale; the bonus fades as the director closes threads
+    near the end. Raising it makes the story plant more mysteries early.
+  unit: score points × storyteller's setup trait
+  type: float
+  default: 1.0
+  source:
+  - core_engine/game_state.py:2358
+action_selection.discovery_weight:
+  label: Pull of actions that reveal things
+  explanation: Each outcome that opens a path or reveals a place, person or item adds the storyteller's discovery
+    trait × this to the action (outcomes of a triggered event count as a share). Raising it makes the storyteller
+    favour exploration and reveals.
+  unit: score points per revealing outcome × trait
+  type: float
+  default: 1.2
+  source:
+  - core_engine/game_state.py:2367
+action_selection.movement_weight:
+  label: Pull of actions that move the player
+  explanation: Each outcome that moves, sends or leads the player somewhere adds the storyteller's travel trait
+    (genome voyage_bias) × this to the action. Raising it makes the storyteller travel more.
+  unit: score points per moving outcome × trait
+  type: float
+  default: 1.4
+  source:
+  - core_engine/game_state.py:2369
+action_selection.recovery_weight:
+  label: Pull of healing or paying actions when hurt
+  explanation: Only while the player's health is low, each outcome that restores health or gives coins adds the
+    storyteller's recovery trait × this to the action. Raising it makes a wounded player seek recovery more urgently.
+  unit: score points per recovery outcome × trait
+  type: float
+  default: 1.2
+  source:
+  - core_engine/game_state.py:2371
+action_selection.stay_penalty_power:
+  label: How sharply lingering boosts moving on
+  explanation: Actions that move the player or open a path have their score multiplied by 1 + (travel trait × turns
+    spent in this place) ^ this. Raising it makes the push to leave weaker during the first turns (while the base
+    is below 1) and much stronger after lingering longer.
+  unit: exponent
+  type: float
+  default: 2.0
+  source:
+  - core_engine/game_state.py:2444
+  - core_engine/builder.py:554
+  minimum: 0
+action_selection.consistency_penalty_weight:
+  label: Strength of place-specific action penalties
+  explanation: 'Multiplies the total of the current place''s penalties (location_penalties: matching action names
+    and destination tags) before it is subtracted from an action''s score. Raising it enforces those ''doesn''t
+    fit here'' rules more strongly; 0 disables them, a negative value turns them into bonuses.'
+  unit: multiplier
+  type: float
+  default: 1.0
+  source:
+  - core_engine/game_state.py:2462
+action_selection.event_trigger_weight:
+  label: Pull of actions that start events
+  explanation: Actions that trigger an event gain the storyteller's event trait (genome event_prob) × this. Raising
+    it makes the storyteller start encounters and events more often.
+  unit: score points × storyteller's event trait
+  type: float
+  default: 1.5
+  source:
+  - core_engine/game_state.py:2373
+action_selection.mission_goal_weight:
+  label: Pull of actions that advance the mission
+  explanation: An action's mission progress (goal conditions it advances plus progress along the route to the goal)
+    × this × the current goal drive is added to its score; the same weight scales how much an outcome that advances
+    the goal is preferred. Goal drive is negative early in the story (early goal avoidance), so a larger weight
+    also holds the mission back harder at the start.
+  unit: score points per unit of mission progress
+  type: float
+  default: 6.0
+  source:
+  - core_engine/game_state.py:2438
+  - core_engine/game_state.py:2170
+action_selection.repetition_penalty:
+  label: Penalty for repeating a choice
+  explanation: Subtracts (times this choice was already taken) ^ story_rules.repetition_power × the storyteller's
+    novelty trait × this from an action's score. Raising it makes the storyteller avoid doing the same thing again;
+    a negative value would reward repetition.
+  unit: score points per (earlier uses ^ power)
+  type: float
+  default: 1.0
+  source:
+  - core_engine/game_state.py:2387
+action_selection.skill_fit_weight:
+  label: Preference for skill checks the character is likely to pass
+  explanation: For actions with a skill check, adds (pass chance − 0.5) × this, where pass chance is a fraction
+    0–1; likely checks get a bonus of up to about half this value, unlikely ones a penalty. Raising it makes the
+    storyteller play to the character's strengths; a negative value makes it seek long shots.
+  unit: score points per pass chance above 0.5 (0–1)
+  type: float
+  default: 2.0
+  source:
+  - core_engine/game_state.py:2380
+action_selection.heading_weight:
+  label: Pull toward the next step on the way to a set destination
+  explanation: When the story has set out for a far place, the travel action to the next place on the way gets this
+    flat bonus for action_selection.heading_turns turns. Raising it makes the storyteller follow through on journeys
+    instead of wandering off.
+  unit: score points (flat bonus)
+  type: float
+  default: 1.5
+  source:
+  - core_engine/game_state.py:2430
+action_selection.location_penalties.Dungeon.action_terms.royal halls:
+  label: Penalty in the Dungeon for actions mentioning the royal halls
+  explanation: While the player is in the Dungeon, any action whose name contains 'royal halls' has this value ×
+    the consistency penalty strength subtracted from its score. Raising it keeps the storyteller from choosing such
+    actions in the Dungeon.
+  unit: score points subtracted (× penalty strength)
+  type: float
+  source:
+  - core_engine/game_state.py:2451
+action_selection.location_penalties.Dungeon.destination_tags.palace:
+  label: Penalty in the Dungeon for travel to palace places
+  explanation: While the player is in the Dungeon, any action that moves the player to a place tagged 'palace' has
+    this value × the consistency penalty strength subtracted from its score. Raising it discourages heading straight
+    from the Dungeon to such places.
+  unit: score points subtracted (× penalty strength)
+  type: float
+  source:
+  - core_engine/game_state.py:2459
+action_selection.location_penalties.Dungeon.destination_tags.luxury:
+  label: Penalty in the Dungeon for travel to luxury places
+  explanation: While the player is in the Dungeon, any action that moves the player to a place tagged 'luxury' has
+    this value × the consistency penalty strength subtracted from its score. Raising it discourages heading straight
+    from the Dungeon to such places.
+  unit: score points subtracted (× penalty strength)
+  type: float
+  source:
+  - core_engine/game_state.py:2459
+action_selection.location_penalties.Dungeon.destination_tags.grand:
+  label: Penalty in the Dungeon for travel to grand places
+  explanation: While the player is in the Dungeon, any action that moves the player to a place tagged 'grand' has
+    this value × the consistency penalty strength subtracted from its score. Raising it discourages heading straight
+    from the Dungeon to such places.
+  unit: score points subtracted (× penalty strength)
+  type: float
+  source:
+  - core_engine/game_state.py:2459
+evolution.mutation_rate:
+  label: Mutation probability per trait
+  explanation: 'When a child storyteller is bred, each of its traits is nudged by a random amount (up to the current
+    mutation step) with this probability. Raising it makes children differ more from their parents: more exploration,
+    less stable convergence.'
+  unit: probability per trait, per child (0–1)
+  type: float
+  default: 0.22
+  source:
+  - core_engine/evolution.py:86
+  - core_engine/evolution.py:513
+  - core_engine/genome.py:88
+evolution.elitism_rate:
+  label: Share of best storytellers kept unchanged
+  explanation: Each generation, this share of the population (rounded to the nearest whole storyteller, at least
+    one) is copied unchanged into the next generation, best first. Raising it protects good storytellers but leaves
+    fewer places for new children, reducing exploration.
+  unit: share of the population (0–1)
+  type: float
+  default: 0.08
+  source:
+  - core_engine/evolution.py:82
+  - core_engine/evolution.py:498
+evolution.crossover_rate:
+  label: Chance a child mixes two parents
+  explanation: For each child bred, the probability that it is made by crossing two tournament-selected parents;
+    otherwise it is a copy of one parent (then mutated). Raising it mixes the traits of good storytellers more often.
+  unit: probability per child (0–1)
+  type: float
+  default: 0.75
+  source:
+  - core_engine/evolution.py:83
+  - core_engine/evolution.py:509
+evolution.blend_crossover_chance:
+  label: Chance a crossed trait is blended
+  explanation: When two parents are crossed, each trait of the child is, with this probability, a random weighted
+    average of the two parents' values; otherwise it is copied outright from one parent picked at random. Raising
+    it produces more in-between children; lowering it keeps parents' extreme values intact.
+  unit: probability per trait, per crossover (0–1)
+  type: float
+  default: 0.55
+  source:
+  - core_engine/genome.py:73
+evolution.random_immigrant_rate:
+  label: Share of random newcomers per generation
+  explanation: Each generation, this share of the population is filled with brand-new random storytellers instead
+    of children. Raising it keeps the population diverse and helps escape plateaus, at the cost of slots spent on
+    untrained storytellers.
+  unit: share of the population (0–1)
+  type: float
+  default: 0.08
+  source:
+  - core_engine/evolution.py:84
+  - core_engine/evolution.py:499
+evolution.max_immigrant_rate:
+  label: Newcomer share when diversity is low
+  explanation: When the population's diversity drops below min_diversity, the share of random newcomers for that
+    generation is raised to this value (if higher than the normal rate) and the mutation step widens 1.5×. Raising
+    it injects more fresh storytellers when the population collapses onto one type.
+  unit: share of the population (0–1)
+  type: float
+  default: 0.3
+  source:
+  - core_engine/evolution.py:97
+  - core_engine/evolution.py:502
+evolution.consistency_weight:
+  label: Penalty for uneven story quality
+  explanation: With score_aggregate 'mean_minus_std', a storyteller's score is the mean score of its stories minus
+    this multiple of their standard deviation. Raising it favours storytellers that are consistently good over erratic
+    ones; a negative value would reward erratic storytellers.
+  unit: multiplier of the score standard deviation
+  type: float
+  default: 0.25
+  source:
+  - core_engine/evolution.py:102
+  - core_engine/evolution.py:217
+  - core_engine/evolution.py:420
+evolution.alternatives_weight:
+  label: Reward for telling different stories
+  explanation: Adds this many points × how different a storyteller's stories are from one another (mean pairwise
+    Jaccard distance of the places, events, people and outcomes in them, 0–1). Raising it pushes evolution toward
+    storytellers that do not tell the same story whatever the start. It is added once per storyteller's set of stories.
+  unit: score points at fully different stories (0–1)
+  type: float
+  default: 0.0
+  source:
+  - core_engine/evolution.py:103
+  - core_engine/evolution.py:203
+  - core_engine/evolution.py:222
+  - core_engine/evolution.py:421
+evolution.judge_weight:
+  label: Weight of the AI judge's engagement rating
+  explanation: When above 0, the LLM judge reads one story of each of the judge_top_k best storytellers per generation,
+    and judge_weight × (engagement − 5) is added to their scores before breeding (engagement is rated 1–10). Raising
+    it lets the judge reorder the top storytellers more strongly; 0 turns the judge off.
+  unit: score points per judge point above 5 (1–10)
+  type: float
+  default: 0.0
+  source:
+  - core_engine/evolution.py:106
+  - core_engine/evolution.py:551
+fitness.variety.distinct_choice_weight:
+  label: Reward for choosing different actions
+  explanation: Adds this many points × the share of the story's choices that were distinct (distinct choices ÷ choices
+    made, 0–1). Raising it rewards stories in which the same action or destination is rarely picked twice. It counts
+    once per story.
+  unit: score points × distinct-choice share (0–1)
+  type: float
+  default: 30
+  source:
+  - core_engine/fitness.py:286
+fitness.variety.repeated_outcome_penalty:
+  label: Penalty for each repeated outcome text
+  explanation: Subtracts this many points every time an outcome text is shown again after its first showing. Raising
+    it penalises stories that repeat the same results; a negative value would reward repetition.
+  unit: score points per repeated outcome showing
+  type: float
+  default: 2
+  source:
+  - core_engine/fitness.py:288
+fitness.base.zero_step_penalty:
+  label: Score of a story that never started
+  explanation: A story in which no action was taken gets exactly this score and nothing else. It is stored as a
+    negative number; making it more negative punishes storytellers that produce empty stories harder.
+  unit: score points, once per story
+  type: float
+  default: -100
+  source:
+  - core_engine/fitness.py:141
+fitness.base.death_penalty:
+  label: Penalty when the player dies
+  explanation: Subtracted once when a story ends with the player's health at 0 or below (the completion bonus is
+    then not given). Raising it makes evolution avoid lethal stories more.
+  unit: score points, once per story
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:308
+fitness.base.completion_bonus:
+  label: Bonus for reaching an ending alive
+  explanation: Added once when a story ends with the player alive, whatever the ending (mission won, epilogue, stalled,
+    dungeon, ...). Raising it rewards finishing stories without dying.
+  unit: score points, once per story
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:310
+fitness.base.stall_penalty:
+  label: Penalty for a story that stalls in one place
+  explanation: Subtracted once when a story ends because the player stayed in one location too many turns in a row
+    (narrative_end.max_consecutive_steps_in_location). Raising it makes evolution avoid storytellers that get stuck.
+  unit: score points, once per story
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:314
+fitness.base.dungeon_penalty:
+  label: Penalty for a story ending in the dungeon
+  explanation: Subtracted once when a story ends because the player is in the Dungeon location. Raising it makes
+    evolution avoid stories that land the player in prison.
+  unit: score points, once per story
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:316
+fitness.base.max_action_completion_bonus:
+  label: Bonus for reaching the action limit
+  explanation: Added once when a story ends because it hit the action limit without an epilogue. Raising it makes
+    running out of turns less costly (it offsets the action-limit penalty).
+  unit: score points, once per story
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:318
+fitness.base.action_limit_penalty:
+  label: Penalty for a story cut off at the action limit
+  explanation: Subtracted once when a story ends because it hit the action limit without a proper ending. Raising
+    it pushes evolution toward stories that reach an ending before running out of turns.
+  unit: score points, once per story
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:319
+fitness.base.stage_bonus:
+  label: Bonus per mission stage completed
+  explanation: Adds this many points for each completed stage of a staged mission, whether or not the mission is
+    finally won. Raising it rewards progress through multi-step quests.
+  unit: score points per mission stage completed
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:301
+fitness.base.npc_goal_bonus:
+  label: Bonus per character helped
+  explanation: Adds this many points for each NPC whose goal the story fulfilled (who became an ally). Raising it
+    rewards stories in which the player helps characters.
+  unit: score points per NPC whose goal was fulfilled
+  type: float
+  default: 8
+  source:
+  - core_engine/fitness.py:363
+fitness.base.mission_win_bonus:
+  label: Bonus for winning the mission
+  explanation: Added once when the story's mission is won, scaled down in proportion if the win comes before mission_win_min_steps
+    turns (full bonus at or after that many turns). Raising it makes completing the quest a stronger goal for evolution.
+    The bonus is multiplied by turns ÷ mission_win_min_steps, at most 1.
+  unit: score points, once per story
+  type: float
+  default: 60
+  source:
+  - core_engine/fitness.py:305
+fitness.base.unfinished_penalty:
+  label: Penalty for a story cut short by the evaluation
+  explanation: Subtracted once when a story has not reached any ending by the time the evaluation stops playing
+    it. Raising it penalises storytellers whose stories cannot finish within the evaluated length.
+  unit: score points, once per story
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:322
+fitness.repetition.action_repeat_penalty:
+  label: Penalty for each repeated action
+  explanation: Each non-travel action may be taken free_uses times (2) at no cost; every further use of the same
+    action subtracts this many points. Raising it discourages stories that repeat the same action.
+  unit: score points per use beyond free uses
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:331
+fitness.repetition.backtrack_penalty:
+  label: Penalty for each back-and-forth trip
+  explanation: Subtracts this many points for each A → B → A pattern in the story's travel path (going straight
+    back to the place just left). Raising it discourages ping-pong travel.
+  unit: score points per A→B→A travel loop
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:331
+fitness.pacing.early_win_penalty_per_step:
+  label: Penalty per turn of a rushed win
+  explanation: If the mission is won, subtracts this many points for every turn the win came before mission_win_min_steps.
+    Raising it punishes stories that win before they have had room to unfold.
+  unit: score points per turn won too early
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:339
+fitness.length_normalization.floor_steps:
+  label: Minimum story length for per-turn scoring
+  explanation: In 'rate' mode the length-dependent score terms (dramatic arc, scene contrast, combat success, volatility,
+    character interactions, discovery, tone variety) are multiplied by target length ÷ max(story length, this value).
+    Raising it shrinks the score of stories shorter than this, so a short story is not inflated when counted per
+    turn.
+  unit: turns
+  type: integer
+  minimum: 1
+  source:
+  - core_engine/fitness.py:352
+fitness.objective_losses.transition_quality.weight:
+  label: Loss for poorly matching travel
+  explanation: Subtracts this weight × how far the average tag similarity between consecutive places travelled falls
+    below target_similarity (0.65). Raising it pushes stories toward moves between places that fit together. It
+    counts once per story.
+  unit: score points per similarity shortfall (0–1)
+  type: float
+  default: 60.0
+  source:
+  - core_engine/fitness.py:576
+fitness.objective_losses.transition_quality.missing_penalty:
+  label: Loss for a story that never travels
+  explanation: Subtracted once when the story never moves between two different places. Raising it penalises stories
+    that stay in one location.
+  unit: score points, once per story
+  type: float
+  default: 5.0
+  source:
+  - core_engine/fitness.py:578
+fitness.objective_losses.tag_coverage.weight:
+  label: Loss for showing too little of the world
+  explanation: Subtracts this weight × how far the share of the world's tags the story showed falls below target_ratio
+    (0.6). Raising it pushes stories to show more of the world's kinds of places, people and outcomes. It counts
+    once per story.
+  unit: score points per tag-coverage shortfall (0–1)
+  type: float
+  default: 40.0
+  source:
+  - core_engine/fitness.py:584
+fitness.objective_losses.named_transition_dependence.weight:
+  label: Loss for relying on hard-coded links
+  explanation: Subtracts this weight × how far the share of discoveries and engine-made moves that only followed
+    an authored name (not tags, a lead or the map) exceeds allowed_ratio (0.5). Raising it rewards stories whose
+    connections come from the world's content rather than fixed names. It counts once per story.
+  unit: score points per 1.0 of excess share (0–1)
+  type: float
+  default: 30.0
+  source:
+  - core_engine/fitness.py:590
+fitness.objective_losses.scenario_duplication.weight:
+  label: Loss for retelling the same scene
+  explanation: Subtracts this weight × (share of turns that repeated an already-told place + action + outcome) raised
+    to 'power'. Raising it punishes stories that tell the same scenario again. It counts once per story.
+  unit: score points at 100% duplicated turns
+  type: float
+  default: 80.0
+  source:
+  - core_engine/fitness.py:594
+fitness.objective_losses.scenario_duplication.power:
+  label: How sharply duplication is punished
+  explanation: Exponent applied to the share of duplicated turns (0–1) before multiplying by the weight. Raising
+    it forgives a little duplication and concentrates the loss on heavily repetitive stories; 1 makes the loss proportional.
+  unit: exponent
+  type: float
+  default: 2.0
+  source:
+  - core_engine/fitness.py:594
+  - core_engine/builder.py:554
+  minimum: 0
+fitness.objective_losses.world_extension.discovery_weight:
+  label: Loss for discovering too little of the world
+  explanation: Subtracts this weight × how far the share of the world's places known at the end of the story (visited,
+    or reachable by a known path) falls below target_discovery_ratio (0.45). Raising it pushes stories to open up
+    more of the map. It counts once per story.
+  unit: score points per known-places shortfall (0–1)
+  type: float
+  default: 45.0
+  source:
+  - core_engine/fitness.py:602
+fitness.objective_losses.world_extension.branching_weight:
+  label: Loss for a map without branches
+  explanation: Subtracts this weight × how far the known map's paths per place fall below target_branching (2.4).
+    Raising it rewards stories that reveal a map with real choices of where to go rather than a single line. It
+    counts once per story.
+  unit: score points per missing path per place
+  type: float
+  default: 8.0
+  source:
+  - core_engine/fitness.py:603
+fitness.beats.climax_bonus:
+  label: Bonus for a won climax
+  explanation: Added once if the quest's final confrontation was won; half of it if the climax was only won at a
+    price (after repeated setbacks). Raising it rewards stories that build to and win a showdown.
+  unit: score points, once per story
+  type: float
+  default: 15
+  source:
+  - core_engine/fitness.py:484
+fitness.beats.triumph_bonus:
+  label: Bonus per important foe defeated
+  explanation: For each defeated NPC who mattered (up to triumph_cap of them, most important first), adds this many
+    points × that NPC's importance (0 bystander … 3 nemesis). Raising it rewards beating significant characters.
+  unit: score points per importance level (0–3)
+  type: float
+  default: 4
+  source:
+  - core_engine/fitness.py:488
+fitness.beats.reveal_bonus:
+  label: Bonus per reveal
+  explanation: Adds this many points for each reveal (an important character found or named, or a secret told),
+    up to reveal_cap (4). Raising it rewards stories that uncover people and secrets.
+  unit: score points per reveal (up to reveal_cap)
+  type: float
+  default: 3
+  source:
+  - core_engine/fitness.py:490
+fitness.beats.consequence_bonus:
+  label: Bonus per consequence shown
+  explanation: Adds this many points for each later consequence of something the player did that the story shows,
+    up to consequence_cap (3). Raising it rewards stories where actions visibly matter.
+  unit: score points per consequence shown
+  type: float
+  default: 3
+  source:
+  - core_engine/fitness.py:492
+fitness.beats.another_way_bonus:
+  label: Bonus per failure that opens another way
+  explanation: Adds this many points for each failed attempt after which the story showed another way forward (a
+    witness, a name or a lead). Raising it rewards 'fail forward' storytelling.
+  unit: score points per failure showing another way
+  type: float
+  default: 2
+  source:
+  - core_engine/fitness.py:493
+fitness.beats.dead_end_penalty:
+  label: Penalty per failure that leads nowhere
+  explanation: Subtracts this many points for each failed attempt that brought neither a complication nor another
+    way forward. Raising it pushes evolution away from dead-end failures.
+  unit: score points per dead-end failure
+  type: float
+  default: 4
+  source:
+  - core_engine/fitness.py:494
+fitness.rhythm.predictability_penalty:
+  label: Penalty per uneventful turn in a row
+  explanation: Takes the longest run of calm turns (turns that brought nothing new); every turn of it beyond calm_allowed
+    (3) subtracts this many points. Raising it punishes long stretches where nothing happens.
+  unit: score points per extra calm turn
+  type: float
+  default: 6
+  source:
+  - core_engine/fitness.py:452
+fitness.rhythm.variety_bonus:
+  label: Bonus per kind of development
+  explanation: Adds this many points for each different kind of development the story offered (new place, event,
+    new person, new outcome, skill check, fight, payoff, getting hurt, gain, discovery), up to variety_cap (9) kinds.
+    Raising it rewards a broader mix of happenings.
+  unit: score points per kind of development
+  type: float
+  default: 3
+  source:
+  - core_engine/fitness.py:453
+fitness.rhythm.event_bonus:
+  label: Bonus per event lived through
+  explanation: Adds this many points for each distinct event the story lived through, up to event_cap (4). Raising
+    it rewards eventful stories.
+  unit: score points per distinct event
+  type: float
+  default: 5
+  source:
+  - core_engine/fitness.py:454
+fitness.rhythm.exploration_bonus:
+  label: Bonus per place visited
+  explanation: Adds this many points for each distinct place visited beyond the starting one, up to exploration_cap
+    (8). Raising it rewards stories that travel more widely.
+  unit: score points per distinct place beyond first
+  type: float
+  default: 2
+  source:
+  - core_engine/fitness.py:455
+fitness.rhythm.open_thread_penalty:
+  label: Penalty per unresolved clue
+  explanation: When a story ends (other than by death), subtracts this many points for each planted clue that was
+    never paid off. Raising it pushes stories to resolve the threads they open.
+  unit: score points per clue still open at the end
+  type: float
+  default: 8
+  source:
+  - core_engine/fitness.py:458
+fitness.rhythm.repeated_failure_penalty:
+  label: Penalty for retrying a failed action at once
+  explanation: Subtracts this many points each time an action is tried again within 3 turns after it failed. Raising
+    it discourages padding the story with repeated failed attempts.
+  unit: score points per quick retry after a failure
+  type: float
+  default: 6
+  source:
+  - core_engine/fitness.py:467
+fitness.engagement.filler_penalty:
+  label: Penalty for filler turns
+  explanation: Subtracts this many points × the share of turns that brought nothing new (no new place, event, person
+    or outcome, no skill check, no change of health or coins). Raising it punishes stories padded with empty turns.
+    It counts once per story.
+  unit: score points × filler-turn share (0–1)
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:125
+fitness.engagement.loop_penalty:
+  label: Penalty per looping turn
+  explanation: Subtracts this many points for each turn that repeats an action with the same outcome already seen
+    within the previous loop_window (6) turns. Raising it punishes stories that go round in circles.
+  unit: score points per looping turn
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:126
+fitness.engagement.novelty_fade_penalty:
+  label: Penalty for novelty fading toward the end
+  explanation: Subtracts this many points × how much the share of new (non-filler) turns drops from the first third
+    of the story to the last third. Raising it punishes stories that run out of new content. It counts once per
+    story.
+  unit: score points per drop in new-turn share (0–1)
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:131
+fitness.engagement.escalation_bonus:
+  label: Bonus for rising tension
+  explanation: Adds this many points × how much the share of tense turns (damage taken, an event under way, a failed
+    skill check) rises from the first third of the story to the last third. Raising it rewards stories that build
+    toward a climax. It counts once per story.
+  unit: score points per rise in tense share (0–1)
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:132
+fitness.dramatic_arc.intro_bonus:
+  label: Bonus for opening-mood tags early in the story
+  explanation: 'For every story entry in the first quarter (dramatic_arc.intro_end) of the story, each of its tags
+    that matches an opening tag (exploration, urban, nature, spawn, port, trade...) adds this. Raising it rewards
+    stories that open with exploration and calm settings; negative values penalise them. The term is length-normalised:
+    × 35 / story turns.'
+  unit: score points per opening-quarter tag match
+  type: float
+  default: 2
+  source:
+  - core_engine/fitness.py:151
+fitness.dramatic_arc.middle_bonus:
+  label: Bonus for rising-tension tags in the middle of the story
+  explanation: 'For every story entry between 25% and 75% of the story (intro_end..middle_end), each tag matching
+    a middle tag (threat, guards, social, sleazy, prison, dark, guarded) adds this. Raising it rewards stories whose
+    middle is full of danger and intrigue. The term is length-normalised: × 35 / story turns.'
+  unit: score points per middle-half tag match
+  type: float
+  default: 3
+  source:
+  - core_engine/fitness.py:152
+fitness.dramatic_arc.climax_bonus:
+  label: Bonus for climax tags in the final quarter
+  explanation: 'For every story entry in the last quarter (from middle_end, 75%), each tag matching a climax tag
+    (payoff_*, palace, vault, grand, success, luxury) adds this. Raising it rewards stories that end in grand places,
+    payoffs and successes. The term is length-normalised: × 35 / story turns.'
+  unit: score points per final-quarter tag match
+  type: float
+  default: 5
+  source:
+  - core_engine/fitness.py:153
+fitness.story_length.bonus:
+  label: Bonus for a story of the right length
+  explanation: A story whose number of turns is within story_length.min..max (20-60) earns this in full; outside
+    that range it earns this minus penalty_per_unit for each turn away from the target (35), never below 0. Raising
+    it rewards stories that end within the length window more strongly.
+  unit: score points, once per story
+  type: float
+  default: 25
+  source:
+  - core_engine/fitness.py:64-72
+fitness.story_length.penalty_per_unit:
+  label: Penalty per turn away from the target length
+  explanation: 'Only when the story''s turn count falls outside min..max (20-60): the length bonus is reduced by
+    this for each turn between the story''s length and the target (35), floored at 0. Raising it makes out-of-range
+    lengths lose the bonus faster.'
+  unit: score points per turn from target length
+  type: float
+  default: 1
+  source:
+  - core_engine/fitness.py:64-72
+  - core_engine/fitness.py:72
+fitness.threat_balance.bonus:
+  label: Bonus for the right amount of danger
+  explanation: Counts the threat/combat tags (volatility.threat_patterns) across the whole story; if the count is
+    within threat_balance.min..max (5-15) the story earns this in full, otherwise this minus penalty_per_unit per
+    threat tag away from the target (10), never below 0. Raising it pushes training toward a moderate amount of
+    danger.
+  unit: score points, once per story
+  type: float
+  default: 20
+  source:
+  - core_engine/fitness.py:64-72
+fitness.threat_balance.penalty_per_unit:
+  label: Penalty per threat away from the target amount
+  explanation: When the story's count of threat/combat tags is outside min..max (5-15), the danger bonus is reduced
+    by this for each tag between the count and the target (10), floored at 0. Raising it punishes too much or too
+    little danger more steeply.
+  unit: score points per threat tag off target
+  type: float
+  default: 1
+  source:
+  - core_engine/fitness.py:64-72
+  - core_engine/fitness.py:72
+fitness.health_balance.bonus:
+  label: Bonus for ending with low but not critical health
+  explanation: Looks at the hero's health when the story ends; if it is within health_balance.min..max (2-6) the
+    story earns this in full, otherwise this minus penalty_per_unit per health point away from the target (3), never
+    below 0. Raising it rewards stories that end battered but alive.
+  unit: score points, once per story
+  type: float
+  default: 20
+  source:
+  - core_engine/fitness.py:64-72
+fitness.health_balance.penalty_per_unit:
+  label: Penalty per health point away from the target
+  explanation: When final health is outside min..max (2-6), the health bonus is reduced by this per health point
+    between final health and the target (3), floored at 0. Raising it punishes ending too healthy (or dead) more
+    steeply.
+  unit: score points per health point off target
+  type: float
+  default: 1
+  source:
+  - core_engine/fitness.py:64-72
+  - core_engine/fitness.py:72
+fitness.setup_payoff.pair_bonus:
+  label: Bonus for each clue paid off after a long wait
+  explanation: For each planted clue (setup_ tag) later paid off (payoff_ tag) with a gap of more than min_gap_fraction
+    (33%) of the story's turns, this is added. Raising it rewards long-range foreshadowing that gets resolved.
+  unit: score points per long-gap setup-payoff pair
+  type: float
+  default: 20
+  source:
+  - core_engine/fitness.py:187
+  - core_engine/fitness.py:185-187
+fitness.setup_payoff.late_payoff_bonus:
+  label: Extra bonus when a long-awaited clue pays off near the end
+  explanation: For each long-gap setup-payoff pair whose payoff comes in the last third of the story (turn >= 66%
+    of its length), this is added on top of pair_bonus. Raising it rewards saving revelations for the finale.
+  unit: score points per long-gap pair paid off late
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:190
+  - core_engine/fitness.py:189-190
+fitness.setup_payoff.gap_step_bonus:
+  label: Bonus per turn a clue waits before paying off
+  explanation: For each long-gap setup-payoff pair, the gap (payoff turn minus setup turn) times this is added.
+    Raising it rewards longer foreshadowing distances.
+  unit: score points per gap turn, per long-gap pair
+  type: float
+  default: 2
+  source:
+  - core_engine/fitness.py:188
+fitness.setup_payoff.short_gap_bonus:
+  label: Bonus for a clue paid off quickly
+  explanation: For each setup-payoff pair whose gap is at most min_gap_fraction (33%) of the story's turns, this
+    is added instead of pair_bonus and gap_step_bonus. Raising it makes quick payoffs relatively more attractive.
+  unit: score points per short-gap setup-payoff pair
+  type: float
+  default: 5
+  source:
+  - core_engine/fitness.py:192
+  - core_engine/fitness.py:191-192
+fitness.setup_payoff.target_count_bonus:
+  label: Bonus for each clue paid off at all
+  explanation: Each matched setup-payoff pair adds this, whatever its gap (on top of pair_bonus or short_gap_bonus).
+    Raising it rewards resolving more clues regardless of timing.
+  unit: score points per setup-payoff pair
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:194
+fitness.setup_payoff.unmatched_setup_penalty:
+  label: Penalty for each clue never paid off
+  explanation: Each planted clue (setup_ tag) still open when the score is computed is subtracted this. Raising
+    it punishes dangling plot threads more.
+  unit: score points per open (unpaid) setup
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:195
+fitness.setup_payoff.unmatched_payoff_penalty:
+  label: Penalty for each payoff with no earlier setup
+  explanation: Each payoff_ tag that appears with no open clue planted before it is subtracted this. Raising it
+    punishes revelations that come out of nowhere.
+  unit: score points per unmatched payoff
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:196
+fitness.volatility.pair_weight:
+  label: Bonus for each danger followed by relief
+  explanation: 'Counts threat/combat tags and recovery tags (neutral, success) over the whole story; the smaller
+    of the two counts times this is added. Raising it rewards stories that alternate danger and recovery. The term
+    is length-normalised: × 35 / story turns.'
+  unit: score points per threat-recovery pair
+  type: float
+  default: 10
+  source:
+  - core_engine/fitness.py:199-205
+fitness.visit_penalty:
+  label: Penalty per extra visit to the same place
+  explanation: For every place visited more than max_location_visits (3) times, each visit beyond that subtracts
+    this. Raising it discourages stories that keep returning to the same places.
+  unit: score points per visit beyond a place's 3rd
+  type: float
+  default: 5
+  source:
+  - core_engine/fitness.py:235-239
+fitness.contrast_weight:
+  label: Bonus for moving between contrasting places
+  explanation: 'For each move between two consecutive places in the story''s path, (1 - tag similarity of the two
+    places) times this is added. Raising it rewards journeys that go to places unlike the previous one. The term
+    is length-normalised: × 35 / story turns.'
+  unit: score points per move × dissimilarity (0–1)
+  type: float
+  default: 10
+  source:
+  - core_engine/fitness.py:167-175
+fitness.volatility_pair_weight:
+  label: Fallback bonus per danger-relief pair (legacy)
+  explanation: Only used as the per-pair weight of the danger-and-relief score when fitness.volatility.pair_weight
+    is missing. While that key is set (currently 5) this value has no effect. The term is length-normalised.
+  unit: score points per threat-recovery pair
+  type: float
+  default: 10
+  source:
+  - core_engine/fitness.py:205
+fitness.tone_variety.density_weight:
+  label: Bonus for not repeating the same moods
+  explanation: 'Takes the story''s descriptive tags (ignoring spawn, success, failure, neutral, setup_/payoff_),
+    computes the share that are distinct (0-1) and multiplies it by this. Raising it rewards stories whose tags
+    rarely repeat. It counts once per story; the term is length-normalised: × 35 / story turns.'
+  unit: score points × distinct-tag share (0–1)
+  type: float
+  default: 30
+  source:
+  - core_engine/fitness.py:221
+fitness.tone_variety.unique_tag_bonus:
+  label: Bonus for each different mood or theme shown
+  explanation: 'Each distinct descriptive tag (ignoring spawn, success, failure, neutral, setup_/payoff_) seen in
+    the story adds this. Raising it rewards stories that show more kinds of places, people and situations. The term
+    is length-normalised: × 35 / story turns.'
+  unit: score points per distinct narrative tag
+  type: float
+  default: 15
+  source:
+  - core_engine/fitness.py:222
+fitness.path_variety.unique_location_bonus:
+  label: Bonus for each different place visited
+  explanation: Each distinct place in the story's path adds this. Raising it rewards exploring more of the world.
+  unit: score points per distinct location visited
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:243
+  - core_engine/fitness.py:241-243
+fitness.path_variety.revisit_penalty:
+  label: Penalty for each return to a place already visited
+  explanation: Every arrival at a place the story had already been to (path length minus distinct places) subtracts
+    this. Raising it discourages backtracking.
+  unit: score points per revisit of a place
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:244
+fitness.path_variety.repeat_penalty_power:
+  label: How sharply staying put is punished (exponent)
+  explanation: The number of times the path lists the same place twice in a row is raised to this power, then multiplied
+    by repeat_penalty_weight and subtracted. Raising it makes several such repeats cost disproportionately more
+    than one.
+  unit: exponent
+  type: float
+  default: 2
+  source:
+  - core_engine/fitness.py:231
+  - core_engine/fitness.py:228-233
+fitness.path_variety.repeat_penalty_weight:
+  label: Penalty for staying in the same place (scale)
+  explanation: Multiplies (number of back-to-back repeats of the same place in the path) ^ repeat_penalty_power,
+    which is subtracted from the score. Raising it punishes stories that stay put or loop on one spot.
+  unit: score points per (repeats in a row ^ power)
+  type: float
+  default: 10
+  source:
+  - core_engine/fitness.py:232
+  - core_engine/fitness.py:228-233
+fitness.character_interaction_bonus:
+  label: Bonus per conversation or action with a character
+  explanation: For each character, the number of interactions with them (up to npc_interaction_cap, 3) times this
+    is added. Raising it rewards involving characters in the story. The term is length-normalised.
+  unit: score points per interaction per character
+  type: float
+  default: 5
+  source:
+  - core_engine/fitness.py:247
+fitness.character_spawn_bonus:
+  label: Bonus for each character met more than once
+  explanation: Each character the story interacted with at least twice (after the cap) adds this once. Raising it
+    rewards recurring characters over one-off encounters. The term is length-normalised.
+  unit: score points per recurring character
+  type: float
+  default: 15
+  source:
+  - core_engine/fitness.py:248
+fitness.npc_similarity_weight:
+  label: Bonus for characters who fit the story's themes
+  explanation: For each character interacted with, the tag similarity (0-1) between that character's tags and all
+    tags the story showed is multiplied by this and added. Raising it rewards meeting characters who match the story's
+    mood. The term is length-normalised.
+  unit: score points per character × similarity (0–1)
+  type: float
+  default: 20
+  source:
+  - core_engine/fitness.py:249
+fitness.npc_repeat_weight:
+  label: Extra bonus per interaction with a character
+  explanation: For each character, the number of interactions (up to npc_interaction_cap, 3) times this is added,
+    on top of character_interaction_bonus. Raising it rewards spending more turns with characters. The term is length-normalised.
+  unit: score points per interaction per character
+  type: float
+  default: 10
+  source:
+  - core_engine/fitness.py:250
+fitness.combat_success_bonus:
+  label: Bonus for each danger overcome
+  explanation: 'Each story entry whose tags include both ''success'' and either ''combat'' or ''threat'' adds this.
+    Raising it rewards winning fights and getting through dangerous moments. The term is length-normalised: × 35
+    / story turns.'
+  unit: score points per successful combat outcome
+  type: float
+  default: 25
+  source:
+  - core_engine/fitness.py:267-272
+fitness.discovery.location_bonus:
+  label: Bonus per distinct place visited
+  explanation: 'Each distinct place in the story''s path adds this to the discovery score. Raising it rewards exploring
+    more places. The term is length-normalised: × 35 / story turns.'
+  unit: score points per distinct place visited
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:274-279
+fitness.discovery.inventory_bonus:
+  label: Bonus per item held at the end
+  explanation: 'Each distinct item in the hero''s inventory when the story is scored adds this. Raising it rewards
+    collecting items (and keeping them). The term is length-normalised: × 35 / story turns.'
+  unit: score points per item in final inventory
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:274-279
+fitness.discovery.character_bonus:
+  label: Bonus per character met
+  explanation: 'Each distinct character the story interacted with adds this. Raising it rewards meeting more different
+    people. The term is length-normalised: × 35 / story turns.'
+  unit: score points per distinct character met
+  type: float
+  default: 0
+  source:
+  - core_engine/fitness.py:274-279
+fitness.unexpected_events.variety_bonus:
+  label: Bonus per unexpected event, up to the target
+  explanation: Each unexpected (procedural) event the story lived through, up to unexpected_events.target (3), adds
+    this. Raising it rewards stories with surprises, up to that number.
+  unit: score points per unexpected event
+  type: float
+  default: 5
+  source:
+  - core_engine/fitness.py:291-297
+fitness.unexpected_events.excess_penalty:
+  label: Penalty per unexpected event beyond the target
+  explanation: Each unexpected event beyond fitness.unexpected_events.target (3) subtracts this. Raising it discourages
+    stories crowded with surprises.
+  unit: score points per event beyond the target
+  type: float
+  default: 3
+  source:
+  - core_engine/fitness.py:291-297
+outcome_resolution.tag_weights.*:
+  label: Storyteller-trait effect on tagged outcomes
+  explanation: 'Hidden adjustment: an outcome carrying a matching tag gets (the storyteller''s matching trait −
+    0.5) × this weight added to its success probability, so storytellers who like that kind of content make it succeed
+    more (or less, with a negative weight). Applies only when `outcome_resolution.hidden_adjustments` is on.'
+  unit: probability per trait unit above 0.5 (0–1)
+  type: float
+  source:
+  - core_engine/actions.py:156
+  requires: outcome_resolution.hidden_adjustments
+action_selection.location_penalties.*.action_terms.*:
+  label: Penalty for actions named like this at this place
+  explanation: While the player is at this place, any action whose name contains this text (case-insensitive) has
+    this value × the consistency penalty strength subtracted from its score. Raising it keeps that kind of action
+    from being chosen here; a negative value makes it more attractive.
+  unit: score points subtracted (× penalty strength)
+  type: float
+  source:
+  - core_engine/game_state.py:2451
+action_selection.location_penalties.*.destination_tags.*:
+  label: Penalty for travel to places with this tag from this place
+  explanation: While the player is at this place, any action with an outcome that moves the player to a place carrying
+    this tag has this value × the consistency penalty strength subtracted from its score. Raising it discourages
+    travelling from here to such places; a negative value encourages it.
+  unit: score points subtracted (× penalty strength)
+  type: float
+  source:
+  - core_engine/game_state.py:2459

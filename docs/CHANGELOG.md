@@ -7,6 +7,542 @@ that introduces them.
 
 ## [Unreleased]
 
+### Settings say when they take effect
+
+#### Added
+- ⚙ Advanced → App & jobs: each parameter says who reads it (the API, the studio, or both, when they
+  start), and a table shows it saved, running in the API, running in this studio, and after which restart
+  it takes effect, with a **⏳ Restart pending** notice where saved and running differ. The studio's
+  `ANE_UI_HOST`, `ANE_UI_PORT` and `ANE_UI_SHARE` are shown where they set a launch setting instead of the
+  saved value (no restart pending for those). `GET`/`PUT /v1/app-settings` add `running` and `parameters`.
+- The configuration's forms (Story rules, Simulation, Weights, Engine logic) carry a note on when a save
+  takes effect (`GET /v1/reference`'s `activation`).
+
+#### Changed
+- Save confirmations say when they take effect, without implying that anything running changed: the
+  configuration's saves (at once for new games, runs, evaluations and jobs still queued; a game in
+  progress or a running job is not restarted; an uploaded or engine configuration set aside, said when it
+  was), the app parameters (nothing running changes; what a restart of the API and of the studio would
+  use; the environment kept), an uploaded configuration (in memory until the next save, *Use built-in
+  config*, a game with a trained engine, or an API restart) and Grow the world's tick.
+- The studio launches with an empty `ANE_UI_HOST`, `ANE_UI_PORT` or `ANE_UI_SHARE` treated as unset (it
+  used to take the empty value), as the activation table shows it.
+
+### The judge and the augmenter take turns on one GPU
+
+#### Added
+- `llm_sharing` (on by default; `ANE_LLM_SHARING`): the judge (Gemma 4) and the augmenter (Qwen3.5-4B)
+  take turns on one GPU. The model not running sleeps in CPU memory (vLLM sleep level 1) and is woken
+  when it is needed (1–2 s); a model idle for `idle_seconds` goes to sleep. Off when each model has a GPU
+  of its own (several sessions).
+- `compose.yaml`: both services in sleep mode on GPU 0 by default, started through
+  `packaging/vllm_turn_start.py` (the other put to sleep before loading). The judge's GPU memory share
+  is 0.72 (was 0.85) and the augmenter's 0.6 (was 0.75), so each fits beside the other asleep.
+- The judge's and the augmenter's status say whether the model is asleep.
+- World augmentation asks vLLM for valid JSON (`augmentation.llm.json_output`, structured output): a
+  small model's occasional malformed reply (a missing comma) no longer fails a proposal.
+
+### World augmentation: a tick, and its own model (Qwen3.5-4B on vLLM)
+
+#### Added
+- 🌍 World → ✨ Grow the world: **Augment the world with the language model**, a tick saved as
+  `augmentation.enabled` (what `python main.py` reads too). Off: *Propose* is disabled,
+  `POST /v1/jobs/world-proposal` is refused (409), and the terminal proposes nothing.
+- `GET`/`PUT /v1/augmentation`: whether augmentation is on and its model's status; switch it.
+- World augmentation runs on its own model, **Qwen3.5-4B** (float16, not quantized; text only; without
+  its thinking), a role of its own in `utils/llm_model_loader.py` (`augmentation.llm.*`,
+  `ANE_AUGMENT_URL`/`_MODEL`/`_API_KEY`/`_MODEL_PATH`). The judge and the editor's suggestions stay on
+  Gemma 4.
+- The augmentation prompt spells out the engine's action shape, with one of the world's own actions as
+  the example, and a small model's common deviations are put into that shape, so its proposals can be
+  added (before, every proposed action was refused: the prompt said only `"actions": [...]`).
+- `compose.yaml`: the `augmenter` service (profile `augmenter`), serving the weights from
+  `/data/angelisg/llm_models/Qwen3.5-4B` (read-only) with the judge's vLLM image, on GPU 0; the API
+  finds it at `http://hamlet-ane-augmenter:8000/v1`.
+
+### Nine limitations fixed
+
+#### Added
+- 🧩 The condition builder is under every condition field: an action's *No longer offered once*, a
+  mission's *Offered only if*, and a dialogue line's *Said when* (choose the line; its condition is kept
+  in step with the table both ways), besides an entry's *Enabled if* and an action's *Offered only if*.
+- Renaming an entry renames what refers to it, in the same save: the map's routes, people's known places
+  and items, other entries' actions and conditions, missions, variables and the tuning parameters that
+  name a place. The other files are edited in place, their comments kept, and the message counts the
+  references per file. A name that also names something of another kind is not renamed elsewhere: a rename
+  that would then leave references dangling is refused, as before. Both `PUT .../draft` and `PUT
+  /v1/entities/{kind}/{name}` do this.
+- `GET /v1/world/revision`: a fingerprint of the world's entries. The content library looks at it every
+  10 seconds and lists changes made elsewhere (another browser, Grow the world, an import, a file edited
+  by hand) without ↻ Refresh, and says when the entry open in the editor was renamed or deleted elsewhere.
+- The address follows the destination open (`?section=…`, replaced in the browser's history), however it
+  was opened, and a banner or menu choice is marked at once, before the server answers (not with
+  unsaved changes, where the guard decides).
+- `python main.py --apply-augmentation FILE` adds a reviewed world augmentation proposal, checked as the
+  studio checks it.
+
+#### Changed
+- `python main.py` no longer writes world augmentation into `config/`: with `augmentation.enabled`, it
+  keeps the proposal in `augmentations/run_<time>/proposal.yaml` for review (only when the world is below
+  the augmentation targets) and runs with the world as it is. The old path rewrote `locations.yaml` and
+  dropped the map's routes and the files' comments.
+- The training work counts the turns a story may spend in fast travel (`travel.max_free_turns`, which do
+  not count toward its end) when the steps allow them; `GET /v1/simulations/work` adds
+  `fast_travel_turns`. With the shipped settings a full-length story counts 110 turns instead of 100
+  when more steps than its length are asked for.
+- The preview's *changes* list the map's changes too: a path that opens or closes, a place unlocked,
+  being held.
+- A quest cleared in ▶ Play because the new engine's world doesn't have it is named by its title (as
+  the world that listed it had it), with its key.
+
+#### Fixed
+- Old lint warnings: unused imports in `main.py` (the tests and the backend now import `_build_action`,
+  `_build_outcome`, `_stat_usage_errors` and `_fitness_breakdown` from `core_engine`), an unused
+  variable in `core_engine/game_state.py` and an unused import in `backend/sessions.py`.
+
+### Jobs: followed again after a refresh, and cancelled
+
+#### Added
+- The studio remembers the job it started in 🧠 Train and in ⚖ Evaluate, in the browser's local storage (one
+  per section). After a refresh or a lost connection it follows that job again through `GET /v1/jobs/{id}`,
+  without starting another, and shows its result as if it had never left. A failed, cancelled or lost job
+  (an API restart; or one of more than the latest 100) is said in so many words. It never attaches itself to
+  another job of the global list: the job panel marks the browser's own job as **yours**.
+- `POST /v1/jobs/{id}/cancel`, and **🚫 Cancel it** in the job panels. A queued job is cancelled at once and
+  never starts. A running one becomes `cancel_requested` and stops at its next safe point (training: after a
+  generation; evaluation: before a story is judged, or after the stories are played), then is `cancelled`.
+  A cancelled job keeps no result: its `partial` says how far it got. A training cancelled makes no engine
+  and its recorded run is `cancelled`. Work that completes before it reaches a safe point finishes, with a
+  `cancel_note`. Either way, the worker goes on to the next job.
+
+#### Changed
+- `StudioAPI.wait()` stops on a cancelled job (`JobCancelledError`) and waits through a lost connection
+  for up to a minute before giving up.
+
+#### Fixed
+- The job panel's polling could stop for good when a run was submitted while the page was still loading:
+  a refresh computed before the job existed switched its timer off. The timer now never stops (it slows
+  down instead).
+- The job panel stopped refreshing once a job chosen in its lists had ended, because the lists refused a
+  value no longer among their choices.
+
+### Job panels in Train and Evaluate; the discovered map drawn
+
+#### Added
+- **⏱ Jobs** in 🧠 Train and ⚖ Evaluate shows the jobs queued, running and recent. Each shows its state,
+  its progress counted as the job counts it (generations, or stories judged), scores, elapsed time and
+  queue position, and a failure's error with what to do. A finished job's result can be opened there.
+  The panel refreshes every 2 seconds while one of its jobs is active, every 10 otherwise, without holding
+  up the rest of the studio.
+- Jobs report a `label` with their progress and a `queue_ahead`. An identical submission while a job is
+  queued or running returns that job (`reused`) instead of queuing it again.
+- ▶ Play draws the discovered map of the game (only what the player has found).
+
+### 🌍 World: Content, Missions and Map
+
+#### Changed
+- 🌍 World has a sub-navigation: **📚 Content** (Entries, Story rules, Behaviour by tags, Grow the world,
+  Checks; it goes back to the last one opened), **🎯 Missions** and **🗺 Map**. The missions and map
+  interfaces, their API calls and their YAML stay as they were. Switching keeps selections and unsaved
+  drafts: an editor with unsaved changes asks first.
+- The map in 🌍 World is named the **authoring map** (the whole world). The map in ▶ Play is the
+  **discovered map** (this game's: only what the player has found).
+
+### 🌍 World → Entries: a condition builder
+
+#### Added
+- A condition builder under an entry's *Enabled if* and an action's *Offered only if*: nested ALL, ANY
+  and NOT groups, and predicates (has item, visited, at location, variable, stat and resource comparisons,
+  mission, events, actions, ...) chosen from the world. It is checked as a save checks it. Conditions it
+  reads are written back as they were, and parts it cannot show are kept as written. The YAML field stays
+  as the advanced mode.
+- `GET /v1/conditions/reference` and `POST /v1/conditions/validate`.
+
+### 🌍 World → Entries: preview the unsaved draft
+
+#### Added
+- **👁 Preview the draft**, below the entry editor, shows the entry as its unsaved draft makes it.
+  *Content (static)* gives the texts, actions, outcome text and what each outcome changes, and what a save
+  would refuse. *Simulated scene* is a sample scene the engine plays with the draft, with its sample state
+  listed: start, seed, storyteller, character, variables at their defaults, quest. Each of the entry's
+  actions is tried on a copy of that state.
+- `POST /v1/entities/{kind}/{name}/preview`, read only: it writes no configuration, changes no
+  progression, records nothing and advances no session.
+
+### 🌍 World → Entries: Save changes at once, and the library's next pages
+
+#### Added
+- **💾 Save changes**, always under the entry's status line, saves every section with unsaved changes at
+  once (`PUT /v1/entities/{kind}/{name}/draft`). The entry is checked whole with the world and written
+  once, or not at all, with every problem named by section; fields no section touches are kept. The
+  forms and the YAML are then reloaded from the stored entry.
+- The status line names the sections with unsaved changes and those saved.
+- The content library lists 200 results at a time, with *Show N more* for the next ones.
+
+#### Changed
+- The leave question's **Save** no longer saves some sections when another fails: it is the same
+  single save as *Save changes*.
+
+### 🌍 World: a searchable content library
+
+#### Added
+- 🌍 World → Entries has a content library listing every location, NPC, item and event, with its tags,
+  facts and first description, a search, per-type counts and type filters. Choosing an entry opens it
+  in the editor, guarded like the pickers (unsaved changes are asked about first). Searching and
+  filtering never change the open entry. Empty worlds, empty types and searches without results say so.
+- `GET /v1/entities/{kind}?fields=summary`, a light summary of each entry; the other `fields` values
+  are unchanged.
+
+### ⚖ Evaluate: a selected trained engine, or the baseline, said before and after
+
+#### Changed
+- ⚖ Evaluate has one target for the judge benchmark and the calibration: a **selected trained engine**
+  or the explicit **baseline** (the current configuration with random storytellers). *Evaluate this
+  result* selects the completed engine; a training or a loaded engine is offered (the newest selected)
+  without a reload. An engine target without an engine is refused, never replaced by the baseline.
+- The target is shown before submission, with each section's plan (seeds; in A/B: A and B are both the
+  target, B with version B's settings, same seeds, both orders). It is also shown in the results.
+  A/B results no longer call side A "the current settings" when an engine was selected.
+
+#### Added
+- `GET /v1/evaluation/target`; judge-benchmark and calibrate-fitness results and jobs carry `target`
+  (and `seeds`; pairwise results also carry `a` and `b`).
+
+### ▶ Play: quests from the chosen engine's own world
+
+#### Changed
+- ▶ Play's quest choices depend on the chosen trained AI and the player profile. They are read from
+  that engine's saved world, without making it active, with the profile's save game, and refreshed
+  when either changes. A quest chosen before that no longer fits is cleared, saying why. A note
+  beside the pickers names the engine and its world.
+- `GET /v1/missions/playable` takes an optional `engine_id` and answers `engine_id` and `world`
+  (its identity); the existing fields are unchanged.
+
+### 📦 Export in five steps
+
+#### Changed
+- 📦 Export is laid out as the steps of an export: choose what to export, where it runs and the options,
+  then export, download and read how to use it on that platform (Python, Unity, or the standalone
+  program, with the macOS and Windows notes). Multi-run exports and the Python-only sources stay.
+- Systems without a runtime here are marked *not available here*, with the API's reason
+  (`GET /v1/exports/platforms`). Export is enabled only for a valid combination; otherwise step 4 says
+  why and how to resolve it. An invalid export is also refused before the API is asked.
+- *Export this result* keeps its engine chosen: only the user's own choice of source or platform lays
+  out the form again.
+
+### Studio: edits that were lost, overwritten or could not work
+
+#### Fixed
+- 🎯 Missions:
+  - A new or renamed mission whose key another mission already has is refused. It used to replace that
+    mission. An empty key is refused too.
+  - Weight 0 is kept; it used to be saved as 1.
+  - A single step with its own text or rewards stays a step; these used to be dropped.
+  - After the mission in the form is deleted, Save no longer brings it back.
+  - Deleting a mission no longer reloads the missions YAML over unsaved edits.
+  - A YAML save that removes or renames the open mission no longer reports an error.
+- 📝 Entries:
+  - A new entry named like an existing one is refused; it used to update that entry.
+  - Scheduling's Save and YAML editor are shown for events and items only. For places and people
+    the API refuses scheduling rules.
+  - Dialogue lines with several variants stay variants; they used to be saved as one string.
+  - Dropdowns of the world's names (the action editor's pickers, Lies at, known places and items,
+    the map's places, the arrest location, the player profile) fetch their choices when opened.
+    Entries made, renamed or deleted since the page loaded now appear.
+- 📜 Story rules:
+  - A cleared number is refused with why; it used to keep its old value silently.
+  - Reset profile (new player) asks first, because it cannot be undone.
+- 🗺 Map: a place deleted meanwhile is no longer saved to, and the place list follows the world.
+- 🏷 Behaviour by tags:
+  - Saving one table reloads only that table; it used to reload both, losing the other's edits.
+  - A failed save keeps the edits.
+  - An indicator shows unsaved changes, and closing the page with them asks first.
+- ✨ Grow: the ticks follow the proposal's YAML, so an entry renamed there is no longer left out.
+- ▶ Play:
+  - The game survives a page reload (`ane-play-session`, while the API still has it).
+  - Up to 12 choices get buttons (it was 8), and more are said in the status bar, not hidden.
+  - "Sent to the UNP" is read from the save game, where the delivery is noted.
+- The records import note and the records refresh show the API's error message.
+
+### Engine names and result cards; the weights' shipped values, leave question and trait scaling
+
+#### Added
+- Completed engines can be given an optional name: on Train's result card, or in 🧠 Train → 🏷 Finished
+  engines. Train, Play, Evaluate and Export show every engine by one label: its name, or, for an
+  unnamed engine, what it is, when it was made, its generations and its training fitness, always
+  with its short id. The engine and run ids stay the identifiers. An export without a name takes
+  the engine's.
+- Result cards, in Train and beside the engine pickers of Play, Evaluate and Export, show when the
+  engine was made, its world, its generations and training settings, its training fitness, the
+  judge's engagement (once judged: a different measure, shown apart) and the storyteller traits
+  that scale the Basic weights.
+- `GET /v1/engines/{engine_id}/card` and `PUT /v1/engines/{engine_id}/name`. Engine listings also
+  answer `name` and `label`. A judge benchmark or calibration of an engine is kept on its card.
+  Names and evaluations are kept with the saves (`engine_meta.json`, format 1, older files
+  migrated), so they work with recording off and survive a restart.
+- Weights: *Changed from the shipped values* lists the saved values that differ from the release's,
+  and *↺ Shipped values into the draft* puts them back for saving. `config/default_history.json`
+  records the shipped values, and `GET /v1/weights` answers them.
+- Leaving ⚙ Advanced with unsaved weights asks Save, Discard or Stay, like the World editors.
+- The Basic controls a storyteller scales say how far its traits move them (from `genome_bounds`).
+  *Event frequency* has the turns between events and the most events per story.
+
+#### Changed
+- The studio waits up to 90 s (`ANE_UI_STARTUP_WAIT`) for its page to answer at start, instead of
+  Gradio's single 3-second check, which a busy host could fail.
+
+### A guide for building another frontend on the API
+
+#### Added
+- [docs/FRONTEND.md](FRONTEND.md) describes every studio view as requests and JSON fields: what each
+  view loads, its components, its actions, the client-side logic a new frontend has to reimplement,
+  and where it navigates. It also covers the API contract (headers, errors, jobs, downloads, drafts,
+  conflicts and undo), real samples of the shared response shapes, the gaps a rebuild should not
+  copy, and an index of which view uses which of the 128 endpoints.
+- `FrontendGuideTests` (in `tests/test_studio_coverage.py`) fails when the index and the API's
+  routes disagree, or when the guide names a request the API does not have.
+
+#### Changed
+- docs/API.md links to the guide, and its CORS note now lists `PATCH`, which the API allows.
+
+### ANE AI runtime: stopping without cutting answers short
+
+#### Fixed
+- `POST /shutdown` sometimes answered with the headers but no body (`IncompleteRead`): the process
+  exited before the answer was written. The server now stops listening only after that answer is sent.
+- A stop by signal, by the UNP process ending or by stdin closing now waits up to 5 seconds
+  (`DRAIN_TIMEOUT`) for the requests still being answered, rather than exiting under them.
+- If saving the sessions fails during a shutdown, the server still stops (it no longer stays up
+  answering `503`).
+
+### Weights: a Basic view of common gameplay controls
+
+#### Added
+- ⚙ Advanced → Weights has two views of one draft. **Basic** (shown first) groups 20 common gameplay
+  controls in Difficulty, Pacing, Repetition and Event frequency. Each control is one tuning parameter
+  (`backend/tuning_basic.yaml`; no presets), explained by what raising or lowering it does in play.
+  **Advanced** is the complete editor, as before. A value edited in one view is the same value in the
+  other, and switching views changes no value.
+- The draft's status, above both views, lists every unsaved change. Changes made in Advanced to
+  parameters that Basic doesn't show are listed apart (*Advanced only, not shown in Basic*). Unsaved
+  weights make the browser ask before the page is left.
+- `GET /v1/weights` also answers `basic`, the Basic view. `PUT /v1/weights` takes an optional
+  `expected` (the values when loaded); a parameter changed since then is refused with `409`.
+- The parameters of the director, variation, unexpected events, first trips and the alert name the
+  setting they need (`requires`), and are marked inactive while it is off.
+
+#### Changed
+- The weights form saves only the values that changed, rather than every field, and *Discard changes*
+  reloads the saved values. The form also reloads the saved values when the page opens, so a page built
+  earlier no longer writes back stale values.
+
+### Drafts everywhere, undo histories, references, and the engine's parameters cleaned up
+
+#### Added
+- 🎯 Missions, 📜 Story rules and 🗺 Map track their drafts like the entry editor: an indicator, their
+  pickers (mission, profile, place, *New mission*) guarded, and Save / Discard / Stay when leaving them.
+- An entry draft is kept in the browser: after the page is closed or reloaded, *Unsaved changes from your
+  last visit* offers Restore or Discard.
+- Undo keeps a history per panel (newest first), kept in the browser across reloads; the API keeps the
+  deletions with the saves (`deletions.json`), so an undo survives its restart.
+- Deleting an entry says first what refers to it and would no longer work (`GET
+  /v1/entities/{kind}/{name}/references`).
+- Weights: parameters that need `outcome_resolution.hidden_adjustments` are marked inactive while it is off.
+
+#### Changed
+- Draft baselines are set from the loaded values in the same step (no second round trip); an edit sends
+  only its own part, and leaving checks only which parts are unsaved.
+- Saving weights rewrites only the numbers that changed: `hyperparameters.yaml` keeps its comments.
+- The tuning metadata's units are short (≤ 45 characters) and its code references point at the reading
+  line; a test fails when a reference no longer reads its parameter.
+- `spawn_selection.immediate_repeat_penalty` now applies, to the place just left (it compared with the
+  current place, never a candidate): discoveries rarely lead straight back.
+- Every training run uses `evolution.crossover_rate`; the app parameter `crossover_probability` is retired
+  (ignored in a saved file).
+- A negative `action_selection.stay_penalty_power` or `fitness.objective_losses.scenario_duplication.power`
+  is refused when the world is built (it would divide by zero mid-story).
+
+#### Removed
+- Parameters that changed nothing: `outcome_scoring.*`, `fitness.setup_payoff.early_setup_bonus`,
+  `simulation.mutation_rate`, `transition_objective.character_goal_weight` and `known_location_bonus`,
+  `spawn_selection.character_alignment_weight` (and the code paths no caller could reach). An older config
+  folder keeping them still loads; they are ignored and not offered.
+
+### Training defaults, Train's result, and the records by purpose
+
+#### Changed
+- The saved training defaults are 40 storytellers × 25 generations × 2 stories (with full-length stories:
+  200,000 simulated turns of the 1,000,000 allowed). They were 400 × 200 × 6 (48,000,000), so a run that
+  set nothing was refused; `python main.py` uses the same defaults.
+- *▶ Play this result* starts a game with the completed engine at once (with the player, quest and
+  character chosen in ▶ Play), instead of only choosing it.
+- The records are where they are used: *🧠 Train → From a recorded engine* (continue, retrain), *⚖ Evaluate*
+  (recorded stories: read, judge, compare), *📦 Export* (a recorded engine's, run's and world's files) and
+  *⚙ Advanced → 🗂 Records* (recording, the import folder). Train's *Records* tab is gone.
+
+#### Added
+- After a warm-started run, its summary says how many remembered storytellers it really started from (the
+  summary before the run counted the memory), and a run's `training.executed` has `warm_started`.
+- Train's completed engine is kept in the browser: its card and actions come back after a reload, while
+  that engine is still a finished run.
+
+### Tuning parameters: labels, units, defaults and bounds from the engine
+
+#### Added
+- Every tuning parameter in *⚙ Advanced → Weights* (236) has presentation metadata derived from the
+  engine's code (`backend/tuning_parameters.yaml`, read by `backend/tuning.py`): a readable label (e.g.
+  `skill_check_resolution.difficulty_rate_per_step` is *Difficulty increase per turn*), what the engine
+  does with it, its unit on its own scale (a percentage of the 1–100 roll, a probability per first trip,
+  an event pressure compared with a threshold, score points per ...), the engine's default, its numeric
+  type, bounds where the engine sets them (`story_rules`, `fitness.length_normalization.floor_steps`) and
+  the code that reads it. The parameter's path stays under it. The parameters the engine does not use at
+  present (all of `outcome_scoring`, `fitness.setup_payoff.early_setup_bonus`) or only in branches that
+  never run say so; those of `outcome_resolution` that need `hidden_adjustments` say that.
+- `GET /v1/weights` gains `parameters` (that metadata, per parameter); a parameter without metadata keeps
+  a fallback (a label from its name, its type as written).
+
+#### Fixed
+- Saving the weights cut a fraction typed for a parameter written as a whole number down (40.5 became 40,
+  even for decimal parameters like `evolution.alternatives_weight`): an integer parameter now refuses a
+  fraction, a decimal one takes it. Values that did not change are kept exactly as written (40 stays 40),
+  and a value outside the engine's bounds saves nothing (it used to be written, and `story_rules` then
+  stopped the world from building).
+
+### Deleting in the World editor: asked first, with Undo
+
+#### Added
+- *Delete entry*, *Delete action* and *Delete mission* ask first, naming exactly what goes (content
+  type, name and place; an action's number and name; a mission's title and key) with **Delete** and
+  **Cancel**; after a deletion, **↶ Undo** brings it back for the rest of the session.
+- The API keeps a deleted entry, action or mission whole with its place: the delete responses carry
+  `undo` (a token), and `POST /v1/deletions/{token}/restore` puts back that record only, where it was
+  (next to its old neighbour if the list changed since, and said so). A name taken again or an
+  action's entry gone is `409` (nothing newer overwritten); a record that would now be invalid is
+  `400`; a deletion no longer kept is `404`.
+- `DELETE /v1/entities/{kind}/{name}/actions/{index}?expected_name=`: deletes only if the action at
+  that index has that name (`409` otherwise), as the studio now asks.
+
+#### Unchanged
+- The delete rules: at least one place, person and item remains (events may all go); an action's
+  remaining list and the remaining missions are checked as before.
+
+### World editor: drafts, and nothing discarded without asking
+
+#### Added
+- *🌍 World → 📝 Entries* tracks a draft of the entry: *Fields*, *Actions & outcomes*, *Scheduling*,
+  *More details* and the three YAML editors, each against what it held right after its last load or
+  save (read back from the browser, so loads are never edits). A line under the entry says whether
+  anything is unsaved, and which part.
+- Changing the entry, the content type or the action, *New entry*, *New action*, another World section
+  or another destination with unsaved changes is undone and asked about: **Save** (each changed part
+  with its own save, then on), **Discard** (then on) or **Stay**. Closing or reloading the page asks too.
+
+#### Fixed
+- Changing the entry or the content type used to reload every form at once, silently discarding what
+  was being edited; so did *New entry*, adding the language model's proposals (which also changed the
+  entry), and another action replacing an edited one.
+- A failed save no longer reloads anything: the *Every field (YAML)*, scheduling YAML and actions YAML
+  saves used to reload the other forms even when they failed, and the entry's save its YAML. A
+  successful save reloads only what it made out of date and has no unsaved changes of its own.
+- An NPC with a structured goal (`{goal, tags, needed, reward}`, e.g. the Smuggler) could not be opened
+  in the editor (`GET /v1/entities/NPCs/{name}` failed with 500), and saving its fields would have
+  turned the goal into text: it is now a line of YAML in *Goals*, saved back as the structured goal.
+
+### Train: a run, its progress, its completed engine; the game in ▶ Play
+
+#### Changed
+- *🧠 Train → Run* is organised as the work goes: *1 · Configure the run*, *2 · Progress and the
+  completed engine* (the progress bar follows the generations on the result card, which then names
+  the engine made, its run, best fitness and generations, and whether the run executed what its
+  summary showed), *3 · Learning results* (curve, learned traits, report, files, learning memory).
+  A continued or retrained engine opens *Run* with its result.
+- A training from the studio no longer starts a game. It used to start one after every run,
+  continuation and retraining, which nobody played: a play session (taking a slot of
+  `max_web_sessions`), a start and a mission written to the player's profile (so later games
+  avoided that start), and an empty play story in the records.
+- The integration diagnostics moved to *⚙ Advanced → 🔌 Integration*: the game in ▶ Play as a UNP
+  sees it (set the player, tell it what happened, its parameters), sending a session report to the
+  UNP again, the runtimes available and the world catalogue (formerly in ▶ Play and 📦 Export).
+
+#### Added
+- After a training, **▶ Play this result**, **⚖ Evaluate this result** and **📦 Export this
+  result** open those destinations with the exact completed engine chosen (its id, never the newest
+  in its place); nothing is played, judged or exported until the user starts it.
+- The API: `start_game` (default `true`, as before) on `POST /v1/simulations`, `/v1/jobs/simulations`
+  and the records' `continue` and `retrain` (and their jobs); with `false` the training only trains,
+  and the response has `game_started: false` and `session_id: null`.
+- ⚖ Evaluate's storytellers include the finished runs, and the judge jobs accept a finished run kept
+  without the records (`engine_id`), which used to be refused with `404`.
+
+### Training settings: saved engine defaults, and a run's own overrides
+
+#### Changed
+- One model for a run's settings: the **saved engine defaults** (`evolution.*`, `reproducibility.*`,
+  edited in *⚙ Advanced → Simulation*, labelled *Default …* there) with what **the run sets for
+  itself** in *🧠 Train*, the place a run is set up. Each Train setting shows its saved default and is
+  used as it is unless *Set … for this run* is ticked; reproducibility and warm start are *Saved
+  default* or chosen for the run, and the seed can be set for a run.
+- Before a run starts, *This run, resolved* shows what it will execute (population, generations,
+  stories per storyteller, story length, seed, warm start, the work), each with where it comes
+  from; after it, the report says whether it ran exactly as summarised. Retraining a recorded
+  engine shows the same, with that engine's saved defaults.
+- The API: a run's `candidate_count`, `generations`, `simulation_steps`, `episodes`, `deterministic`,
+  `seed` and `warm_start` are optional, the saved defaults when left out (a request leaving out the
+  first three used to get 8, 5 and 16). `GET /v1/simulations/work`'s values are optional too.
+
+#### Added
+- `POST /v1/simulations/resolve`: what a run (or, with `engine_id`, a retraining) would execute,
+  resolved by the backend's own rules (`backend.sessions.resolve_training`, which the runs use); every
+  run's response carries `training` (`overrides`, `sources`, `resolved`, `executed`). A run can set
+  its own `seed`.
+
+#### Removed
+- The app parameters `default_candidates`, `default_generations` and `default_simulation_steps`
+  (a second set of run defaults): a saved file that has them still loads, without them.
+
+#### Fixed
+- A retraining marked deterministic did not seed the random generators as a new run does, and
+  without a saved seed it silently ran random; it now follows the same rules (and is refused
+  without a seed).
+
+### Training: requested versus effective story length
+
+#### Changed
+- *🧠 Train* explains how long a story is before a run starts: **Full-length stories enabled: up to
+  N turns** (the configured `narrative_end.max_actions`) or **Bounded stories: up to N turns**; when
+  the steps asked for do not set it, why (full-length stories, or steps beyond the story's end),
+  and the **Steps per simulation** slider is marked (*not used: full-length stories* or *capped at
+  N*, outlined). The work is shown as its multiplication: storytellers × generations × stories each
+  × turns = work, of the limit.
+- `GET /v1/simulations/work` returns `requested_steps`, `effective_max_turns`, `full_length_stories`,
+  `story_length`, `steps_decide`, `override` (`{setting, reason}`), `factors` and `over_by`
+  (`story_turns` stays). The studio only shows it; a run is refused on the same numbers, and the
+  refusal says why a story counts as many turns as it does.
+
+#### Fixed
+- Steps beyond a story's end were counted in the work though never played (e.g. 400 steps for
+  100-turn stories counted 400 turns a story), so runs within the limit could be refused. The
+  story's length now has one definition (`core_engine.game_state.story_length`), used by the game,
+  training and the work count.
+
+### The studio's navigation: destinations, a workflow banner, a menu on narrow screens
+
+#### Changed
+- The studio's destinations are **🌍 World**, **🧠 Train**, **▶ Play**, **⚖ Evaluate** and **📦 Export**,
+  in the order of the work, and **⚙ Advanced** for the technical settings (simulation, weights,
+  engine logic, app and jobs). The story's own settings (story rules, messages, persistent
+  variables, character stats) moved to *🌍 World → 📜 Story rules*; Export is a destination of its
+  own (it was inside Train & export).
+- The workflow banner is the navigation: a button per destination, the open one highlighted. On
+  screens narrower than 820 px it gives way to *☰ Menu: go to a section*, which lists every
+  destination. The destinations' own tab bar is no longer shown, so no destination is behind
+  Gradio's overflow button; a destination's sections that do not fit a narrow screen are behind an
+  overflow button that now reads **··· More**.
+- Stable destination ids (`world`, `train`, `play`, `evaluate`, `export`, `advanced`): the tabs, the
+  banner's buttons (`#nav-<id>`), the destinations (`#dest-<id>`), the menu, and the address
+  (`?section=<id>`). Changing destination only selects a tab, so every form, game and result keeps
+  its state.
+
 ### The studio: five tabs, a game screen that fits a window
 
 #### Changed

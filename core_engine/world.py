@@ -317,32 +317,30 @@ class WorldGraph:
             return sum(1 for tag in loc_tags if tag in middle_tags) * phases.get("middle_weight", 1.75)
         return sum(1 for tag in loc_tags if tag in climax_tags) * phases.get("climax_weight", 2.0)
 
-    def _score_spawn_candidate(self, current, loc, character=None, state=None, target_tags=None):
+    def _score_spawn_candidate(self, current, loc, state=None, target_tags=None):
         if target_tags:
             # What the discovery asked for comes first; the usual scoring breaks ties.
             wanted = {str(tag).lower() for tag in target_tags}
             fit = semantic_tag_similarity(wanted, loc.tags) + len(wanted & {t.lower() for t in loc.tags})
             return fit * config.get("spawn_selection.target_tag_weight", 10.0) + \
-                self._score_spawn_candidate(current, loc, character=character, state=state)
+                self._score_spawn_candidate(current, loc, state=state)
         similarity = semantic_tag_similarity(current.tags, loc.tags)
         contrast = 1.0 - similarity
         score = contrast * config.get("spawn_selection.contrast_weight", 2.5)
         score += self._phase_alignment_score(loc, state)
-
-        if character:
-            score += semantic_tag_similarity(character.associated_tags, loc.tags) * config.get("spawn_selection.character_alignment_weight", 2.0)
 
         if state is not None:
             # Discovered paths lean toward the mission goal.
             score += state._goal_route_pull(loc.name)
             prior_visits = state.location_counts.get(loc.name, 0)
             score -= prior_visits * config.get("spawn_selection.repeat_visit_penalty", 3.0)
-            if state.path and state.path[-1] == loc.name:
+            # A discovery leading straight back to the place just left (path[-1] is where the player is).
+            if len(state.path) >= 2 and state.path[-2] == loc.name:
                 score -= config.get("spawn_selection.immediate_repeat_penalty", 10.0)
 
         return score
 
-    def spawn(self, current, character=None, force_target=None, state=None, allow_special=False, target_tags=None):
+    def spawn(self, current, force_target=None, state=None, allow_special=False, target_tags=None):
         """The place a discovery from ``current`` opens (None: none). ``force_target`` names
         it; ``target_tags`` (a discovery led by tags) chooses the neighbour that fits them
         best, among those not yet known; otherwise the spawn rules and scoring decide."""
@@ -365,8 +363,6 @@ class WorldGraph:
             # Led by tags: any place next door (any place, without a map) may answer them.
             pool = neighbours if neighbours is not None else set(self.locations)
             options = sorted(o for o in pool if o != current.name and o not in current.connected)
-        elif character:
-            options = list(self.locations.keys())
         elif state is not None and hasattr(state, "spawn_options"):
             options = state.spawn_options(current.name)  # the story's own geography
         else:
@@ -411,7 +407,7 @@ class WorldGraph:
         scored = []
         for loc_name in available:
             loc = self.locations[loc_name]
-            score = self._score_spawn_candidate(current, loc, character=character, state=state, target_tags=target_tags)
+            score = self._score_spawn_candidate(current, loc, state=state, target_tags=target_tags)
             scored.append((score, loc_name))
         scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
         new_name = scored[0][1]

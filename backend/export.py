@@ -49,6 +49,7 @@ from utils.tag_similarity import export_tag_vectors
 from .errors import AuthoringError
 from . import records
 from .sessions import ENGINES, RUNS, SESSIONS, SESSION_LOCK, kept_engines
+from . import engine_meta
 from .store import PROJECT_ROOT
 
 RUNTIME_CODE = [
@@ -108,7 +109,92 @@ def complete_engines(limit=50):
     for info in found.values():
         info.setdefault("generations", None)
         info["loaded"] = not info.get("run_id")
-    return sorted(found.values(), key=lambda e: e["created_at"] or "", reverse=True)[:limit]
+    known = engine_meta.names()
+    return [engine_meta.annotate(info, known)
+            for info in sorted(found.values(), key=lambda e: e["created_at"] or "", reverse=True)[:limit]]
+
+
+def _engine_row(engine_id):
+    """The records' row of an engine, or None (not recorded, or no records)."""
+    if not records.readable():
+        return None
+    try:
+        return records.engine_record(engine_id)
+    except Exception:  # noqa: BLE001 - not recorded (LookupError), or the records cannot be read
+        return None
+
+
+def engine_world_config(engine_id):
+    """The world and tuning an engine was trained on (its saved configuration), read only: from its
+    model file (recorded, or kept with the saves when recording is off), or, for a recorded
+    generation's champion, its run's recorded world. ``latest``: the newest complete engine. Returns
+    (engine id, configuration); LookupError for an unknown engine."""
+    if engine_id in (None, "", "latest"):
+        newest = complete_engines(limit=1)
+        if not newest:
+            raise LookupError("No finished run yet: train the AI first.")
+        engine_id = newest[0]["engine_id"]
+    kept = _kept_engine(engine_id)
+    row = _engine_row(engine_id)
+    path = kept["model_path"] if kept else None
+    if path is None and row and row.get("model_path") and records.model_readable(row["model_path"]):
+        path = row["model_path"]
+    if path:
+        return engine_id, engine_meta.model_config(path)
+    if row and row.get("world_id"):
+        return engine_id, dict(records.get_world(row["world_id"])["config"])
+    raise LookupError(f"Unknown engine `{engine_id}`: GET /v1/exports/engines lists the finished runs.")
+
+
+def world_identity(cfg, engine_id=None):
+    """What identifies a world: {source (engine | active), engine_id, digest (its world alone, without
+    the tuning), id (world and tuning, as an engine's manifest has it), summary, current (the active
+    configuration's world is the same)}."""
+    from core_engine.model import config_id, world_summary
+
+    digest = engine_meta.world_digest(cfg)
+    return {"source": "engine" if engine_id else "active", "engine_id": engine_id, "digest": digest,
+            "id": config_id(cfg), "summary": world_summary(cfg),
+            "current": digest == engine_meta.world_digest(config.as_dict())}
+
+
+def known_engine(engine_id) -> bool:
+    """Whether an engine is a complete engine here or a recorded one (a generation's champion too)."""
+    return _kept_engine(engine_id) is not None or _engine_row(engine_id) is not None
+
+
+def engine_card(engine_id):
+    """The result card of an engine (backend/engine_meta.py): read from its model file, whether it is
+    recorded or kept with the saves (recording off). A recorded generation's champion has no model
+    file: its card has what its record says. LookupError for an unknown engine."""
+    from utils.config_loader import config
+
+    listed = next((e for e in complete_engines(limit=500) if e["engine_id"] == engine_id), None)
+    kept = _kept_engine(engine_id)
+    row = _engine_row(engine_id)
+    current = engine_meta.world_digest(config.as_dict())
+    path = kept["model_path"] if kept else None
+    if path is None and row and row.get("model_path") and records.model_readable(row["model_path"]):
+        path = row["model_path"]
+    if path:
+        info = listed or {**(row or {}), "engine_id": engine_id}
+        return engine_meta.card(engine_id, path, info, current)
+    if row is None:
+        raise LookupError(f"Unknown engine `{engine_id}`: GET /v1/exports/engines lists the finished runs.")
+    info = {"engine_id": engine_id, "created_at": row.get("created_at"), "source": row.get("source"),
+            "score": row.get("score"), "generation": row.get("generation")}
+    labelled = engine_meta.annotate(info)
+    known = engine_meta.entry(engine_id)
+    return {"engine_id": engine_id, "run_id": row.get("run_id"), "name": labelled["name"], "label": labelled["label"],
+            "default_label": engine_meta.default_label(info), "created_at": row.get("created_at"),
+            "kind": engine_meta.kind_of(row.get("source")), "source": row.get("source"),
+            "parent_id": row.get("parent_id"),
+            "world": {"id": row.get("world_id"), "digest": None, "summary": {}, "current": None},
+            "generations": None, "generation": row.get("generation"), "trained_generations": None,
+            "settings": {"main": {}, "other": {}},
+            "fitness": {"training": row.get("score"), "improvement": None, "early_stopped": None, "history": []},
+            "judge_in_training": None, "evaluations": list(known.get("evaluations") or []), "resumable": False,
+            "scaling_traits": engine_meta.scaling_traits(row.get("genome"))}
 
 
 def _kept_engine(engine_id):
@@ -513,7 +599,10 @@ def export_engine(source="run", run_id=None, generation=None, token=None, includ
             run = RUNS.get(run_id) if run_id else (RUNS[next(reversed(RUNS))] if RUNS else {})
             checkpoint, engine_id = run.get("checkpoint"), run.get("engine_id")
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
-    name = re.sub(r"[^A-Za-z0-9_.-]+", "-", name or f"narrative-engine-{stamp}").strip("-") or "narrative-engine"
+    # The engine's own name (studio), if it has one: the package's default file name, and in its manifest.
+    engine_name = engine_meta.names().get(engine_id) if engine_id else None
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "-", name or engine_name or f"narrative-engine-{stamp}").strip("-") \
+        or "narrative-engine"
     active = active if active is not None else config.as_dict()
     world = active.get("world_definition") or {}
     manifest = {
@@ -521,6 +610,7 @@ def export_engine(source="run", run_id=None, generation=None, token=None, includ
         "version": 1,
         "name": name,
         "engine_id": engine_id,
+        "engine_name": engine_name,
         "resumable": bool(checkpoint),
         "created": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "source": description,

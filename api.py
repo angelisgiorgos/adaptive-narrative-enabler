@@ -22,7 +22,8 @@ from pydantic import BaseModel, Field
 
 import yaml
 
-from backend import content, evaluation, export, records, sessions, store
+from backend import content, engine_meta, evaluation, export, records, sessions, store, tuning
+from backend.errors import ConflictError
 from core_engine import Mission
 from core_engine.actions import REPEAT_RULES
 from utils.config_loader import config
@@ -149,20 +150,37 @@ class Settings(BaseModel):
     seed: int | None = 42
 
 
-class SimulationRequest(BaseModel):
-    candidate_count: int = Field(default=8, ge=1, le=store.RUN_LIMITS["candidate_limit"])
-    generations: int = Field(default=5, ge=1, le=store.RUN_LIMITS["generation_limit"])
-    simulation_steps: int = Field(default=16, ge=1, le=store.RUN_LIMITS["simulation_step_limit"],
-                                  description="Steps per evaluated story; with "
-                                  "evolution.full_length_stories every story is played to its end.")
-    deterministic: bool = True
+class TrainingOverrides(BaseModel):
+    """What one run sets for itself; anything left out (or null) is the saved engine default
+    (evolution.*, reproducibility.*: ⚙ Advanced → Simulation). POST /v1/simulations/resolve shows
+    what a run with these would use."""
+    candidate_count: int | None = Field(default=None, ge=1, le=store.RUN_LIMITS["candidate_limit"],
+                                        description="Population: storytellers per generation (default evolution.pop_size).")
+    generations: int | None = Field(default=None, ge=1, le=store.RUN_LIMITS["generation_limit"],
+                                    description="Default evolution.generations.")
+    simulation_steps: int | None = Field(default=None, ge=1, le=store.RUN_LIMITS["simulation_step_limit"],
+                                         description="Steps per evaluated story (default evolution.max_steps); with "
+                                         "evolution.full_length_stories every story is played to its end.")
+    episodes: int | None = Field(default=None, ge=1, le=10, description="Stories each storyteller plays per generation "
+                                 "(default evolution.episodes_per_genome).")
+    deterministic: bool | None = Field(default=None, description="Default reproducibility.deterministic.")
+    seed: int | None = Field(default=None, description="The seed of a deterministic run (default reproducibility.seed).")
+
+
+class TrainingGame(BaseModel):
+    start_game: bool = Field(default=True, description="Start a game with the best storyteller when the training "
+                             "finishes (the response's session). false: train only; no session is created and nothing "
+                             "is written to the player's profile (the response's session_id is null).")
+
+
+class SimulationRequest(TrainingOverrides, TrainingGame):
     profile: str | None = Field(default=None, description="Player profile for persistent variables.")
     stats_mode: Literal["defined", "random", "balanced"] | None = Field(
         default=None, description="How the player's stats are allocated (default: character_stats.mode).",
     )
     stats: dict[str, int] | None = Field(default=None, description="The player's own stat points (overrides stats_mode).")
-    episodes: int | None = Field(default=None, ge=1, le=10, description="Stories each storyteller plays per generation.")
-    warm_start: bool | None = Field(default=None, description="Continue learning from the storytellers remembered from earlier runs.")
+    warm_start: bool | None = Field(default=None, description="Continue learning from the storytellers remembered from "
+                                    "earlier runs (default evolution.warm_start).")
     mission: str | None = Field(default=None, description="The mission to play (its key or title, see GET "
                                 "/v1/missions/playable); left out, the story draws one.")
 
@@ -173,6 +191,9 @@ class ActionRequest(BaseModel):
 
 class WeightUpdate(BaseModel):
     values: dict[str, float]
+    expected: dict[str, float] | None = Field(
+        default=None, description="Optional: the value each changed parameter had when the form was loaded; a "
+        "parameter changed since (by someone else) is refused (409) instead of overwritten.")
 
 
 class YAMLDocument(BaseModel):
@@ -259,6 +280,13 @@ class PlayState(BaseModel):
 
 
 class SimulationResponse(PlayState):
+    session_id: str | None = Field(default=None, description="The game started with the result; null when a "
+                                   "training was asked for with start_game false.")
+    scene: str = ""
+    actions: list[str] = Field(default_factory=list)
+    ended: bool = False
+    game_started: bool = Field(default=True, description="False for a training asked for with start_game false: "
+                               "the play fields are then empty.")
     report: str
     run_id: str | None = Field(default=None, description="Use with POST /v1/exports to export this run or one of its generations.")
     learning: dict[str, Any] | None = Field(
@@ -271,6 +299,11 @@ class SimulationResponse(PlayState):
     config_download_url: str
     engine_download_url: str = Field(description="The engine model file: world, storyteller, training state, memory "
                                      "and tag vectors. Load it with POST /v1/engines/load.")
+    training: dict[str, Any] | None = Field(
+        default=None, description="A training's settings: `overrides` (what the request set), `sources` (each value: "
+        "override or default), `resolved` (as POST /v1/simulations/resolve gives them) and `executed` (read back "
+        "from the evolution that ran): population, generations, stories_per_storyteller, requested_steps, "
+        "story_turns, full_length_stories, story_length, deterministic, seed, warm_start, warm_start_mode.")
 
 
 ARTIFACTS: dict[str, Path] = {}
@@ -321,7 +354,7 @@ def _fail(exc: Exception):
                    "(permission denied).")
     else:
         message = getattr(exc, "message", None) or str(exc)
-    status = 409 if isinstance(exc, (export.RuntimeUnavailable, export.EngineRequired)) else 400
+    status = 409 if isinstance(exc, (export.RuntimeUnavailable, export.EngineRequired, ConflictError)) else 400
     raise HTTPException(status_code=status, detail=public_message(message)) from exc
 
 
@@ -432,8 +465,8 @@ def upload_config(file: UploadFile = File(...)):
 
 @api.post("/v1/config/reset", tags=["Configuration"])
 def reset_config():
-    store.use_builtin_config()
-    return {"message": "Built-in configuration restored.", "settings": _settings()}
+    message = store.use_builtin_config()[-1]
+    return {"message": message, "settings": _settings()}
 
 
 @api.get("/v1/settings", response_model=Settings, tags=["Configuration"])
@@ -534,32 +567,69 @@ def put_hyperparameters(body: YAMLDocument):
         _fail(exc)
 
 
+def _weights():
+    entries = store._weight_entries()
+    shipped = tuning.shipped_values()
+    return {"values": dict(entries),
+            "parameters": [{**tuning.describe(path, value), "shipped": shipped.get(path)} for path, value in entries],
+            "basic": tuning.basic_view(path for path, _ in entries),
+            "shipped": {path: shipped[path] for path, _ in entries if path in shipped}}
+
+
 @api.get("/v1/weights", tags=["Configuration"])
 def get_weights():
-    return {"values": dict(store._weight_entries())}
+    """The tuning parameters (every weight, bonus, penalty, threshold, chance, rate, ... of
+    hyperparameters.yaml): ``values`` {path: value}, and ``parameters``, how each is presented:
+    [{path, value, section, label, explanation, unit, type: integer | float, minimum, maximum, default
+    (the engine's, when the parameter is left out), source (the code reading it), described}]. Units,
+    bounds and defaults come from the engine's code; a parameter without metadata (``described``
+    false) has a label from its name and the type it is written with, nothing more. ``requires``: the
+    true/false setting a parameter needs, ``inactive``: why it has no effect now (that setting is off).
+    ``basic``: the Basic view, a chosen set of common gameplay controls, each ONE of these parameters
+    (no presets): [{key, title, summary, controls: [{path, effect, scaled_by?, scaling?}]}] (``scaling``:
+    how far each storyteller's learned traits move the value). ``shipped``: {path: value} as this release
+    ships them (config/default_history.json), to tell which saved values were changed."""
+    return _weights()
 
 
 @api.put("/v1/weights", tags=["Configuration"])
 def put_weights(body: WeightUpdate):
+    """Change tuning parameters (paths left out keep their value). Every value is checked first: a
+    finite number, a whole number for an integer parameter (a fraction is refused, not cut down),
+    within the bounds the engine defines; one wrong value saves nothing (400, each problem named). A
+    value that did not change is kept exactly as it is written. With ``expected`` (the values the form
+    was loaded with), a changed parameter whose stored value moved since is refused (409)."""
     known = dict(store._weight_entries())
     unknown = sorted(set(body.values) - set(known))
     if unknown:
         raise HTTPException(status_code=400, detail="Unknown weight paths: " + ", ".join(unknown))
+    moved = [f"`{path}` is now {known[path]:g} (it was {body.expected[path]:g} when loaded)"
+             for path in body.values if body.expected and path in body.expected
+             and float(known[path]) != float(body.expected[path])]
+    if moved:
+        raise HTTPException(status_code=409, detail="Changed since it was loaded, so nothing was saved; reload "
+                            "to see the newer values: " + "; ".join(moved) + ".")
     merged = {**known, **body.values}
     paths = list(known)
     try:
         message = store.save_weights(paths, *(merged[path] for path in paths))
-        return {"message": message, "values": dict(store._weight_entries())}
+        return {"message": message, **_weights()}
     except Exception as exc:
         _fail(exc)
 
 
 @api.get("/v1/entities/{kind}", tags=["World authoring"])
-def list_entities(kind: Literal["Locations", "NPCs", "Items", "Events"], fields: Literal["all", "names"] = "all"):
-    """The entries of a kind (``fields=names``: their names only)."""
+def list_entities(kind: Literal["Locations", "NPCs", "Items", "Events"],
+                  fields: Literal["all", "names", "summary"] = "all"):
+    """The entries of a kind (``fields=names``: their names only; ``fields=summary``: a light summary of
+    each, as the studio's content library lists them: {names, entries: [{name, tags, summary (its first
+    description, shortened), actions (how many), facts (a few words: a start, a role, a hostile
+    encounter, an event's title, an item's bonus)}]})."""
     names, _ = content._entity_name_values(kind)
     if fields == "names":
         return {"kind": kind, "names": names}
+    if fields == "summary":
+        return {"kind": kind, "names": names, "entries": content.entity_summaries(kind)}
     return {"kind": kind, "entities": [get_entity(kind, name) for name in names]}
 
 
@@ -594,14 +664,93 @@ def put_entity(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str,
         _fail(exc)
 
 
+class EntryDraft(BaseModel):
+    fields: Entity | None = Field(default=None, description="The entry form, as PUT /v1/entities/{kind}/{name} "
+                                  "takes it (its name: a rename; with create, the new entry's name).")
+    entry_yaml: str | None = Field(default=None, description="Every field of the entry as YAML (replaces it).")
+    actions: list[dict[str, Any]] | str | None = Field(default=None, description="Every action (a list or YAML).")
+    action: dict[str, Any] | None = Field(default=None, description="One action: {index, action} (index = the "
+                                          "number of actions: a new one).")
+    policy: dict[str, Any] | str | None = Field(default=None, description="An event's start rules or an item's "
+                                                "uniqueness (a mapping or YAML).")
+    details: dict[str, Any] | None = Field(default=None, description="As PUT /v1/entities/{kind}/{name}/details.")
+
+
+@api.put("/v1/entities/{kind}/{name}/draft", tags=["World authoring"])
+def put_entry_draft(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str, body: EntryDraft,
+                    create: bool = False):
+    """Save an entry's whole draft at once (the studio's *Save changes*): its sections (fields, entry_yaml,
+    actions, action, policy, details; as their own endpoints take them) are applied to a copy of the
+    stored entry, every field no section touches is kept, the entry and the world with it are checked
+    as each section's own save checks them, and the entry is written once. Anything wrong: 400 naming
+    every problem with its section, and nothing is written (no section is saved without the others).
+    Fields and Every field (YAML), or Actions as YAML and one action, change the same data: 400.
+    ``create``: a new entry named ``name`` (its fields required). Returns {name, saved, message,
+    entity}."""
+    draft = _draft_sections(kind, name, body, create)
+    try:
+        result = content.save_entry_draft(kind, None if create else name, draft)
+        return {**result, "entity": get_entity(kind, result["name"])}
+    except Exception as exc:
+        _fail(exc)
+
+
+def _draft_sections(kind, name, body: EntryDraft, create: bool) -> dict:
+    """An entry draft's sections as content.compose_entry_draft takes them (404: no such entry; a new one:
+    its fields, named as in the path)."""
+    if not create:
+        _known_entity(kind, name)
+    elif body.fields is None or body.fields.name.strip() != name:
+        raise HTTPException(status_code=400, detail="A new entry is made from its fields, named as in the path.")
+    draft = body.model_dump(exclude={"fields"}, exclude_none=True)
+    if body.fields is not None:
+        fields = body.fields.model_dump()
+        draft["fields"] = {key: value for key, value in fields.items()
+                           if key not in ("role", "secret") or key in body.fields.model_fields_set}
+    return draft
+
+
+@api.post("/v1/entities/{kind}/{name}/preview", tags=["World authoring"])
+def preview_entry_draft(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str,
+                        body: EntryDraft | None = None, create: bool = False, simulate: bool = False,
+                        seed: int = 0):
+    """Preview an entry as its unsaved draft makes it (the body of PUT .../draft; empty: the stored entry).
+    Read only: nothing is written, no progression changes, nothing is recorded, no session advances.
+    {name, sections, problems (what a save would refuse; shown, not raised), static (the content as
+    written: texts, facts, actions with what they need, outcomes' text and what each changes), simulated
+    (with ``simulate``: a sample scene the engine plays in a separate process, its ``assumptions`` said:
+    the start, the storyteller, the character, the variables at their defaults; the entry's actions
+    each tried on a copy of that state), simulated_error, saved: false}."""
+    from backend import preview
+
+    draft = _draft_sections(kind, name, body or EntryDraft(), create)
+    try:
+        return preview.preview(kind, None if create else name, draft, simulate_scene=simulate, seed=max(0, seed))
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.get("/v1/entities/{kind}/{name}/references", tags=["World authoring"])
+def get_entity_references(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str):
+    """What refers to the entry and would break if it were deleted (missions, actions, conditions,
+    dialogue, routes, ...), as the engine's checks word it: {references: [...]} (empty: nothing).
+    Deleting is still allowed; a deleted entry's restore is checked against them."""
+    names, _ = content._entity_name_values(kind)
+    if name not in names:
+        raise HTTPException(status_code=404, detail="Entity not found.")
+    return {"references": content.entity_references(kind, name)}
+
+
 @api.delete("/v1/entities/{kind}/{name}", tags=["World authoring"])
 def delete_entity(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str):
+    """Delete an entry (at least one location, NPC and item remains: 400 for the last). ``undo``: what
+    POST /v1/deletions/{token}/restore puts back (the entry whole, where it was)."""
     names, _ = content._entity_name_values(kind)
     if name not in names:
         raise HTTPException(status_code=404, detail="Entity not found.")
     try:
-        content.delete_entity(kind, name)
-        return {"message": f"Deleted {name}.", "entities": content._entity_name_values(kind)[0]}
+        result = content.remove_entity(kind, name)
+        return {"message": f"Deleted {name}.", "entities": result["entities"], "undo": result["undo"]}
     except Exception as exc:
         _fail(exc)
 
@@ -788,12 +937,55 @@ def export_engines():
 
 @api.get("/v1/runs", tags=["Engine export"])
 def list_runs():
-    """Recent evolution runs that can be exported (best or any generation)."""
-    return {"runs": [
-        {"run_id": run_id, "best_score": run["learning"]["best_score"],
-         "generations": len(run["learning"]["history"])}
-        for run_id, run in reversed(sessions.RUNS.items())
-    ]}
+    """Recent evolution runs that can be exported (best or any generation), each with its engine's
+    id, name (None: unnamed) and label."""
+    known = engine_meta.names()
+    runs = []
+    for run_id, run in reversed(sessions.RUNS.items()):
+        engine_id = run.get("engine_id")
+        kept = sessions.ENGINES.get(engine_id) or {}
+        info = {"engine_id": engine_id, "created_at": kept.get("created_at"), "source": kept.get("source"),
+                "score": run["learning"]["best_score"],
+                "generations": len(run["learning"]["history"])}
+        runs.append({"run_id": run_id, "best_score": run["learning"]["best_score"],
+                     "generations": len(run["learning"]["history"]), "engine_id": engine_id,
+                     "name": known.get(engine_id) if engine_id else None,
+                     "label": engine_meta.label(info, known) if engine_id else None})
+    return {"runs": runs}
+
+
+class EngineName(BaseModel):
+    name: str | None = Field(default=None, description=f"The engine's name (at most {engine_meta.MAX_NAME} "
+                             "characters); empty or null removes it. The engine id does not change.")
+
+
+@api.get("/v1/engines/{engine_id}/card", tags=["Evolution and play"])
+def get_engine_card(engine_id: str):
+    """A completed engine's result card, recorded or kept with the saves (recording off): {engine_id,
+    run_id, name, label, default_label, created_at, kind, source, parent_id, world: {id, digest,
+    summary, current (trained on the active world)}, generations, trained_generations, settings:
+    {main, other} (what its training ran with), fitness: {training (the evolution's objective: the
+    story score on the run's benchmark), improvement, early_stopped, history}, judge_in_training (the
+    judge's engagement in the loop of evolution, when it ran), evaluations (judge benchmarks and
+    calibrations of this engine: the judge's 1–10 engagement, newest first), resumable}."""
+    try:
+        return export.engine_card(engine_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@api.put("/v1/engines/{engine_id}/name", tags=["Evolution and play"])
+def put_engine_name(engine_id: str, body: EngineName):
+    """Name a completed (or recorded) engine, or remove its name. Only what is shown changes: the
+    engine and run ids stay its identifiers. Kept with the saves, with recording on or off."""
+    if not export.known_engine(engine_id):
+        raise HTTPException(status_code=404, detail=f"Unknown engine `{engine_id}`.")
+    try:
+        name = engine_meta.set_name(engine_id, body.name)
+    except engine_meta.EngineNameError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    card = export.engine_card(engine_id)
+    return {"engine_id": engine_id, "name": name, "label": card["label"]}
 
 
 @api.get("/v1/learning", tags=["Evolution and play"])
@@ -834,11 +1026,22 @@ def get_missions():
 
 
 @api.get("/v1/missions/playable", tags=["Evolution and play"])
-def get_playable_missions(profile: str | None = None):
+def get_playable_missions(profile: str | None = None, engine_id: str | None = None):
     """The missions a player may choose when starting a game (``mission`` in the play requests):
-    [{key, title, description, stages, available}], ``available`` for this profile now."""
+    [{key, title, description, stages, available, achieved}], ``available`` for this profile now.
+    ``engine_id`` (a finished run or recorded engine; ``latest``: the newest): the missions of the
+    world that engine was trained on, read from its saved configuration (the active configuration is
+    not changed); without it, the active world's. ``world`` says which world was read: {source,
+    engine_id, digest, id, summary, current}. 404 for an unknown engine."""
     try:
-        return {"missions": sessions.playable_missions(profile)}
+        if engine_id:
+            engine_id, cfg = export.engine_world_config(engine_id)
+        else:
+            cfg = config.as_dict()
+        return {"missions": sessions.playable_missions(profile, cfg if engine_id else None),
+                "engine_id": engine_id or None, "world": export.world_identity(cfg, engine_id or None)}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         _fail(exc)
 
@@ -886,10 +1089,10 @@ def simulate(body: SimulationRequest, origin: str = Depends(_origin), user_id: s
     try:
         game = sessions.run_simulation(
             body.candidate_count, body.generations, body.simulation_steps, body.deterministic,
-            profile=body.profile, episodes=body.episodes, warm_start=body.warm_start,
+            profile=body.profile, episodes=body.episodes, warm_start=body.warm_start, seed=body.seed,
             stats_choice="defined" if body.stats is not None else body.stats_mode,
             stats_points=yaml.safe_dump(body.stats) if body.stats is not None else None,
-            progress=None, origin=origin, mission=body.mission, user_id=user_id,
+            progress=None, origin=origin, mission=body.mission, user_id=user_id, start_game=body.start_game,
         )
         return _game_response(game)
     except HTTPException:
@@ -899,10 +1102,13 @@ def simulate(body: SimulationRequest, origin: str = Depends(_origin), user_id: s
 
 
 def _game_response(game) -> "SimulationResponse":
-    state = _play_state(game["token"], game["last_turn"])
+    if game.get("token") is None:  # a training without a game (start_game false)
+        state = {"session_id": None, "game_started": False}
+    else:
+        state = _play_state(game["token"], game["last_turn"]).model_dump()
     return SimulationResponse(
-        **state.model_dump(), report=game["report"], learning=game["learning"], run_id=game.get("run_id"),
-        engine_id=game.get("engine_id"),
+        **state, report=game["report"], learning=game["learning"], run_id=game.get("run_id"),
+        engine_id=game.get("engine_id"), training=game.get("training"),
         config_download_url=_register_artifact(game["config_path"]),
         engine_download_url=_register_artifact(game["engine_path"]),
     )
@@ -995,15 +1201,93 @@ def _session_call(session_id, work):
         _fail(exc)
 
 
-@api.get("/v1/simulations/work", tags=["Evolution and play"])
-def simulation_work(candidate_count: int = 8, generations: int = 5, simulation_steps: int = 16, episodes: int = 3):
-    """What a run would ask for before it starts: ``work`` (simulated turns at most:
-    storytellers x generations x stories per storyteller x turns per story, whole stories counted
-    at ``narrative_end.max_actions``), the ``limit`` (app parameter ``max_simulation_work``),
-    ``allowed`` and ``story_turns``."""
-    if min(candidate_count, generations, simulation_steps, episodes) < 1:
+class WorkOverride(BaseModel):
+    setting: str = Field(description="The setting that decides a story's length instead of the steps: "
+                                     "evolution.full_length_stories or narrative_end.max_actions.")
+    reason: str
+
+
+class SimulationWork(BaseModel):
+    work: int = Field(description="Simulated turns at most: storytellers x generations x stories per storyteller x "
+                                  "effective_max_turns (many stories end sooner).")
+    limit: int = Field(description="The app parameter max_simulation_work.")
+    allowed: bool = Field(description="work <= limit: a run asking for more is refused (400).")
+    over_by: int = Field(description="How far work is above the limit (0 when allowed).")
+    requested_steps: int = Field(description="The steps per story asked for (simulation_steps).")
+    effective_max_turns: int = Field(description="The most turns a story can take in this run: its length plus "
+                                                 "fast_travel_turns, at most the steps played.")
+    story_turns: int = Field(description="The same as effective_max_turns (kept for older clients).")
+    full_length_stories: bool = Field(description="evolution.full_length_stories: every story is played to its end.")
+    story_length: int = Field(description="Turns after which a story ends by itself (narrative_end.max_actions, at "
+                                          "least 100).")
+    steps_decide: bool = Field(description="Whether the requested steps set effective_max_turns.")
+    fast_travel_turns: int = Field(default=0, description="Turns of fast travel a story may take on top of its "
+                                                          "length (travel.max_free_turns; 0 with fast travel off).")
+    override: WorkOverride | None = Field(default=None, description="Why the steps do not set it, when they do not.")
+    factors: dict[str, int] = Field(description="The multiplication: storytellers, generations, "
+                                                "stories_per_storyteller, turns_per_story.")
+
+
+@api.get("/v1/simulations/work", response_model=SimulationWork, tags=["Evolution and play"])
+def simulation_work(candidate_count: int | None = None, generations: int | None = None,
+                    simulation_steps: int | None = None, episodes: int | None = None):
+    """What a run would ask for before it starts, as the run itself counts it (each value left out:
+    the saved engine default): the steps asked for against the turns a story can really take (with
+    full-length stories every story is played to its end whatever the steps; otherwise the steps,
+    though no story outlasts its end) and why they differ, and the ``work`` (storytellers x
+    generations x stories per storyteller x turns per story) against the ``limit`` (app parameter
+    ``max_simulation_work``). The work part of POST /v1/simulations/resolve."""
+    given = [value for value in (candidate_count, generations, simulation_steps, episodes) if value is not None]
+    if given and min(given) < 1:
         raise HTTPException(status_code=422, detail="Every value must be at least 1.")
-    return sessions.training_work(candidate_count, generations, episodes, simulation_steps)
+    return sessions.resolve_training({"candidate_count": candidate_count, "generations": generations,
+                                      "simulation_steps": simulation_steps, "episodes": episodes})["work"]
+
+
+class TrainingResolveRequest(TrainingOverrides):
+    warm_start: bool | None = Field(default=None, description="Default evolution.warm_start.")
+    engine_id: str | None = Field(default=None, description="Resolve a retraining of this recorded engine: its saved "
+                                  "defaults, and a warm start from it.")
+
+
+class ResolvedTraining(BaseModel):
+    defaults: dict[str, Any] = Field(description="The saved engine defaults: candidate_count, generations, episodes, "
+                                     "simulation_steps, deterministic, seed, warm_start, full_length_stories, "
+                                     "story_length (and story_length_setting, narrative_end.max_actions as saved).")
+    overrides: dict[str, Any] = Field(description="What the request sets for this run.")
+    sources: dict[str, str] = Field(description="Each effective value: override, default (or the engine it starts from).")
+    effective: dict[str, Any] = Field(description="What the run executes: population, generations, "
+                                      "stories_per_storyteller, requested_steps, story_turns, full_length_stories, "
+                                      "story_length, deterministic, seed (null: random), warm_start, warm_start_mode "
+                                      "(memory, engine or off).")
+    work: SimulationWork
+    notes: list[str] = Field(description="Values held to the app's limits, a seed a random run does not use.")
+    errors: list[str] = Field(description="Why the run would be refused besides its work (a deterministic run "
+                              "without a seed); too much work: work.allowed is false.")
+    ready: bool = Field(description="The run would start: no errors and its work allowed.")
+    remembered: int | None = Field(default=None, description="Storytellers in the learning memory a warm start "
+                                   "begins from (now).")
+
+
+def _overrides(body) -> dict:
+    return {field: getattr(body, field, None) for field in sessions.TRAINING_OVERRIDES}
+
+
+@api.post("/v1/simulations/resolve", response_model=ResolvedTraining, tags=["Evolution and play"])
+def resolve_simulation(body: TrainingResolveRequest):
+    """What a run with these settings would execute, before it starts: the saved engine defaults
+    (⚙ Advanced → Simulation) with what the request sets for itself, held to the app's limits, with
+    the seed, how long a story is, the warm start and the work. POST /v1/simulations (or the job, or
+    a retraining with ``engine_id``) with the same body runs exactly ``effective``; its response's
+    ``training`` says what was resolved and what the evolution ran with."""
+    source = None
+    if body.engine_id:
+        _known_engine(body.engine_id)
+        source = sessions._recorded_model(body.engine_id).config
+    try:
+        return sessions.resolve_training(_overrides(body), source=source, warm_start_from=body.engine_id)
+    except Exception as exc:
+        _fail(exc)
 
 
 @api.get("/v1/sessions/{session_id}/state", tags=["Evolution and play"])
@@ -1104,17 +1388,13 @@ class EnginePlayRequest(BaseModel):
                                 "/v1/missions/playable); left out, the story draws one.")
 
 
-class EngineContinueRequest(EnginePlayRequest):
+class EngineContinueRequest(EnginePlayRequest, TrainingGame):
     generations: int = Field(default=1, ge=1, le=store.RUN_LIMITS["generation_limit"],
                              description="Further generations, continuing exactly where training stopped.")
 
 
-class EngineRetrainRequest(EnginePlayRequest):
-    candidate_count: int = Field(default=8, ge=1, le=store.RUN_LIMITS["candidate_limit"])
-    generations: int = Field(default=5, ge=1, le=store.RUN_LIMITS["generation_limit"])
-    simulation_steps: int = Field(default=16, ge=1, le=store.RUN_LIMITS["simulation_step_limit"])
-    episodes: int | None = Field(default=None, ge=1, le=10)
-    deterministic: bool = True
+class EngineRetrainRequest(EnginePlayRequest, TrainingOverrides, TrainingGame):
+    """A retraining sets what it wants for itself; the rest is the recorded engine's saved defaults."""
 
 
 def _player(body):
@@ -1135,6 +1415,13 @@ def _records(function, *args, **kwargs):
 def _known_engine(engine_id):
     """404 for an engine that is not in the records (before any work starts)."""
     _records(records.get_engine, engine_id)
+
+
+def _evaluable_engine(engine_id):
+    """404 for an engine the judge cannot play: neither recorded nor a finished run kept without the
+    records (GET /v1/exports/engines lists those)."""
+    if export._kept_engine(engine_id) is None:
+        _known_engine(engine_id)
 
 
 @api.get("/v1/records", tags=["Records"])
@@ -1182,7 +1469,10 @@ def get_recorded_world(world_id: str, format: Literal["json", "yaml"] = "json"):
 
 @api.get("/v1/records/engines", tags=["Records"])
 def list_recorded_engines(run_id: str | None = None, source: str | None = None, limit: int = 200, offset: int = 0):
-    return {"engines": _records(records.list_engines, run_id=run_id, source=source, limit=limit, offset=offset)}
+    """The recorded engines, newest first, each with its name (None: unnamed) and label."""
+    known = engine_meta.names()
+    return {"engines": [engine_meta.annotate(row, known) for row in
+                        _records(records.list_engines, run_id=run_id, source=source, limit=limit, offset=offset)]}
 
 
 @api.get("/v1/records/engines/{engine_id}", tags=["Records"])
@@ -1248,7 +1538,7 @@ def continue_recorded_engine(engine_id: str, body: EngineContinueRequest, origin
     _known_engine(engine_id)
     try:
         return _game_response(sessions.continue_engine(engine_id, body.generations, origin=origin, user_id=user_id,
-                                                       **_player(body)))
+                                                       start_game=body.start_game, **_player(body)))
     except HTTPException:
         raise
     except Exception as exc:
@@ -1263,7 +1553,8 @@ def retrain_recorded_engine(engine_id: str, body: EngineRetrainRequest, origin: 
     try:
         return _game_response(sessions.retrain_engine(
             engine_id, body.candidate_count, body.generations, body.simulation_steps, body.episodes,
-            body.deterministic, origin=origin, user_id=user_id, **_player(body)))
+            body.deterministic, origin=origin, user_id=user_id, seed=body.seed, start_game=body.start_game,
+            **_player(body)))
     except HTTPException:
         raise
     except Exception as exc:
@@ -1327,6 +1618,27 @@ def _known_entity(kind, name):
         raise HTTPException(status_code=404, detail="Entity not found.")
 
 
+class ConditionCheck(BaseModel):
+    condition: Any = Field(default=None, description="A condition (a mapping, a list, or its YAML text).")
+    where: str = Field(default="enabled_if", description="What the messages call it.")
+
+
+@api.get("/v1/conditions/reference", tags=["World authoring"])
+def get_condition_reference():
+    """What a condition can say in the current world, for a condition builder: the groups (all, any,
+    not), the operators, every fact predicate with the names it may refer to (items, locations, NPCs,
+    events, missions; null: free text), and the comparisons (variables with their types, stats,
+    resources). See core_engine/conditions.py."""
+    return content.condition_reference()
+
+
+@api.post("/v1/conditions/validate", tags=["World authoring"])
+def validate_condition(body: ConditionCheck):
+    """Check a condition as every save checks it (structure, operators, references, operand types):
+    {valid, errors, empty}. Nothing is saved."""
+    return content.validate_condition(body.condition, body.where or "enabled_if")
+
+
 @api.get("/v1/reference", tags=["Studio"])
 def get_reference():
     """What a client needs to build an authoring UI: entry kinds, suggested tags, the
@@ -1345,6 +1657,8 @@ def get_reference():
         "documents": {name: description for name, (description, _, _) in DOCUMENTS.items()},
         "npc_roles": content.role_names(),
         "judge_criteria": _judge_criteria(),
+        # When saved settings take effect (backend/activation.py): the configuration's note for its forms.
+        "activation": {"configuration": __import__("backend.activation", fromlist=["CONFIG_NOTE"]).CONFIG_NOTE},
         "defaults": {
             "episodes_per_genome": int(config.get("evolution.episodes_per_genome", 3)),
             "warm_start": bool(config.get("evolution.warm_start", True)),
@@ -1365,22 +1679,39 @@ class AppSettingsBody(BaseModel):
 
 @api.get("/v1/app-settings", tags=["Studio"])
 def get_app_settings():
-    """The studio's app parameters (config/ui_settings.yml): limits, defaults, queue, launch."""
-    return {"settings": store.load_app_settings(), "defaults": store.APP_DEFAULTS}
+    """The studio's app parameters (config/ui_settings.yml): limits, defaults, queue, launch, and when
+    each takes effect. ``settings``: the saved values. ``running``: the values this API process uses (read
+    when it started). ``parameters``: per parameter {key, purpose, saved, readers (API, studio: who reads
+    it, when it starts), takes_effect, running_api, environment (the studio's variable that can set it
+    instead: ANE_UI_HOST, ANE_UI_PORT, ANE_UI_SHARE), pending (the API runs another value than the
+    saved one: a restart of the API is pending)}. The studio's own running values are the studio's."""
+    from backend import activation
+
+    saved = store.load_app_settings()
+    return {"settings": saved, "defaults": store.APP_DEFAULTS, "running": dict(store.APP_SETTINGS),
+            "parameters": activation.app_parameters_state(saved, store.APP_SETTINGS)}
 
 
 @api.put("/v1/app-settings", tags=["Studio"])
 def put_app_settings(body: AppSettingsBody):
-    """Validate and save app parameters; they apply when the studio and the API restart."""
-    unknown = sorted(set(body.settings) - set(store.APP_DEFAULTS))
+    """Validate and save app parameters. Nothing running changes: the API and the studio read them when
+    they start (a restart of the API, or the studio, or both, as ``parameters`` says). Returns
+    {message, settings, running, parameters} as GET /v1/app-settings."""
+    from backend import activation
+
+    retired = sorted(set(body.settings) & set(store.RETIRED_APP_SETTINGS))
+    unknown = sorted(set(body.settings) - set(store.APP_DEFAULTS) - set(retired))
     if unknown:
         raise HTTPException(status_code=400, detail="Unknown app parameters: " + ", ".join(unknown))
     try:
         store.save_app_settings({**store.load_app_settings(), **body.settings})
     except (ValueError, OSError) as exc:
         _fail(exc)
-    return {"message": "App parameters saved. Restart the studio and the API to apply them.",
-            "settings": store.load_app_settings()}
+    note = (f" Ignored {', '.join(retired)}: a run's defaults are the saved engine defaults (evolution.*, "
+            "crossover included: evolution.crossover_rate), and each run may set its own sizes." if retired else "")
+    saved = store.load_app_settings()
+    return {"message": activation.app_saved_message(store.APP_SETTINGS, saved) + note, "settings": saved,
+            "running": dict(store.APP_SETTINGS), "parameters": activation.app_parameters_state(saved, store.APP_SETTINGS)}
 
 
 # YAML documents edited as text, comments kept: (description, load(profile), save(profile, text) -> (yaml, message))
@@ -1553,10 +1884,15 @@ def put_one_action(kind: Literal["Locations", "NPCs", "Items", "Events"], name: 
 
 
 @api.delete("/v1/entities/{kind}/{name}/actions/{index}", tags=["World authoring"])
-def delete_one_action(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str, index: int):
+def delete_one_action(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str, index: int,
+                      expected_name: str | None = None):
+    """Delete one action (the others are checked as a save checks them). ``expected_name``: the name the
+    action at ``index`` must have, else 409 and nothing is deleted (the actions changed since they were
+    read). ``undo``: what POST /v1/deletions/{token}/restore puts back."""
     _known_entity(kind, name)
     try:
-        return {"actions": content.delete_entity_action(kind, name, index)}
+        result = content.remove_entity_action(kind, name, index, expected=expected_name)
+        return {"actions": result["actions"], "message": result["message"], "undo": result["undo"]}
     except Exception as exc:
         _fail(exc)
 
@@ -1611,8 +1947,26 @@ def put_one_mission(key: str, body: OneMission):
 
 @api.delete("/v1/missions/{key}", tags=["World authoring"])
 def delete_one_mission(key: str):
+    """Delete a mission (the others are checked as a save checks them). ``undo``: what
+    POST /v1/deletions/{token}/restore puts back."""
     try:
-        return {"missions": content.delete_mission(key), "message": f"Deleted the mission `{key}`."}
+        result = content.remove_mission(key)
+        return {"missions": result["missions"], "message": result["message"], "undo": result["undo"]}
+    except Exception as exc:
+        _fail(exc)
+
+
+@api.post("/v1/deletions/{token}/restore", tags=["World authoring"])
+def restore_deletion(token: str):
+    """Undo a deletion: ``token`` is the ``undo.token`` of a DELETE of an entry, an action or a mission
+    (kept in this process, for its recent deletions). The record goes back whole, and only it (never a
+    whole file): where it was when its list is as the deletion left it, else next to its old neighbour
+    (``changed_since``, ``moved``). 404: no such deletion (undone already, or the API restarted); 409: its
+    name is taken again, or its entry is gone (nothing is overwritten); 400: it would now be invalid."""
+    try:
+        return content.restore_deletion(token)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         _fail(exc)
 
@@ -1695,6 +2049,14 @@ def suggest_values(body: SuggestionRequest):
         _fail(exc)
 
 
+@api.get("/v1/world/revision", tags=["World authoring"])
+def get_world_revision():
+    """{revision}: a fingerprint of the world's entries as stored (and of an uploaded configuration in use).
+    It changes whenever an entry is added, changed, renamed or deleted, by any client or by hand: a client
+    listing the entries asks for it now and then and lists them again only when it changed."""
+    return content.world_revision()
+
+
 @api.get("/v1/world/size", tags=["World authoring"])
 def get_world_size():
     """How big the world is against the augmentation targets (augmentation.min_*): {have, want, enough}."""
@@ -1707,11 +2069,41 @@ class WorldAdditions(BaseModel):
     characters: list[dict[str, Any]] = Field(default_factory=list, description="NPCs, each with a name.")
 
 
+class AugmentationSwitch(BaseModel):
+    enabled: bool = Field(description="World augmentation on (true) or off (false): augmentation.enabled.")
+
+
+@api.get("/v1/augmentation", tags=["World authoring"])
+def get_augmentation():
+    """World augmentation: {enabled (augmentation.enabled: the studio's tick in 🌍 World → ✨ Grow the world,
+    and what python main.py reads), model: {available, mode, model, server, reason, how}} for its own
+    language model (augmentation.llm: Qwen3.5-4B served by vLLM; ANE_AUGMENT_URL selects a server). A
+    server is asked which models it serves (3 s at most)."""
+    return content.augmentation_state()
+
+
+@api.put("/v1/augmentation", tags=["World authoring"])
+def put_augmentation(body: AugmentationSwitch):
+    """Switch world augmentation on or off (augmentation.enabled in hyperparameters.yaml, its comments
+    kept). Off: POST /v1/jobs/world-proposal is refused (409) and python main.py proposes nothing.
+    Returns as GET /v1/augmentation."""
+    try:
+        return content.set_augmentation_enabled(body.enabled)
+    except Exception as exc:
+        _fail(exc)
+
+
 @api.post("/v1/jobs/world-proposal", status_code=202, tags=["Jobs", "World authoring"])
 def submit_world_proposal():
-    """Gemma proposes new places, people and items for this world, in the background (poll GET
-    /v1/jobs/{id}; the result is {locations, objects, characters}). Nothing is written: add the
-    ones wanted with POST /v1/world/additions."""
+    """The augmentation model (Qwen3.5-4B on vLLM: augmentation.llm) proposes new places, people and
+    items for this world, in the background (poll GET /v1/jobs/{id}; the result is {locations,
+    objects, characters}). Nothing is written: add the ones wanted with POST /v1/world/additions.
+    409 while world augmentation is off (PUT /v1/augmentation)."""
+    try:
+        content.require_augmentation()
+    except Exception as exc:
+        _fail(exc)
+
     def work(progress):
         return content.propose_additions()
     return sessions.submit_job("world-proposal", work, "new places, people and items from the language model")
@@ -1734,7 +2126,8 @@ def add_to_world(body: WorldAdditions):
 def _job_or_404(job_id):
     job = sessions.get_job(job_id)
     if job is None:
-        raise HTTPException(status_code=404, detail="Job not found.")
+        raise HTTPException(status_code=404, detail="Job not found: the API keeps its jobs in memory (the latest "
+                            f"{sessions.MAX_JOBS}); an API restart loses them.")
     return job
 
 
@@ -1745,13 +2138,16 @@ def submit_simulation(body: SimulationRequest, origin: str = Depends(_origin), u
     def work(progress):
         game = sessions.run_simulation(
             body.candidate_count, body.generations, body.simulation_steps, body.deterministic,
-            profile=body.profile, episodes=body.episodes, warm_start=body.warm_start,
+            profile=body.profile, episodes=body.episodes, warm_start=body.warm_start, seed=body.seed,
             stats_choice="defined" if body.stats is not None else body.stats_mode,
             stats_points=yaml.safe_dump(body.stats) if body.stats is not None else None,
-            progress=progress, origin=origin, mission=body.mission, user_id=user_id,
+            progress=progress, origin=origin, mission=body.mission, user_id=user_id, start_game=body.start_game,
         )
         return _game_response(game).model_dump()
-    return sessions.submit_job("simulation", work, f"{body.generations} generation(s) of {body.candidate_count} storytellers")
+    run = sessions.resolve_training(_overrides(body))["effective"]
+    return sessions.submit_job("simulation", work,
+                               f"{run['generations']} generation(s) of {run['population']} storytellers",
+                               request={"body": body.model_dump(), "origin": origin, "user": user_id})
 
 
 @api.post("/v1/jobs/engines/{engine_id}/continue", status_code=202, tags=["Jobs"])
@@ -1761,8 +2157,11 @@ def submit_continue(engine_id: str, body: EngineContinueRequest, origin: str = D
     _known_engine(engine_id)
     def work(progress):
         return _game_response(sessions.continue_engine(engine_id, body.generations, origin=origin, progress=progress,
-                                                       user_id=user_id, **_player(body))).model_dump()
-    return sessions.submit_job("continue", work, f"{body.generations} more generation(s) of engine {engine_id}")
+                                                       user_id=user_id, start_game=body.start_game,
+                                                       **_player(body))).model_dump()
+    return sessions.submit_job("continue", work, f"{body.generations} more generation(s) of engine {engine_id}",
+                               request={"engine": engine_id, "body": body.model_dump(), "origin": origin,
+                                        "user": user_id})
 
 
 @api.post("/v1/jobs/engines/{engine_id}/retrain", status_code=202, tags=["Jobs"])
@@ -1773,8 +2172,12 @@ def submit_retrain(engine_id: str, body: EngineRetrainRequest, origin: str = Dep
     def work(progress):
         return _game_response(sessions.retrain_engine(
             engine_id, body.candidate_count, body.generations, body.simulation_steps, body.episodes,
-            body.deterministic, origin=origin, progress=progress, user_id=user_id, **_player(body))).model_dump()
-    return sessions.submit_job("retrain", work, f"{body.generations} generation(s) from engine {engine_id}")
+            body.deterministic, origin=origin, progress=progress, user_id=user_id, seed=body.seed,
+            start_game=body.start_game, **_player(body))).model_dump()
+    return sessions.submit_job("retrain", work, f"{body.generations or 'the default'} generation(s) from engine "
+                                                f"{engine_id}",
+                               request={"engine": engine_id, "body": body.model_dump(), "origin": origin,
+                                        "user": user_id})
 
 
 class StoryRef(BaseModel):
@@ -1790,10 +2193,12 @@ class CompareRequest(BaseModel):
 class JudgeBenchmarkRequest(BaseModel):
     stories: int = Field(default=10, ge=1, le=evaluation.MAX_STORIES)
     seed: int = Field(default=0, ge=0, description="The first story's seed (stories use seed, seed+1, ...).")
-    engine_id: str | None = Field(default=None, description="A recorded engine's world and storyteller; "
-                                  "left out: the current settings with random storytellers.")
-    pairwise: bool = Field(default=False, description="Compare the current settings (A) with `variants` (B) on "
-                           "the same seeds, each pair judged in both orders.")
+    engine_id: str | None = Field(default=None, description="The selected trained engine (a finished run or a "
+                                  "recorded engine): its saved world and its trained storyteller. Left out: the "
+                                  "baseline, the current configuration with a random storyteller per seed.")
+    pairwise: bool = Field(default=False, description="Compare the target (the selected engine, or the baseline) as "
+                           "it is (A) with the same target and `variants` (B) on the same seeds, each pair judged in "
+                           "both orders.")
     variants: dict[str, Any] = Field(default_factory=dict, description="Settings of version B: {dotted.path: value}, "
                                      "e.g. {\"climax.enabled\": false}.")
     workers: int = Field(default=4, ge=1, le=8, description="Judgements sent to the model at once.")
@@ -1853,13 +2258,18 @@ def submit_judge_benchmark(body: JudgeBenchmarkRequest):
     if body.pairwise and not body.variants:
         raise HTTPException(status_code=400, detail="A pairwise benchmark needs the settings of version B (`variants`).")
     if body.engine_id:
-        _known_engine(body.engine_id)
+        _evaluable_engine(body.engine_id)
+    target = _evaluation_target(body.engine_id)
 
     def work(progress):
-        return evaluation.benchmark(body.stories, body.seed, body.engine_id, body.variants or None, body.pairwise,
-                                    body.workers, progress=progress)
+        result = evaluation.benchmark(body.stories, body.seed, body.engine_id, body.variants or None, body.pairwise,
+                                      body.workers, progress=progress)
+        if body.engine_id and not body.pairwise and not body.variants:  # the engine as it is: on its card
+            engine_meta.record_evaluation(body.engine_id, "judge", result)
+        return result
     kind = "pairwise A/B" if body.pairwise else "judge benchmark"
-    return sessions.submit_job("judge-benchmark", work, f"{kind} of {body.stories} stories")
+    return sessions.submit_job("judge-benchmark", work, f"{kind} of {body.stories} stories · {target['label']}",
+                               meta={"target": target}, request=body.model_dump())
 
 
 @api.post("/v1/jobs/calibrate-fitness", status_code=202, tags=["Jobs", "Evaluation"])
@@ -1869,12 +2279,32 @@ def submit_calibration(body: CalibrationRequest):
     terms, spearman, cv_spearman (how well it predicts stories it was not fitted on), alpha, n,
     yaml, applied}); `apply` saves them as fitness.term_weights."""
     if body.engine_id:
-        _known_engine(body.engine_id)
+        _evaluable_engine(body.engine_id)
+    target = _evaluation_target(body.engine_id)
 
     def work(progress):
-        return evaluation.calibrate(body.stories, body.seed, body.engine_id, body.alpha, body.apply, body.workers,
-                                    progress=progress)
-    return sessions.submit_job("calibrate-fitness", work, f"fit the fitness to the judge on {body.stories} stories")
+        result = evaluation.calibrate(body.stories, body.seed, body.engine_id, body.alpha, body.apply, body.workers,
+                                      progress=progress)
+        if body.engine_id:
+            engine_meta.record_evaluation(body.engine_id, "calibration", result)
+        return result
+    return sessions.submit_job("calibrate-fitness", work, f"fit the fitness to the judge on {body.stories} stories · "
+                               f"{target['label']}", meta={"target": target}, request=body.model_dump())
+
+
+@api.get("/v1/evaluation/target", tags=["Evaluation"])
+def get_evaluation_target(engine_id: str | None = None):
+    """What a judge benchmark or calibration with this ``engine_id`` plays, before it is submitted:
+    {kind: engine | baseline, engine_id, label, world, storyteller}. Left out: the baseline (the
+    current configuration with a random storyteller per seed). 404 for an unknown engine."""
+    return _evaluation_target(engine_id)
+
+
+def _evaluation_target(engine_id):
+    try:
+        return evaluation.describe_target(engine_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @api.get("/v1/fitness/term-weights", tags=["Evaluation"])
@@ -1921,14 +2351,38 @@ def submit_records_import(body: RecordsImport):
 
 @api.get("/v1/jobs", tags=["Jobs"])
 def list_jobs():
+    """The jobs this API keeps, newest first, without their results (has_result says whether one is
+    there; GET /v1/jobs/{id} has it), each with its progress and queue_ahead."""
     return {"jobs": sessions.list_jobs()}
 
 
 @api.get("/v1/jobs/{job_id}", tags=["Jobs"])
 def get_job(job_id: str):
-    """status (queued, running, finished, failed), progress (generation, total, best, mean,
-    validation), and the result (as the synchronous endpoint returns it) or the error."""
+    """status (queued, running, cancel_requested, cancelled, finished, failed), progress (generation, total,
+    label: what is counted
+    (generation, stories judged, ...), best, mean, validation), queue_ahead (a queued job: how many
+    jobs run before it; jobs run one at a time, in the order they came), and the result (as the
+    synchronous endpoint returns it) or the error. A submission identical to a job still queued or
+    running returns that job (``reused``: true) instead of queuing it again."""
     return _job_or_404(job_id)
+
+
+@api.post("/v1/jobs/{job_id}/cancel", tags=["Jobs"])
+def cancel_job(job_id: str):
+    """Cancel a training or evaluation job (simulation, continue, retrain, judge-benchmark,
+    calibrate-fitness). Queued: ``cancelled`` at once, and it never starts. Running:
+    ``cancel_requested``; the work stops at its next safe point (a training: the end of the generation
+    being played; an evaluation: before the next story is judged) and becomes ``cancelled``, with
+    ``partial`` (its last progress and what is kept of it: no engine, no result; never ``finished``).
+    If the work completes before reaching a safe point, it is ``finished`` with its result and a
+    ``cancel_note``. An ended job is unchanged. Returns the job (without its result) and ``message``;
+    404: no such job (kept in memory only: an API restart loses them); 409: a job of another kind."""
+    try:
+        return sessions.cancel_job(job_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @api.get("/v1/artifacts/{artifact_id}", tags=["Artifacts"])

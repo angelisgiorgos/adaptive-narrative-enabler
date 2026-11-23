@@ -40,6 +40,16 @@ def _run_offline(root, code, timeout=300):
     return result.stdout
 
 
+def _inside(parent, block):
+    """Whether ``block`` is inside ``parent`` in the layout."""
+    node = getattr(block, "parent", None)
+    while node is not None:
+        if node is parent:
+            return True
+        node = getattr(node, "parent", None)
+    return False
+
+
 class _Exports(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -47,6 +57,12 @@ class _Exports(unittest.TestCase):
         cls.dir = Path(cls.tmp.name)
         cls.env = patch.dict(os.environ, {"ANE_SAVE_DIR": str(cls.dir / "saves")})
         cls.env.start()
+        # Short stories and a one-story benchmark for the runs these tests export (simulation_steps does
+        # not shorten full-length stories): what is exported does not depend on a story's length.
+        world = engine.config.as_dict()
+        world["evolution"].update({"full_length_stories": False, "cover_situations": False, "validation_episodes": 2})
+        engine.config.use_override(world)
+        cls.addClassCleanup(engine.config.clear_override)
         cls.game = sessions.run_simulation(5, 3, 5, True, episodes=1)
 
     @classmethod
@@ -243,6 +259,83 @@ class ExportEndpointsTests(_Exports):
         path, status = app.export_engine_ui("This game's storyteller", None, None, self.game["token"], False, "mine")
         self.assertIn("storyteller of the current game", status)
 
+    def test_the_export_steps_refuse_invalid_combinations_and_say_how_to_resolve_them(self):
+        import gradio as gr
+
+        import app
+
+        listed = app.export_platform_list()
+        python = next(p for p in listed if p["platform"] == "python")
+        self.assertTrue(python["available"])
+        missing = [p for p in listed if not p["available"]]
+        for entry in missing:  # each unavailable system says why (the API's reason) in its label and note
+            with self.subTest(platform=entry["platform"]):
+                self.assertIn("(not available here)", dict((v, l) for l, v in app.export_platform_choices(listed))[
+                    entry["platform"]])
+                self.assertIn(entry["reason"], app.export_platform_note(entry["platform"], listed))
+        # The ANE AI from a storyteller without an engine: refused, with both ways out.
+        problems = app.export_problems("linux-x64", "This game's storyteller", token=self.game["token"], listed=[
+            python, {"platform": "linux-x64", "available": True}])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("Choose *finished runs* in step 1, or *Python* in step 2", problems[0][1])
+        # Python from each source: what is missing is named.
+        self.assertIn("No game is open", app.export_problems("python", "This game's storyteller")[0][0])
+        self.assertIn("No run was trained", app.export_problems("python", app.GENERATION_SOURCE)[0][0])
+        self.assertIn("No generation is chosen",
+                      app.export_problems("python", app.GENERATION_SOURCE, run_id=self.game["run_id"])[0][0])
+        self.assertEqual(app.export_problems("python", app.GENERATION_SOURCE, generation="1",
+                                             run_id=self.game["run_id"]), [])
+        self.assertIn("No finished run is chosen", app.export_problems("python", app.FINISHED_RUNS, [])[0][0])
+        self.assertIn("no longer offered", app.export_problems("python", app.FINISHED_RUNS, ["0" * 32])[0][0])
+        self.assertEqual(app.export_problems("python", app.FINISHED_RUNS, [self.game["engine_id"]]), [])
+        # The form: Export disabled for an invalid combination, with the summary saying why and how.
+        form = app.export_form_ui("python", "This game's storyteller")
+        self.assertFalse(form[4].interactive)
+        self.assertIn("⛔", form[-1])
+        self.assertFalse(form[2].visible)                       # finished runs: only for that source
+        form = app.export_form_ui("python", "This game's storyteller", token=self.game["token"])
+        self.assertTrue(form[4].interactive)
+        self.assertIn("✅ **Ready:** 1 download for Python", form[-1])
+        button, options, check = app.export_check_ui("python", app.FINISHED_RUNS, [], None, None, None, "")
+        self.assertFalse(button.interactive)
+        self.assertIn("Choose one or more finished runs", check)
+        _, options, _ = app.export_check_ui("python", app.FINISHED_RUNS, ["a", "b"], name="pack")
+        self.assertIn("`pack-<engine id>`", options)
+        # A refused export asks nothing of the API.
+        with self.assertRaises(gr.Error) as refused:
+            app.export_engine_ui("This game's storyteller", None, None, None, True, "", "python")
+        self.assertIn("No game is open", str(refused.exception))
+        # Usage after the download, per platform.
+        self.assertIn("python run.py play", app.export_usage_markdown("python"))
+        self.assertIn("Import Package", app.export_usage_markdown("unity"))
+        self.assertIn("ane-ai.exe serve", app.export_usage_markdown("windows-x64"))
+        self.assertIn("com.apple.quarantine", app.export_usage_markdown("macos-arm64"))
+
+    def test_the_export_destination_is_laid_out_in_steps_and_wired(self):
+        import gradio as gr
+
+        import app
+
+        demo = app.build_app()
+        by = {b.elem_id: b for b in demo.blocks.values() if getattr(b, "elem_id", None)}
+        export = by["dest-export"]
+        headings = [b.value for b in demo.blocks.values() if isinstance(b, gr.Markdown) and str(b.value).startswith(
+            "#### ") and _inside(export, b)]
+        self.assertEqual([h.split(" · ")[0] for h in headings], ["#### 1", "#### 2", "#### 3", "#### 4", "#### 5"])
+
+        def listeners(component, event):
+            return [fn for fn in demo.fns.values() if (component._id, event) in fn.targets]
+
+        for elem, event, name in (("export-platform", "input", "export_form_ui"), ("export-source", "input",
+                                  "export_form_ui"), ("export-engines", "change", "export_check_ui"),
+                                  ("export-name", "input", "export_check_ui")):
+            with self.subTest(elem=elem):
+                self.assertIn(name, [fn.fn.__name__ for fn in listeners(by[elem], event)])
+        # Nothing re-lays the form when a value is set by code (Export this result's chosen engine stays).
+        self.assertEqual(listeners(by["export-platform"], "change"), [])
+        self.assertEqual(listeners(by["export-source"], "change"), [])
+
+
     def test_the_ane_ai_is_made_from_a_complete_engine_only(self):
         runtimes = Path(tempfile.mkdtemp(dir=self.dir))
         with zipfile.ZipFile(runtimes / "ane-runtime-linux-x64.zip", "w") as zipped:  # a stand-in runtime
@@ -296,9 +389,12 @@ class ExportEndpointsTests(_Exports):
         ids = [engine for _, engine in app.finished_run_choices()]
         self.assertEqual(ids[0], second["engine_id"])  # newest first
         self.assertIn(self.game["engine_id"], ids)
-        _, generation, chosen, note, button = app.export_form_ui("linux-x64")
-        self.assertEqual((chosen.value, button.interactive), ([second["engine_id"]], True))  # the finished run
+        _, generation, chosen, note, button, platform_note, _, check = app.export_form_ui("linux-x64")
+        self.assertEqual(chosen.value, [second["engine_id"]])        # the newest finished run
         self.assertFalse(generation.visible)
+        self.assertFalse(button.interactive)                          # no linux-x64 runtime here: explained
+        self.assertIn("not available here", platform_note)
+        self.assertIn("**To resolve:**", check)
 
         runtimes = Path(tempfile.mkdtemp(dir=self.dir))
         with zipfile.ZipFile(runtimes / "ane-runtime-linux-x64.zip", "w") as zipped:
@@ -308,6 +404,10 @@ class ExportEndpointsTests(_Exports):
             zipped.writestr("ane-ai", "#!/bin/sh\n")
         both = [self.game["engine_id"], second["engine_id"]]
         with patch.dict(os.environ, {"ANE_RUNTIMES_DIR": str(runtimes)}):
+            form = app.export_form_ui("linux-x64", app.FINISHED_RUNS, both)
+            self.assertTrue(form[4].interactive)                      # available now, two runs chosen
+            self.assertEqual(form[2].value, both)
+            self.assertIn("2 downloads", form[-1])
             files, status = app.export_engine_ui(app.FINISHED_RUNS, None, None, None, False, "both", "linux-x64", both)
         self.assertEqual(len(files), 2)  # one download per finished run
         exported = set()

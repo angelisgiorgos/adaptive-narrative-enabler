@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import main as engine
 from core_engine import Action, Character, GameState, Genome, Location, Outcome, WorldGraph
+from core_engine.builder import _build_outcome
 from utils.config_loader import config
 
 
@@ -100,7 +101,7 @@ class OneWayTests(unittest.TestCase):
         self.assertTrue(self.state._location_is_locked())
 
     def test_send_to_is_read_from_yaml(self):
-        outcome = engine._build_outcome({"desc": "Seized!", "send_to": "Dungeon"}, _genome())
+        outcome = _build_outcome({"desc": "Seized!", "send_to": "Dungeon"}, _genome())
         self.assertEqual(outcome.send_to, "Dungeon")
 
 

@@ -104,8 +104,6 @@ class MapTests(unittest.TestCase):
         for _ in range(5):
             found = world.spawn(self.state.current, state=self.state)
             self.assertIn(found.name if found else "Square", {"Square"})
-        found = world.spawn(self.state.current, character=world.characters[0], state=self.state)
-        self.assertIn(found.name if found else "Square", {"Square"})
         self.assertFalse(any(name in ("Move to Tower", "Move to Cell") for name in _names(self.state)))
 
     def test_people_cannot_take_you_where_this_place_does_not_lead(self):

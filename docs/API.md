@@ -9,6 +9,10 @@ below (`ANE_API_URL`, set to `http://hamlet-ane-api:8004` by Compose), and
 whatever it does, other clients can do too. Without `ANE_API_URL`, `python
 app.py` serves the same API inside the studio's process.
 
+**Building another frontend?** [FRONTEND.md](FRONTEND.md) describes every studio view as
+requests and JSON fields: what each screen loads, its components, its actions, the client-side logic
+to reimplement, and an index of which view uses which endpoint.
+
 | URL | Purpose |
 |---|---|
 | `http://localhost:8003` | Adaptive Narrative Studio |
@@ -53,7 +57,7 @@ the first one's games, and a restart forgets everything that lives in memory:
 | --- | --- |
 | Play sessions: the newest `max_web_sessions` (100); beyond that the oldest is dropped | Configuration: `config/*.yaml` and the app parameters `config/ui_settings.yml` |
 | Recent runs that can be exported (the latest 20) | Player profiles' persistent variables and the learning memory (`ANE_SAVE_DIR`) |
-| Background jobs (the latest 100) | The records database and engine model files (`ANE_RECORDS_DIR`) |
+| Background jobs (the latest 100), including queued and running ones: a restart loses them, and no job is resumed | The records database and engine model files (`ANE_RECORDS_DIR`) |
 | Download links `/v1/artifacts/{id}` (the files stay in `ANE_ARTIFACT_DIR`, the links do not) | Generated configurations, engine models and exports (`ANE_ARTIFACT_DIR`) |
 | An uploaded configuration (`POST /v1/config/upload`), until `POST /v1/config/reset` or a restart | |
 
@@ -74,9 +78,13 @@ state.
 - **Atomic.** Files are replaced in one step (a temporary file, then a
   rename) under one lock. Concurrent writes do not interleave, and an
   interrupted write leaves the previous file.
-- **Immediate.** After a save the configuration is reloaded, and new
-  simulations and games use it at once. App parameters
-  (`PUT /v1/app-settings`) apply when the API and the studio restart.
+- **Immediate, for what starts afterwards.** After a save the configuration is reloaded (an uploaded
+  configuration, or a trained engine's, in use until then is set aside, and the message says so). New
+  games, training runs and evaluations, and jobs still queued (a job reads the configuration when it
+  starts), use it. Nothing running is restarted: a game in progress or a running job keeps going, and
+  values it reads as it goes may change mid-way. Every save's `message` says this
+  (`backend/activation.py`; the forms' note is `GET /v1/reference`'s `activation.configuration`). App
+  parameters (`PUT /v1/app-settings`) apply only when the API, or the studio, restarts.
 
 ### Status codes
 
@@ -95,6 +103,22 @@ paths (where the records, saves and models are): only a file's name, when it mat
 
 ### Runs: limits, work, and waiting
 
+0. **Defaults and overrides.** A run's settings are the saved engine defaults (`evolution.pop_size`,
+   `generations`, `episodes_per_genome`, `max_steps`, `warm_start`, `full_length_stories`;
+   `reproducibility.deterministic` and `seed`; `narrative_end.max_actions`) with what the request sets
+   for itself: `candidate_count`, `generations`, `episodes`, `simulation_steps`, `deterministic`, `seed`,
+   `warm_start`, each optional (left out or `null`: the default). `POST /v1/simulations/resolve` with
+   the same body answers, before anything runs, with what the run would execute: `defaults`,
+   `overrides`, `sources` (each value: `override` or `default`), `effective` (`population`,
+   `generations`, `stories_per_storyteller`, `requested_steps`, `story_turns`, `full_length_stories`,
+   `story_length`, `deterministic`, `seed` (`null`: random), `warm_start`, `warm_start_mode`: memory,
+   engine or off), `work` (as `GET /v1/simulations/work`), `notes` (values held to the app's limits,
+   a seed a random run does not use), `errors` (a deterministic run without a seed), `ready` and
+   `remembered`; with `engine_id`, a retraining of that recorded engine (its saved defaults, a warm
+   start from it). `POST /v1/simulations`, the job, and a retraining run exactly `effective`, and
+   their response's `training` gives `overrides`, `sources`, `resolved` and `executed` (read back
+   from the evolution that ran). A request that left out `candidate_count`, `generations` or
+   `simulation_steps` used to get 8, 5 and 16; it now gets the saved defaults.
 1. **Maximums.** One run takes up to 400 storytellers
    (`candidate_count`), 1000 `generations`, 400 `simulation_steps`, and 10
    `episodes`; above that is `422`.
@@ -102,16 +126,37 @@ paths (where the records, saves and models are): only a file's name, when it mat
    `candidate_limit`, `generation_limit`, and `simulation_step_limit`
    (by default the maximums). A request above a lowered limit runs at the
    limit; it is not refused.
-3. **Work.** Storytellers × generations × story length × stories per
-   storyteller must stay within `max_simulation_work` (1,000,000 simulated
-   turns by default, an app parameter). With `evolution.full_length_stories`, a story counts as
-   `narrative_end.max_actions` turns (at least 100), an upper bound since many end sooner. A
-   run above this is refused with `400` before anything runs, and
-   `GET /v1/simulations/work?candidate_count=&generations=&simulation_steps=&episodes=` says
-   beforehand what a run would ask for (`work`, `limit`, `allowed`, `story_turns`).
+3. **Story length and work.** A story lasts `narrative_end.max_actions` turns at most (at least
+   100; fast-travel turns, `travel.max_free_turns`, come on top). With
+   `evolution.full_length_stories` (on by default) every training story is played to that end and
+   the `simulation_steps` asked for do not change it; without it a story is played for
+   `simulation_steps` turns, though none outlasts its end. Storytellers × generations × stories per
+   storyteller × the turns a story can take must stay within `max_simulation_work` (1,000,000
+   simulated turns by default, an app parameter), an upper bound since many stories end sooner. A
+   run above it is refused with `400` before anything runs (the refusal shows the multiplication
+   and why a story counts as many turns as it does).
+   `GET /v1/simulations/work?candidate_count=&generations=&simulation_steps=&episodes=` answers
+   beforehand with the same numbers, so a client never computes them itself:
+   `requested_steps`, `effective_max_turns` (the most turns a story can take: its length plus
+   `fast_travel_turns`, turns of fast travel that do not count toward its end (`travel.max_free_turns`,
+   0 with fast travel off), at most the steps training plays; `story_turns` is the same, for older
+   clients), `full_length_stories`, `story_length`, `fast_travel_turns`, `steps_decide` (whether the
+   steps set `effective_max_turns`), `override` (`{setting, reason}` when they do not: the setting
+   that does, `evolution.full_length_stories` or `narrative_end.max_actions`, and why), `factors`
+   (`storytellers`, `generations`, `stories_per_storyteller`, `turns_per_story`), `work`, `limit`,
+   `allowed` (exactly when the run would start) and `over_by`.
 4. **Reproducible.** `deterministic: true` uses the seed of the settings; the
    same configuration and seed give the same evolution.
-5. **Waiting.** `POST /v1/simulations` and the records' `play`, `continue` and
+5. **A game after training, or not.** `POST /v1/simulations`, its job, and the records' `continue`
+   and `retrain` (and their jobs) start a game with the best storyteller, as before, unless the
+   request sets `start_game: false`: then the training only trains. No session is created and
+   nothing is written to the player's profile (no start, no mission, no play story); the response
+   has `game_started: false`, `session_id: null` and empty play fields, with the run, its engine
+   (`engine_id`), its files, `learning` and `training` as usual. The studio's 🧠 Train asks this way;
+   the engine is then played with `POST /v1/engines/{engine_id}/play`, judged with `engine_id` in
+   the judge jobs (a finished run kept without the records too) and exported with
+   `POST /v1/exports {"source": "engine", "engine_id": …}`.
+6. **Waiting.** `POST /v1/simulations` and the records' `play`, `continue` and
    `retrain` answer when the work is done, which can take minutes, so give
    the client a long timeout. The job endpoints answer at once (`202`) and
    report progress per generation. Jobs run one at a time in the order they
@@ -234,7 +279,7 @@ curl -X POST http://localhost:8004/v1/simulations -H 'Content-Type: application/
 - Uploads are recognised by their extension (`.yaml`/`.yml`, `.zip`) and
   read in chunks up to their limit.
 - CORS is off unless `ANE_CORS_ORIGINS` lists the allowed origins (comma
-  separated). It then allows `GET`, `PUT`, `POST`, `DELETE` and the headers
+  separated). It then allows `GET`, `PUT`, `PATCH`, `POST`, `DELETE` and the headers
   `Content-Type`, `Authorization`, `X-ANE-Client`, and `X-ANE-User`.
 
 ## Endpoint coverage
@@ -258,7 +303,12 @@ one); `tests/test_studio_coverage.py` checks it.
 - `GET|PUT /v1/app-settings`: the studio's app parameters
   (`config/ui_settings.yml`: limits, defaults, queue, launch) with their
   `defaults`. A `PUT` (`{"settings": {...}}`) changes the parameters it names,
-  validates all of them, and rejects unknown ones. They apply after a restart.
+  validates all of them, and rejects unknown ones. They apply after a restart: the API reads its own
+  when it starts, the studio its own. `running` is what this API process uses; `parameters` says, per
+  parameter, `readers` (API, studio), `takes_effect`, `running_api`, `environment` (the studio's
+  `ANE_UI_HOST`, `ANE_UI_PORT`, `ANE_UI_SHARE`, which set its launch settings instead of the saved
+  values; only the studio sees them) and `pending` (the API runs another value than the saved one). A
+  `PUT`'s `message` says that nothing running changes and what a restart of the API would use.
 - `GET /v1/documents` lists the configuration documents edited as YAML text
   with their comments kept: `missions`, `messages`, `variables`, `map` (the world's
   map, `world_definition.routes`: `{routes: {place: [neighbours]}}`, or `routes: null`
@@ -286,6 +336,48 @@ one); `tests/test_studio_coverage.py` checks it.
   (`retry_on_failure`). The whole action list is validated before it is
   written; an unknown index is `404`.
 - `GET /v1/entities/{kind}?fields=names` returns only the names.
+- `GET /v1/conditions/reference` is what a condition can say in the current world, for a condition
+  builder: `groups`, `operators`, and `facts` (`{fact: {refers_to, names}}`, with `refers_to` null for
+  free text). It also gives `comparisons`: variables with their types, stats and resources.
+- `POST /v1/conditions/validate` (`{condition, where}`; the condition may be its YAML text) checks a
+  condition as every save checks it (structure, operators, references, operand types):
+  `{valid, errors, empty}`. Nothing is saved.
+- `POST /v1/entities/{kind}/{name}/preview` (the body of `PUT …/draft`; an empty body previews the
+  stored entry; `?create`, `?simulate`, `?seed`) previews an entry as its unsaved draft makes it. It is
+  read only: no configuration is written, no progression changes, nothing is recorded, no session
+  advances. It returns `{name, sections, problems, static, simulated, simulated_error, saved: false}`.
+  - `problems` lists what a save would refuse; the preview is still shown.
+  - `static` is the content as written: `texts`, `facts`, `dialogue`, and `actions` with their
+    `requirements` and outcomes (`text`, `effects`, `variants`).
+  - `simulated` (with `simulate`) is a sample scene the engine plays in a separate process: `start`,
+    `present`, `description`, `choices`, the entry's `actions` (each tried on its own copy of the
+    state: `text`, `check`, `changes`), and `assumptions`, which spell out the sample state.
+- `PUT /v1/entities/{kind}/{name}/draft` saves an entry's whole draft at once, as the studio's
+  *Save changes* does. The sections are `fields` (as `PUT /v1/entities/{kind}/{name}` takes them; their
+  `name` renames the entry), `entry_yaml`, `actions` (a list or YAML), `action` (`{index, action}`, where
+  `index` equal to the number of actions adds one), `policy` (a mapping or YAML) and `details`.
+  - They are applied, in order, to a copy of the stored entry; every field no section touches is kept.
+  - The entry, and the world with it, are checked as each section's own save checks them, and the entry
+    is written once.
+  - When anything is wrong, `400` names every problem with its section and nothing is written: no
+    section is saved without the others. Two sections that change the same data (`fields` and
+    `entry_yaml`, or `actions` and `action`) are also `400`.
+  - `?create=true` makes a new entry named `name` from its `fields`.
+  - A rename (`fields.name`) renames what refers to the entry in the same save: every YAML key or
+    string that is exactly its old name in the entry files, the missions, the variables and the
+    tuning parameters (a place's `location_penalties`, `game_state.arrest_location`); the other files
+    are edited in place, their comments kept. The reply's `references` counts them per file
+    (`{"locations.yaml": 6, "npcs.yaml": 2}`), and `message` says so. When the old name also names
+    something of another kind (an item and a place both called `Lantern`), nothing else is renamed,
+    and a rename that would leave references dangling is `400`, saying why. `PUT
+    /v1/entities/{kind}/{name}` with a new `name` renames the references the same way.
+  - Returns `{name, saved, message, entity}`.
+- `GET /v1/entities/{kind}?fields=summary` returns the names plus a light summary of each entry, in
+  order: `{kind, names, entries: [{name, tags, summary, actions, facts}]}`. `summary` is the first
+  description, shortened to 140 characters, and `actions` is how many it has. `facts` gives a few
+  words on what it is: a start place, an NPC's role and whether it is unique or generic, a hostile
+  encounter, an event's title, an item's stat bonus. The studio's content library is built from it,
+  and the other `fields` values are unchanged.
 
 **Jobs** (long work with progress)
 - `POST /v1/jobs/simulations` (body as `POST /v1/simulations`),
@@ -295,12 +387,35 @@ one); `tests/test_studio_coverage.py` checks it.
 - `POST /v1/jobs/judge-benchmark` and `POST /v1/jobs/calibrate-fitness` (see
   **Evaluation**) run the judge in the background; their `progress` is
   `{generation: stories judged so far, total, label}`.
-- `GET /v1/jobs/{id}`: `status` (`queued`, `running`, `finished`, `failed`),
-  `progress` (`generation`, `total`, `best`, `mean`, `validation`, `improved`),
+- `GET /v1/jobs/{id}`: `status` (`queued`, `running`, `cancel_requested`,
+  `cancelled`, `finished`, `failed`),
+  `progress` (`generation`, `total`, `label`: what is counted, `generation` or
+  `stories judged`, plus a training's `best`, `mean`, `validation`, `improved`),
+  `queue_ahead` (for a queued job, how many jobs run before it; null otherwise),
   and, when finished, `result` (what the synchronous endpoint returns: the
   playable game) or `error`. `GET /v1/jobs` lists the latest jobs without their
-  results. Jobs run one at a time in the order they arrive; the latest 100 are
-  kept (in memory).
+  results (`has_result` says whether there is one). Jobs run one at a time in the
+  order they arrive; the latest 100 are kept (in memory). A submission identical
+  to a job still queued or running (the same body, user and origin) is not queued
+  again: it returns that job with `reused: true` (otherwise `reused: false`).
+  `cancellable` says whether the job can still be cancelled. A `404` for a job
+  that was submitted means it was lost: an API restart (jobs live in memory and
+  are not persisted), or more than 100 newer jobs.
+- `POST /v1/jobs/{id}/cancel` cancels a training (`simulation`, `continue`,
+  `retrain`) or evaluation (`judge-benchmark`, `calibrate-fitness`) job; other
+  kinds answer `409`, an unknown job `404`. Cancellation is cooperative:
+  - a **queued** job is `cancelled` at once and never starts;
+  - a **running** job becomes `cancel_requested` and stops at its next safe
+    point: a training after its current generation, an evaluation before the
+    next story is judged or once its stories are played (a play phase itself
+    is not interrupted). It is then `cancelled`;
+  - a cancelled job has no `result`. `partial` (`{progress, note}`) says how far
+    it got; nothing partial is kept as a result. A cancelled training makes no
+    engine, and its recorded run has the status `cancelled`;
+  - if the work completes before it reaches a safe point, the job is `finished`
+    with its result and a `cancel_note`;
+  - an ended job is left as it is (`message` says so). The reply is the job,
+    with a `message`. In every case the worker goes on to the next job.
 
 **Configuration**
 - `GET /v1/config` returns the complete merged active configuration.
@@ -322,7 +437,28 @@ one); `tests/test_studio_coverage.py` checks it.
   `simulate_with`), and the event fallback (`fallback_action`,
   `fallback_description`). Fields left out of a `PUT` keep their value.
 - `GET|PUT /v1/hyperparameters` reads or validates the complete hyperparameter
-  YAML; `GET|PUT /v1/weights` reads or updates every weight.
+  YAML; `GET|PUT /v1/weights` reads or updates every weight. `GET` answers `values`
+  `{path: value}` and `parameters`, how each is presented: `[{path, value, section, label,
+  explanation, unit, type: integer | float, minimum, maximum, default, source, described}]`.
+  These come from the engine's code (`backend/tuning_parameters.yaml`): the unit on the
+  parameter's own scale, `default` the value the engine uses when the parameter is left out,
+  `minimum`/`maximum` only where the engine clamps or rejects values, `source` the code that
+  reads it; `described: false` (a parameter without metadata) gives a label from its name and the
+  type it is written with. A `PUT` (paths left out keep their value) is checked whole first: a
+  fraction for an integer parameter is `400` (never cut down), as is a value outside the engine's
+  bounds, and nothing is saved; values that do not change are kept exactly as written.
+  `requires` names the true/false setting a parameter needs, and `inactive` says why it has no
+  effect now. `basic` is the studio's Basic view, a chosen set of common gameplay controls:
+  `[{key, title, summary, controls: [{path, effect}]}]`. Each control is one of the parameters
+  (`backend/tuning_basic.yaml`; no presets); a control whose parameter the configuration lacks is
+  left out. A `PUT` may send `expected` `{path: value}`, the values the form was loaded with. A
+  changed parameter whose stored value has moved since is then refused with `409`, and nothing is saved.
+  `shipped` (`{path: value}`, also `shipped` in each parameter) is what this release ships:
+  `config/default_history.json`'s `shipped` record, written by `packaging/default_history.py`
+  from the configuration being released. It is read from `ANE_CONFIG_DEFAULTS`, the image's
+  pristine `config.defaults`, or `config/`. A Basic control the storyteller scales has
+  `scaled_by` and `scaling`, which says how far each storyteller's learned traits move its value.
+  `unexpected_events.cooldown_steps` and `max_per_story` are weights too.
 - `GET /v1/logic` lists the parameter sections of the engine's logic, with what
   each controls. `GET|PUT /v1/logic/{section}` reads or changes one section as
   YAML text (`{"parameters": "evolution:\n  ..."}`). It must keep the same
@@ -332,8 +468,11 @@ one); `tests/test_studio_coverage.py` checks it.
 **World authoring**
 - `GET /v1/entities/{kind}` lists Locations, NPCs, Items, or Events.
 - `GET|PUT|DELETE /v1/entities/{kind}/{name}` reads, creates, renames,
-  updates, or deletes an entry. Optional fields, which keep their stored value
-  when omitted on `PUT`:
+  updates, or deletes an entry. `goals` is a list of strings; a structured goal
+  (`{goal, tags, needed, reward}`) is one line of YAML in it (`{goal: Get out of
+  this cell, tags: [smuggler_freed], needed: 1, reward: lead}`), and such a line
+  sent back on `PUT` is stored as the structured goal (it used to fail with `500`
+  on `GET`). Optional fields, which keep their stored value when omitted on `PUT`:
   - `unique`, `encounter_event` (send `""` to remove it), and
     `encounter_repeat`: NPCs only.
   - `enabled_if`: locations, NPCs, items, and events (send `{}` to remove it).
@@ -365,6 +504,17 @@ one); `tests/test_studio_coverage.py` checks it.
   `interact_prompts`, `dialogue`), given the entry and the world's names: `{suggestions}`. Nothing
   is saved. `503` (with why and how to start it) without the language model, `404` for an unknown
   entry.
+- `GET /v1/augmentation`: `{enabled, model}`: whether world augmentation is on (`augmentation.enabled`,
+  the studio's tick, what `python main.py` reads) and its own language model's status (`augmentation.llm`:
+  Qwen3.5-4B on vLLM; `{available, mode, model, server, reason, how}`, a server asked which models it
+  serves). `PUT /v1/augmentation` `{enabled: true|false}` switches it (written into
+  `hyperparameters.yaml`, its comments kept; `422` for anything but a boolean). While it is off,
+  `POST /v1/jobs/world-proposal` is `409` and no job is queued; the proposal itself runs on Qwen3.5-4B,
+  not on the judge's model.
+- `GET /v1/world/revision`: `{revision}`, a fingerprint of the world's entries as stored (their
+  files' size and time of change) and of an uploaded configuration in use. It changes whenever an
+  entry is added, changed, renamed or deleted, by any client or by hand; the studio's content library
+  asks for it every 10 seconds and lists the entries again when it changed.
 - `GET /v1/world/size`: the world against the augmentation targets (`augmentation.min_*`):
   `{have, want, enough}` for locations, items, NPCs and outcomes. `POST /v1/jobs/world-proposal`:
   the language model proposes new places, people and items in the background (the job's result:
@@ -373,7 +523,25 @@ one); `tests/test_studio_coverage.py` checks it.
   kept, edited or not): each must be new and pass the checks of a saved entry, and the whole world
   is checked with them in place; otherwise `400` and nothing is written.
 - `GET|PUT|DELETE /v1/missions/{key}`: one mission (`PUT` adds or replaces it; `rename` gives it a
-  new key), checked with every other one. `GET /v1/map`: `{routes: {place: [borders]} or null,
+  new key), checked with every other one.
+- **Deleting, and undoing it.** `DELETE /v1/entities/{kind}/{name}` (at least one location, NPC and
+  item remains: `400` for the last; events may all go), `DELETE
+  /v1/entities/{kind}/{name}/actions/{index}` (optional `?expected_name=`: the name the action at
+  `index` must have, else `409` and nothing is deleted, so an action list changed by someone else
+  never loses the wrong action) and `DELETE /v1/missions/{key}` answer as before, with `undo`:
+  `{token, type: entity | action | mission, name, kind, entry, position, of}`. The API keeps the
+  deleted record whole (every field, as stored) with its place: its index, its neighbours and the
+  list it left. `POST /v1/deletions/{token}/restore` puts back that record only (never a whole file
+  or configuration): where it was when its list is as the deletion left it, otherwise next to its
+  old neighbour; the answer says where (`position`, `was`, `moved`, `changed_since`, `message`).
+  `409` when its name is taken again (an entry, an action of its entry, a mission key) or its entry
+  is gone (an action): nothing newer is overwritten; `400` when it would now be invalid (it is
+  checked as a save checks it, only against problems the world did not already have when it was
+  deleted); `404` when it was undone already or the API restarted since (deletions are kept in
+  memory, the most recent 200) — now kept with the saves (`deletions.json` in `ANE_SAVE_DIR`, the most recent
+  200), so `404` means it was undone already or is older than that.
+  `GET /v1/entities/{kind}/{name}/references` lists what refers to an entry and would no longer work
+  without it (`{references: [...]}`, the engine's own check messages); deleting stays allowed. `GET /v1/map`: `{routes: {place: [borders]} or null,
   places}`; `PUT /v1/map/{place}` `{borders}` sets a place's borders, both ways; `PUT /v1/map`
   `{routes}` the whole map (null: every story draws its own).
 - `GET /v1/behaviours/rules` and `PUT /v1/behaviours/rules/{npcs|locations}` `{default, rules}`:
@@ -398,9 +566,18 @@ one); `tests/test_studio_coverage.py` checks it.
   `replayability`, with `engagement`, `spread` (between its `llm_judge.samples`
   judgements), `verdict`, `best_moment` and `weakest_moment`. `404` for an unknown story
   or session, `503` when no language model is available (`vllm`).
-- `GET /v1/missions/playable?profile=`: the quests a player may choose when
+- `GET /v1/missions/playable?profile=&engine_id=`: the quests a player may choose when
   starting a game (`key`, `title`, `description`, `stages` (their titles),
-  `available` for that profile now).
+  `available` for that profile now, `achieved` in its save game).
+  - With `engine_id` (a finished run or a recorded engine; `latest` is the newest), the quests
+    come from the world that engine was trained on, read from its saved configuration. They are
+    evaluated against that world's variable definitions and progression rules, with the
+    profile's save game. The active configuration does not change, so the answer is what
+    `POST /v1/engines/{id}/play` with a `mission` then accepts. Without `engine_id`, the
+    active world is used.
+  - `world` says which world was read: `source` (`engine` or `active`), `engine_id`, `digest`
+    (the world alone), `id` (world and tuning, as in the engine's manifest), `summary` and
+    `current` (whether it is the active configuration's world). An unknown engine answers `404`.
 - `GET /v1/lint/failures`: the failures the current world leaves as dead ends,
   `{dead_ends: [{action, owner, why}]}`: actions that can fail (a skill check, or
   failure outcomes) where failing changes nothing but health or coins and no
@@ -421,19 +598,29 @@ one); `tests/test_studio_coverage.py` checks it.
   game. The pair is judged in both orders and a side wins only where both agree:
   `{winner: A | B | tie (null: unreadable), criteria: {criterion: A | B | tie},
   reason, agreed}`. `400` for an unknown story or session.
-- `POST /v1/jobs/judge-benchmark` (`stories` 1-60, `seed`, `engine_id` (a recorded
-  engine; left out: the current settings with random storytellers), `pairwise`,
-  `variants` (`{dotted.path: value}`: version B), `workers`): the judge on the
-  engine's stories. Absolute: `{engagement, criteria, judged, rows}`. Pairwise: the
-  same seeds with the current settings (A) and with `variants` (B), each pair judged
-  in both orders: `{pairs, a_wins, b_wins, ties, b_win_rate, wilson_95, criteria,
-  rows}`. The stories are played in a separate process, so the settings of games
-  in progress never change.
+- `POST /v1/jobs/judge-benchmark` (`stories` 1-60, `seed`, `engine_id`, `pairwise`, `variants`,
+  `workers`): the judge on the stories of the target.
+  - **Target:** `engine_id` is the selected trained engine (a finished run or a recorded engine):
+    its saved world, and its trained storyteller for every seed. Left out, the target is the
+    baseline: the current configuration, with a random storyteller per seed.
+  - **Absolute:** `{engagement, criteria, judged, rows}`.
+  - **Pairwise:** A is the target as it is and B is the same target with `variants`
+    (`{dotted.path: value}`, version B). Both are played on the same seeds, and each pair is
+    judged in both orders: `{pairs, a_wins, b_wins, ties, b_win_rate, wilson_95, criteria, rows,
+    a, b}`, where `a` and `b` give each side's `label` and `variants`.
+  - Every result also has `target` and `seeds` (`[first, last]`), and the job carries `target`
+    from its submission. The target is `{kind: engine | baseline, engine_id, label, world:
+    {digest, id, summary, current}, storyteller}`.
+  - The stories are played in a separate process, so the settings of games in progress never
+    change.
+- `GET /v1/evaluation/target?engine_id=`: the same `target`, before anything is submitted. `404`
+  for an unknown engine.
 - `POST /v1/jobs/calibrate-fitness` (`stories` 10-60, `seed`, `engine_id`, `alpha`,
   `apply`, `workers`): plays and judges the stories, fits the judged engagement on
   the fitness terms and suggests a multiplier per term: `{term_weights, terms,
   spearman, cv_spearman (agreement on stories left out), alpha, n, yaml,
-  applied}`; `apply: true` saves them.
+  applied, engagement, stories, target, seeds}`; `apply: true` saves them. Its target is the same as the
+  judge benchmark's, and its job carries it as well.
 - `GET|PUT /v1/fitness/term-weights` (`{"weights": {term: multiplier}}`, `{}`
   removes them): `fitness.term_weights`, the multiplier of each fitness term.
 - The judge in the loop of evolution is a setting: `evolution.judge_weight`
@@ -534,7 +721,29 @@ one); `tests/test_studio_coverage.py` checks it.
   default the newest) or `source: run` (that run's engine, without
   `generation`). A generation's champion, the remembered storyteller, a play
   session's storyteller, or no complete engine yet answer `409`. The response
-  carries the `engine_id`.
+  carries the `engine_id`. Without a `name`, the export is named after the engine's
+  name, if it has one; its manifest carries that name as `engine_name`.
+- **Engine names and result cards.** Each entry of `GET /v1/exports/engines`, `GET /v1/runs`
+  and `GET /v1/records/engines` also has `name` (null when unnamed) and `label`. The label is
+  the name with the creation time, or, for an unnamed engine, what it is, when it was made, its
+  generations and its training fitness. It always ends with the short id. The engine and run
+  ids stay the identifiers.
+  - `PUT /v1/engines/{engine_id}/name` with `{"name": "…"}` names an engine, and `""` or
+    `null` removes the name. It answers `400` for a name over 80 characters or one with control
+    characters, and `404` for an unknown engine.
+  - `GET /v1/engines/{engine_id}/card` is the result card: `name`, `label`, `default_label`,
+    `created_at`, `kind`, `run_id`, `parent_id`, `world` (`id`, `summary`, and `current`: trained
+    on the active world), `generations`, `settings` (`main` and `other`: what its training ran
+    with), `fitness` (`training`, the evolution's objective, plus `improvement`,
+    `early_stopped` and `history`), `judge_in_training`, `evaluations`, `resumable` and
+    `scaling_traits`.
+  - `evaluations` lists, newest first, the judge benchmarks (`POST /v1/jobs/judge-benchmark`
+    with an `engine_id`, neither pairwise nor with variants) and calibrations of this engine.
+    Each gives the judge's mean `engagement` (1–10), kept apart from the training fitness, which
+    is on its own scale.
+  - Names and evaluations are kept with the saves (`ANE_SAVE_DIR/engine_meta.json`,
+    `{"format": 1, "engines": {...}}`), so they work with recording on or off and survive a
+    restart. An older bare `{engine_id: name}` file is read and rewritten in this format.
 - `GET /v1/learning` returns the storytellers the AI remembers from earlier
   runs; `DELETE /v1/learning` forgets them.
 - `POST /v1/engines/load?profile=&stats_mode=&stats=&mission=` loads an engine model

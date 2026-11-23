@@ -140,6 +140,12 @@ class _Records(_Folder):
         patcher = patch.dict(os.environ, {"ANE_RECORDS_DIR": str(self.dir / "records"), "ANE_SAVE_DIR": str(self.dir / "saves")})
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Runs through the API and the terminal take what they do not set from the saved configuration:
+        # short stories and a one-story benchmark (simulation_steps does not shorten full-length stories);
+        # recording does not depend on a story's length. _Folder clears the override.
+        world = config.as_dict()
+        world["evolution"].update({"full_length_stories": False, "cover_situations": False, "validation_episodes": 2})
+        config.use_override(world)
 
     def _db(self, query, *args):
         with sqlite3.connect(records.database_path()) as connection:
@@ -158,6 +164,7 @@ class ApiRecordingTests(_Records):
         return response.json()
 
     def test_a_run_is_recorded_with_everything(self):
+        config.clear_override()  # full-length stories: the preview is played to its end and recorded as ended
         game = self._simulate()
         run = self.client.get(f"/v1/records/runs/{game['run_id']}").json()
         self.assertEqual((run["origin"], run["status"], run["kind"]), ("api", "finished", "evolution"))

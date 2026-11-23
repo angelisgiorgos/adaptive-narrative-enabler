@@ -62,6 +62,11 @@ services:
       # The language model judge (Gemma 4 on a vLLM server): the `judge` service below when it
       # runs. Another OpenAI-compatible vLLM server works too; empty: vllm.* in the engine logic.
       ANE_JUDGE_URL: ${ANE_JUDGE_URL-http://hamlet-ane-judge:8000/v1}
+      # World augmentation's own language model (Qwen3.5-4B on a vLLM server): the `augmenter`
+      # service below when it runs; empty: augmentation.llm.* in the engine logic.
+      ANE_AUGMENT_URL: ${ANE_AUGMENT_URL-http://hamlet-ane-augmenter:8000/v1}
+      # The judge and the augmenter take turns on one GPU (on); off when each has a GPU of its own.
+      ANE_LLM_SHARING: ${ANE_LLM_SHARING:-on}
     volumes: *studio-volumes
     networks:
       hamlet-shared-network:
@@ -78,17 +83,21 @@ services:
   # The language model judge, off unless asked for (it takes a GPU):
   #   docker compose --profile judge up -d judge
   # Gemma 4 E4B served by vLLM from a local Hugging Face cache (offline: the model must be in it).
+  # It takes turns with the augmenter on one GPU (sleep mode: the one not running waits in CPU memory;
+  # the API wakes the one it needs). Several sessions: give each its own GPU and ANE_LLM_SHARING=off.
   judge:
     profiles: [judge]
     image: ${ANE_JUDGE_IMAGE:-hamlet-cpcg-vllm:0.20.2-gemma4-turing}
     user: "${ANE_JUDGE_USER:-1004:1004}"   # the owner of the model cache
+    entrypoint: ["python3", "/ane/vllm_turn_start.py"]   # the augmenter put to sleep, then `vllm serve`
     command:
       - --model=${ANE_JUDGE_MODEL:-google/gemma-4-E4B-it}
       - --served-model-name=${ANE_JUDGE_MODEL:-google/gemma-4-E4B-it}
       - --dtype=float16
       - --max-model-len=8192
-      - --gpu-memory-utilization=0.85
+      - --gpu-memory-utilization=${ANE_JUDGE_GPU_MEMORY:-0.72}   # fits beside the augmenter asleep
       - --max-num-seqs=8
+      - --enable-sleep-mode
       - --enforce-eager
       - --api-key=${ANE_JUDGE_API_KEY:-local-vllm}
       - '--limit-mm-per-prompt={"image":0,"audio":0}'
@@ -100,20 +109,80 @@ services:
       HF_HUB_OFFLINE: "1"
       VLLM_CACHE_ROOT: /tmp/vllm
       TORCHINDUCTOR_CACHE_DIR: /tmp/inductor
+      VLLM_SERVER_DEV_MODE: "1"            # /sleep and /wake_up (internal network only: not published)
+      ANE_LLM_SHARING: ${ANE_LLM_SHARING:-on}
+      ANE_LLM_PEERS: http://hamlet-ane-augmenter:8000
+      ANE_LLM_PEER_API_KEY: ${ANE_AUGMENT_API_KEY:-local-vllm}
     volumes:
       - ${ANE_JUDGE_HF_CACHE:-/home/angelisg/.cache/huggingface}:/hf
+      - ./packaging/vllm_turn_start.py:/ane/vllm_turn_start.py:ro
     shm_size: 4g
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["${ANE_JUDGE_GPU:-1}"]
+              device_ids: ["${ANE_JUDGE_GPU:-0}"]   # the augmenter's GPU: they take turns
               capabilities: [gpu]
     networks:
       hamlet-shared-network:
         aliases:
           - hamlet-ane-judge
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 600s
+
+  # World augmentation's language model, off unless asked for (it takes a GPU):
+  #   docker compose --profile augmenter up -d augmenter
+  # It takes turns with the judge on one GPU (sleep mode), as the judge's comment says.
+  # Qwen3.5-4B (float16, not quantized) served by vLLM from a local folder of its weights
+  # (ANE_AUGMENT_MODELS/Qwen3.5-4B, downloaded with `hf download Qwen/Qwen3.5-4B --local-dir ...`).
+  augmenter:
+    profiles: [augmenter]
+    image: ${ANE_AUGMENT_IMAGE:-hamlet-cpcg-vllm:0.20.2-gemma4-turing}   # vLLM 0.20.2: Qwen3.5 included
+    user: "${ANE_AUGMENT_USER:-1004:1004}"   # the owner of the model folder
+    entrypoint: ["python3", "/ane/vllm_turn_start.py"]   # the judge put to sleep, then `vllm serve`
+    command:
+      - --model=/models/${ANE_AUGMENT_MODEL_DIR:-Qwen3.5-4B}
+      - --served-model-name=${ANE_AUGMENT_MODEL:-Qwen/Qwen3.5-4B}
+      - --dtype=float16                      # TITAN RTX (Turing): no bfloat16
+      - --max-model-len=8192
+      - --gpu-memory-utilization=${ANE_AUGMENT_GPU_MEMORY:-0.6}   # fits beside the judge asleep
+      - --max-num-seqs=4
+      - --enable-sleep-mode
+      - --enforce-eager
+      - --api-key=${ANE_AUGMENT_API_KEY:-local-vllm}
+      - '--limit-mm-per-prompt={"image":0,"video":0}'   # text only
+    environment:
+      HOME: /tmp
+      USER: ane
+      LOGNAME: ane
+      HF_HUB_OFFLINE: "1"
+      VLLM_CACHE_ROOT: /tmp/vllm
+      TORCHINDUCTOR_CACHE_DIR: /tmp/inductor
+      VLLM_SERVER_DEV_MODE: "1"            # /sleep and /wake_up (internal network only: not published)
+      ANE_LLM_SHARING: ${ANE_LLM_SHARING:-on}
+      ANE_LLM_PEERS: http://hamlet-ane-judge:8000
+      ANE_LLM_PEER_API_KEY: ${ANE_JUDGE_API_KEY:-local-vllm}
+    volumes:
+      - ${ANE_AUGMENT_MODELS:-/data/angelisg/llm_models}:/models:ro
+      - ./packaging/vllm_turn_start.py:/ane/vllm_turn_start.py:ro
+    shm_size: 4g
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${ANE_AUGMENT_GPU:-0}"]
+              capabilities: [gpu]
+    networks:
+      hamlet-shared-network:
+        aliases:
+          - hamlet-ane-augmenter
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
