@@ -135,6 +135,14 @@ class Turns:
         self._absent_until = {}  # a role whose server did not answer: not asked again before this time
         self.log = []  # (role, "sleep" | "wake", ok): what was done, the latest last (status, tests)
 
+    def close(self):
+        """Cancel the pending idle timers (a model then stays as it is): before this coordinator is
+        replaced or the process stops, so that no timer acts on servers configured afterwards."""
+        with self._cond:
+            for timer in self._timers.values():
+                timer.cancel()
+            self._timers.clear()
+
     def _engines(self, role):
         with _RUNTIMES_LOCK:
             return [rt for rt in _RUNTIMES.values() if rt.role == role and rt._engine is not None]
@@ -158,6 +166,9 @@ class Turns:
                 ok = False
                 self.state[role] = None
                 self._absent_until[role] = time.monotonic() + 60.0
+            except Exception:  # noqa: BLE001 - anything else: left as it is; a request is never failed by it
+                ok = False
+                self.state[role] = None
         else:
             engines = self._engines(role)
             ok = bool(engines)

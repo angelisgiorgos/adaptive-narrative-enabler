@@ -7,6 +7,18 @@ that introduces them.
 
 ## [Unreleased]
 
+### A faster studio
+
+#### Changed
+- The studio's page no longer carries Gradio's description of its 570 events (11 MB in every page; they
+  are still callable by the page, left out of "Use via API").
+- The page's loading-status bookkeeping is kept small: events whose progress is hidden register nothing,
+  the others only their outputs that can show progress; on opening the page, the Weights load and the
+  entry editor's first load show their progress on their status lines.
+- The page and its config are sent gzipped (13 MB before, 0.2 MB now).
+- Measured in headless Firefox: ready in 3.5 s (was 18 s), a click to another destination 1.3–2.6 s (was
+  4–38 s), and the browser idle between events (it was busy all the time). Nothing an event does changed.
+
 ### Settings say when they take effect
 
 #### Added
@@ -36,7 +48,8 @@ that introduces them.
   when it is needed (1–2 s); a model idle for `idle_seconds` goes to sleep. Off when each model has a GPU
   of its own (several sessions).
 - `compose.yaml`: both services in sleep mode on GPU 0 by default, started through
-  `packaging/vllm_turn_start.py` (the other put to sleep before loading). The judge's GPU memory share
+  `packaging/vllm_turn_start.py` (the other put to sleep before loading; started together, the augmenter
+  waits for the judge to serve first, `ANE_LLM_WAIT_FOR_PEERS`, so they don't load at once). The judge's GPU memory share
   is 0.72 (was 0.85) and the augmenter's 0.6 (was 0.75), so each fits beside the other asleep.
 - The judge's and the augmenter's status say whether the model is asleep.
 - World augmentation asks vLLM for valid JSON (`augmentation.llm.json_output`, structured output): a

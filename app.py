@@ -52,6 +52,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import gradio as gr
+from starlette.middleware import Middleware
 import pandas as pd
 import yaml
 
@@ -6433,6 +6434,45 @@ def save_app_parameters(*values):
 APP_PARAMETER_KEYS = []
 REFERENCE = {}
 
+class CompressPages:
+    """gzip for the studio's own pages and data, which have no file extension (the page, /config: about
+    2 MB each, sent uncompressed: Gradio's Brotli compresses only paths with a file extension, .js,
+    .css, ...; those it keeps compressing). Starlette's gzip leaves event streams (text/event-stream)
+    as they are."""
+
+    def __init__(self, app, minimum_size=1024):
+        from starlette.middleware.gzip import GZipMiddleware
+
+        self.app, self.gzip = app, GZipMiddleware(app, minimum_size=minimum_size)
+
+    async def __call__(self, scope, receive, send):
+        last = str(scope.get("path", "")).rsplit("/", 1)[-1]
+        if scope.get("type") == "http" and "." not in last:
+            return await self.gzip(scope, receive, send)
+        return await self.app(scope, receive, send)
+
+
+# Components that never show an event's progress (no status overlay of their own).
+NO_PROGRESS_SHOWN = ("State", "BrowserState", "Timer", "Tabs", "Tab", "Group", "Row", "Column", "Accordion", "Form")
+
+
+def lighten_loading_status(demo):
+    """Keep the page's loading-status bookkeeping small. Gradio's page keeps a loading status for every
+    component an event has ever shown progress on (its outputs, or show_progress_on), and on every status
+    message of any event it updates all of them: with this page's 1,500 components that took nearly all
+    of the browser's time. Nothing an event does changes: an event whose progress is hidden shows it on
+    nothing (it had no overlay to show); any other shows it on its outputs that can show it (not its
+    states, timers or layout blocks)."""
+    for fn in demo.fns.values():
+        if fn.show_progress_on is not None:
+            continue
+        if fn.show_progress == "hidden":
+            fn.show_progress_on = []
+            continue
+        shown = [o for o in fn.outputs if type(o).__name__ not in NO_PROGRESS_SHOWN]
+        if len(shown) != len(fn.outputs):
+            fn.show_progress_on = shown
+
 
 def build_app():
     global REFERENCE, APP_PARAMETER_KEYS
@@ -7112,7 +7152,10 @@ def build_app():
                             [*outputs[:at], draft_base, *outputs[at + 1:], drafts_dirty, draft_status,
                              *(() if keep_saved else (saved_draft,))])
 
-                demo.load(*tracked(load_selection_ui, [kind, entity], [*entry_outputs, draft_capture], keep_saved=True))
+                # On loading the page (before anything can be typed): its progress on the editor's status line,
+                # not on its 80 fields (lighten_loading_status).
+                demo.load(*tracked(load_selection_ui, [kind, entity], [*entry_outputs, draft_capture], keep_saved=True),
+                          show_progress_on=[draft_status])
                 demo.load(offer_kept_draft_ui, saved_draft, [draft_offer, draft_offer_group, draft_offer_text])
                 draft_offer_restore.click(restore_kept_draft_ui, [draft_offer, draft_base, drafts_dirty, draft_loaded,
                                                                   *draft_inputs],
@@ -8139,7 +8182,10 @@ def build_app():
                                                   weights_draft, weights_status]
                         for reloaded in (discard_weights_button.click(reload_weights_ui, weights_meta_state,
                                                                       weights_reload_outputs),
-                                         demo.load(reload_weights_ui, weights_meta_state, weights_reload_outputs)):
+                                         # On loading the page (⚙ Advanced not shown yet; the fields hold the saved
+                                         # values already): its progress on the status line, not on 251 fields.
+                                         demo.load(reload_weights_ui, weights_meta_state, weights_reload_outputs,
+                                                   show_progress_on=[weights_draft])):
                             reloaded.success(weights_after_ui, dirty_inputs, after_outputs, show_progress="hidden")
                         shipped_weights_button.click(
                             shipped_into_draft_ui, draft_inputs,
@@ -8411,6 +8457,13 @@ def build_app():
         demo.load(open_requested, None, nav_outputs, show_progress="hidden")
 
     demo.launch_settings = limits
+    lighten_loading_status(demo)
+    # The studio's events are its own page's (it is a client of the API, which is the API to call):
+    # undocumented, they stay callable by the page but are left out of the API description Gradio
+    # embeds in every page (gradio_api_info: 11 MB for the 571 events, parsed on every load).
+    for fn in demo.fns.values():
+        if fn.api_visibility == "public":
+            fn.api_visibility = "undocumented"
     return demo
 
 
@@ -8461,4 +8514,5 @@ if __name__ == "__main__":
         css=CSS,
         theme=THEME,
         head=DRAFT_HEAD,  # with unsaved changes in the entry editor, the browser asks before leaving the page
+        app_kwargs={"middleware": [Middleware(CompressPages)]},  # the page and its config gzipped
     )
