@@ -89,6 +89,15 @@ def main(argv=None):
         if current.get("shipped") != history["shipped"]:
             sys.exit(f"{OUT.name}'s shipped values are not the configuration's; run python {Path(__file__).name}")
         return
+    # Values recorded before are kept (a copy without the repository's history, e.g. an exported source
+    # folder, can only add the working tree's values: they must not replace the older ones).
+    if OUT.is_file():
+        before = json.loads(OUT.read_text(encoding="utf-8")).get("files", {})
+        for name, keys in before.items():
+            merged = history["files"].setdefault(name, {})
+            for key, digests in keys.items():
+                merged[key] = sorted(set(merged.get(key, [])) | set(digests))
+            history["files"][name] = dict(sorted(merged.items()))
     OUT.write_text(json.dumps(history, indent=0, sort_keys=True) + "\n", encoding="utf-8")
     print(f"Wrote {OUT.relative_to(ROOT)}: {sum(len(v) for v in history['files'].values())} entries and settings.")
 

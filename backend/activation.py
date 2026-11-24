@@ -5,11 +5,14 @@ Two kinds of settings:
 - **The configuration** (config/*.yaml: hyperparameters, weights, engine logic, story rules, messages,
   variables, stats, training defaults; an uploaded configuration). A save writes the file and makes the
   files the active configuration of the API's process at once (config.clear_override: an uploaded
-  configuration, or a trained engine's world and tuning, in use until then is set aside). What starts
-  afterwards reads it: new games, training runs, evaluations, and jobs still queued (a job reads the
-  configuration when it starts, not when it was submitted). Nothing running is restarted: a game in
-  progress or a running job keeps going, and the values it reads as it goes may change mid-way. A game
-  with a trained engine makes that engine's own saved world and tuning active instead.
+  configuration, or a trained engine's world and tuning, in use until then is set aside, and its trained
+  tag vectors with it). What starts afterwards reads it: new games, training runs, evaluations, and jobs
+  still queued (a job reads the configuration when it starts, not when it was submitted). Nothing running
+  changes: every game, training run and evaluation runs with its own frozen copy of the configuration
+  (core_engine/context.py, an EngineContext taken when it started), so a game in progress or a running
+  job keeps the configuration it started with until it ends. A game with a trained engine runs with that
+  engine's own saved world, tuning and tag vectors; starting one also makes them the process-wide
+  configuration (what the editors show and what starts next), which never reaches another session.
 - **The app parameters** (config/ui_settings.yml). The API reads its own when it starts, the studio its
   own when it starts (its launch settings also from ANE_UI_HOST, ANE_UI_PORT and ANE_UI_SHARE, which
   take precedence over the saved values): a save changes nothing that is running, and the saved value
@@ -49,9 +52,9 @@ def takes_effect(key):
 
 CONFIG_NOTE = (
     "**When it takes effect:** at once for what starts from now on (new games, training runs, evaluations, "
-    "and jobs still queued: a job reads the configuration when it starts). Nothing running is restarted: a game "
-    "in progress or a running job keeps going, and the values it reads as it goes may change mid-way. A game "
-    "with a trained engine uses that engine's own saved world and tuning instead.")
+    "and jobs still queued: a job reads the configuration when it starts). Nothing running changes: a game in "
+    "progress or a running job keeps the configuration it started with (its own frozen copy) until it ends. A "
+    "game with a trained engine uses that engine's own saved world and tuning instead.")
 
 
 def config_saved(what, file, override_was_active=False):
@@ -60,8 +63,8 @@ def config_saved(what, file, override_was_active=False):
                  "files are the active configuration again." if override_was_active else "")
     return (f"Saved {what} to `{file}`. In use now for what starts from here: new games, training runs and "
             "evaluations, and jobs still queued (they read it when they start). A game in progress or a job "
-            "already running is not restarted, and values it reads as it goes may change mid-way. A game with a "
-            f"trained engine uses that engine's own saved world and tuning instead.{set_aside}")
+            "already running keeps the configuration it started with (its own frozen copy) until it ends. A game "
+            f"with a trained engine uses that engine's own saved world and tuning instead.{set_aside}")
 
 
 def override_active():

@@ -32,6 +32,32 @@ OPTIONAL_CONFIG_PATHS = {
     "authored_events",
     "action_selection.event_trigger_weight",
     "world_definition.missions",
+    "world_definition.side_quests",   # worlds written before side quests have none
+    "side_quest_settings",
+    "side_quest_settings.enabled",
+    "side_quest_settings.max_active",
+    "side_quest_settings.guide",
+    "side_quest_settings.accept",
+    "side_quest_settings.offer_turns",
+    "side_quest_settings.aids_mission",
+    "side_quest_settings.rank_weight",
+    "genome_bounds.side_quest_bias",
+    "side_quest_settings.remind_after",
+    "llm_sharing.watch_seconds",
+    "side_quest_settings.offer_after",
+    "side_quest_settings.offer_cooldown",
+    "side_quest_settings.offer_max_tension",
+    "side_quest_settings.finale_offers",
+    "side_quest_settings.fit",
+    "side_quest_settings.impossible",
+    "side_quest_settings.pause_when_held",
+    "side_quest_settings.epilogue",
+    "fitness.side_quests.unfinished_penalty",
+    "fitness.side_quests",
+    "fitness.side_quests.complete_bonus",
+    "fitness.side_quests.step_bonus",
+    "fitness.side_quests.mission_aid_bonus",
+    "fitness.side_quests.fail_penalty",
     "mission_settings",
     "mission_settings.route_weight",
     "mission_settings.discovery_route_cost",
@@ -517,7 +543,7 @@ def _validate_complete_config(candidate: object, reference: object, path: str = 
             errors.append(f"`{label}` must be {type(reference).__name__}, not {type(candidate).__name__}.")
     return errors
 
-WORLD_CONTENT = ("locations", "characters", "objects", "events", "missions", "variables", "routes",
+WORLD_CONTENT = ("locations", "characters", "objects", "events", "missions", "side_quests", "variables", "routes",
                  "scenario_templates")
 LOCATION_KEYED = (("location_constraints",), ("action_selection", "location_penalties"))
 
@@ -591,12 +617,15 @@ def upload_config(uploaded_file):
             preview += f"\n- …and {remainder} more problem(s)."
         raise AuthoringError("The configuration is incomplete or invalid:\n" + preview)
 
+    from utils.tag_similarity import reset_tag_vectors
+
     config.use_override(uploaded)
+    reset_tag_vectors()  # an upload carries no trained tag vectors: never a previous engine's
     engine.refresh_runtime_settings()
     note = f" Taken from the built-in configuration: {', '.join(filled)}." if filled else ""
     return (*load_settings(), "✅ Uploaded configuration validated and in use now for what starts from here (new "
             "games, training runs, evaluations, and jobs still queued: they read it when they start); a game in "
-            "progress or a running job is not restarted. It is kept in the API's memory only (config/ is not "
+            "progress or a running job keeps the configuration it started with. It is kept in the API's memory only (config/ is not "
             "changed) until the next save of any setting, *Use built-in config*, a game with a trained engine "
             "(it uses its own), or a restart of the API." + note)
 
@@ -605,7 +634,7 @@ def use_builtin_config():
     engine.refresh_runtime_settings()
     return (*load_settings(), "The saved configuration files (config/) are in use again for what starts from "
             "here (new games, training runs, evaluations, and jobs still queued); a game in progress or a running "
-            "job is not restarted.")
+            "job keeps the configuration it started with.")
 
 def load_settings():
     config.reload()
@@ -812,6 +841,7 @@ LOGIC_SECTIONS = {
     "scene": "Which NPCs and items appear in a scene.",
     "skill_check_resolution": "How hard skill checks are, over time, and how the damage-reduction stat softens combat.",
     "mission_settings": "Missions: pacing of goal pursuit and route planning.",
+    "side_quest_settings": "Side quests: how many at once, offered as a choice or started at once, how long an offer waits, what a completed one does for the mission, and how strongly the storyteller pursues them.",
     "story_rules": "Rules that keep stories coherent, paced and varied: failure outcomes, text-consistent routes, holding back from the mission early, moving on instead of stalling, repetition and backtracking costs, tie-breaking, items and clue payoffs.",
     "start_selection": "Where stories start: how strongly a player's recent starts are discouraged, and the single start of worlds without starting locations.",
     "action_rules": "How often actions are offered by default (once, per visit, always).",

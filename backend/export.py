@@ -48,7 +48,7 @@ from utils.tag_similarity import export_tag_vectors
 
 from .errors import AuthoringError
 from . import records
-from .sessions import ENGINES, RUNS, SESSIONS, SESSION_LOCK, kept_engines
+from .sessions import ENGINES, RUNS, SESSIONS, SESSION_LOCK, find_session, kept_engines
 from . import engine_meta
 from .store import PROJECT_ROOT
 
@@ -398,7 +398,7 @@ def _choose_storyteller(source, run_id=None, generation=None, token=None, engine
         return Genome.from_traits(entries[0]["traits"]), entries[0]["score"], "best remembered storyteller", None
     if source == "game":
         with SESSION_LOCK:
-            state = SESSIONS.get(token)
+            state = find_session(token)  # restored when it is saved; someone else's is not found
         if state is None:
             raise AuthoringError("That game session no longer exists.")
         return Genome.from_traits(state.genome.traits()), None, "storyteller of the current game", None

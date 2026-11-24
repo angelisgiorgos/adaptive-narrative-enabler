@@ -707,8 +707,10 @@
 "02818b2aab0a68b4",
 "2b42fbfadc762782",
 "48b7b2314bdd9749",
+"abd62035010cd2d7",
 "b21bd628b8e5e5f1",
 "be2de918f802c3e6",
+"bf114a70ed072b3d",
 "c29233aab20f0e81",
 "c4b3907dc55b915a",
 "cf8dbbcf8db57734"
@@ -1090,6 +1092,25 @@
 "fitness.setup_payoff.unmatched_setup_penalty": [
 "4b227777d4dd1fc6"
 ],
+"fitness.side_quests": [
+"6449c16241862eb2",
+"a58f175027118c6a"
+],
+"fitness.side_quests.complete_bonus": [
+"4a44dc15364204a8"
+],
+"fitness.side_quests.fail_penalty": [
+"4b227777d4dd1fc6"
+],
+"fitness.side_quests.mission_aid_bonus": [
+"e7f6c011776e8db7"
+],
+"fitness.side_quests.step_bonus": [
+"4e07408562bedb8b"
+],
+"fitness.side_quests.unfinished_penalty": [
+"d4735e3a265e16ee"
+],
 "fitness.story_length": [
 "ae10bf6fc8209bc8"
 ],
@@ -1226,6 +1247,7 @@
 ],
 "genome_bounds": [
 "0e78debf43515d6a",
+"10e58b904a331e76",
 "5b0f281be36e13d5"
 ],
 "genome_bounds.chaos_bias": [
@@ -1254,6 +1276,9 @@
 ],
 "genome_bounds.setup_prob": [
 "103b22981ee6d4b4"
+],
+"genome_bounds.side_quest_bias": [
+"0fc38385af7db4c7"
 ],
 "genome_bounds.spawn_prob": [
 "97cc1e95a29e65df"
@@ -1325,6 +1350,7 @@
 "221764976efe0413"
 ],
 "llm_sharing": [
+"4d5bbd98d37f2473",
 "c87a37bd76a9ec97"
 ],
 "llm_sharing.enabled": [
@@ -1338,6 +1364,9 @@
 ],
 "llm_sharing.wait_seconds": [
 "bdc5d8a48c238979"
+],
+"llm_sharing.watch_seconds": [
+"624b60c58c9d8bfb"
 ],
 "location_behaviour": [
 "8f989528318e902f"
@@ -1958,6 +1987,60 @@
 ],
 "session_scope.variety_weight": [
 "b4af4e0d40391d3a"
+],
+"side_quest_settings": [
+"2aa90235fdc69c39",
+"7e5f516039c2c9cf",
+"cab62237e32164c6",
+"f9706042e1e66986"
+],
+"side_quest_settings.accept": [
+"a5b7bf5479b9dead"
+],
+"side_quest_settings.aids_mission": [
+"8eb5ab83664ff112"
+],
+"side_quest_settings.enabled": [
+"b5bea41b6c623f7c"
+],
+"side_quest_settings.epilogue": [
+"b5bea41b6c623f7c"
+],
+"side_quest_settings.finale_offers": [
+"fcbcf165908dd18a"
+],
+"side_quest_settings.fit": [
+"b5bea41b6c623f7c"
+],
+"side_quest_settings.guide": [
+"b5bea41b6c623f7c"
+],
+"side_quest_settings.impossible": [
+"34e382cfb94027bb"
+],
+"side_quest_settings.max_active": [
+"4e07408562bedb8b"
+],
+"side_quest_settings.offer_after": [
+"6b86b273ff34fce1"
+],
+"side_quest_settings.offer_cooldown": [
+"6b86b273ff34fce1"
+],
+"side_quest_settings.offer_max_tension": [
+"ce5d3aa79ae56155"
+],
+"side_quest_settings.offer_turns": [
+"4e07408562bedb8b"
+],
+"side_quest_settings.pause_when_held": [
+"b5bea41b6c623f7c"
+],
+"side_quest_settings.rank_weight": [
+"d84bdb34d4eeef40"
+],
+"side_quest_settings.remind_after": [
+"e7f6c011776e8db7"
 ],
 "simulation": [
 "01ad2bf736535439",
@@ -2676,16 +2759,21 @@
 "messages.yaml": {
 "messages": [
 "0131c71ad636a0c2",
+"01a38507da1d56cb",
+"048f0accb0fbf79f",
 "11def9b95befe701",
 "1cace454197aa0a5",
 "2531e86f0ae9fcf3",
 "4c66493ed5069120",
 "59a414f8ea6c7b8d",
 "625c41ffd1ed8cbe",
+"8a1374e642c52bef",
 "c3199c8e96a38cd1",
+"cce2eea57ceed348",
 "d381ec9df372f216",
 "d5293ca8a0ded69b",
 "d803930bc77e4696",
+"ead19923ab819ad3",
 "ef05cf4a21aa5330"
 ],
 "messages.action_taken": [
@@ -2955,6 +3043,72 @@
 "messages.sent": [
 "3fe7a1c255f0f11f"
 ],
+"messages.side_quest_accepted": [
+"c6880044f6dff6d2"
+],
+"messages.side_quest_aid": [
+"8760d9b3d3d2f4d8"
+],
+"messages.side_quest_ally": [
+"a26ab33f11572f9a"
+],
+"messages.side_quest_complete": [
+"8e972de42033d18b"
+],
+"messages.side_quest_deadline": [
+"9b8c79a07fac02fe"
+],
+"messages.side_quest_declined": [
+"9918b2c52ed852d8"
+],
+"messages.side_quest_epilogue": [
+"99864b97fdf05e47"
+],
+"messages.side_quest_expired": [
+"a97f45ee908b9401"
+],
+"messages.side_quest_failed": [
+"da5b1c4080e50a2f"
+],
+"messages.side_quest_given": [
+"ee2975d7e1d535b7"
+],
+"messages.side_quest_giver_gone": [
+"a4c358be5dc99945"
+],
+"messages.side_quest_helps": [
+"8ee912151fe6665a"
+],
+"messages.side_quest_hurry": [
+"6e90a3effd05c9f5"
+],
+"messages.side_quest_item_gone": [
+"0d706192edbe9ed5"
+],
+"messages.side_quest_ready": [
+"a3af12a1117629f0"
+],
+"messages.side_quest_remind_ready": [
+"ef8b0a3dc5b71888"
+],
+"messages.side_quest_reminder": [
+"4151e120f8e766fa"
+],
+"messages.side_quest_stage": [
+"87fdab1c66a697c4"
+],
+"messages.side_quest_stakes": [
+"4891ae050ab86292"
+],
+"messages.side_quest_start": [
+"533cafc4f8c5400c"
+],
+"messages.side_quest_turned_in": [
+"70002a7134b3bc36"
+],
+"messages.side_quest_way": [
+"e4c1cacc0e6abc9a"
+],
 "messages.spawn": [
 "b22e58b08773f25c"
 ],
@@ -3167,6 +3321,38 @@
 "038d1ae4945d1306",
 "b19db795eaa555b6",
 "f248bd39dfb87980"
+]
+},
+"side_quests.yaml": {
+"world_definition": [
+"41522ee8455225d1",
+"8382be094fd5e336",
+"a5b6f195bba17b76",
+"b370a18f553d04ba",
+"c5fa1b3f69f8af53"
+],
+"world_definition.side_quests[a_blessing_for_the_road]": [
+"afba3e26e581cd12",
+"ffe139a525eff503"
+],
+"world_definition.side_quests[a_full_purse]": [
+"a9b7fa3bcbd331bb",
+"bd1a43a6d376b15e"
+],
+"world_definition.side_quests[a_gift_for_the_chapel]": [
+"24d262cf7a832aa6",
+"395d7ee28ef9f6d2",
+"d34ba8ec2c2fb2e8",
+"fa558e09f320c3e5"
+],
+"world_definition.side_quests[charting_the_storm]": [
+"c083291702b4794f",
+"daa83a05a4dafb1c"
+],
+"world_definition.side_quests[rumours_from_the_archive]": [
+"3debf062c38d59ac",
+"84edd4e2e4d197e2",
+"defabdddb49d7b0c"
 ]
 },
 "stats.yaml": {
@@ -3476,6 +3662,11 @@
 "fitness.setup_payoff.target_count_bonus": 2,
 "fitness.setup_payoff.unmatched_payoff_penalty": 3,
 "fitness.setup_payoff.unmatched_setup_penalty": 4,
+"fitness.side_quests.complete_bonus": 10,
+"fitness.side_quests.fail_penalty": 4,
+"fitness.side_quests.mission_aid_bonus": 6,
+"fitness.side_quests.step_bonus": 3,
+"fitness.side_quests.unfinished_penalty": 2,
 "fitness.story_length.bonus": 25,
 "fitness.story_length.max": 60,
 "fitness.story_length.min": 20,
@@ -3515,6 +3706,7 @@
 "llm_sharing.idle_seconds": 5,
 "llm_sharing.level": 1,
 "llm_sharing.wait_seconds": 900,
+"llm_sharing.watch_seconds": 30,
 "mission_selection.recent_missions": 3,
 "mission_selection.repeat_factor": 0.3,
 "mission_settings.discovery_route_cost": 2,
@@ -3623,6 +3815,13 @@
 "session_scope.relevance_weight": 1.0,
 "session_scope.richness_weight": 0.5,
 "session_scope.variety_weight": 0.6,
+"side_quest_settings.max_active": 3,
+"side_quest_settings.offer_after": 1,
+"side_quest_settings.offer_cooldown": 1,
+"side_quest_settings.offer_max_tension": 0.75,
+"side_quest_settings.offer_turns": 3,
+"side_quest_settings.rank_weight": 2.0,
+"side_quest_settings.remind_after": 6,
 "skill_check_resolution.damage_mitigation_per_point": 25,
 "skill_check_resolution.dangerous_failure_damage": 2,
 "skill_check_resolution.difficulty_penalty": 0,

@@ -26,6 +26,28 @@ messages:
   epilogue_mission_open: "{title} is left for another day. "  # {title}
   finale_start: "[FINALE] Time is running out: {title} must be settled now."  # {title}
   stage_complete: "[QUEST] {done}: done. Next: {next}. {description}"  # {done} {next} {description}
+  side_quest_start: "[SIDE QUEST] {title}: {description}"  # {title} {description} (its first step, or the quest's)
+  side_quest_given: "[SIDE QUEST] {giver} asks a favour of you: {title}. {description}"  # {giver} {title} {description}
+  side_quest_stage: "[SIDE QUEST] {title} - {done}: done. Next: {next}."  # {title} {done} {next}; also {description}
+  side_quest_complete: "[SIDE QUEST COMPLETE] {title}"  # {title}
+  side_quest_failed: "[SIDE QUEST FAILED] {title}"  # {title}
+  side_quest_accepted: "[SIDE QUEST] You take it on: {title}."  # {title}
+  side_quest_declined: "[SIDE QUEST] You turn it down: {title}."  # {title}
+  side_quest_aid: "[LEAD] {title} pays off for your quest: the way to the {location} is open."  # {title} {location}
+  side_quest_ally: "[ALLY] {npc} owes you for {title}, and will help with your quest."  # {npc} {title}
+  side_quest_stakes: "[SIDE QUEST] In it for you: {reward}."  # {title} {reward}
+  side_quest_helps: "[SIDE QUEST] It could help with your quest too: {mission}."  # {title} {mission}
+  side_quest_deadline: "[SIDE QUEST] It has to be done within {turns} turns."  # {title} {turns}
+  side_quest_ready: "[SIDE QUEST] {title}: done. Now take it back to {giver}."  # {title} {giver}
+  side_quest_turned_in: "[SIDE QUEST] You hand it over to {giver}."  # {giver} {title}
+  side_quest_expired: "[SIDE QUEST FAILED] {title}: too late."  # {title}
+  side_quest_giver_gone: "[SIDE QUEST FAILED] {title}: {giver} is gone from the story."  # {title} {giver}
+  side_quest_hurry: "[SIDE QUEST] Time is running out for {title}: {turns} turn(s) left."  # {title} {turns}
+  side_quest_reminder: "[SIDE QUEST] Still open: {title} - {todo}."  # {title} {todo}
+  side_quest_remind_ready: "[SIDE QUEST] {giver} is still waiting for you: {title}."  # {title} {giver}
+  side_quest_way: "[LEAD] {source} points you the way to the {location}."  # {source} (the giver, or "What you heard") {location} {title}
+  side_quest_item_gone: "[SIDE QUEST FAILED] {title}: {item} is gone for good."  # {title} {item}
+  side_quest_epilogue: "[SIDE QUESTS] Along the way you {summary}."  # {summary}: saw ... through; failed at ...; left ... unfinished
   finale_start_free: "[FINALE] Time is running out: the story nears its end."
   end_stalled: "The story stalled in {location} for too long."  # {location}
   end_dungeon: "The traveler was thrown into the {location}."  # {location}

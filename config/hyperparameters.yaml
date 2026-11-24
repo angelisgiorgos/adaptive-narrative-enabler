@@ -3,7 +3,7 @@ evolution:
   generations: 25
   episodes_per_genome: 2
   max_steps: 100             # steps per evaluated story (narrative_end.max_actions: whole stories)
-  evaluation_threads: auto
+  evaluation_threads: auto   # processes playing stories at once: auto (physical cores), cpus (every CPU), or a number
   max_evaluation_processes: 16
   parallel_backend: processes
   mutation_rate: 0.22
@@ -108,6 +108,9 @@ genome_bounds:
   novelty_bias:
   - 0.2
   - 0.9
+  side_quest_bias:             # how strongly a storyteller pursues side quests (its own trait, apart from goal_bias)
+  - 0.2
+  - 1.0
 game_state:
   initial_health: 8
   max_health: 10      # healing never raises health above this
@@ -197,6 +200,25 @@ persistence:
   profile: default
   save_on: change          # change: save after every change; end: only when a story ends
   simulate_with: defaults  # evolution uses defaults (reproducible) or the stored values
+side_quest_settings:           # optional quests besides the mission (world_definition.side_quests)
+  enabled: true
+  max_active: 3                # the most side quests under way at once (new ones wait for a free place)
+  guide: true                  # one choice that works toward a side quest (or meets someone who offers one) is kept
+  accept: choice               # choice: the player takes an offered side quest on or turns it down; auto: it starts at once
+  offer_turns: 3               # an offer not answered within this many turns lapses
+  aids_mission: lead           # what a completed side quest does for the mission: lead (the way on opens), ally, none
+  rank_weight: 2.0             # the storyteller's pull toward a side quest's next step (x its learned side_quest_bias)
+  remind_after: 6              # a side quest quiet this many turns is recalled to the player (0: never)
+  # When the story lets a new side quest in (they come at calm moments, one at a time):
+  offer_after: 1               # not before this turn
+  offer_cooldown: 1            # turns between two new ones (0: several may come at once)
+  offer_max_tension: 0.75      # not in a tenser moment (GameState.tension, 0..1; 1: any moment)
+  finale_offers: false         # none new once the finale has begun
+  fit: true                    # several could come: the one that fits the story now first (tags, the mission)
+  # Continuity:
+  impossible: fail             # fail | keep: a side quest that can no longer be done (its giver gone, a unique item gone)
+  pause_when_held: true        # a deadline does not run while the player is held (a cell)
+  epilogue: true               # the ending recalls the side quests: seen through, failed, left unfinished
 mission_settings:
   enabled: true
   end_on_goal: true
@@ -478,6 +500,12 @@ npc_goals:
   action_weight: 0.5      # the storyteller's pull toward helping someone (x 0.5 + bias_social)
 fitness:
   npc_interaction_cap: 3  # interactions per NPC that still add to the score (no reward for chat farming)
+  side_quests:            # the training objective's share for side quests (core_engine/side_quests.fitness_term)
+    complete_bonus: 10           # each side quest completed
+    step_bonus: 3                # each step of a side quest done
+    mission_aid_bonus: 6         # each completed side quest that helped the mission (a way on, an ally)
+    fail_penalty: 4              # each side quest failed
+    unfinished_penalty: 2        # each side quest still under way when the story ends (threads left open)
   variety:
     distinct_choice_weight: 30   # x share of choices that were distinct
     repeated_outcome_penalty: 2  # per outcome text shown again
@@ -681,6 +709,7 @@ llm_sharing:                   # the judge (vllm) and the augmenter (augmentatio
   idle_seconds: 5              # a model that has stopped running goes to sleep after this
   level: 1                     # vLLM sleep level 1: weights to CPU memory, GPU memory freed
   wait_seconds: 900            # the longest a model waits for the other to finish
+  watch_seconds: 30            # the API puts an idle, awake model to sleep this often (0: never; frees its GPU memory)
 llm_judge:
   # Gemma 4 as a game critic (evaluator/game_judge.py): it reads a playthrough's turns and
   # scores agency, pacing, surprise, payoff, exploration, stakes, coherence, replayability

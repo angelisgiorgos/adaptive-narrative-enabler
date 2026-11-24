@@ -63,12 +63,21 @@ public sealed class AneAiTextAdventure : MonoBehaviour
             }
             else
             {
-                var actions = view.Actions;
-                for (var i = 0; i < actions.Count; i++)
+                // Each button sends its choice's stable id and the version of the view it was shown in.
+                var shown = view;
+                foreach (var choice in shown.Choices)
                 {
-                    var index = i;
-                    if (GUILayout.Button(actions[i]))
-                        Run(async () => view = await ane.Client.ChooseAsync(view.GameId, index));
+                    var chosen = choice;
+                    if (GUILayout.Button(chosen.Label))
+                        Run(async () =>
+                        {
+                            try { view = await ane.Client.ChooseAsync(shown, chosen); }
+                            catch (AneAiException refused) when (refused.IsStale || refused.IsUnavailable)
+                            {
+                                view = await ane.Client.GameAsync(shown.GameId);  // nothing was done: the current choices
+                                message = "The story had moved on; here is where it stands.";
+                            }
+                        });
                 }
             }
             GUILayout.BeginHorizontal();

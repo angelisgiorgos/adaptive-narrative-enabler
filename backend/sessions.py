@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import collections
+import contextvars
 import copy
 import datetime
 import hashlib
@@ -27,16 +28,25 @@ from core_engine.variables import VariableStore
 from core_engine.evolution import (LearningMemory, NarrativeEvolution, evolution_settings, fast_travel_turns,
                                    story_turns)
 from core_engine.model import EngineModel
-from utils.config_loader import config
+from core_engine import choices as choice_ids
+from core_engine.context import EngineContext, with_state_context
+from utils.config_loader import config, lookup
 
-from . import records
-from .errors import AuthoringError
+from . import persistence, records
+from .errors import ActionUnavailableError, AuthoringError, SessionUnrecoverableError, StaleStateError
 from .store import APP_SETTINGS, MAX_CONFIG_UPLOAD_BYTES, MAX_ENGINE_UPLOAD_BYTES, MAX_SIMULATION_WORK, MAX_WEB_SESSIONS, _validate_complete_config
 from .content import _player_stats, _profile
 
 
 SESSIONS = {}
 SESSION_RECORDS = {}  # session token -> id of its story in the records database
+# session token -> {owner, origin, engine_id, run_id, parameters (to restart it), restored}: what the
+# durable session index (backend/persistence.py) keeps about it besides its state.
+SESSION_META = {}
+# Who asks (the API sets it per request: X-ANE-User, or `test` for the studio; None: an anonymous
+# client): a session started now belongs to them, and only they may use it (an anonymous session:
+# anyone with its id, as before).
+SESSION_OWNER = contextvars.ContextVar("ane_session_owner", default=None)
 
 SESSION_LOCK = threading.Lock()
 # Recent evolution runs (learning summaries), so any run or generation can be exported.
@@ -47,6 +57,7 @@ MAX_RUNS = 20
 # recording is off.
 ENGINES: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
 
+@with_state_context
 def play_state(state: GameState) -> dict:
     """Structured snapshot of a game, for clients that render their own UI."""
     # A game not started yet (no scene set: the first step sets it) has nothing in view.
@@ -75,10 +86,12 @@ def play_state(state: GameState) -> dict:
         "stat_points": dict(state.stats.points),
         "last_check": vars(state.combat.history[-1]).copy() if state.combat.history else None,
         "quest": state.quest_log(),
+        "side_quests": state.side_quest_log(),
         "people": state.people_here() if not state.ended else [],
         "people_met": state.people_met(),
         "map": state.map_view(),
         "choices": choice_details(state),
+        "state_version": state.state_version,
         "ways_on": state.ways_on() if not state.ended else [],
         "stakes": state.stakes() if hasattr(state, "stakes") else None,
         # The session: its cast, the one-time actions tried, and its report once it has ended.
@@ -288,7 +301,7 @@ class ConfigView:
         self._config = data or {}
 
     def get(self, key, default=None):
-        return type(config).get(self, key, default)
+        return lookup(self._config, key, default)
 
 
 def playable_missions(profile=None, cfg=None):
@@ -322,10 +335,19 @@ def playable_missions(profile=None, cfg=None):
     return missions
 
 
-def _start_game(genome, profile, points, mode, origin="studio", run_id=None, engine_id=None, mission=None):
+def _start_game(genome, profile, points, mode, origin="studio", run_id=None, engine_id=None, mission=None,
+                context=None):
     """A playable game for the genome; variable changes are saved to the profile, and
     the game is recorded (records database) as it is played. ``mission``: the mission
-    the player chose (key or title), else the story draws one."""
+    the player chose (key or title), else the story draws one. ``context``: the EngineContext the
+    game runs with from start to end (an engine's own), else the one bound now, else the
+    process-wide configuration as it is now."""
+    context = (context or EngineContext.current()).with_genome(genome)
+    with context.bind():
+        return _start_game_in(context, genome, profile, points, mode, origin, run_id, engine_id, mission)
+
+
+def _start_game_in(context, genome, profile, points, mode, origin, run_id, engine_id, mission):
     world = engine.build_world(genome)
     mission = _mission_key(world, mission)
     if mission is not None and not next((m["available"] for m in playable_missions(profile) if m["key"] == mission), True):
@@ -335,7 +357,7 @@ def _start_game(genome, profile, points, mode, origin="studio", run_id=None, eng
         # Its own dice (drawn from the global, seeded ones: reproducible runs stay reproducible),
         # so that its save game can carry them.
         player = GameState(world, genome, store=VariableStore(), profile=profile, rng=random.Random(random.getrandbits(64)),
-                           stats=points, stats_mode=mode, mission=mission)
+                           stats=points, stats_mode=mode, mission=mission, context=context)
     except ValueError as exc:
         if mission is None:
             raise
@@ -345,20 +367,116 @@ def _start_game(genome, profile, points, mode, origin="studio", run_id=None, eng
                                          "mission": mission}), player
 
 
+def _start_parameters(player, parameters):
+    """What a restart starts again with: {profile, stat_points, stats_mode, mission} as asked when the
+    game started, else (a continued save game) as the game has them."""
+    parameters = dict(parameters or {})
+    if "stats_mode" in parameters:
+        return {key: parameters.get(key) for key in ("profile", "stat_points", "stats_mode", "mission")}
+    return {"profile": player.profile, "stat_points": dict(player.stats.points), "stats_mode": "defined",
+            "mission": player.mission.name if player.mission else None}
+
+
+def _admit(token, player, meta, story_id=None):
+    """Hold a session in memory (the oldest held one is let go beyond MAX_WEB_SESSIONS: it is saved, and
+    comes back when it is used again). The caller holds SESSION_LOCK."""
+    while len(SESSIONS) >= MAX_WEB_SESSIONS:
+        dropped = next(iter(SESSIONS))
+        SESSIONS.pop(dropped)
+        SESSION_RECORDS.pop(dropped, None)
+        SESSION_META.pop(dropped, None)
+    SESSIONS[token] = player
+    SESSION_RECORDS[token] = story_id
+    SESSION_META[token] = meta
+
+
 def _register_session(player, origin, run_id=None, engine_id=None, parameters=None):
-    """Make a game a play session (recorded as it is played); returns its token."""
+    """Make a game a play session (recorded as it is played, and saved: backend/persistence.py); it
+    belongs to whoever asks now (SESSION_OWNER). Returns its token."""
     token = uuid.uuid4().hex
     player.session_id = token  # the session's id in its report (core_engine/progression.py)
     story_id = records.record_story(player, origin, "play", run_id=run_id, engine_id=engine_id, session_id=token,
                                     parameters=parameters or {})
+    meta = {"owner": SESSION_OWNER.get(), "origin": origin, "engine_id": engine_id, "run_id": run_id,
+            "parameters": _start_parameters(player, parameters)}
     with SESSION_LOCK:
-        while len(SESSIONS) >= MAX_WEB_SESSIONS:
-            dropped = next(iter(SESSIONS))
-            SESSIONS.pop(dropped)
-            SESSION_RECORDS.pop(dropped, None)
-        SESSIONS[token] = player
-        SESSION_RECORDS[token] = story_id
+        _admit(token, player, meta, story_id)
+        _autosave(token)
     return token
+
+
+def _autosave(token):
+    """Save the session as it stands now (after every change that matters). The caller holds
+    SESSION_LOCK. Never interrupts the game (backend/persistence.autosave)."""
+    state = SESSIONS.get(token)
+    if state is None:
+        return False
+    meta = SESSION_META.get(token) or {}
+    return persistence.autosave(token, state, {**meta, "story_id": SESSION_RECORDS.get(token)})
+
+
+def _owner(token):
+    """Whose session it is (None: anonymous, anyone with its id). LookupError when there is none."""
+    if token in SESSIONS:
+        return (SESSION_META.get(token) or {}).get("owner")
+    row = persistence.session(token) if persistence.enabled() else None
+    if row is None:
+        raise LookupError("Play session not found.")
+    return row["owner"]
+
+
+def _live(token):
+    """The session ``token``: held in memory, or restored from its last save (after a restart, or
+    once it was let go). The caller holds SESSION_LOCK. LookupError when there is no such session;
+    SessionUnrecoverableError when it is saved but cannot be restored here."""
+    state = SESSIONS.get(token)
+    if state is not None:
+        return state
+    row = persistence.session(token) if persistence.enabled() else None
+    if row is None:
+        raise LookupError("Play session not found.")
+    try:
+        doc = persistence.read_autosave(token)
+        state, how, note = persistence.restore(doc, row["context_key"], profile=row["profile"], store=VariableStore())
+    except persistence.PersistenceError as exc:
+        raise SessionUnrecoverableError(
+            f"The saved game `{token}` cannot be restored: {exc}", token) from exc
+    state.session_id = token
+    if how != "exact":  # rebuilt: a new state, so its version moves on from the saved one
+        state.__dict__["_state_version"] = int(row.get("state_version") or 0) + 1
+    meta = {"owner": row["owner"], "origin": row["origin"], "engine_id": row["engine_id"], "run_id": row["run_id"],
+            "parameters": row.get("parameters") or {}, "restored": {"how": how, "note": note}}
+    if row["status"] == "abandoned":
+        meta["status"] = "abandoned"
+    _admit(token, state, meta, row.get("story_id"))
+    LOG.info("Play session %s restored (%s).", token, how)
+    if how != "exact":
+        _autosave(token)
+    return state
+
+
+def find_session(token, user=None, check_owner=True):
+    """The session ``token`` (restored when it is saved but not in memory), or None when there is none
+    or it is someone else's (``user``: who asks; default: SESSION_OWNER). The caller holds SESSION_LOCK."""
+    try:
+        if check_owner:
+            owner = _owner(token)
+            asking = SESSION_OWNER.get() if user is None else user
+            if owner is not None and owner != asking:
+                return None
+        return _live(token)
+    except LookupError:
+        return None
+
+
+def open_session(token, user=None):
+    """The session ``token`` for ``user`` (who asks): restored when needed. A session that belongs to
+    someone else is not found (LookupError), so its existence is not revealed either."""
+    with SESSION_LOCK:
+        owner = _owner(token)
+        if owner is not None and owner != user:
+            raise LookupError("Play session not found.")
+        return _live(token)
 
 
 def load_best_engine(uploaded_file, model_parameters_file=None, profile=None, stats_choice=None, stats_points=None,
@@ -377,8 +495,11 @@ def load_best_engine(uploaded_file, model_parameters_file=None, profile=None, st
         model.activate()
         note = "" if model.code_matches() else " It was trained with different engine code, so stories may differ."
     else:
+        from utils.tag_similarity import reset_tag_vectors
+
         config_data, genome = _read_engine_artifact(uploaded_file, model_parameters_file)
         config.use_override(config_data)
+        reset_tag_vectors()  # it carries no tag vectors: never another engine's
         score = (config_data.get("generated_run") or {}).get("best_score")
         model = EngineModel.capture(genome, score=score if isinstance(score, Number) else None,
                                     learning=(config_data.get("generated_run") or {}).get("learning"),
@@ -396,7 +517,7 @@ def load_best_engine(uploaded_file, model_parameters_file=None, profile=None, st
 def _game_for(model, profile, points, mode, origin, report, run_id=None, candidate_count=0, generations=0,
               simulation_steps=0, mission=None):
     token, player = _start_game(model.genome, profile, points, mode, origin=origin, run_id=run_id, engine_id=model.id,
-                                mission=mission)
+                                mission=mission, context=model.context())
     scene, actions = _scene(player)
     config_path, bundle_path = _export_run_artifacts(model, candidate_count, generations, simulation_steps)
     return {
@@ -466,6 +587,7 @@ def _option_limit():
     return max(1, int((config.get("player_options") or {}).get("limit", 6)))
 
 
+@with_state_context
 def _player_options(state: GameState):
     """The options a player sees (GameState.player_options): the most relevant of the
     storyteller's options, at most player_options.limit, in the scene's order
@@ -474,12 +596,23 @@ def _player_options(state: GameState):
     return state.player_options(limit=_option_limit(), order="world" if order == "world" else "ranked")
 
 
+@with_state_context
+def offered_choices(state):
+    """(the options offered now, their stable ids): what a player may choose (core_engine/choices.py)."""
+    options = _player_options(state) if not state.ended else []
+    return options, choice_ids.assign_ids(options, state)
+
+
+@with_state_context
 def choice_details(state):
-    """The choices offered now, each with the check it involves ({stat, chance, bonus}, or
-    None): the player sees what is at stake before choosing."""
+    """The choices offered now as structured objects (core_engine/choices.describe): {id, name,
+    label, category, owner, source, location, requirements, check, skill_check, failure_risk,
+    available, availability, repeat, one_time, takes_turn, members}. Only what is offered: why
+    anything else is not is for authors (decisions)."""
     if state.ended:
         return []
-    return [{"name": action.name, "check": state.check_hint(action)} for action in _player_options(state)]
+    options, ids = offered_choices(state)
+    return [choice_ids.describe(action, state, action_id) for action, action_id in zip(options, ids)]
 
 
 def risk_text(risk):
@@ -540,6 +673,7 @@ def people_text(people):
     return "\n".join(lines)
 
 
+@with_state_context
 def _scene(state: GameState) -> tuple[str, list[str]]:
     actions = _player_options(state) if not state.ended else []
     description, npcs, objects = state._describe_visible_scene()
@@ -599,41 +733,44 @@ def run_simulation(candidate_count=None, generations=None, simulation_steps=None
     points, mode = _player_stats(stats_choice, stats_points)
     config.reload()
     engine.refresh_runtime_settings()
-    plan = resolve_training({"candidate_count": candidate_count, "generations": generations,
-                             "simulation_steps": simulation_steps, "episodes": episodes, "deterministic": deterministic,
-                             "seed": seed, "warm_start": warm_start})
-    _refuse_unless_ready(plan)
-    run = plan["effective"]
-    if run["seed"] is not None:
-        engine.apply_random_seed(force=True, seed=run["seed"])
-    evolution = NarrativeEvolution(
-        engine.build_world, engine.fitness,
-        settings={
-            "pop_size": run["population"], "generations": run["generations"], "max_steps": run["requested_steps"],
-            "episodes_per_genome": run["stories_per_storyteller"],
-            "warm_start": run["warm_start"],
-        },
-        seed=run["seed"],
-        memory=LearningMemory(),
-    )
-    candidate_count, episodes, simulation_steps = run["population"], run["stories_per_storyteller"], run["requested_steps"]
-    parameters = {"candidate_count": candidate_count, "generations": run["generations"],
-                  "simulation_steps": simulation_steps, "episodes": episodes, "deterministic": run["deterministic"],
-                  "warm_start": run["warm_start"], "seed": run["seed"], "overrides": plan["overrides"],
-                  "profile": profile, "stat_points": points, "stats_mode": mode}
-    seed = run["seed"]
-    run_id = uuid.uuid4().hex
-    records.start_run(origin, settings=evolution.settings, parameters=parameters, seed=seed, run_id=run_id,
-                      user_id=user_id)
-    try:
-        result = _train(evolution, progress)
-    except Exception as exc:
-        records.finish_run(run_id, None, error=exc)
-        raise
-    game = _finish_training(evolution, result, run_id, origin, profile, points, mode, candidate_count, episodes,
-                            simulation_steps, title="Evolution complete.", mission=mission, start_game=start_game)
-    game["training"] = _training_record(plan, evolution, result.warm_started)
-    return game
+    # The run's configuration is frozen now: what the editor saves (or another engine activates) while
+    # it trains changes nothing for it, nor for the game it starts.
+    with EngineContext.capture(source="training run").bind():
+        plan = resolve_training({"candidate_count": candidate_count, "generations": generations,
+                                 "simulation_steps": simulation_steps, "episodes": episodes, "deterministic": deterministic,
+                                 "seed": seed, "warm_start": warm_start})
+        _refuse_unless_ready(plan)
+        run = plan["effective"]
+        if run["seed"] is not None:
+            engine.apply_random_seed(force=True, seed=run["seed"])
+        evolution = NarrativeEvolution(
+            engine.build_world, engine.fitness,
+            settings={
+                "pop_size": run["population"], "generations": run["generations"], "max_steps": run["requested_steps"],
+                "episodes_per_genome": run["stories_per_storyteller"],
+                "warm_start": run["warm_start"],
+            },
+            seed=run["seed"],
+            memory=LearningMemory(),
+        )
+        candidate_count, episodes, simulation_steps = run["population"], run["stories_per_storyteller"], run["requested_steps"]
+        parameters = {"candidate_count": candidate_count, "generations": run["generations"],
+                      "simulation_steps": simulation_steps, "episodes": episodes, "deterministic": run["deterministic"],
+                      "warm_start": run["warm_start"], "seed": run["seed"], "overrides": plan["overrides"],
+                      "profile": profile, "stat_points": points, "stats_mode": mode}
+        seed = run["seed"]
+        run_id = uuid.uuid4().hex
+        records.start_run(origin, settings=evolution.settings, parameters=parameters, seed=seed, run_id=run_id,
+                          user_id=user_id)
+        try:
+            result = _train(evolution, progress)
+        except Exception as exc:
+            records.finish_run(run_id, None, error=exc)
+            raise
+        game = _finish_training(evolution, result, run_id, origin, profile, points, mode, candidate_count, episodes,
+                                simulation_steps, title="Evolution complete.", mission=mission, start_game=start_game)
+        game["training"] = _training_record(plan, evolution, result.warm_started)
+        return game
 
 
 def _training_record(plan, evolution, warm_started=0):
@@ -654,7 +791,7 @@ def _train(evolution, progress=None, resume=None):
     stories = max(int(settings["pop_size"]) * int(settings["episodes_per_genome"]),
                   int(settings.get("benchmark_top_k", 1)) * int(settings.get("validation_episodes", 1)))
     serial = evolution.map_fn
-    with engine.story_pool(stories) as map_fn:
+    with evolution.context.bind(), engine.story_pool(stories) as map_fn:
         evolution.map_fn = map_fn or serial
         try:
             return evolution.run(progress=progress, resume=resume)
@@ -903,29 +1040,30 @@ def continue_engine(engine_id, generations=1, profile=None, stats_choice=None, s
     generations = max(1, min(int(generations), APP_SETTINGS["generation_limit"]))
     settings = model.checkpoint["settings"]
     _training_guard(settings["pop_size"], generations, settings["episodes_per_genome"], settings["max_steps"])
-    model.activate()
+    model.activate()  # the process-wide view (editors, new runs) shows its world; the run reads its own context
     engine.refresh_runtime_settings()
-    run_id = uuid.uuid4().hex
-    records.start_run(origin, kind="continue", settings={**settings, "generations": generations},
-                      parameters={"generations": generations, "from_generation": model.checkpoint["next_generation"],
-                                  "profile": profile}, seed=model.checkpoint.get("seed"), parent_engine_id=engine_id,
-                      run_id=run_id, user_id=user_id)
-    try:
-        from core_engine.evolution import ModelMemory
+    with model.context(seed=model.checkpoint.get("seed")).bind():
+        run_id = uuid.uuid4().hex
+        records.start_run(origin, kind="continue", settings={**settings, "generations": generations},
+                          parameters={"generations": generations, "from_generation": model.checkpoint["next_generation"],
+                                      "profile": profile}, seed=model.checkpoint.get("seed"), parent_engine_id=engine_id,
+                          run_id=run_id, user_id=user_id)
+        try:
+            from core_engine.evolution import ModelMemory
 
-        evolution = NarrativeEvolution.from_checkpoint(
-            engine.build_world, engine.fitness, model.checkpoint, generations=generations,
-            memory=ModelMemory(model.memory) if model.memory or settings.get("warm_start") else None,
-        )
-        result = _train(evolution, progress, resume=model.checkpoint)
-    except Exception as exc:
-        records.finish_run(run_id, None, error=exc)
-        raise
-    return _finish_training(evolution, result, run_id, origin, profile, points, mode, settings["pop_size"],
-                            settings["episodes_per_genome"], settings["max_steps"],
-                            title=f"Training continued for {generations} generation(s) from engine `{engine_id}`.",
-                            parent_id=engine_id, source=f"continued from {engine_id}", mission=mission,
-                            start_game=start_game)
+            evolution = NarrativeEvolution.from_checkpoint(
+                engine.build_world, engine.fitness, model.checkpoint, generations=generations,
+                memory=ModelMemory(model.memory) if model.memory or settings.get("warm_start") else None,
+            )
+            result = _train(evolution, progress, resume=model.checkpoint)
+        except Exception as exc:
+            records.finish_run(run_id, None, error=exc)
+            raise
+        return _finish_training(evolution, result, run_id, origin, profile, points, mode, settings["pop_size"],
+                                settings["episodes_per_genome"], settings["max_steps"],
+                                title=f"Training continued for {generations} generation(s) from engine `{engine_id}`.",
+                                parent_id=engine_id, source=f"continued from {engine_id}", mission=mission,
+                                start_game=start_game)
 
 
 def retrain_engine(engine_id, candidate_count=None, generations=None, simulation_steps=None, episodes=None,
@@ -938,8 +1076,15 @@ def retrain_engine(engine_id, candidate_count=None, generations=None, simulation
     profile = _profile(profile)
     points, mode = _player_stats(stats_choice, stats_points)
     model = _recorded_model(engine_id)
-    model.activate()
+    model.activate()  # the process-wide view (editors, new runs) shows its world; the run reads its own context
     engine.refresh_runtime_settings()
+    with model.context().bind():
+        return _retrain_in(model, engine_id, candidate_count, generations, simulation_steps, episodes, deterministic,
+                           profile, points, mode, origin, progress, mission, user_id, seed, start_game)
+
+
+def _retrain_in(model, engine_id, candidate_count, generations, simulation_steps, episodes, deterministic, profile,
+                points, mode, origin, progress, mission, user_id, seed, start_game):
     plan = resolve_training({"candidate_count": candidate_count, "generations": generations,
                              "simulation_steps": simulation_steps, "episodes": episodes, "deterministic": deterministic,
                              "seed": seed}, warm_start_from=engine_id)
@@ -1039,18 +1184,19 @@ def end_session(token: str):
     """End a session where it stands (the player stops): the progression is saved and the
     session reported, as when a story ends by itself. Returns its report."""
     with SESSION_LOCK:
-        state = SESSIONS.get(token)
+        state = find_session(token, check_owner=False)
         if state is None:
             raise AuthoringError("Play session not found.")
         state.end_session()
         records.update_story(SESSION_RECORDS.get(token), state)
+        _autosave(token)
         return state.__dict__.get("session_report")
 
 
 def session_report(token: str):
     """The report of an ended session (None while it goes on)."""
     with SESSION_LOCK:
-        state = SESSIONS.get(token)
+        state = find_session(token, check_owner=False)
         if state is None:
             raise AuthoringError("Play session not found.")
         return state.__dict__.get("session_report") if state.ended else None
@@ -1075,21 +1221,50 @@ def resend_report(profile, report_id):
     return delivery
 
 
-def play_action(token: str, selected_action: str):
-    """Take one action; returns (scene, next action names, text of the turn)."""
+def play_action(token: str, selected_action: str | None = None, action_id: str | None = None,
+                state_version: int | None = None):
+    """Take one action; returns (scene, next action names, text of the turn).
+
+    ``action_id``: the choice's stable id (PlayState choices[].id), the way to choose; with
+    ``state_version`` (the PlayState's), a choice made from options the game has moved past is
+    refused (StaleStateError) instead of taking whatever is offered now. ``selected_action``: the
+    choice's name, as before (when two choices share a name, the last one listed is taken)."""
     with SESSION_LOCK:
-        state = SESSIONS.get(token)
+        state = find_session(token, check_owner=False)
         if state is None:
             raise AuthoringError("Run a simulation first to start a game.")
-        offered = {action.name: action for action in _player_options(state)}
-        if selected_action not in offered:
-            raise AuthoringError("That choice is no longer available. Select a current action.")
+        try:  # the same rules as the exported ANE AI (core_engine/choices.select)
+            chosen = choice_ids.select(state, lambda: offered_choices(state), action_id,
+                                       None if state_version is None else int(state_version))
+        except choice_ids.ChoiceRefused as refused:
+            error = StaleStateError if isinstance(refused, choice_ids.StaleChoice) else ActionUnavailableError
+            raise error(str(refused), refused.state_version, refused.offered) from None
+        if action_id is None:
+            offered = {action.name: action for action in _player_options(state)}
+            if selected_action not in offered:
+                raise AuthoringError("That choice is no longer available. Select a current action.")
+            chosen = offered[selected_action]
         before = len(state.history)
-        state.take_option(offered[selected_action])  # approaching someone or leaving a conversation: no turn
+        state.take_option(chosen)  # approaching someone or leaving a conversation: no turn
         turn_text = "\n\n".join(state.history[before:]).strip()
         scene, next_actions = _scene(state)
         records.update_story(SESSION_RECORDS.get(token), state)
+        _autosave(token)  # every turn, and approaching or leaving someone, is saved
     return scene, next_actions, turn_text
+
+
+def session_decisions(token):
+    """Author-only: why each action is shown, hidden or blocked in a play session now
+    (core_engine/diagnostics.decision_trace). Asking changes nothing in the game: no turn, no dice,
+    no encounter, nothing saved."""
+    from core_engine.diagnostics import decision_trace
+
+    with SESSION_LOCK:
+        state = _session(token)
+        with state.context.bind():  # the session's own configuration (its engine context)
+            order = (config.get("player_options") or {}).get("order", "ranked")
+            return decision_trace(state, limit=_option_limit(), order="world" if order == "world" else "ranked",
+                                  session_id=token)
 
 
 # ---- a session as the UNP sees it (the ANE AI's protocol, for play sessions) ----------------------
@@ -1098,10 +1273,8 @@ def play_action(token: str, selected_action: str):
 # savegame.py), so a UNP integration can be tried in the studio and the API.
 
 def _session(token):
-    state = SESSIONS.get(token)
-    if state is None:
-        raise LookupError("Play session not found.")
-    return state
+    """The session (restored when needed; the caller holds SESSION_LOCK); LookupError when there is none."""
+    return _live(token)
 
 
 def _parameter_errors(work):
@@ -1131,6 +1304,8 @@ def update_player(token, player):
         state = _session(token)
         applied = _parameter_errors(lambda: resume.apply_player(state, dict(player or {})))
         records.update_story(SESSION_RECORDS.get(token), state)
+        _scene(state)  # the scene as the player sees it next, then saved
+        _autosave(token)
         return applied
 
 
@@ -1144,6 +1319,8 @@ def sync_session(token, events):
         state = _session(token)
         taken = _parameter_errors(lambda: [resume.sync(state, dict(event or {})) for event in events])
         records.update_story(SESSION_RECORDS.get(token), state)
+        _scene(state)
+        _autosave(token)
         return taken
 
 
@@ -1170,16 +1347,142 @@ def load_savegame(doc, profile=None, session_id=None, origin="studio"):
         genome = Genome.from_traits(traits)
     else:
         with SESSION_LOCK:
-            if session_id not in SESSIONS:
+            source = find_session(session_id) if session_id else None
+            if source is None:
                 raise AuthoringError("This save game has no snapshot, so no storyteller: give the `session_id` of a "
                                      "play session whose storyteller continues it.")
-            genome = SESSIONS[session_id].genome
+            genome = source.genome
     store = VariableStore()
     state, how, note = _parameter_errors(lambda: savegame.load(doc, genome, store=store, profile=profile or None))
     if state.ended:
         raise AuthoringError("The save game's session has ended: start a new one.")
     token = _register_session(state, origin, parameters={"profile": state.profile, "savegame": how})
     return token, how, note
+
+
+# ---- saved games: the session index, save slots, continue, restore, restart (backend/persistence.py) ----
+
+def _require_persistence():
+    if not persistence.enabled():
+        raise AuthoringError("Saved games are off on this server (ANE_SESSION_PERSISTENCE=off): games live in "
+                             "memory only.")
+
+
+def _game_summary(row):
+    held = row["session_id"] in SESSIONS
+    return {"session_id": row["session_id"], "profile": row["profile"], "status": row["status"],
+            "location": row["location"], "turn": row["turn"], "state_version": row["state_version"],
+            "mission": row["mission"], "won": row["won"], "engine_id": row["engine_id"],
+            "world_version": row["world_version"], "origin": row["origin"], "created_at": row["created_at"],
+            "updated_at": row["updated_at"], "ended_at": row["ended_at"], "in_memory": held,
+            "error": row.get("error")}
+
+
+def list_games(owner, profile=None, status=None, limit=100):
+    """The owner's play sessions, saved (also those a restart forgot), the most recent first."""
+    _require_persistence()
+    if status not in (None, "", "all") and status not in persistence.STATUSES:
+        raise AuthoringError(f"Unknown status `{status}`: use active, ended, abandoned or all.")
+    rows = persistence.list_sessions(owner, profile=profile or None, status=None if status in (None, "", "all") else status,
+                                     limit=max(1, min(int(limit), 500)))
+    return [_game_summary(row) for row in rows]
+
+
+def continue_game(token):
+    """Continue a play session where it stands: restored from its last save when it is not in memory.
+    Returns {"how": exact | parameters | live, "note"} (how it came back)."""
+    with SESSION_LOCK:
+        _live(token)
+        # How it came back, if it was restored since it was last continued (the API restores a session
+        # when any of its routes is used: _session_access).
+        restored = (SESSION_META.get(token) or {}).pop("restored", None)
+    return restored or {"how": "live", "note": None}
+
+
+def restart_game(token):
+    """Start the session's adventure again: the same engine (world, tuning and storyteller), profile,
+    quest (as asked: a drawn quest is drawn again) and character settings, as a new session for the
+    same owner. The old session is set aside (abandoned) unless it has ended. Returns the new token."""
+    with SESSION_LOCK:
+        state = _live(token)
+        meta = dict(SESSION_META.get(token) or {})
+    parameters = meta.get("parameters") or _start_parameters(state, None)
+    points = parameters.get("stat_points") if parameters.get("stats_mode") == "defined" else None
+    owner = SESSION_OWNER.set(meta.get("owner"))
+    try:
+        new_token, _ = _start_game(state.genome, parameters.get("profile") or state.profile, points,
+                                   parameters.get("stats_mode"), origin=meta.get("origin") or "studio",
+                                   run_id=meta.get("run_id"), engine_id=meta.get("engine_id"),
+                                   mission=parameters.get("mission"), context=state.context)
+    finally:
+        SESSION_OWNER.reset(owner)
+    if not state.ended and persistence.enabled():
+        with SESSION_LOCK:
+            SESSION_META.setdefault(token, {})["status"] = "abandoned"
+            persistence.set_status(token, "abandoned")
+    return new_token
+
+
+def _save_summary(row):
+    return {key: row[key] for key in ("save_id", "slot", "kind", "session_id", "profile", "engine_id", "world_version",
+                                      "location", "turn", "state_version", "mission", "session_status",
+                                      "created_at", "updated_at")}
+
+
+def save_game(token, owner, slot=None):
+    """Save the session into the owner's save slot ``slot`` (a name: saving there again replaces it), or
+    without one into a new manual save. The session goes on (its autosave is kept too)."""
+    _require_persistence()
+    if not owner:
+        raise AuthoringError("Saving a game to a slot needs a user: send X-ANE-User (an opaque id).")
+    with SESSION_LOCK:
+        state = _live(token)
+        _scene(state)
+        meta = SESSION_META.get(token) or {}
+        try:
+            row = persistence.save_slot(owner, token, state, slot=slot, meta=meta)
+        except persistence.PersistenceError as exc:
+            raise AuthoringError(str(exc)) from exc
+    return _save_summary(row)
+
+
+def list_saves(owner, profile=None):
+    _require_persistence()
+    return [_save_summary(row) for row in persistence.list_saves(owner, profile=profile or None)]
+
+
+def restore_save(save_id, owner, profile=None, origin="studio"):
+    """Continue the owner's save ``save_id`` as a new play session (theirs): exactly, or rebuilt from its
+    parameters when its snapshot no longer fits. Returns (token, how, note). LookupError: no such save
+    of theirs."""
+    _require_persistence()
+    row = persistence.save_row(save_id, owner)
+    try:
+        doc = persistence.read_save(row["save_id"])
+        state, how, note = persistence.restore(doc, row["context_key"], profile=profile or row["profile"],
+                                               store=VariableStore())
+    except persistence.PersistenceError as exc:
+        raise SessionUnrecoverableError(f"The save `{row['slot']}` cannot be restored: {exc}") from exc
+    if state.ended:
+        raise AuthoringError("That save is of a game that has ended: start a new one.")
+    asking = SESSION_OWNER.set(owner)
+    try:
+        token = _register_session(state, origin, engine_id=row["engine_id"],
+                                  parameters={"profile": state.profile, "save": row["slot"], "restored": how})
+    finally:
+        SESSION_OWNER.reset(asking)
+    return token, how, note
+
+
+def delete_save(save_id, owner):
+    _require_persistence()
+    return _save_summary(persistence.delete_save(save_id, owner))
+
+
+def cleanup_games(dry_run=False):
+    """Apply the retention policy to finished sessions (backend/persistence.cleanup)."""
+    _require_persistence()
+    return persistence.cleanup(dry_run=dry_run)  # finished games still held in memory stay playable to their end
 
 
 def world_catalogue():
@@ -1273,10 +1576,9 @@ def _benchmark(model):
     """The benchmark score of a storyteller on its own world (the evolution's validation stories)."""
     from core_engine.evolution import evaluate_task
 
-    model.activate()
-    engine.refresh_runtime_settings()
-    evolution = NarrativeEvolution(engine.build_world, engine.fitness, seed=0)
-    return round(float(evaluate_task(evolution.benchmark_task(model.genome_traits))), 3)
+    with model.context(seed=0).bind():  # its own world, tuning and tag vectors; nothing process-wide changes
+        evolution = NarrativeEvolution(engine.build_world, engine.fitness, seed=0)
+        return round(float(evaluate_task(evolution.benchmark_task(model.genome_traits))), 3)
 
 
 def _preview_story(model, engine_id, seed=0):
@@ -1285,7 +1587,8 @@ def _preview_story(model, engine_id, seed=0):
 
     state = model.new_game(seed=seed)
     engine.refresh_runtime_settings()
-    players.play(state, 10 ** 6, players.for_settings(seed, evolution_settings()))  # a simulated player
+    with state.context.bind():  # the engine's own settings (its simulated player's too)
+        players.play(state, 10 ** 6, players.for_settings(seed, evolution_settings()))  # a simulated player
     return records.record_story(state, "import", "preview", engine_id=engine_id, seed=seed,
                                 parameters={"preview": True, "seed": seed})
 
@@ -1485,11 +1788,14 @@ def submit_job(kind: str, work, description: str = "", meta: dict | None = None,
     check = _cancel_check(flag)
     progress.check = check  # work may also check between its own safe points (check_cancelled)
 
+    owner = SESSION_OWNER.get()  # a game the job starts belongs to whoever asked for the job
+
     def run():
         with _JOBS_LOCK:
             if job["status"] == "cancelled":  # cancelled while queued: it never starts
                 return
             job.update(status="running", started_at=_now())
+        asking = SESSION_OWNER.set(owner)
         try:
             result = work(progress)
             with _JOBS_LOCK:
@@ -1506,6 +1812,7 @@ def submit_job(kind: str, work, description: str = "", meta: dict | None = None,
             with _JOBS_LOCK:
                 job.update(status="failed", error=getattr(exc, "detail", None) or getattr(exc, "message", None) or str(exc))
         finally:
+            SESSION_OWNER.reset(asking)
             with _JOBS_LOCK:
                 job["finished_at"] = _now()
 

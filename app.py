@@ -442,6 +442,14 @@ def save_missions_yaml(text):
     return save_document("missions", text)
 
 
+def load_side_quests_yaml():
+    return load_document("side_quests")
+
+
+def save_side_quests_yaml(text):
+    return save_document("side_quests", text)
+
+
 def load_messages_yaml():
     return load_document("messages")
 
@@ -894,6 +902,39 @@ def quest_markdown(quest, journal=None):
     return "\n\n".join(line for line in lines if line)
 
 
+SIDE_QUEST_MARKS = {"offered": "❗", "active": "▶️", "completed": "✅", "failed": "✗", "declined": "▫️"}
+
+
+def side_quests_markdown(side_quests):
+    """The side quests of the story (PlayState ``side_quests``), under the quest: each with its state,
+    who gave it, the current step and what it still needs. Empty when there are none."""
+    if not side_quests:
+        return ""
+    lines = ["#### 🧭 Side quests"]
+    for quest in side_quests:
+        line = f"{SIDE_QUEST_MARKS.get(quest['status'], '▫️')} **{quest['title']}**"
+        if quest.get("giver"):
+            line += f" · for {quest['giver']}"
+        current = next((stage for stage in quest.get("stages") or [] if stage["state"] == "current"), None)
+        if quest["status"] == "offered":
+            line += "  \nOn offer: take it on or turn it down (the first choices)."
+            if quest.get("rewards"):
+                line += f"  \nIn it for you: {quest['rewards']}."
+        elif quest["status"] == "active" and quest.get("ready"):
+            line += f"  \n📦 Done: take it back to {quest.get('giver') or 'who asked'}."
+        elif quest["status"] == "active":
+            if current:
+                line += f"  \nNow: {current['title']}"
+            if quest.get("todo"):
+                line += f"  \n**To do:** {'; '.join(quest['todo'])}"
+            if quest.get("turns_left") is not None:
+                line += f"  \n⏳ {quest['turns_left']} turn(s) left."
+        else:
+            line += f" · {quest['status']}" + (" · it helped your quest" if quest.get("aided_mission") else "")
+        lines.append(line)
+    return "\n\n".join(lines)
+
+
 def people_markdown(game):
     """Everyone met in the story: where, how often spoken with, and who is hostile or gone."""
     met = game.get("people_met") or []
@@ -905,6 +946,8 @@ def people_markdown(game):
             notes.append("here now")
             if here[person["name"]].get("quest"):
                 notes.append("★ can help with your quest")
+            if here[person["name"]].get("side_quests"):
+                notes.append("❗ offers a side quest: " + ", ".join(here[person["name"]]["side_quests"]))
         if person["hostile"]:
             notes.append("⚠ hostile")
         if person["gone"]:
@@ -2553,8 +2596,8 @@ def place_markdown(state):
         lines.append(state["description"])
     people = []
     for person in state.get("people") or []:
-        marks = "".join(mark for flag, mark in ((person.get("quest"), " ★"), (person.get("hostile"), " ⚠"),
-                                                (person.get("ally"), " ♥")) if flag)
+        marks = "".join(mark for flag, mark in ((person.get("quest"), " ★"), (person.get("side_quests"), " ❗"),
+                                                (person.get("hostile"), " ⚠"), (person.get("ally"), " ♥")) if flag)
         role = f" · {person['role']}" if (person.get("importance") or 0) >= 2 and person.get("role") else ""
         people.append(f"**{person['name']}**{marks}{role}")
     if people:
@@ -2665,6 +2708,11 @@ def _changes(entry):
                                                   else ""))
     if entry.get("met"):
         chips.append("👤 met " + ", ".join(entry["met"]))
+    words = {"offered": "❗ side quest offered: {title}", "declined": "▫️ turned down: {title}",
+             "lapsed": "▫️ let go: {title}", "started": "🧭 new side quest: {title}", "stage": "🧭 {title}: {stage} done",
+             "ready": "📦 {title}: done, take it back", "hurry": "⏳ hurry: {title}",
+             "completed": "✅ side quest done: {title}", "failed": "✗ side quest failed: {title}"}
+    chips += [words[event["what"]].format(**event) for event in entry.get("side_quests") or [] if event["what"] in words]
     return chips
 
 
@@ -2734,9 +2782,21 @@ def journey_markdown(journal, show=15):
 def _play_screen(state, journal=None):
     """The game screen for a play state (PLAY_PARTS): how the story ended (when it has), the status
     bar, the place, what just happened, a button per choice (with the check it involves), the quest
-    log, the player, the people and the map, the choices' names (what the buttons take), the journey."""
+    log, the player, the people and the map, what each button sends (the choice's id and the state it was
+    offered in; its name for an API without ids), the journey."""
     actions = list(state.get("actions") or [])
     checks = {item["name"]: item.get("check") for item in state.get("choices") or []}
+    # What each button sends: the choice's stable id with the state it was offered in (a choice made
+    # from older options, e.g. in another tab, is refused instead of taking another), else its name.
+    unclaimed = list(state.get("choices") or [])
+    requests = []
+    for name in actions:
+        choice = next((item for item in unclaimed if item.get("name") == name and item.get("id")), None)
+        if choice is not None:
+            unclaimed.remove(choice)
+            requests.append({"action_id": choice["id"], "state_version": state.get("state_version"), "action": name})
+        else:
+            requests.append({"action": name})
     buttons = [gr.Button(value=f"{i + 1}.  {actions[i]}"
                          + (f"   ·   🎲 {_check_text(checks[actions[i]])}" if checks.get(actions[i]) else ""),
                          visible=True) if i < len(actions) else gr.Button(visible=False)
@@ -2754,8 +2814,10 @@ def _play_screen(state, journal=None):
                 "lower `player_options.limit` (⚙ Advanced → Engine logic).")
     return (gr.Markdown(value=ending, visible=bool(ending)), gr.Markdown(value=hud, visible=True),
             place_markdown(state), gr.Markdown(value=card, visible=bool(card)),
-            *buttons, quest_markdown(state.get("quest"), journal), you_markdown(state), people_markdown(state),
-            discovered_map_svg(state.get("map")), actions, journey_markdown(journal))
+            *buttons, "\n\n".join(part for part in (quest_markdown(state.get("quest"), journal),
+                                                   side_quests_markdown(state.get("side_quests"))) if part),
+            you_markdown(state), people_markdown(state),
+            discovered_map_svg(state.get("map")), requests, journey_markdown(journal))
 
 
 def _story_so_far(token):
@@ -2821,8 +2883,8 @@ def play_engine_file_ui(uploaded_file, model_parameters_file, profile, mission, 
 
 
 def restore_game_ui(token, size):
-    """After a reload: the game this browser was playing (GET /v1/sessions/{id}), when the API still has it
-    (a restart forgets games: the kept id is then dropped). Returns (the session, the ``size`` outputs of the
+    """After a reload: the game this browser was playing (GET /v1/sessions/{id}): the API restores it from
+    its last save after a restart; when it is gone (removed, or never saved) the kept id is dropped. Returns (the session, the ``size`` outputs of the
     game screen and the story, the id kept)."""
     if not token:
         return ("", *[gr.skip()] * size, "")
@@ -2843,7 +2905,16 @@ def play_choose_ui(token, actions, index):
         raise gr.Error("Start a new game first (choose a trained AI and press New game).")
     if index >= len(actions or []):
         raise gr.Error("That choice is no longer there.")
-    state = API.post(_path("/v1/sessions", token, "actions"), {"action": actions[index]})
+    choice = actions[index] if isinstance(actions[index], dict) else {"action": actions[index]}
+    try:
+        state = API.post(_path("/v1/sessions", token, "actions"), choice)
+    except APIError as exc:
+        if exc.status != 409:
+            raise
+        # The game moved on since these choices were shown (another tab): nothing was done; the
+        # current choices are shown instead.
+        gr.Warning(f"{exc} The current choices are shown now.")
+        state = API.get(_path("/v1/sessions", token))
     return (*_play_screen(state, _journal(token)), _story_so_far(token))
 
 
@@ -2870,6 +2941,105 @@ def play_continue_ui(upload, token):
               else f"Rebuilt from its parameters ({state.get('note') or 'no usable snapshot'}).")
     return (state["session_id"], *_play_screen(state, _journal(state["session_id"])),
             _story_so_far(state["session_id"]), status)
+
+
+# ---- saved games: every game is saved as it is played (GET /v1/sessions, /v1/saves) ---------------
+
+RESTORED_TEXT = {"live": "Continued where you left it.", "exact": "Continued exactly where it was saved."}
+
+
+def _when(stamp):
+    return (stamp or "")[:16].replace("T", " ")
+
+
+def saved_games_choices(profile=None):
+    """[(label, value)] of the games to open: games in progress (``session:<id>``, each saved after every
+    change) and save slots (``save:<id>``), of ``profile`` (all profiles when none). None when saved
+    games cannot be listed (off on the server, or it cannot be reached)."""
+    try:
+        games = API.get("/v1/sessions", profile=profile or None, status="active")["sessions"]
+        saves = API.get("/v1/saves", profile=profile or None)["saves"]
+    except APIError as exc:
+        LOG.info("Saved games are not available: %s", exc)
+        return None
+    choices = [(f"▶ In progress · {g['profile']} · {g['location']} · turn {g['turn']} · {_when(g['updated_at'])}",
+                f"session:{g['session_id']}") for g in games]
+    choices += [(f"💾 {s['slot']} · {s['profile']} · {s['location']} · turn {s['turn']} · {_when(s['updated_at'])}",
+                 f"save:{s['save_id']}") for s in saves]
+    return choices
+
+
+def saved_games_ui(profile=None, selected=None):
+    """The saved-games list of the chosen profile, keeping the selection when it is still there."""
+    choices = saved_games_choices(profile)
+    if choices is None:
+        return gr.Dropdown(choices=[], value=None, info="Saved games are off on this server.")
+    values = [value for _, value in choices]
+    return gr.Dropdown(choices=choices, value=selected if selected in values else (values[0] if values else None),
+                       info=f"{len(choices)} saved game(s)" if choices else "No saved games yet: every game you play "
+                       "is saved as you play it.")
+
+
+def _saved(choice):
+    if not choice or ":" not in choice:
+        raise gr.Error("Choose a saved game first (↻ to list them).")
+    kind, _, ident = choice.partition(":")
+    return kind, ident
+
+
+@ui
+def open_saved_game_ui(choice):
+    """Open a saved game, as a normal action: a game in progress goes on (restored from its last save
+    when the server restarted); a save slot goes on as a new game."""
+    kind, ident = _saved(choice)
+    if kind == "session":
+        state = API.post(_path("/v1/sessions", ident, "continue"))
+    else:
+        state = API.post(_path("/v1/saves", ident, "restore"), {})
+    token = state["session_id"]
+    status = RESTORED_TEXT.get(state["restored"]) or (
+        f"Rebuilt from its parameters ({state.get('note') or 'its snapshot no longer fits this engine'}).")
+    return (token, *_play_screen(state, _journal(token)), _story_so_far(token), status)
+
+
+@ui
+def restart_saved_game_ui(choice, token):
+    """Start the adventure again (same AI, world, profile, quest and character settings): the game in
+    progress chosen in the list, else the game being played. The old one is set aside."""
+    kind, _, ident = (choice or "").partition(":")
+    target = ident if kind == "session" else token
+    if not target:
+        raise gr.Error("Choose a game in progress (▶) to restart, or start a game first.")
+    state = API.post(_path("/v1/sessions", target, "restart"))
+    new = state["session_id"]
+    return (new, *_play_screen(state, _journal(new)), _story_so_far(new), "Started again from the beginning.")
+
+
+@ui
+def save_to_slot_ui(token, slot):
+    """Save the game being played into a save slot (its name; saving there again replaces it), or a new
+    manual save. The game goes on."""
+    _need_game(token)
+    saved = API.post(_path("/v1/sessions", token, "saves"), {"slot": (slot or "").strip() or None})
+    return f"💾 Saved to **{saved['slot']}** ({saved['location']}, turn {saved['turn']}). The game goes on."
+
+
+@ui
+def delete_saved_game_ui(choice):
+    kind, ident = _saved(choice)
+    if kind != "save":
+        raise gr.Error("Only save slots (💾) are deleted here; a game in progress ends with *End the game*.")
+    deleted = API.delete(_path("/v1/saves", ident))["deleted"]
+    return f"Deleted the save **{deleted['slot']}**."
+
+
+@ui
+def cleanup_games_ui():
+    report = API.post("/v1/sessions/cleanup", {})
+    policy = report["policy"]
+    return (f"🧹 Removed {len(report['removed'])} finished game(s): finished games are kept "
+            f"{policy['retention_days']} days, at most {policy['keep_finished']} per user. Save slots and games in "
+            "progress are kept.")
 
 
 # ---- records (/v1/records) -------------------------------------------------------------------
@@ -3162,6 +3332,40 @@ def judgement_markdown(result, title="Judgement"):
         f"**Best moment:** {result.get('best_moment') or '-'}", f"**Weakest moment:** {result.get('weakest_moment') or '-'}",
         f"> {result.get('verdict') or ''}",
     ) if line)
+
+
+DECISION_ICONS = {"shown": "✅", "hidden": "👁‍🗨", "blocked": "⛔"}
+
+
+def decisions_markdown(trace):
+    """The author's view of a game's choices now (GET /v1/sessions/{id}/decisions): what is shown,
+    hidden and blocked, and why, with the reason codes. Never part of the player's screen."""
+    if trace.get("ended"):
+        return "The game has ended: nothing is offered."
+    limits = trace.get("limits") or {}
+    lines = [f"**Now:** {trace.get('location')} · mode **{trace.get('mode')}**"
+             + (f" · event *{trace['event']['title'] or trace['event']['name']}*" if trace.get("event") else "")
+             + (f" · talking with **{trace['talking_to']}**" if trace.get("talking_to") else "")
+             + f" · state {trace.get('state_version')}",
+             f"**Limits:** up to {limits.get('cap', limits.get('limit'))} of {limits.get('limit')} choices shown now"
+             + (f" (tension {trace['tension']})" if trace.get("tension") is not None else "")
+             + " · " + " · ".join(f"{count} {status}" for status, count in (trace.get("counts") or {}).items())]
+    for note in trace.get("notes") or []:
+        lines.append(f"> ℹ️ {note['message']}")
+    lines += ["", "| | Choice | Id | Why |", "| --- | --- | --- | --- |"]
+    for entry in trace.get("actions") or []:
+        why = "; ".join(f"`{r['code']}` {r['message']}" for r in entry["reasons"])
+        rank = f" (rank {entry['rank']})" if entry.get("rank") else ""
+        lines.append(f"| {DECISION_ICONS.get(entry['status'], '')} {entry['status']} | {_cell_text(entry['label'], 60)}"
+                     f"{rank} | `{entry['id']}` | {_cell_text(why, 220)} |")
+    return "\n".join(lines)
+
+
+@ui
+def decisions_ui(token):
+    if not token:
+        raise gr.Error("Start a game first.")
+    return decisions_markdown(API.get(_path("/v1/sessions", token, "decisions")))
 
 
 @ui
@@ -5529,7 +5733,8 @@ FORM_CONFLICTS = {"missions": ("mission", "missions_yaml"), "map": ("borders", "
 
 def _form_parts(editor):
     """{part: (label, number of components)}, in the order of the editor's components."""
-    return {"missions": {"mission": ("Mission form", 7), "missions_yaml": ("Missions as YAML", 1)},
+    return {"missions": {"mission": ("Mission form", 7), "missions_yaml": ("Missions as YAML", 1),
+                         "side_quests_yaml": ("Side quests as YAML", 1)},
             "rules": {"rules": ("Story rules", len(REFERENCE["rule_fields"])), "messages": ("Story messages", 1),
                       "variables": ("Persistent variables", 1), "values": ("Stored values of a profile", 1),
                       "stats": ("Character stats", 1)},
@@ -5577,6 +5782,8 @@ def _form_load(editor, part, context):
                 key = None
             *values, state = mission_form_ui(key)
             return tuple(values), {"context": state}
+        if part == "side_quests_yaml":
+            return (load_side_quests_yaml(),), {}
         return (load_missions_yaml(),), {}
     if editor == "rules":
         if part == "rules":
@@ -5598,6 +5805,8 @@ def _form_save(editor, part, context, values):
             key = _output_value(picker)[1]
             return message, {"context": {**(context or {}), "key": key},
                              "picker": gr.Dropdown(choices=_mission_keys(), value=key)}
+        if part == "side_quests_yaml":
+            return save_side_quests_yaml(values[0])[1], {}
         return save_missions_yaml(values[0])[1], {"picker": gr.Dropdown(choices=_mission_keys())}
     if editor == "rules":
         if part == "rules":
@@ -6768,6 +6977,17 @@ def build_app():
                             with gr.Row():
                                 save_missions_button = gr.Button("Validate & save missions")
                                 reload_missions_button = gr.Button("Reload from disk")
+                        with gr.Accordion("🧭 Side quests: optional quests besides the mission", open=False,
+                                          elem_id="world-side-quests"):
+                            gr.Markdown("Written like a mission (title, description, goal or stages, rewards, "
+                                        "enabled_if), plus `giver` (the NPC who offers it: it starts once the player "
+                                        "has dealt with them), `start` (a condition), `fail_if`, `on_fail` and "
+                                        "`repeatable`. Several run at once; none ends the story. See docs/WORLD.md.")
+                            side_quests_editor = gr.Code(value=load_side_quests_yaml(), language="yaml",
+                                                         label="side_quests.yaml")
+                            with gr.Row():
+                                save_side_quests_button = gr.Button("Validate & save side quests")
+                                reload_side_quests_button = gr.Button("Reload from disk")
 
                     with gr.Tab(WORLD_SECTIONS["story-rules"], id="story-rules") as section_story_rules:
                         gr.Markdown(REFERENCE["activation"]["configuration"], elem_classes="activation-note")  # rules, messages, variables, stats
@@ -7140,7 +7360,8 @@ def build_app():
                 # 🎯 Missions, 📜 Story rules, 🗺 Map: each form's draft, its picker guarded, its saves and reloads
                 # setting its baselines in the same step, and a question when its draft would be replaced.
                 form_layouts = {
-                    "missions": {"parts": {"mission": mission_fields, "missions_yaml": [missions_editor]},
+                    "missions": {"parts": {"mission": mission_fields, "missions_yaml": [missions_editor],
+                                           "side_quests_yaml": [side_quests_editor]},
                                  "context": mission_state, "picker": mis_pick, "view": None, "message": missions_status,
                                  "panels": (missions_draft_status, missions_prompt, missions_prompt_text, missions_save,
                                             missions_discard, missions_stay, missions_pending_state)},
@@ -7218,6 +7439,8 @@ def build_app():
                         ("missions", "mission", save_mission_form, missions_status, "save"),
                         ("missions", "missions_yaml", save_missions_button, missions_status, "save"),
                         ("missions", "missions_yaml", reload_missions_button, missions_status, "reload"),
+                        ("missions", "side_quests_yaml", save_side_quests_button, missions_status, "save"),
+                        ("missions", "side_quests_yaml", reload_side_quests_button, missions_status, "reload"),
                         ("rules", "rules", save_rules_button, story_rules_status, "save"),
                         ("rules", "rules", reload_rules_button, story_rules_status, "reload"),
                         ("rules", "messages", save_messages_button, messages_status, "save"),
@@ -7527,8 +7750,6 @@ def build_app():
                     play_quest_titles = gr.State({})  # {key: title} of the quests listed: a cleared one is named
                     with gr.Row():
                         play_new = gr.Button("▶ New game", variant="primary", scale=3)
-                        play_upload = gr.UploadButton("📂 Continue a save game", file_types=[".json"],
-                                                      type="filepath", scale=2)
                         play_refresh = gr.Button("↻ Refresh", scale=1)
                     with gr.Accordion("🏷 About this engine: its result card", open=False):
                         play_card = gr.Markdown(elem_id="play-engine-card")
@@ -7574,6 +7795,22 @@ def build_app():
                             save_game_refresh = gr.Button("Show the save game", size="sm")
                         save_game_text = gr.Markdown()
                         save_game_table = gr.Dataframe(label="Sessions", interactive=False, wrap=True)
+                with gr.Accordion("📂 Saved games: continue, restart or open a save", open=True,
+                                  elem_id="play-saved-games"):
+                    gr.Markdown("Every game is saved as you play it, so it survives closing the page or a "
+                                "restart of the server. ▶ games in progress; 💾 your save slots (of the player "
+                                "profile chosen above).")
+                    with gr.Row(equal_height=True):
+                        saved_list = gr.Dropdown([], label="Saved games", scale=5, elem_id="play-saved-list")
+                        saved_refresh = gr.Button("↻", scale=0, min_width=40)
+                    with gr.Row():
+                        saved_open = gr.Button("▶ Continue", variant="primary", scale=2)
+                        saved_restart = gr.Button("↺ Restart from the beginning", scale=2)
+                        saved_delete = gr.Button("🗑 Delete save", variant="stop", scale=1)
+                        saved_cleanup = gr.Button("🧹 Clean up finished games", size="sm", scale=1)
+                    with gr.Accordion("A save game file (ane.savegame/1, e.g. from the ANE AI)", open=False):
+                        play_upload = gr.UploadButton("📂 Open a save game file", file_types=[".json"],
+                                                      type="filepath")
                 play_status = gr.Markdown()
                 with gr.Row():
                     with gr.Column(scale=3):
@@ -7585,9 +7822,12 @@ def build_app():
                         play_turn = gr.Markdown(elem_classes="turn-card", visible=False)
                         play_buttons = [gr.Button(visible=False, elem_classes="choice", size="md")
                                         for _ in range(CHOICE_BUTTONS)]
-                        with gr.Row():
-                            play_save = gr.Button("💾 Save game", size="sm")
-                            play_stop = gr.Button("End the game", variant="stop", size="sm")
+                        with gr.Row(equal_height=True):
+                            play_slot = gr.Textbox(placeholder="Save slot name (empty: a new manual save)",
+                                                   show_label=False, scale=3, max_length=64)
+                            play_save = gr.Button("💾 Save", size="sm", scale=1)
+                            play_download = gr.Button("⬇ Save game file", size="sm", scale=1)
+                            play_stop = gr.Button("End the game", variant="stop", size="sm", scale=1)
                         play_save_file = gr.File(label="Save game (JSON)", interactive=False, visible=False)
                     with gr.Column(scale=2):
                         play_quest_log = gr.Markdown("### 🎯 Quest\nStart a game to see its quest.",
@@ -7600,6 +7840,12 @@ def build_app():
                     play_journey = gr.Markdown("*Your journey starts with your first choice.*", elem_classes="journey")
                 with gr.Accordion("📖 The story so far", open=False):
                     play_story = gr.Markdown(elem_classes="story-book")
+                with gr.Accordion("🔍 Author: why these choices (shown, hidden, blocked)", open=False):
+                    gr.Markdown("For authors: why each action is offered to the player now or not (its conditions, "
+                                "items and coins, one-time use, conversations and encounters, the storyteller's "
+                                "ranking and the choice limits). Asking changes nothing in the game.")
+                    decisions_button = gr.Button("Explain the current choices")
+                    decisions_view = gr.Markdown()
                 with gr.Accordion("⚖ Judge this playthrough (Gemma 4 as a game critic)", open=False):
                     game_judge_status = gr.Markdown()
                     judge_game_button = gr.Button("Judge the game played so far")
@@ -7615,7 +7861,15 @@ def build_app():
                                       concurrency_limit=1),
                     play_upload.upload(play_continue_ui, [play_upload, play_token], new_game_outputs,
                                        concurrency_limit=1),
+                    saved_open.click(open_saved_game_ui, saved_list, new_game_outputs, concurrency_limit=1),
+                    saved_restart.click(restart_saved_game_ui, [saved_list, play_token], new_game_outputs,
+                                        concurrency_limit=1),
                 ]
+                for event in (saved_refresh.click, play_who.change, demo.load, *(e.success for e in started)):
+                    event(saved_games_ui, [play_who, saved_list], saved_list, show_progress="hidden")
+                saved_delete.click(delete_saved_game_ui, saved_list, play_status).success(
+                    saved_games_ui, [play_who, saved_list], saved_list, show_progress="hidden")
+                saved_cleanup.click(cleanup_games_ui, None, play_status)
                 loaded = load_engine_button.click(play_engine_file_ui,
                                                   [engine_upload, model_parameters_upload, *player_inputs],
                                                   new_game_outputs, concurrency_limit=1)
@@ -7642,11 +7896,14 @@ def build_app():
                     button.click(lambda token, actions, index=index: play_choose_ui(token, actions, index),
                                  [play_token, play_actions], [*play_screen, play_story], concurrency_limit=1)
                 play_stop.click(play_end_ui, play_token, [*play_screen, play_story], concurrency_limit=1)
-                play_save.click(download_savegame_ui, play_token, [play_save_file, play_status]).success(
+                play_save.click(save_to_slot_ui, [play_token, play_slot], play_status).success(
+                    saved_games_ui, [play_who, saved_list], saved_list, show_progress="hidden")
+                play_download.click(download_savegame_ui, play_token, [play_save_file, play_status]).success(
                     lambda: gr.File(visible=True), None, play_save_file)
                 save_game_refresh.click(progression_ui, play_who, [save_game_text, save_game_table])
                 demo.load(judge_status_ui, None, game_judge_status)
                 judge_game_button.click(judge_session_ui, play_token, game_judgement)
+                decisions_button.click(decisions_ui, play_token, decisions_view)
                 # The game survives a reload: its session id is kept in this browser, and the game opens again
                 # while the API still has it.
                 play_token.change(lambda token: token or "", play_token, saved_game, show_progress="hidden")

@@ -41,6 +41,7 @@ import uuid
 from pathlib import Path
 
 from utils.config_loader import config
+from core_engine.context import with_state_context
 
 LOG = logging.getLogger("ane.records")
 DEFAULT_DIR = "/data/angelisg/ane"
@@ -424,6 +425,7 @@ def _turns(connection, story_id, state):
 
 
 @_safe
+@with_state_context
 def record_story(state, origin, kind, run_id=None, engine_id=None, session_id=None, seed=None, parameters=None,
                  story_id=None):
     """Store a story (its parameters, state, result and every turn so far); returns

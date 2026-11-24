@@ -41,7 +41,7 @@ SECTION_TITLES = {
     "power_model": "Player power", "game_state": "Game state", "story_rules": "Story rules", "scene": "Scenes",
     "director": "Director", "npc_goals": "People's goals", "npc_leads": "People's leads", "evolution": "Training",
     "simulation": "Simulation", "fitness": "Story score (fitness)", "session_scope": "Session cast",
-    "discovery_nodes": "Discovery", "mission_settings": "Missions", "world_definition": "World", "climax": "Climax",
+    "discovery_nodes": "Discovery", "mission_settings": "Missions", "side_quest_settings": "Side quests", "world_definition": "World", "climax": "Climax",
     "variation": "Variation", "travel": "Travel", "stakes": "Stakes",
 }
 

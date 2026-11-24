@@ -30,6 +30,7 @@ import re
 import statistics
 
 from utils.config_loader import config
+from core_engine.context import with_state_context
 
 CRITERIA = {
     "agency": "the player's choices matter: real options with consequences, not one obvious path",
@@ -144,6 +145,7 @@ def digest_turns(turns, meta=None, max_turns=None, outcome_chars=None, max_chars
     return "\n".join(lines)
 
 
+@with_state_context
 def digest_state(state, **kwargs):
     """The digest of a played GameState (each turn with its story text, for the beats)."""
     meta = {

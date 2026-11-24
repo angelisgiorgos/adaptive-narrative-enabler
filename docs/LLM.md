@@ -113,6 +113,10 @@ session they **take turns** (`llm_sharing`, on by default; `utils/llm_model_load
 - Before a model generates, the other is put to sleep once nothing of its is running (vLLM's sleep
   level 1: its weights go to CPU memory and its GPU memory is freed), and its own is woken.
 - A model that has stopped running is put to sleep after `idle_seconds` (5), so it waits in CPU memory.
+- A background watcher in the API (started with it) puts to sleep, every `watch_seconds` (30), a model
+  that is awake while nothing of it runs: one that loaded awake when its container started, or that
+  something else woke. So no model holds its GPU memory while no evaluation runs; the next request
+  wakes it (a few seconds). `watch_seconds: 0` turns the watcher off.
 - Requests of the same model at the same time (a judge benchmark) share one wake; a request of the
   other model waits until they have finished (`wait_seconds`, 900, at most).
 - Measured on a TITAN RTX: waking takes 1–2 s and going to sleep about 1 s; the first switch after the

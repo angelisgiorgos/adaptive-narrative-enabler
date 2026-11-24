@@ -178,6 +178,8 @@ def _error_message(response):
         return f"{response.status_code}: {response.text[:500]}"
     if isinstance(detail, list):  # request validation errors
         return "; ".join(f"{'.'.join(str(p) for p in item.get('loc', [])[1:])}: {item.get('msg')}" for item in detail)
+    if isinstance(detail, dict) and detail.get("message"):  # a structured refusal ({code, message, ...})
+        return str(detail["message"])
     return str(detail)
 
 

@@ -35,6 +35,285 @@ that introduces them.
 - Tests give the studio the API served in the test process (`tests/records_sandbox.py`,
   `studio_client.use_test_client`); the studio's code holds no in-process mode.
 
+### Side quests that live in the story
+
+#### Added
+- `reactions` (per side quest): what the story does to it. When a condition comes to hold while it
+  is active, offered or either, it happens once: its text, its effects, then `complete`, `fail`,
+  `advance`, `withdraw` or `none`.
+- `tags` and fit: when several side quests could come, the one that fits the story now comes first
+  (the place's tags, what the last turns brought, the mission's thread).
+- The story lets new side quests in at fitting moments only (`side_quest_settings`): `offer_after`
+  (1), `offer_cooldown` (1: one at a time), never during an event, not above `offer_max_tension`
+  (0.75), not in the finale (`finale_offers: false`).
+- Continuity:
+  - a side quest that can no longer be done ends with its reason (its giver gone, a unique item gone
+    for good: `side_quest_item_gone`; `impossible: fail | keep`), and an offer whose giver is gone is
+    withdrawn;
+  - a deadline waits while the player is held (`pause_when_held`);
+  - the ending recalls the side quests (`side_quest_epilogue`; `epilogue`);
+  - a quest without a description is announced by what it needs;
+  - conditions `side_quest_failed` and `side_quest_declined`.
+- Training: `fitness.side_quests.unfinished_penalty` (2) per side quest left under way when the story
+  ends: storytellers that close the threads they open score higher.
+- Shipped: tags for every side quest. Reactions to the world's events:
+  - the Memory Thief striking makes *Rumours from the Archive* urgent (+2 coins);
+  - the fence exposed completes it;
+  - a brawl won adds to *A full purse*;
+  - a lost ambush is told against it.
+
+#### Changed
+- At most one new side quest per turn by default (`offer_cooldown: 1`); set it to 0 for several at
+  once. In 40 simulated stories per setting: side quests completed 15 → 17, the fitness term 4.85 →
+  5.25, missions won 14 → 15 of 40.
+
+### The language models free the GPU while no evaluation runs
+
+#### Fixed
+- A vLLM server that loaded awake (the judge, started after the augmenter was put to sleep) held its
+  GPU memory (18.5 GB of a 24 GB GPU at `ANE_JUDGE_GPU_MEMORY=0.72`) until the API first used it.
+  The API now runs a background watcher (`llm_sharing.watch_seconds`, 30; `Turns.start_watcher`)
+  that puts every idle, awake model to sleep (vLLM sleep level 1: weights in CPU memory, GPU memory
+  freed); the next judge or augmentation request wakes it, as before.
+
+### Side quests: their own storyteller trait, and richer, better-told quests
+
+#### Added
+- Genome trait `side_quest_bias` (bounds `genome_bounds.side_quest_bias`, `[0.2, 1.0]`): how hard
+  a storyteller pursues side quests, learned apart from the mission's `goal_bias`; the ranking's
+  side-quest pull is `side_quest_settings.rank_weight` x `side_quest_bias`. It is drawn, crossed
+  and mutated with a random stream of its own, so every other trait, draw and seeded result is
+  what it was. Storytellers and save games from before it load with its midpoint (0.6), and their
+  snapshots still continue exactly (`Genome.same`).
+- Side quest cases:
+  - `turn_in` (done, it is handed back to the giver: "Hand over: <title>", id
+    `side-quest:<quest>:turn-in`, or dealing with them; it fails if the giver leaves);
+  - `within_turns` (a deadline, told and warned of, failing when time is up);
+  - `follows` (a chain: offered once another side quest is completed);
+  - `on_decline` (the cost of turning it down or letting the offer go);
+  - `texts` (the story's own words for its moments: offer, accept, decline, ready, turn_in,
+    complete, fail, remind).
+- Better told: an offer says what is in it for the player (rewards in words), whether it helps the
+  mission, and how long it may take; the way to a place a side quest needs is pointed out when no
+  known way leads there (and back to a giver waiting for a hand-over); a quiet side quest is
+  recalled after `side_quest_settings.remind_after` (6) turns; failures say why (time, the giver
+  gone).
+- The storyteller's pull counts a step on the way to a place a side quest names, pulls hardest
+  toward a waiting giver, and grows as a deadline nears. Side-quest moments are something new for
+  the director's rhythm and a fitness development of their own (`side_quest`).
+- Shipped: *A gift for the chapel* is handed back to the Priest, in its own words; new *Rumours
+  from the Archive* (the Merchant: a deadline and a hand-over) and *A blessing for the road*
+  (follows the chapel's gift, costs reputation if turned down).
+- Play state: `reason`, `ready`, `rewards`, `deadline`, `turns_left`, `turn_in`, `aids_mission`,
+  `follows`; journal events `ready`, `hurry`, `reminded`; UNP parameters `ready`, `turns_left`.
+  Messages `side_quest_stakes`, `side_quest_helps`, `side_quest_deadline`, `side_quest_ready`,
+  `side_quest_turned_in`, `side_quest_expired`, `side_quest_giver_gone`, `side_quest_hurry`,
+  `side_quest_reminder`, `side_quest_remind_ready`, `side_quest_way`.
+
+#### Changed
+- In 40 simulated stories per setting with the shipped world: side quests completed 6 → 15,
+  failed 13 → 7, their fitness term 0.8 → 4.85 on average.
+- The Merchant offers *Rumours from the Archive* in most stories, so the first choice is often a
+  side quest's answer (no turn passes). A client that always takes the first choice to make a turn
+  should take the first with `takes_turn: true` (the smoke test, the C# protocol test and the
+  API's tests now do).
+
+### Side quests: taken on by choice, helping the mission, part of the training objective
+
+#### Added
+- A side quest that can start is offered: "Take on: <title>" and "Turn down: <title>" come first
+  among the player's choices (ids `side-quest:<quest>:accept` / `:decline`, category `side_quest`,
+  no turn). An offer unanswered for `side_quest_settings.offer_turns` (3) turns lapses (turns an
+  event hides it do not count). `accept: auto` (per quest, or `side_quest_settings.accept`) starts
+  it at once, as before.
+- Completing a side quest helps the mission (`aids_mission`, default
+  `side_quest_settings.aids_mission: lead`): `lead` opens the way toward where the mission
+  advances next; `ally` makes its giver an ally; `none`. *A gift for the chapel* makes the Priest
+  an ally.
+- Training objective: the fitness term `side_quests` (`fitness.side_quests`: `complete_bonus` 10,
+  `step_bonus` 3, `mission_aid_bonus` 6, `fail_penalty` 4; on the Weights page, and calibrated
+  like any term with `fitness.term_weights.side_quests`). The storyteller's ranking pulls toward a
+  side quest's next step, or someone who offers one, by `side_quest_settings.rank_weight` (2.0) x
+  its learned `goal_bias`. The quester player prefers to take side quests on.
+- UNP: `POST /world/patch` adds, changes and removes side quests (kind `side_quests`), checked like
+  the studio checks them; `GET /world/side_quests/<name>`.
+- Statuses `offered` and `declined`; journal events `offered`, `declined`, `lapsed`; report
+  `side_quests.declined` and `aided_mission`; play state `offered`, `aided_mission`. Messages
+  `side_quest_accepted`, `side_quest_declined`, `side_quest_aid`, `side_quest_ally`. Decision trace
+  code `side_quest_offer`.
+
+#### Changed
+- Side quests are offered as a choice by default; set `side_quest_settings.accept: auto` for the
+  earlier behaviour.
+
+### Side quests
+
+#### Added
+- Side quests: optional quests besides the story's mission (`world_definition.side_quests` in
+  `config/side_quests.yaml`; `core_engine/side_quests.py`, `SideQuest` in `core_engine/world.py`).
+  - Written like a mission (title, description, goal or stages, rewards, enabled_if), plus `giver`
+    (the NPC who offers it: it starts once the player has dealt with them), `start` (a condition),
+    `fail_if` and `on_fail` (failure and its cost), and `repeatable`.
+  - Several are under way at once (`side_quest_settings.max_active`, 3); none ends the story. Each
+    is offered once per story, and once per profile unless repeatable.
+  - Checked at the end of every turn and after the UNP sets the player or reports events; nothing
+    is drawn from the dice.
+  - Three ship with the world: *A gift for the chapel* (the Priest), *Charting the storm* (the
+    Storm Cartographer, in two steps) and *A full purse* (repeatable).
+- The player's choices keep one that works toward a side quest under way, or meets someone who
+  offers one (`side_quest_settings.guide`; `priority_side_quest` in the decision trace).
+- Conditions: `talked_to: <NPC>`, `side_quest_active: <key>`, `side_quest_done: <key>`.
+- PlayState, the exported ANE AI's view and the journal show them (`side_quests`); `people[]`
+  lists the side quests each person offers. The session report has `side_quests: {completed,
+  failed, unfinished}`, and the profile keeps the side quests it completed
+  (`progression.side_quests_completed`). The UNP's session parameters, save games and snapshots
+  carry them; a rebuilt session stands where they stood, quietly. `GET /world` (and
+  `/v1/world/catalogue`) lists them.
+- Validation: the mission rules plus giver (an NPC who is not hostile), `start`, `fail_if`,
+  `on_fail` and `repeatable` (`content_rules.side_quest_errors`); a world, upload or rename that
+  breaks a side quest is refused like one that breaks a mission.
+- Studio: 🌍 World → 🎯 Missions → *🧭 Side quests* edits them as YAML (the document
+  `side_quests`); ▶ Play shows them under the quest, marks people who offer one (❗), and tells
+  what happened to them in the turn card.
+- Messages `side_quest_start`, `side_quest_given`, `side_quest_stage`, `side_quest_complete`,
+  `side_quest_failed`.
+
+#### Changed
+- `packaging/default_history.py` keeps the values recorded before when it rewrites
+  `config/default_history.json`, so a copy without the repository's history adds to it.
+
+### Saved games: every play session is saved, restored after a restart, and kept per user
+
+#### Added
+- Every play session is saved after each change that matters (a turn, approaching or leaving
+  someone, the player or the world set through `PATCH .../player` and `POST .../sync`, the end) as
+  an ordinary `ane.savegame/1` document, with a durable session index (owner, profile, origin,
+  engine, world version, status, place, turn, state version, mission, start parameters, last
+  change) in `ANE_SESSIONS_DIR` (default `ANE_SAVE_DIR/sessions`; `backend/persistence.py`). The
+  configuration each session runs with is kept once per engine beside it.
+- A session that is saved but not in memory (after a restart of the API, or one let go beyond
+  `max_web_sessions`) is restored when any of its routes is used: exactly (the same dice, quest,
+  NPC goals and relations, discovered places, event, encounter or conversation, and story), or
+  rebuilt from its parameters when the snapshot no longer fits the engine code.
+- `GET /v1/sessions`, `POST /v1/sessions/{id}/continue`, `POST /v1/sessions/{id}/restart`,
+  `POST /v1/sessions/{id}/saves` (named and manual save slots), `GET /v1/saves`,
+  `POST /v1/saves/{id}/restore`, `DELETE /v1/saves/{id}`, `POST /v1/sessions/cleanup`.
+- Retention: finished sessions older than `ANE_SESSION_RETENTION_DAYS` (30), or beyond the
+  `ANE_SESSION_KEEP_FINISHED` (20) most recent of each user, are removed (at most hourly when a
+  session ends, and on `POST /v1/sessions/cleanup`); active sessions and save slots are kept.
+  `ANE_SESSION_PERSISTENCE=off` keeps sessions in memory only.
+- Studio ▶ Play: *📂 Saved games* lists the games in progress and save slots of the chosen
+  profile, to continue, restart or delete; *💾 Save* saves into a named slot (or a new manual
+  save). The save game file is still available (*⬇ Save game file*, *📂 Open a save game file*).
+
+#### Changed
+- A play session belongs to the user who started it (`X-ANE-User`; the studio's are `test`): any
+  other user gets `404` on its routes, and their saves are not listed or restored. Sessions started
+  without `X-ANE-User` stay anonymous (anyone with the id), as before. An invalid `X-ANE-User` on a
+  session's route answers `400`.
+- Saves are written atomically (a temporary file renamed over the old one) and serialised per
+  session and across processes (the index's write transaction); an older state never replaces a
+  newer one. A failed save is logged and noted (`error`), never interrupts the game.
+- Background jobs carry the identity of who submitted them, so the game a training job starts is
+  theirs.
+
+### Stable action identities and author decision diagnostics
+
+#### Added
+- Every choice has a stable `id` from what offers it, not its text or position
+  (`npc:<person>:<action>`, `location:<place>:<action>`, `go:<place>`, `approach:<person>`, ...;
+  `core_engine/choices.py`). Authored actions use their `id` field (already accepted, now used; one
+  entry's ids must differ), else their authored name; the builder records each action's
+  `content_ref` (where it is written).
+- PlayState `choices[]` are structured: `id`, `label`, `category`, `owner`, `source`, `location`,
+  `requirements`, `skill_check`, `failure_risk`, `available`, `availability`, `repeat`, `one_time`,
+  `takes_turn`, `members` (with `name` and `check` as before); `state_version` changes whenever the game
+  moves.
+- `POST /v1/sessions/{id}/actions` takes `action_id` with an optional `state_version`: a choice made
+  from older options is refused (`409 stale_state`), an id not offered is `409 action_unavailable`;
+  `action` (the name) works as before.
+- `GET /v1/sessions/{id}/decisions` (authors only; `ANE_AUTHOR_DIAGNOSTICS=off` disables it): why each
+  action is shown, hidden or blocked, with reason codes and explanations (source entity, conditions
+  with their failing parts, items and coins, one-time and per-visit use, events, encounters and
+  conversations, ranking, relevance and choice-count limits). It is made on a copy of the game: no
+  turn, no dice, no encounter, nothing saved (`core_engine/diagnostics.py`, with hooks at the engine's
+  own decision points). The studio shows it in ▶ Play → *🔍 Author: why these choices*.
+- `conditions.explain`: the failing parts of a condition, with their values.
+- The exported ANE AI (`narrative_runtime/`, the UNP protocol) has the same ids: the view's
+  `choices[]` are the same structured choices and the view has `state_version`;
+  `POST /games/<id>/choose` takes `{"action_id", "state_version"}` and refuses a stale or unknown
+  choice with `409 {"error", "code": "stale_state" | "action_unavailable", "state_version",
+  "offered"}` (nothing done); `{"action": name | index}` works as before. `Game.choices()`,
+  `Game.choose(action_id=..., state_version=...)` in Python. The API and the runtime share
+  `core_engine/choices.select`.
+- Unity library: `AneView.Choices` (`AneChoice`: `Id`, `Label`, `Category`, `SourceKind`,
+  `SkillCheck`, `FailureRisk`, ...), `AneView.StateVersion`, `ChooseAsync(view, choice)` and
+  `ChooseIdAsync(gameId, actionId, stateVersion)`; `AneAiException.Code`, `IsStale`, `IsUnavailable`,
+  `StateVersion`, `Offered`. With an ANE AI older than action ids, `ChooseAsync(view, choice)` chooses
+  by name. The text-adventure sample and the C# protocol test choose by id.
+
+#### Changed
+- The studio chooses by `action_id` and `state_version`; a choice made in a tab whose game moved on
+  is refused with a warning and the current choices are shown.
+- `GameState.take_option` finds the chosen option in its new ranking by identity, not by name: a
+  place's action named like a way on (or two same-named choices) could be taken for the other.
+- The runtime's `choose(<index>)` takes the choice at that index; it took the first choice with the
+  same name (a place's action named like a way on could move the player instead).
+
+### Faster training and evaluation on every core
+
+#### Changed
+- `evolution.evaluation_threads: auto` starts one process per physical core (hyperthreads of one core
+  count once; a container's CPU set is respected), at most `evolution.max_evaluation_processes`. On a
+  10-core / 20-thread CPU, 10, 16 and 20 processes train equally fast, so 10 leave memory and CPU to the
+  rest. `cpus` keeps the previous behaviour (every logical CPU); a number sets it exactly.
+- A run's preview story (the champion's best benchmark story) is chosen from the scores the benchmark
+  already computed, and only that story is played again in the run's own process; before, every
+  benchmark story of the champion was replayed there one after another (13 s of a 27 s run measured).
+  The same story is chosen.
+- Evaluations play their stories in a pool of processes (one per physical core), not one after another
+  in a single process: the same stories, in seed order (30 stories: 8.7 s → 5.1 s).
+- Evaluation processes bind one engine context when they start instead of copying the configuration
+  for every story; two methods called on every turn (`_repeat_rule`, `_action_scope`) no longer bind the
+  context themselves (their only outside caller, `resume._mark_done`, does).
+- Measured (population 20 × 2, 2 generations, seed 7, 10-core CPU): 10 processes 16.0 s before, 11.4 s
+  now (one process: 57 s); identical storytellers, scores and preview story.
+
+#### Added
+- Tests: the story pool really plays in other processes (not the one-process fallback), the preview
+  story is the one a replay of every benchmark story would choose and is the only story played in the
+  run's process, evaluations give the same stories in a pool, and the worker count follows the CPU
+  topology.
+
+### Each game, training run and evaluation keeps its own configuration
+
+#### Added
+- `core_engine/context.py`: `EngineContext`, the frozen configuration one game, training run or evaluation
+  runs with (world and tuning, storyteller, hyperparameters, tag vectors, `world_version`, seed).
+  `EngineModel.context()` gives an engine's own; `EngineContext.capture()` the process-wide one as it is.
+- `GameState(..., context=)`; a state keeps the context it started with and binds it on every call.
+  `NarrativeEvolution` freezes its run's context when it is created and reads it until the run ends.
+- `utils.tag_similarity.TagSpace`: tag vectors and their caches per context (shared between contexts with
+  the same vectors and embedding model).
+- `config.process_get` / `config.process_dict` (the process-wide configuration whatever is bound),
+  `follow_process_config(state)` for tests and debugging tools, `tests/test_engine_context.py`.
+
+#### Changed
+- A game in progress, or a running training job, keeps the configuration it started with until it ends:
+  a save in an editor, an upload, *Use built-in config*, a UNP world patch or another session's engine no
+  longer changes it mid-way. Two engines can be played at once, their turns alternating, each exactly as
+  alone. The settings forms' note and every save's message say so (`backend/activation.py`).
+- `EngineModel.build_world()`, `new_game()`, `continue_training()` and `retrain()` run in the engine's own
+  context and no longer change the process-wide configuration; `activate()` still does (the studio's
+  view), and now replaces the process-wide tag vectors instead of merging them into another engine's.
+- Clearing the configuration override (a save, *Use built-in config*) and uploading a configuration forget
+  the process-wide trained tag vectors, so the files' world is never compared with another engine's
+  vectors (before, its tags missing from that engine became zero vectors). The spawn rules cache is kept
+  per tag space.
+- The UNP runtime restores a save game exactly when it was made with an earlier world revision it served
+  (a session started before a world patch).
+- Tests that change a setting to probe a story already set up say so with `follow_process_config`.
+
 ### A faster studio
 
 #### Changed

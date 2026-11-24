@@ -398,7 +398,7 @@ def _reference_files() -> list:
     from . import store
 
     return list(dict.fromkeys([path for path, *_ in ENTITY_FILES.values()]
-                              + [MISSIONS_PATH, VARIABLES_PATH, store.HYPERPARAMETERS_PATH]))
+                              + [MISSIONS_PATH, SIDE_QUESTS_PATH, VARIABLES_PATH, store.HYPERPARAMETERS_PATH]))
 
 
 def _renamed(value, old: str, new: str):
@@ -526,7 +526,8 @@ def entity_references(kind: str, name: str) -> list[str]:
     world = copy.deepcopy(config.get("world_definition") or {})
 
     def problems(candidate):
-        return set(logic_errors(candidate)) | set(content_rules.mission_errors(candidate, candidate.get("missions") or {}))
+        return (set(logic_errors(candidate)) | set(content_rules.mission_errors(candidate, candidate.get("missions") or {}))
+                | set(content_rules.side_quest_errors(candidate, candidate.get("side_quests") or {})))
 
     before = problems(world)
     entries = world.get(key)
@@ -1277,6 +1278,35 @@ def save_missions_yaml(yaml_text: str):
         raise AuthoringError("The missions are invalid:\n" + "\n".join(f"- {e}" for e in errors))
     _store_missions(yaml_text)
     return yaml_text, f"Saved {len(missions)} mission(s). New stories draw from them."
+
+SIDE_QUESTS_PATH = CONFIG_DIR / "side_quests.yaml"
+
+
+def load_side_quests_yaml() -> str:
+    if SIDE_QUESTS_PATH.exists():
+        return SIDE_QUESTS_PATH.read_text(encoding="utf-8")
+    return "world_definition:\n  side_quests: {}\n"
+
+
+def save_side_quests_yaml(yaml_text: str):
+    """Validate and save the side quests (config/side_quests.yaml, comments kept): the mission rules,
+    their giver, start and failure (content_rules.side_quest_errors). Nothing is written when invalid."""
+    try:
+        data = yaml.safe_load(yaml_text) or {}
+    except yaml.YAMLError as exc:
+        raise AuthoringError(f"Could not read the YAML: {exc}") from exc
+    if not isinstance(data, dict) or set(data) - {"world_definition"} or set(data.get("world_definition") or {}) - {"side_quests"}:
+        raise AuthoringError("The document must contain only `world_definition: {side_quests: ...}`.")
+    side_quests = (data.get("world_definition") or {}).get("side_quests") or {}
+    errors = content_rules.side_quest_errors(config.get("world_definition") or {}, side_quests)
+    if errors:
+        raise AuthoringError("The side quests are invalid:\n" + "\n".join(f"- {e}" for e in errors))
+    with CONFIG_LOCK:
+        SIDE_QUESTS_PATH.write_text(yaml_text, encoding="utf-8")
+        config.clear_override()
+        config.reload()
+    return yaml_text, f"Saved {len(side_quests)} side quest(s). New stories offer them."
+
 
 def effective_messages() -> dict:
     """Every message key with its current text (customised or default)."""

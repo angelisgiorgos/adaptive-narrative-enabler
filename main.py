@@ -15,6 +15,7 @@ from utils.config_editor import ConfigEditor
 from core_engine import Genome, GameState
 from core_engine import variables
 from core_engine import players
+from core_engine.context import propagate
 from core_engine.evolution import LearningMemory, NarrativeEvolution, evolution_settings
 # World building and fitness live in core_engine (also shipped in offline engine exports).
 from core_engine.builder import build_world
@@ -234,11 +235,16 @@ def _evaluation_seed(base_seed, generation, genome_index):
 def _init_spawned_worker(config_data, tag_vectors):
     """A spawned evaluation process starts from this process's configuration (an uploaded or
     augmented world) and tag vectors, as a forked one would inherit them."""
+    from core_engine.context import EngineContext
+    from utils.config_loader import ACTIVE_CONTEXT
     from utils.tag_similarity import load_tag_vectors
 
     config.use_override(config_data)
     load_tag_vectors(tag_vectors)
     refresh_runtime_settings()
+    # The worker plays every story it is given in this frozen context (bound once, here: a pool's
+    # tasks run in the thread that ran its initializer), not in a copy taken for each story.
+    ACTIVE_CONTEXT.set(EngineContext(config_data, tag_vectors=tag_vectors, source="evaluation worker"))
 
 
 def _new_process_pool(max_workers):
@@ -246,18 +252,22 @@ def _new_process_pool(max_workers):
     configuration, unless this process holds an embedded vLLM engine (Gemma 4 on the GPU,
     e.g. after world augmentation): a CUDA context must not be forked, so they are spawned
     and given the configuration and tag vectors explicitly."""
+    from core_engine.context import current_context
     from utils.llm_model_loader import embedded_engine_active
 
-    if not embedded_engine_active():
-        return ProcessPoolExecutor(max_workers=max_workers)
     import multiprocessing
 
     from core_engine.model import world_tags
     from utils.tag_similarity import export_tag_vectors
 
+    spawned = embedded_engine_active()
+    if not spawned and current_context() is None:
+        return ProcessPoolExecutor(max_workers=max_workers)
+    # An engine context bound (a run's frozen configuration): the processes start from it, not from
+    # whatever the process-wide configuration is.
     active = config.as_dict()
     return ProcessPoolExecutor(
-        max_workers=max_workers, mp_context=multiprocessing.get_context("spawn"),
+        max_workers=max_workers, mp_context=multiprocessing.get_context("spawn") if spawned else None,
         initializer=_init_spawned_worker, initargs=(active, export_tag_vectors(world_tags(active))),
     )
 
@@ -276,11 +286,34 @@ def _usable_cpus():
         return os.cpu_count() or 1
 
 
+def _physical_cores():
+    """The physical cores among the CPUs this process may run on: hyperthreads of one core count
+    once (Linux CPU topology). Stories are pure-Python and CPU-bound, so a core's second hardware
+    thread adds next to nothing (measured: 10 processes on a 10-core / 20-thread CPU train as fast
+    as 16 or 20) and only costs memory. Elsewhere (no topology): the usable CPUs."""
+    try:
+        cpus = sorted(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        return _usable_cpus()
+    cores = set()
+    for cpu in cpus:
+        try:
+            with open(f"/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list", encoding="ascii") as stream:
+                siblings = stream.read().strip()
+        except OSError:
+            return _usable_cpus()
+        cores.add(siblings)
+    return max(1, len(cores))
+
+
 def _evaluation_worker_count(parallel_tasks):
     """Processes for ``parallel_tasks`` evaluations at once: evolution.evaluation_threads (auto:
-    the CPUs this process may use), at most evolution.max_evaluation_processes."""
+    the physical cores this process may use; cpus: every usable CPU, hyperthreads included; a
+    number: that many), at most evolution.max_evaluation_processes."""
     configured = EVALUATION_THREADS
     if isinstance(configured, str) and configured.lower() == "auto":
+        configured = _physical_cores()
+    elif isinstance(configured, str) and configured.lower() == "cpus":
         configured = _usable_cpus()
     maximum = int(config.get("evolution.max_evaluation_processes", 16))
     return max(1, min(int(configured), maximum, int(parallel_tasks)))
@@ -389,7 +422,7 @@ def evaluate_population(population, generation, base_seed, stop_event=None, exec
     executor = ThreadPoolExecutor(max_workers=max_workers)
     futures = {
             executor.submit(
-                evaluate_genome,
+                propagate(evaluate_genome),  # the threads read the run's engine context too
                 genome,
                 _evaluation_seed(base_seed, generation, index),
                 stop_event,
@@ -422,7 +455,9 @@ def evolve(stop_event=None, progress=None):
     if max_workers > 1:
         executor = (_new_process_pool(max_workers) if PARALLEL_BACKEND == "processes"
                     else ThreadPoolExecutor(max_workers=max_workers))
-    map_fn = (lambda function, tasks: list(executor.map(function, tasks))) if executor else None
+    threads = isinstance(executor, ThreadPoolExecutor)  # they read the run's engine context too
+    map_fn = (lambda function, tasks: list(executor.map(propagate(function) if threads else function, tasks))) \
+        if executor else None
 
     def report(generation, total, stats):
         print(
@@ -849,8 +884,12 @@ def _parallel_map():
     workers = _evaluation_worker_count(POP_SIZE * max(1, int(EPISODES_PER_GENOME)))  # one task per story
     if workers <= 1:
         return None, None
-    executor = _new_process_pool(workers) if PARALLEL_BACKEND == "processes" else ThreadPoolExecutor(max_workers=workers)
-    return executor, (lambda function, tasks: list(executor.map(function, tasks)))
+    if PARALLEL_BACKEND == "processes":
+        executor = _new_process_pool(workers)
+        return executor, (lambda function, tasks: list(executor.map(function, tasks)))
+    executor = ThreadPoolExecutor(max_workers=workers)
+    # The threads read the engine context bound where the stories are asked for (the run's).
+    return executor, (lambda function, tasks: list(executor.map(propagate(function), tasks)))
 
 
 def engine_command(argv=None):
