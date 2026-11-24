@@ -11,6 +11,8 @@ import random
 import unittest
 from unittest.mock import patch
 
+from core_engine.context import follow_process_config
+
 from core_engine import Action, Character, Event, GameState, Genome, Location, Object, Outcome, WorldGraph
 from core_engine.augmenter import WorldAugmenter
 from core_engine.builder import expand_templates, logic_errors
@@ -570,7 +572,7 @@ class StoryCraftTests(_Quiet):
         state.current.connect(world.locations["Yard"])
         travel = next(a for a in state.ranked_available_actions() if a.owner == "Yard")
         self.assertFalse(state._place_promise("Yard"))
-        with patch.dict(config._config["director"], {"dead_end_penalty": 0.0}):
+        with patch.dict(config._config["director"], {"dead_end_penalty": 0.0}), follow_process_config(state):
             free = state._rank_actions([travel])[0][0]
         self.assertLess(state._rank_actions([travel])[0][0], free)
 

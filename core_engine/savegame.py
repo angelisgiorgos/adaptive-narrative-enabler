@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime
 
 from . import resume, snapshot, version
+from .context import with_state_context
 
 FORMAT = "ane.savegame/1"
 OVERRIDABLE = ("stat_points", "stat_changes", "inventory", "coins", "health", "max_health", "variables")
@@ -20,6 +21,7 @@ class SaveGameError(ValueError):
     """A document that is not a usable save game."""
 
 
+@with_state_context
 def make(state, engine=None):
     """The save game of a session in progress (or ended)."""
     data = snapshot.dump(state)

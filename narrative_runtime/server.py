@@ -26,7 +26,9 @@ given in ANE_RUNTIME_TOKEN, else one made at start and given in the ready line.
     GET    /games/<id>/state             the session's parameters (ane.session_state/1)
     PATCH  /games/<id>/player            set stats, inventory, coins, health, variables
     POST   /games/<id>/sync              what happened in the UNP: {"type": ...} or {"events": [...]}
-    POST   /games/<id>/choose            {"action": "<name>"} or {"action": <index>}
+    POST   /games/<id>/choose            {"action_id": "<id>", "state_version": <n>} (a choice's id,
+                                         the view's version; 409 stale_state / action_unavailable),
+                                         or {"action": "<name>"} or {"action": <index>}
     POST   /games/<id>/save              the save game (ane.savegame/1); the session goes on
     POST   /games/<id>/cancel            save game + status (suspended), sent to the UNP; released
     POST   /games/<id>/end               end it (counts as a session): progression + report
@@ -177,6 +179,15 @@ def _routes(server):
             raise _HTTPError(409, "The session has not ended; end it with POST .../end or cancel it.")
         return 200, found
 
+    def choose(game_id, body):
+        if body.get("action_id") is None and body.get("action") is None:
+            raise _HTTPError(400, "Send `action_id` (a choice's id) or `action` (its name or index).")
+        action_id = body.get("action_id")
+        if action_id is not None and not isinstance(action_id, str):
+            raise _HTTPError(400, "`action_id` must be a string (a choice's id: the view's choices[].id).")
+        return 200, game(game_id).choose(body.get("action"), action_id=action_id,
+                                         state_version=body.get("state_version"))
+
     def forget(game_id):
         game(game_id)
         engine.games.pop(game_id, None)
@@ -206,7 +217,7 @@ def _routes(server):
         ("GET", rf"/games/{G}/state", lambda m, b: (200, game(m["id"]).parameters())),
         ("PATCH", rf"/games/{G}/player", lambda m, b: (200, game(m["id"]).update_player(b))),
         ("POST", rf"/games/{G}/sync", lambda m, b: (200, game(m["id"]).sync(b))),
-        ("POST", rf"/games/{G}/choose", lambda m, b: (200, game(m["id"]).choose(b.get("action")))),
+        ("POST", rf"/games/{G}/choose", lambda m, b: choose(m["id"], b)),
         ("POST", rf"/games/{G}/save", lambda m, b: (200, game(m["id"]).savegame())),
         ("POST", rf"/games/{G}/cancel", lambda m, b: (200, game(m["id"]).cancel())),
         ("POST", rf"/games/{G}/end", lambda m, b: (200, game(m["id"]).end())),
@@ -285,7 +296,7 @@ def make_handler(server):
                 server.request_finished()
 
         def _dispatch(self, method):
-            from core_engine import resume, savegame, snapshot
+            from core_engine import choices, resume, savegame, snapshot
 
             from .world import PatchFormatError
 
@@ -304,6 +315,8 @@ def make_handler(server):
                 raise _HTTPError(404, f"No route {method} {path}")
             except _HTTPError as error:
                 return self._send(error.status, {"error": error.message, **error.extra})
+            except choices.ChoiceRefused as refused:  # nothing was done: the current choices are given
+                return self._send(409, refused.details())
             except PatchError as exc:
                 return self._send(422, {"error": "The world content does not fit.", "errors": exc.errors})
             except KeyError as exc:

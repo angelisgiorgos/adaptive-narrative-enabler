@@ -3,6 +3,7 @@ try:  # recording goes to a temporary folder, not the real records database
     import records_sandbox  # noqa: F401
 except ImportError:  # run as tests.<module>
     from tests import records_sandbox  # noqa: F401
+import io
 import json
 import os
 import random
@@ -11,6 +12,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+from core_engine.context import follow_process_config
 
 from fastapi.testclient import TestClient
 
@@ -239,7 +242,7 @@ class EngagementScoreTests(unittest.TestCase):
             if state.ended or not state.step():
                 break
         normalized = _fitness_breakdown(state)
-        with patch.dict(engine.config._config["fitness"]["length_normalization"], {"enabled": False}):
+        with patch.dict(engine.config._config["fitness"]["length_normalization"], {"enabled": False}), follow_process_config(state):
             raw = _fitness_breakdown(state)
         scale = 35 / max(state.actions_taken, 20)
         for term in ("discovery", "character_interactions", "tone_variety"):
@@ -281,6 +284,10 @@ class ReliableLearningTests(unittest.TestCase):
         self.assertEqual(len(keys), len(population))                # no two storytellers alike
 
 
+def _worker_pid(_):
+    return os.getpid()
+
+
 class TrainingSpeedTests(_TempSaves):
     """What makes training fast never changes a result."""
 
@@ -301,6 +308,65 @@ class TrainingSpeedTests(_TempSaves):
             self.assertIsNotNone(map_fn)
             _, pooled = self._run(map_fn)
         self.assertEqual(alone, pooled)
+
+    def test_the_pool_really_plays_in_other_processes(self):
+        with patch.object(engine, "EVALUATION_THREADS", 2), engine.story_pool(8) as map_fn:
+            pids = set(map_fn(_worker_pid, range(8)))
+        self.assertTrue(pids)
+        self.assertNotIn(os.getpid(), pids)   # not the fallback that plays the stories here
+
+    def test_the_preview_story_is_the_best_benchmark_story_played_once(self):
+        from core_engine import evolution as module
+
+        played = []
+        real = module.play_episode
+
+        def counting(*args, **kwargs):
+            played.append(args[2])
+            return real(*args, **kwargs)
+
+        with patch.object(engine, "EVALUATION_THREADS", 2), engine.story_pool(8) as map_fn, \
+                patch.object(module, "play_episode", counting):
+            evolution = NarrativeEvolution(engine.build_world, engine.fitness, settings=self.SETTINGS, seed=5,
+                                           memory=None, map_fn=map_fn)
+            result = evolution.run()
+        self.assertEqual(len(played), 1)   # every story was played by the pool: here only the preview, once
+        # The one a replay of every benchmark story would choose (as the engine did before).
+        best_score, genome, seeds = result.best_score, result.best_genome, evolution._validation_seeds()
+        situations = evolution.benchmark_task(genome.traits())[5]["situations"] or [None] * len(seeds)
+        replayed = max((real(evolution.build_world, genome, seed, evolution._max_steps(), situation,
+                             evolution._player(seed)) for seed, situation in zip(seeds, situations)),
+                       key=evolution.fitness)
+        self.assertEqual(result.best_state.history, replayed.history)
+
+    def test_evaluation_stories_are_the_same_played_at_once(self):
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+
+        from backend import evaluation
+
+        config_data, vectors, traits = evaluation._source(None)
+        with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) as pool:
+            in_turn = pool.submit(evaluation._play, config_data, vectors, 4, 2, traits, None).result()
+        with patch.object(engine, "EVALUATION_THREADS", 2):
+            self.assertEqual(evaluation.play_stories(4, first_seed=2), in_turn)
+
+    def test_worker_count(self):
+        siblings = {0: "0,2", 1: "1,3", 2: "0,2", 3: "1,3"}
+        real_open = open
+
+        def topology(path, *args, **kwargs):
+            if str(path).startswith("/sys/devices/system/cpu/"):
+                return io.StringIO(siblings[int(str(path).split("/cpu")[2].split("/")[0])])
+            return real_open(path, *args, **kwargs)
+
+        with patch.object(engine.os, "sched_getaffinity", lambda pid: {0, 1, 2, 3}, create=True), \
+                patch("builtins.open", topology):
+            self.assertEqual(engine._physical_cores(), 2)              # two cores, two threads each
+            for setting, tasks, expected in (("auto", 100, 2), ("cpus", 100, 4), (3, 100, 3), ("auto", 1, 1),
+                                             (64, 100, int(engine.config.get("evolution.max_evaluation_processes")))):
+                with patch.object(engine, "EVALUATION_THREADS", setting):
+                    self.assertEqual(engine._evaluation_worker_count(tasks), expected, setting)
 
     def test_a_storyteller_is_benchmarked_once(self):
         from core_engine.evolution import evaluate_task

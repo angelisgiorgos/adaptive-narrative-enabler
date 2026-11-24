@@ -34,6 +34,7 @@ from utils.config_loader import config
 from . import version
 from .actions import Action, Outcome
 from .combat import CheckResult, CombatSystem
+from .context import EngineContext, with_state_context
 from .conditions import Condition
 from .effects import EffectList, writes
 from .health import HealthPlayer
@@ -42,7 +43,7 @@ from .stats import CharacterStats
 from .world import Character, Event, ItemInstance, Location, Mission, Object
 
 FORMAT = "ane.snapshot/1"
-SKIP = {"_site_index", "_question_cache", "_ranking_after_free_step", "_turn", "_store", "facts", "world", "genome", "rng", "combat", "health_player", "stats",
+SKIP = {"_context", "_decision_trace", "_site_index", "_question_cache", "_ranking_after_free_step", "_turn", "_store", "facts", "world", "genome", "rng", "combat", "health_player", "stats",
         "narrate"}
 OBJECTS = {cls.__name__: cls for cls in (Action, Outcome, Event, ItemInstance, CheckResult)}
 
@@ -123,6 +124,7 @@ def _event_whole(event):
     return {"$o": "Event", "a": _encode(dict(vars(event)), f"world.events[{event.name}]", None)}
 
 
+@with_state_context
 def dump(state, extra=None):
     """The snapshot of a story in progress: a JSON-ready dict."""
     if state.__dict__.get("_turn") is not None:
@@ -271,7 +273,10 @@ def check(data, genome_traits=None):
         raise SnapshotMismatch(f"made by engine code {data.get('code_version')}, this is {version.code_version()}")
     if data.get("config_hash") != config_hash():
         raise SnapshotMismatch("made with another world or tuning (configuration)")
-    if genome_traits is not None and data.get("genome") != genome_traits:
+    from .genome import Genome
+
+    # A snapshot made before a trait existed has its default (Genome.added_field_defaults).
+    if genome_traits is not None and not Genome.same(data.get("genome"), genome_traits):
         raise SnapshotMismatch("made with another storyteller")
 
 
@@ -294,7 +299,8 @@ def load(data, store=None, genome=None):
             raise SnapshotMismatch(f"The snapshot names the location `{name}`, which this world does not have.")
         world.locations[name].connected = set(connected)
     state = GameState.__new__(GameState)
-    state.__dict__.update({key: decode(value) for key, value in data["attributes"].items()})
+    state.__dict__["_context"] = EngineContext.current(genome)  # the configuration it was checked against
+    state.__dict__.update({key: decode(value) for key, value in data["attributes"].items() if key != "_context"})
     state.world = world
     state.genome = genome
     state.rng = random.Random()

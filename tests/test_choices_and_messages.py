@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from core_engine.context import follow_process_config
+
 import yaml
 from fastapi.testclient import TestClient
 
@@ -97,7 +99,7 @@ class RepeatAndExclusiveTests(unittest.TestCase):
         _choose(state, "Move to Yard")
         # The director hides a chat whose only outcome was told a turn ago (a loop)...
         self.assertNotIn("(Guard) Chat about the weather", _names(state))
-        with patch.dict(config._config["director"], {"enabled": False}):  # ...the repeat rules alone:
+        with patch.dict(config._config["director"], {"enabled": False}), follow_process_config(state):  # ...the repeat rules alone:
             names = _names(state)
         self.assertIn("(Guard) Chat about the weather", names)  # a new visit (another guard, same rules)
         self.assertIn("(Guard) Ask the time", names)  # generic NPC: a different guard here
@@ -157,7 +159,7 @@ class MessageTests(unittest.TestCase):
         state = _state()
         state.actions_taken = 1
         state.consecutive_steps_in_location = config.get("narrative_end.max_consecutive_steps_in_location")
-        with patch.dict(config._config, {"messages": {"end_stalled": "Nothing happens any more."}}):
+        with patch.dict(config._config, {"messages": {"end_stalled": "Nothing happens any more."}}), follow_process_config(state):
             self.assertTrue(state._finalize_if_ended())
         self.assertEqual(state.end_kind, "stalled")
         self.assertEqual(state.history[-1], "[END] Nothing happens any more.")
@@ -551,12 +553,12 @@ class QuestionAndGuideTests(unittest.TestCase):
         free.mission = None
         self.assertEqual(free._quest_pull("Tower"), 0.0)  # no quest, no pull
         state.npc_homes["Oracle"] = "Gate"
-        with patch.dict(config._config.setdefault("npc_leads", {}), {"quest_weight": 50.0}):
+        with patch.dict(config._config.setdefault("npc_leads", {}), {"quest_weight": 50.0}), follow_process_config(state):
             _choose(state, "(Oracle) Show the way")
         self.assertEqual(state.current.name, "Tower")  # not the Yard, whose tags suit the oracle better
         alone = self._state(mission="climb")
         alone.npc_homes["Oracle"] = "Gate"
-        with patch.dict(config._config.setdefault("npc_leads", {}), {"quest_weight": 0.0}):
+        with patch.dict(config._config.setdefault("npc_leads", {}), {"quest_weight": 0.0}), follow_process_config(alone):
             _choose(alone, "(Oracle) Show the way")
         self.assertEqual(alone.current.name, "Yard")
 

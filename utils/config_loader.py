@@ -1,12 +1,44 @@
+"""The configuration (config/*.yaml) of this process, and the engine context a game reads instead.
+
+``config`` is the process-wide configuration: the files, or an override (an uploaded configuration, a
+trained engine's world and tuning). The studio's editors, the API's configuration endpoints and
+everything that *starts* something (a game, a training run, an evaluation) read it.
+
+A running game, training run or evaluation reads its own frozen copy instead: a
+``core_engine.context.EngineContext`` taken when it started. While one is bound (``with
+context.bind():``; a GameState binds its own on every call) ``config.get`` and ``config.as_dict``
+read that context, never the process-wide values, so a save in the editor, an upload or another
+engine's activation changes nothing for it. Code that reads ``config.get`` needs no change.
+"""
+import contextvars
 import yaml
 import os
 import copy
+
+# The engine context bound in this thread / task (core_engine.context.EngineContext, or None: the
+# process-wide configuration). An object with ``_data`` (the configuration it reads).
+ACTIVE_CONTEXT = contextvars.ContextVar("ane_engine_context", default=None)
+
+
+def lookup(data, key, default=None):
+    """``data``'s value at the dotted ``key`` (``a.b.c``), or ``default``."""
+    value = data
+    for k in key.split('.'):
+        if isinstance(value, dict):
+            value = value.get(k)
+        else:
+            return default
+        if value is None:
+            return default
+    return value
+
 
 class Config:
     def __init__(self, config_dir="config"):
         self._config = {}
         self._config_dir = config_dir
         self._override = None
+        self._cleared_hooks = []
         self.reload()
 
     def reload(self):
@@ -35,13 +67,30 @@ class Config:
     def clear_override(self):
         self._override = None
         self.reload()
+        for hook in list(self._cleared_hooks):  # e.g. the trained tag vectors of the override go too
+            hook()
+
+    def on_override_cleared(self, hook):
+        """Call ``hook()`` whenever the override is cleared (the files are the configuration again)."""
+        if hook not in self._cleared_hooks:
+            self._cleared_hooks.append(hook)
 
     def default_config(self):
         return copy.deepcopy(self._default_config)
 
     def as_dict(self):
-        """Return a safe copy of the currently active merged configuration."""
+        """Return a safe copy of the currently active merged configuration (the bound engine
+        context's, if any: see the module docstring)."""
+        bound = ACTIVE_CONTEXT.get()
+        return copy.deepcopy(bound._data if bound is not None else self._config)
+
+    def process_dict(self):
+        """A copy of the process-wide configuration, whatever engine context is bound."""
         return copy.deepcopy(self._config)
+
+    def process_get(self, key, default=None):
+        """``get`` of the process-wide configuration, whatever engine context is bound."""
+        return lookup(self._config, key, default)
 
     @property
     def using_override(self):
@@ -57,16 +106,9 @@ class Config:
                 base[k] = v
 
     def get(self, key, default=None):
-        keys = key.split('.')
-        value = self._config
-        for k in keys:
-            if isinstance(value, dict):
-                value = value.get(k)
-            else:
-                return default
-            if value is None:
-                return default
-        return value
+        """The value at the dotted ``key``: the bound engine context's, else the process-wide one."""
+        bound = ACTIVE_CONTEXT.get()
+        return lookup(bound._data if bound is not None else self._config, key, default)
 
     def set_world_definition(self, new_definition):
         if "world_definition" not in self._config:
@@ -92,6 +134,7 @@ UPGRADED_FILES = {  # file -> (world_definition key, shape): its entries, added 
     "items.yaml": ("objects", "list"),
     "events.yaml": ("events", "mapping"),
     "missions.yaml": ("missions", "mapping"),
+    "side_quests.yaml": ("side_quests", "mapping"),
     "variables.yaml": ("variables", "mapping"),
 }
 OFFERED_FILE = ".ane-default-entries.json"

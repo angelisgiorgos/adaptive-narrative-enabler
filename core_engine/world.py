@@ -234,13 +234,75 @@ class Mission(Conditional):
         self.rewards = EffectList.of(rewards)
 
 
+class SideQuest(Mission):
+    """An optional quest besides the story's mission (core_engine/side_quests.py). Written like a
+    mission (title, description, goal or stages, rewards, enabled_if), plus how it starts and how it
+    can fail: ``giver`` (the NPC who offers it: it starts once the player has dealt with them),
+    ``start`` (any condition that must hold for it to start), ``fail_if`` (a condition that fails it
+    while it is under way), ``on_fail`` (effects when it fails) and ``repeatable`` (offered again in
+    the profile's later stories after it was completed), ``accept`` (``choice``: the player takes it on
+    or turns it down; ``auto``: it starts at once; default side_quest_settings.accept) and
+    ``aids_mission`` (what completing it does for the mission: ``lead``, ``ally`` or ``none``; default
+    side_quest_settings.aids_mission), ``turn_in`` (done, it is taken back to the giver), ``within_turns``
+    (it fails when not completed this many turns after it started), ``on_decline`` (effects when it is
+    turned down or the offer is let go), ``follows`` (offered only once that side quest is completed)
+    ``texts`` (the story's own words for its moments), ``tags`` (what it is about: the story offers
+    first the side quests that fit where it is and what just happened) and ``reactions`` (what the story
+    does to it: [{when (a condition), then: complete | fail | advance | withdraw | none, effects, text,
+    while: active | offered | any}]). Any number run at once; none ends the story."""
+
+    FIELDS = ("title", "description", "goal", "stages", "rewards", "enabled_if", "giver", "start", "fail_if",
+              "on_fail", "repeatable", "accept", "aids_mission", "turn_in", "within_turns", "on_decline", "follows",
+              "texts", "tags", "reactions")
+    REACTIONS = ("complete", "fail", "advance", "withdraw", "none")
+    REACTION_STATES = ("active", "offered", "any")
+
+    def __init__(self, name, goal, title=None, description="", enabled_if=None, rewards=None, stages=None, giver=None,
+                 start=None, fail_if=None, on_fail=None, repeatable=False, accept=None, aids_mission=None,
+                 turn_in=False, within_turns=None, on_decline=None, follows=None, texts=None, tags=None,
+                 reactions=None):
+        super().__init__(name, goal, title=title, description=description, enabled_if=enabled_if, rewards=rewards,
+                         stages=stages)
+        self.giver = giver or None
+        try:
+            self.start = Condition(start) if start else None
+            self.fail_if = Condition(fail_if) if fail_if else None
+        except ConditionError as exc:
+            raise ValueError(f"Side quest '{name}': {exc}") from exc
+        self.on_fail = EffectList.of(on_fail)
+        self.repeatable = bool(repeatable)
+        self.accept = accept or None
+        self.aids_mission = aids_mission or None
+        self.turn_in = bool(turn_in)
+        self.within_turns = int(within_turns) if within_turns else None
+        self.on_decline = EffectList.of(on_decline)
+        self.follows = follows or None
+        self.texts = dict(texts or {})
+        self.tags = [str(tag).lower() for tag in tags or []]
+        self.reactions = []
+        for number, reaction in enumerate(reactions or [], start=1):
+            reaction = dict(reaction or {})
+            try:
+                when = Condition(reaction.get("when")) if reaction.get("when") else None
+            except ConditionError as exc:
+                raise ValueError(f"Side quest '{name}' reaction {number}: {exc}") from exc
+            if when is None:
+                raise ValueError(f"Side quest '{name}' reaction {number} needs a `when` condition.")
+            self.reactions.append({"when": when, "then": reaction.get("then") or "none",
+                                   "effects": EffectList.of(reaction.get("effects")), "text": reaction.get("text"),
+                                   "while": reaction.get("while") or "active"})
+
+
 class WorldGraph:
+    side_quests = {}  # worlds built before side quests have none
+
     def __init__(self):
         self.locations = {}
         self.characters = []
         self.objects = []
         self.events = {}
         self.missions = {}
+        self.side_quests = {}
         self.spawn_rules = defaultdict(list)
         self.routes = None  # authored map (world_definition.routes): place -> set of neighbours
 
@@ -293,6 +355,9 @@ class WorldGraph:
 
     def add_mission(self, mission):
         self.missions[mission.name] = mission
+
+    def add_side_quest(self, quest):
+        self.side_quests[quest.name] = quest
 
     def allow_spawn(self, parent, child):
         self.spawn_rules[parent].append(child)

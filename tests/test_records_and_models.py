@@ -199,9 +199,8 @@ class ApiRecordingTests(_Records):
             state = self.client.get(f"/v1/sessions/{game['session_id']}").json()
             if state["ended"]:
                 break
-            # a turn: not approaching someone or leaving a conversation (those take no turn)
-            actions.append(next(name for name in state["actions"]
-                                if not name.startswith("Approach ") and name != "Leave the conversation"))
+            # a turn: not approaching someone, leaving a conversation or answering a side quest (no turn)
+            actions.append(next(choice["name"] for choice in state["choices"] if choice["takes_turn"]))
             self.client.post(f"/v1/sessions/{game['session_id']}/actions", json={"action": actions[-1]})
         stories = self.client.get(f"/v1/records/stories?session_id={game['session_id']}").json()["stories"]
         story = self.client.get(f"/v1/records/stories/{stories[0]['id']}").json()
