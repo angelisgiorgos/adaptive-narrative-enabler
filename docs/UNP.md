@@ -181,7 +181,7 @@ All paths are relative to the ready line's `url`. Bodies and answers are JSON ob
 | `GET /engine` | | The engine: name, storyteller, world summary, `code_version`, `protocol`, `data_dir`, `world_revision`, `games` |
 | `POST /shutdown` | `{"save": true, "end_sessions": false}` | `{"saved": [...], "ended": [...]}`, then the process exits |
 | `GET /world` | | The world catalogue (`ane.world/1`) |
-| `GET /world/<kind>/<name>` | | One entity; `kind`: `locations`, `npcs`, `items`, `events`, `missions` |
+| `GET /world/<kind>/<name>` | | One entity; `kind`: `locations`, `npcs`, `items`, `events`, `missions`, `side_quests` |
 | `POST /world/patch` | A [world patch](#world-content-post-worldpatch) | `{"revision", "persisted", "warnings", "patch_id"}`; 422 `{"errors": [...]}` |
 | `POST /world/reset` | `{}` | `{"revision"}`: the UNP's content kept in the data folder is dropped |
 | `GET /progression/<profile>` | | The profile's save game: goals achieved, sessions and their reports |
@@ -192,7 +192,7 @@ All paths are relative to the ready line's `url`. Bodies and answers are JSON ob
 | `GET /games/<id>/state` | | The session's parameters (`ane.session_state/1`) and its `session` (cast, NPC roles and homes) |
 | `PATCH /games/<id>/player` | [Player fields](#the-player-patch-gamesidplayer) | The view plus `"applied": [...]` |
 | `POST /games/<id>/sync` | One [event](#what-happened-in-the-unp-post-gamesidsync) or `{"events": [...]}` | The view plus `"synced": [...]` |
-| `POST /games/<id>/choose` | `{"action": "Approach the Merchant"}` or `{"action": 0}` | The view plus `"turn"`: this turn's story text. Approaching someone and leaving a conversation take no turn (`turn_number` stays); in a conversation the choices are that person's and "Leave the conversation", and the view's `talking_to` names them ([docs/WORLD.md](WORLD.md#conversations)) |
+| `POST /games/<id>/choose` | `{"action_id": "approach:merchant", "state_version": 7}` ([choosing](#choosing-by-id)), or `{"action": "Approach the Merchant"}` or `{"action": 0}` | The view plus `"turn"`: this turn's story text; 409 for a [stale or unknown choice](#choosing-by-id). Approaching someone and leaving a conversation take no turn (`turn_number` stays); in a conversation the choices are that person's and "Leave the conversation", and the view's `talking_to` names them ([docs/WORLD.md](WORLD.md#conversations)) |
 | `POST /games/<id>/save` | `{}` | The save game (`ane.savegame/1`); the session goes on |
 | `POST /games/<id>/cancel` | `{}` | `{"game_id", "status", "savegame"}`; the session is released |
 | `POST /games/<id>/end` | `{}` | The view: the session ended where it stands; its progression is saved and reported |
@@ -206,13 +206,67 @@ All paths are relative to the ready line's `url`. Bodies and answers are JSON ob
 What the player sees now (`GET /games/<id>` and most answers about a game):
 
 `game_id`, `location`, `start_location`, `scene`, `description`, `npcs`, `items`, `actions` (the
-choices, in order), `choices` (each with its skill-check hint), `health`, `max_health`, `coins`,
+choices' names, in order), `choices` (the same choices, structured: see below), `state_version`,
+`health`, `max_health`, `coins`,
 `power`, `inventory`, `stats`, `last_check`, `mission`, `mission_description`, `mission_status`,
-`quest`, `people`, `people_met`, `ways_on`, `stakes`, `cast`, `unique_actions`, `map`, `event`,
+`quest`, `side_quests` ([side quests](WORLD.md#side-quests) of the story), `people`, `people_met`, `ways_on`, `stakes`, `cast`, `unique_actions`, `map`, `event`,
 `variables`, `session_report`, `ended`, `won`, `end_reason`, `turn_number`, `talking_to` (the person
 the player is talking with), `turn_summary` (the last turn as a player follows it: the choice, its
 check, what came of it, what it changed, the quest steps it completed; see `GET
 /v1/sessions/{id}/journal` in [API.md](API.md)); after a choice, `turn` (the story text of that turn).
+
+Each entry of `choices` (in the order of `actions`):
+
+```json
+{"id": "location:festival-of-masks:trade-masks-with-a-stranger", "name": "Trade masks with a stranger",
+ "label": "Trade masks with a stranger", "category": "place", "owner": "Festival of Masks",
+ "source": {"kind": "location", "name": "Festival of Masks"}, "location": "Festival of Masks",
+ "requirements": {},
+ "check": {"stat": "stealth", "chance": 40, "bonus": 0, "risk": {"health": -1, "coins": 0, "sent_to": null}},
+ "skill_check": {"stat": "stealth", "chance": 40, "bonus": 0},
+ "failure_risk": {"health": -1, "coins": 0, "sent_to": null}, "available": true,
+ "availability": "offered", "repeat": "once", "one_time": true, "takes_turn": true, "members": null}
+```
+
+`requirements` lists only what applies: `item`, `item_tag`, `item_used`, `coins`, `consumes_item`,
+`collects_item`, `triggers_event`.
+
+`id` is stable: it is made of what offers the choice, never its text or position
+(`location:`/`npc:`/`item:`/`event:<owner>:<action>`, `go:<place>`, `travel:<place>`,
+`talk:`/`approach:`/`leave:<person>`, `look:<place>`, `fallback:<event>`, `side-quest:<quest>:accept` /
+`:decline` (taking an offered side quest on or turning it down) / `:turn-in` (handing a finished one over to its
+giver; no turn passes); [docs/WORLD.md](WORLD.md#action-identities)).
+Two people offering an action of the same name have different ids. `category`: place, person, item,
+event, talk, approach, leave, look, travel, fast_travel, side_quest. `members` (approaching someone): the ids of
+that person's choices. `check` is the skill-check hint as before. The view says only what is
+offered; why anything else is not is an author tool (`GET /v1/sessions/{id}/decisions` in the API).
+
+### Choosing by id
+
+Send the choice's `id` and the view's `state_version`:
+
+```json
+POST /games/<id>/choose   {"action_id": "npc:merchant:haggle", "state_version": 7}
+```
+
+`state_version` changes with every turn, approaching or leaving someone, `PATCH .../player`,
+`POST .../sync` and the end of the session. A choice made from a view the game has moved past, or an
+id that is not offered now, is refused and nothing is done:
+
+```json
+409 {"error": "The game has moved on since that choice was offered (state 7; it is at 9 now). ...",
+     "code": "stale_state", "state_version": 9, "offered": ["go:market", "npc:merchant:haggle", ...]}
+409 {"error": "`npc:nobody:ask` is not among the choices offered now. ...",
+     "code": "action_unavailable", "state_version": 9, "offered": [...]}
+```
+
+Then show the current view (`GET /games/<id>`). A side quest's answers and hand-over
+(`side-quest:...`) come first among the choices and take no turn (`takes_turn: false`): to make a
+turn, take the first choice with `takes_turn: true`. `state_version` is optional (without it only the id
+is checked). `{"action": "<name>"}` and `{"action": <index>}` work as before (two choices with the same
+name: the first); the index takes the choice at that index. An exact load keeps the ids and the
+`state_version`; a session rebuilt from parameters starts again at 0. An ANE AI exported before action
+ids has no `state_version` in its view and no `id` in its choices: choose by name or index there.
 
 ## ANE → UNP: parameters
 
@@ -225,6 +279,7 @@ check, what came of it, what it changed, the quest steps it completed; see `GET
  "items":     [{"kind": "items", "name": "Ancient Map", "associated_tags": [...], "stat_bonus": {...}, "actions": [...], ...}],
  "events":    [{"kind": "events", "name": "storm", "title": "A Storm Breaks", "trigger": {...}, "actions": [...], ...}],
  "missions":  [{"kind": "missions", "name": "find_the_map", "title": "...", "description": "...", "stages": [...], ...}],
+ "side_quests": [{"kind": "side_quests", "name": "charting_the_storm", "title": "...", "giver": "...", "stages": [...], ...}],
  "stats": {"names": [...], "definitions": {...}, "allocation": {...}, "tag_checks": {...}},
  "variables": {...}, "routes": {...}, "starting_locations": [...], "npc_roles": [...]}
 ```
@@ -247,6 +302,7 @@ The session's parameters (`ane.session_state/1`), the same object a save game ca
 | `inventory`, `used_items` | Items held; items used up or removed |
 | `variables` | The persistent variables |
 | `mission` | `{"key", "title", "stage", "won"}` or null |
+| `side_quests` | `{key: {"status": "offered" \| "active" \| "completed" \| "failed" \| "declined", "stage", "ready", "turns_left"?}}`: the side quests of the session (`ready`: done, to be handed over to its giver; `turns_left`: of a deadline); a session rebuilt from them stands where they stood (nothing told or paid again; an offer is put to the player again) |
 | `actions_succeeded`, `unique_actions` | Actions that succeeded; one-time actions and every attempt at them |
 | `events` | Events and their results |
 | `people_met`, `removed_npcs`, `allies`, `defeated`, `alert` | The people of the story |
@@ -297,7 +353,9 @@ Goals are checked afterwards: what the player did in the UNP can win the session
  "persist":     false}
 ```
 
-Kinds: `locations`, `npcs`, `items`, `events`, `missions`. `upsert` inserts or replaces whole
+Kinds: `locations`, `npcs`, `items`, `events`, `missions`, `side_quests` ([side quests](WORLD.md#side-quests):
+`{"upsert": {"side_quests": {"lantern": {"title": "Light the lantern", "giver": "Dock Worker", "goal":
+{"location": "Harbor"}, "aids_mission": "ally"}}}}`; they have no tags or actions). `upsert` inserts or replaces whole
 entries; `update` changes fields of existing ones (`tags` stands for the kind's tag field; `null`
 removes a field); `delete` removes entries; `add_actions` appends actions; `tags` adds or removes
 tags (or sets them with a list); `stats` changes the character stats.
@@ -481,7 +539,9 @@ def call(method, path, body=None):
 
 world = call("GET", "/world")
 view = call("POST", "/games", {"profile": "player-1", "player": {"coins": 20}})
-view = call("POST", f"/games/{view['game_id']}/choose", {"action": 0})
+choice = view["choices"][0]
+view = call("POST", f"/games/{view['game_id']}/choose", {"action_id": choice["id"],
+                                                         "state_version": view["state_version"]})
 save = call("POST", f"/games/{view['game_id']}/cancel", {})["savegame"]
 view = call("POST", "/games", {"savegame": save})     # view["restored"] == "exact"
 call("POST", "/shutdown", {"save": True})

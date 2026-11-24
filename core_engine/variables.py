@@ -239,6 +239,24 @@ class VariableStore:
             data["version"] = 1
             self._write(data)
 
+    def completed_side_quests(self, name="default"):
+        """The side quests (keys) this save game has completed, in order; each only once."""
+        return _start_names(self._read().get("profiles", {}).get(name, {}), "side_quests_completed")
+
+    def complete_side_quests(self, name, keys):
+        """Add side quests to the save game's completed ones (each once)."""
+        keys = [str(key) for key in keys or []]
+        if not keys:
+            return
+        with self._lock:
+            data = self._read()
+            record = data.setdefault("profiles", {}).setdefault(name, {"values": {}, "playthroughs": 0})
+            done = _start_names(record, "side_quests_completed")
+            record["side_quests_completed"] = done + [key for key in keys if key not in done]
+            record["updated"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+            data["version"] = 1
+            self._write(data)
+
     def record_session(self, name, report, limit=50):
         """Keep a session's report in the save game (the latest ``limit``)."""
         with self._lock:
@@ -268,9 +286,11 @@ class VariableStore:
         return [s for s in record.get("sessions") or [] if isinstance(s, dict)]
 
     def progression(self, name="default"):
-        """The save game: {profile, playthroughs, goals_achieved, sessions, values, updated}."""
+        """The save game: {profile, playthroughs, goals_achieved, side_quests_completed, sessions, values,
+        updated}."""
         stored = self.profile(name)
         return {"profile": name, "playthroughs": stored["playthroughs"], "goals_achieved": self.completed_goals(name),
+                "side_quests_completed": self.completed_side_quests(name),
                 "sessions": self.sessions(name), "values": stored["values"], "updated": stored["updated"]}
 
     def _remember(self, name, key, value, limit=None):

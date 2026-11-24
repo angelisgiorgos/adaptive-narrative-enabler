@@ -11,7 +11,8 @@ See docs/AI.md, "What fitness is, and what it is not"."""
 from utils.config_loader import config
 from utils.tag_similarity import semantic_tag_similarity
 
-from . import rules
+from . import rules, side_quests
+from .context import with_state_context
 
 
 def _flatten_seen_tags(tags_seen):
@@ -133,6 +134,7 @@ def _engagement(state, cfg):
     return terms
 
 
+@with_state_context
 def _fitness_breakdown(state):
     fitness_cfg = config.get("fitness", {})
     base_cfg = fitness_cfg.get("base", {})
@@ -361,6 +363,8 @@ def _fitness_breakdown(state):
     breakdown.update(_rhythm(state, fitness_cfg.get("rhythm", {})))
     # People helped: each NPC whose goal the story fulfilled (npc_goals).
     breakdown["npc_goals"] = len(getattr(state, "allies", ())) * base_cfg.get("npc_goal_bonus", 8)
+    # Side quests: completed, their steps, those that helped the mission, failed (fitness.side_quests).
+    breakdown["side_quests"] = side_quests.fitness_term(state, fitness_cfg.get("side_quests") or {})
     # The engine's own beats: the climax, triumphs, reveals, consequences, failures that led on.
     breakdown.update(_beats(state, fitness_cfg.get("beats", {})))
     # What the story lacks (objective_losses), subtracted.
@@ -372,6 +376,7 @@ def _fitness_breakdown(state):
             breakdown[term] *= float(weight)
     return breakdown
 
+@with_state_context
 def fitness(state):
     return sum(_fitness_breakdown(state).values())
 
@@ -384,7 +389,8 @@ fitness.rewards_alternatives = True  # evolution adds evolution.alternatives_wei
 def _developments(state):
     """[(turn, kinds)] of what each turn brought: place (a new one), event, person, outcome
     (not told before), check, fight (a threat or combat), hurt, gain (coins or an item),
-    discovery (a path opened), payoff, ally. A turn with no kind is calm."""
+    discovery (a path opened), payoff, ally, side_quest (one offered, advanced, done or failed). A
+    turn with no kind is calm."""
     log = getattr(state, "turn_log", None) or []
     if not log:
         return []
@@ -419,6 +425,8 @@ def _developments(state):
             kinds.add("gain")
         if turn["turn"] in discoveries:
             kinds.add("discovery")
+        if side_quests.moments_at(state, turn["turn"]):  # a side quest offered, advanced, done or failed
+            kinds.add("side_quest")
         result.append((turn["turn"], kinds))
         previous = turn
     return result
@@ -495,6 +503,7 @@ def _beats(state, cfg):
     }
 
 
+@with_state_context
 def story_signature(state):
     """What a story was made of, for telling stories apart: the places it visited, the events
     it lived through, the people it met and the outcomes it told."""
@@ -549,6 +558,7 @@ def _world_tags(world):
     return cached
 
 
+@with_state_context
 def objective_losses(state, cfg=None):
     """What a story lacks, as non-negative losses subtracted from its score
     (fitness.objective_losses; each term weight x shortfall):

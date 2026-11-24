@@ -4,12 +4,12 @@ import copy
 import math
 
 from utils.config_loader import config
-from utils.tag_similarity import semantic_tag_similarity
+from utils.tag_similarity import current_space, semantic_tag_similarity
 
 from . import conditions, effects, rules, starts, stats, variables
 from .actions import Action, Outcome, repetition_errors
 from .narration import message
-from .world import Character, DialogueLine, Event, Location, Mission, Object, WorldGraph
+from .world import Character, DialogueLine, Event, Location, Mission, Object, SideQuest, WorldGraph
 
 
 _SPAWN_RULES_CACHE = {}
@@ -200,7 +200,8 @@ def _build_spawn_rules(locations, locations_cfg, config_wd):
     strategy = config_wd.get("spawn_strategy", "static")
     if strategy == "similarity":
         threshold = config_wd.get("similarity_threshold", 0.2)
-        cache_key = ("similarity", threshold, _location_signature(locations_cfg))
+        # The similarities depend on the tag vectors too: one engine's never serve another world.
+        cache_key = ("similarity", threshold, _location_signature(locations_cfg), current_space().key)
         cached = _SPAWN_RULES_CACHE.get(cache_key)
         if cached is not None:
             return copy.deepcopy(cached)
@@ -358,6 +359,26 @@ def logic_errors(world):
         effect_list(data.get("rewards"), f"Mission '{name}'.rewards")
         for number, stage in enumerate(data.get("stages") or [], start=1):
             effect_list((stage or {}).get("rewards"), f"Mission '{name}'.stages[{number}].rewards")
+    for name, data in (world.get("side_quests") or {}).items():
+        data = data if isinstance(data, dict) else {}
+        for field in ("enabled_if", "start", "fail_if"):
+            condition(data.get(field), f"Side quest '{name}'.{field}")
+        goals = [("goal", data.get("goal") or {})] + [
+            (f"stages[{number}].goal", (stage or {}).get("goal") or {}) for number, stage in enumerate(data.get("stages") or [], start=1)]
+        for where, goal in goals:
+            for key, value in (goal.items() if isinstance(goal, dict) else ()):
+                if key in Mission.GOAL_KEYS:
+                    condition(conditions.goal_condition(key, value), f"Side quest '{name}'.{where}.{key}")
+        effect_list(data.get("rewards"), f"Side quest '{name}'.rewards")
+        effect_list(data.get("on_fail"), f"Side quest '{name}'.on_fail")
+        effect_list(data.get("on_decline"), f"Side quest '{name}'.on_decline")
+        for number, reaction in enumerate(data.get("reactions") or [], start=1):
+            if isinstance(reaction, dict):
+                condition(reaction.get("when"), f"Side quest '{name}'.reactions[{number}].when")
+                effect_list(reaction.get("effects"), f"Side quest '{name}'.reactions[{number}].effects")
+        for number, stage in enumerate(data.get("stages") or [], start=1):
+            effect_list((stage or {}).get("rewards") if isinstance(stage, dict) else None,
+                        f"Side quest '{name}'.stages[{number}].rewards")
     planted = {str(value) for field, value, _ in threads if field == "setup_id"}
     for field, value, where in threads:
         if field != "setup_id" and str(value) not in planted:
@@ -517,7 +538,8 @@ def _build_outcome(o_data, genome, tags=None):
     _checked(outcome.effects)
     return outcome
 
-def _build_action(a_data, outcomes, events_cfg, name=None, character_name=None, source=None, owner=None):
+def _build_action(a_data, outcomes, events_cfg, name=None, character_name=None, source=None, owner=None,
+                  content_ref=None):
     repeat = a_data.get("repeat")
     errors = repetition_errors(repeat, a_data.get("retry_on_failure"), f"Action '{a_data.get('name', 'Action')}' of {owner}")
     if errors:
@@ -547,6 +569,10 @@ def _build_action(a_data, outcomes, events_cfg, name=None, character_name=None, 
         retry_on_failure=a_data.get("retry_on_failure", False),
     )
     action.until = a_data.get("until")
+    # Its stable identity (core_engine/choices.py): the authored id, else the authored name; the
+    # displayed name may change (the owner's prefix, an item named in place of {...}).
+    action.key = str(a_data.get("id") or a_data.get("name") or "action")
+    action.content_ref = content_ref
     return action
 
 # Exponents the engine raises a value that can be 0 to (the turns spent in a place, the share of
@@ -625,7 +651,8 @@ def build_world(genome):
                     tags.remove("setup_clue")
                     tags.append(_next_setup_tag(action_index, outcome_index))
                 outcomes_list.append(_build_outcome(o_data, genome, tags=tags))
-            actions_list.append(_build_action(a_data, outcomes_list, events_cfg, source="location", owner=name))
+            actions_list.append(_build_action(a_data, outcomes_list, events_cfg, source="location", owner=name,
+                                              content_ref=f"world_definition.locations.{name}.actions[{action_index}]"))
         loc.actions = actions_list
         world.add_location(loc)
 
@@ -640,7 +667,7 @@ def build_world(genome):
     characters_cfg = config_wd.get("characters", [])
     for char_data in characters_cfg:
         char_actions_list = []
-        for a_data in char_data.get("actions", []):
+        for action_index, a_data in enumerate(char_data.get("actions", [])):
             char_outcomes_list = [
                 _build_outcome(o_data, genome) for o_data in a_data.get("outcomes", [])
             ]
@@ -652,6 +679,7 @@ def build_world(genome):
                 character_name=char_data['name'],
                 source="npc",
                 owner=char_data['name'],
+                content_ref=f"world_definition.characters[{char_data['name']}].actions[{action_index}]",
             ))
         
         goal_specs = npc_goals(char_data.get("goals"))
@@ -682,7 +710,7 @@ def build_world(genome):
     objects_cfg = config_wd.get("objects", [])
     for obj_data in objects_cfg:
         obj_actions_list = []
-        for a_data in obj_data.get("actions", []):
+        for action_index, a_data in enumerate(obj_data.get("actions", [])):
             obj_outcomes_list = [
                 _build_outcome(o_data, genome) for o_data in a_data.get("outcomes", [])
             ]
@@ -693,6 +721,7 @@ def build_world(genome):
                 name=f"[{obj_data['name']}] {a_data.get('name', 'Action')}",
                 source="item",
                 owner=obj_data['name'],
+                content_ref=f"world_definition.objects[{obj_data['name']}].actions[{action_index}]",
             ))
         
         obj = Object(
@@ -719,8 +748,9 @@ def build_world(genome):
                 events_cfg,
                 source="event",
                 owner=event_name,
+                content_ref=f"world_definition.events.{event_name}.actions[{action_index}]",
             )
-            for a_data in event_data.get("actions", [])
+            for action_index, a_data in enumerate(event_data.get("actions", []))
         ]
         world.add_event(Event(
             event_name,
@@ -743,6 +773,34 @@ def build_world(genome):
             enabled_if=mission_data.get("enabled_if"),
             rewards=_checked(effects.EffectList(mission_data.get("rewards"))),
             stages=mission_data.get("stages"),
+        ))
+
+    # 8. Side quests (optional quests besides the mission: core_engine/side_quests.py)
+    for quest_name, quest_data in (config_wd.get("side_quests") or {}).items():
+        quest_data = quest_data or {}
+        world.add_side_quest(SideQuest(
+            quest_name,
+            quest_data.get("goal"),
+            title=quest_data.get("title"),
+            description=quest_data.get("description", ""),
+            enabled_if=quest_data.get("enabled_if"),
+            rewards=_checked(effects.EffectList(quest_data.get("rewards"))),
+            stages=quest_data.get("stages"),
+            giver=quest_data.get("giver"),
+            start=quest_data.get("start"),
+            fail_if=quest_data.get("fail_if"),
+            on_fail=_checked(effects.EffectList(quest_data.get("on_fail"))),
+            repeatable=quest_data.get("repeatable", False),
+            accept=quest_data.get("accept"),
+            aids_mission=quest_data.get("aids_mission"),
+            turn_in=quest_data.get("turn_in", False),
+            within_turns=quest_data.get("within_turns"),
+            on_decline=_checked(effects.EffectList(quest_data.get("on_decline"))),
+            follows=quest_data.get("follows"),
+            texts=quest_data.get("texts"),
+            tags=quest_data.get("tags"),
+            reactions=[{**(reaction or {}), "effects": _checked(effects.EffectList((reaction or {}).get("effects")))}
+                       for reaction in quest_data.get("reactions") or []],
         ))
 
     return world

@@ -15,6 +15,7 @@ messages and the tuning. This guide covers every authoring feature; the studio's
 - [`config/variables.yaml`](../config/variables.yaml): persistent variables. See [Persistent variables](#persistent-variables).
 - [`config/messages.yaml`](../config/messages.yaml): every sentence the engine writes into a story. See [Story messages](#story-messages).
 - [`config/missions.yaml`](../config/missions.yaml): missions and their goals, which are the story's win conditions. See [Missions and winning](#missions-and-winning).
+- [`config/side_quests.yaml`](../config/side_quests.yaml): side quests, optional quests besides the mission. See [Side quests](#side-quests).
 - [`config/hyperparameters.yaml`](../config/hyperparameters.yaml): evolution, simulation, fitness, LLM, editor, and augmentation settings.
 
 The web studio also accepts a single combined `.yaml`/`.yml` file in the
@@ -24,6 +25,11 @@ and value type before activating the upload; an invalid or incomplete file does
 not change the active configuration. The upload is a runtime alternative and
 does not overwrite the files under `config/`. Saving an editor entry or the
 built-in settings restores the file-based configuration.
+
+**When an edit takes effect.** A save (or an upload) is used at once by what starts afterwards:
+new games, training runs and evaluations. A game already being played keeps the world and tuning
+it started with until it ends, and a running training job keeps its own too (each runs with a
+frozen copy: [docs/AI.md](AI.md#engine-contexts-which-configuration-a-game-reads-and-when-settings-take-effect)).
 
 **A file may hold only a world.** Every tuning section it does not set is taken
 from the built-in configuration (its own values win), tuning keyed by places
@@ -382,6 +388,186 @@ A mission with an empty goal or an
 unknown goal key raises a `ValueError` when the world is built. A combined
 configuration upload rejects it with a clear message. Configurations uploaded
 before missions existed stay valid and simply have no mission.
+
+### Side quests
+
+A side quest is an optional quest besides the story's mission
+([`config/side_quests.yaml`](../config/side_quests.yaml),
+[`core_engine/side_quests.py`](../core_engine/side_quests.py)). The mission is the story's
+goal, and the story ends when it is complete. Side quests are things to do along the way:
+- the player chooses whether to take one on;
+- several can be under way at once, each with its own steps and rewards;
+- none of them ends the story;
+- completing one helps the mission;
+- training rewards stories that see them through.
+
+```yaml
+world_definition:
+  side_quests:
+    charting_the_storm:
+      title: Charting the storm
+      description: The Storm Cartographer needs a chart older than the storm.
+      giver: Storm Cartographer        # offered once the player has dealt with them
+      start: {visited: Harbor}         # and/or a condition that must hold for it to be offered
+      enabled_if: {reputation: {gte: 0}}   # offered only while this holds
+      accept: choice                   # the player takes it on or turns it down; auto: it starts at once
+      stages:                          # or a single `goal`, as for missions
+      - title: Find an old map
+        goal: {item: Ancient Map}
+        rewards: [{change_coins: 2}]   # a step's own rewards
+      - title: Bring it to the Storm Observatory
+        goal:
+          condition: {at_location: Storm Observatory}
+      rewards: [{change_coins: 10}]    # when it is completed
+      aids_mission: lead               # completing it opens the way toward the mission's next step
+      turn_in: true                    # done, it is taken back to the giver to be completed
+      within_turns: 20                 # it fails when not completed this many turns after it started
+      follows: a_gift_for_the_chapel   # offered only once that side quest is completed
+      fail_if: {npc_removed: Storm Cartographer}   # fails while under way when this holds
+      on_fail: [{change_variable: {reputation: -1}}]
+      on_decline: [{change_variable: {reputation: -1}}]   # turned down, or the offer let go
+      repeatable: false                # true: offered again in the profile's later stories
+      texts:                           # the story's own words for its moments
+        offer: '{giver} unrolls a ragged chart: "Bring me one older than the storm."'
+        complete: '{giver} spreads the old chart beside the new: "There. The island."'
+```
+
+| Field | Meaning |
+| --- | --- |
+| `title`, `description`, `goal` or `stages`, `rewards`, `enabled_if` | As for [missions](#missions-and-winning): the goal keys are the same, every step's goal must hold in order, each step's `rewards` apply when it is done and the quest's `rewards` when it is completed |
+| `giver` | The NPC who offers it: it is offered once the player has dealt with them in this story (any action with them, talking too). A hostile NPC (an encounter) cannot be a giver |
+| `start` | A condition that must hold for it to be offered. With neither `giver` nor `start` it is offered as soon as `enabled_if` holds |
+| `accept` | `choice` (default, `side_quest_settings.accept`): the player takes it on or turns it down; `auto`: it starts at once |
+| `aids_mission` | What completing it does for the story's mission (default `side_quest_settings.aids_mission`, `lead`): `lead` opens the way toward where the mission advances next (the route toward its next step); `ally` makes its giver an ally, who leads and helps like anyone whose goal the player fulfilled; `none` |
+| `turn_in` | `true` (needs a `giver`): once its goal holds it is not complete yet. It is taken back to the giver: "Hand over: <title>" comes first among the choices wherever the giver is in the scene, and dealing with the giver in any other way hands it over too. It fails if the giver leaves the story; it is no longer done if what was brought is gone |
+| `within_turns` | It fails when it is not completed this many turns after it started (once it is done, the way back to the giver does not count against it). The story says how long it has, and warns when two turns are left |
+| `follows` | Another side quest: this one is offered only once that one is completed, in this story or one of the profile's before: a chain |
+| `fail_if` | A condition that fails it while it is under way; then `on_fail` (an effect list) applies |
+| `on_decline` | Effects when it is turned down, or the offer is let go (a disappointed giver) |
+| `texts` | The story's own words for its moments, instead of the messages: `offer`, `accept`, `decline`, `ready`, `turn_in`, `complete`, `fail`, `remind`; they may use `{title}`, `{giver}`, `{reward}` (its rewards in words), `{todo}`, `{turns}` (turns left) |
+| `tags` | What it is about. When several side quests could come, the story offers first the one that fits it now: tags shared with the place (1 each) and with what the last turns brought (0.5 each); a side quest on the mission's thread (it wants what the mission wants: 2; a place it names is where the mission advances next: 1) |
+| `reactions` | What the story does to it: `[{when, then, effects, text, while}]`. When the condition `when` comes to hold while the quest is `active` (default), `offered` or `any`, the reaction happens once: its `text` is told (placeholders as in `texts`), its `effects` apply, and `then` does to the quest: `complete`, `fail` (reason `story`), `advance` (its next step, or done), `withdraw` (the offer, or the quest, is taken back) or `none` |
+| `repeatable` | `false` (default): once a profile has completed it, it is not offered in that profile's later stories |
+
+**Taking it on.** A side quest that can start is offered: its giver asks (`side_quest_given`), or
+the story tells it (`side_quest_start`). Then the story tells what is in it for the player (its
+rewards in words: "In it for you: 6 coins, reputation +1."), whether it could help the mission, and
+how long it may take. The choices "Take on: <title>" and "Turn down: <title>" then
+come first among the player's choices; their ids are `side-quest:<quest>:accept` and
+`side-quest:<quest>:decline`. Answering takes no turn. An offer that stays unanswered for
+`side_quest_settings.offer_turns` (3) turns lapses, like a turned-down one; turns in which an event
+hides the offer do not count. A side quest turned down or let go is not offered again in that story.
+With `accept: auto` it starts at once, without a choice.
+
+**How a story runs them.** Side quests are checked at the end of every turn, and after a UNP sets
+the player or reports what happened. They are never checked in the middle of a turn, and they are
+taken in the order they are written:
+1. Those under way fail (`fail_if`), complete a step, or are completed; unanswered offers age.
+2. Then new ones are offered (or start), as long as fewer than `side_quest_settings.max_active` (3)
+   are under way or on offer.
+
+A side quest whose goal already holds when it starts is completed at once (the item already in
+hand). When it starts, or moves on to its next step, the places its goal names that no known way
+leads to are pointed out: the way opens from where the player stands, along the map ("[LEAD] the
+Merchant points you the way to the Drowned Archive."); a hand-over points the way back to the
+giver. A side quest that has not moved for `side_quest_settings.remind_after` (6) turns is recalled
+to the player, with what it still needs ("[SIDE QUEST] Still open: Charting the storm - Have the
+Ancient Map."), once per quiet spell.
+
+Every moment is told in the story, in the quest's own words (`texts`) or by the
+[Story messages](#story-messages):
+- the offer (`side_quest_given`, `side_quest_start`, `side_quest_stakes`, `side_quest_helps`,
+  `side_quest_deadline`) and the answer (`side_quest_accepted`, `side_quest_declined`);
+- its course: the way pointed out (`side_quest_way`), a step done (`side_quest_stage`), a reminder
+  (`side_quest_reminder`, `side_quest_remind_ready`), time running short (`side_quest_hurry`);
+- its end: done and waiting (`side_quest_ready`), handed over (`side_quest_turned_in`), completed
+  (`side_quest_complete`, then `side_quest_aid` or `side_quest_ally`), or failed
+  (`side_quest_failed`, `side_quest_expired`, `side_quest_giver_gone`, `side_quest_item_gone`);
+- the story's ending: `side_quest_epilogue`. None of this draws from the dice, so a seeded story stays
+reproducible.
+
+**The story's say.** Side quests live in the story, not beside it:
+- **When a new one comes.** The story lets a new side quest in only at fitting moments
+  (`side_quest_settings`): not before turn `offer_after` (1), at most one every `offer_cooldown` (1)
+  turns, never during an event, never in a tense moment (the story's tension above
+  `offer_max_tension`, 0.75: danger a moment ago, a prisoner, the watch hunting the player), and not
+  once the finale has begun (`finale_offers: false`). When several could come, the one that fits
+  the story now comes first (`fit`, `tags`).
+- **What happens to it.** The quest's `reactions` let the world's events change it: a brawl won
+  fills the purse, the fence exposed makes the Merchant's news worthless, a theft makes it urgent.
+- **Continuity.** A side quest that can no longer be done ends with its reason (`impossible: fail`,
+  or `keep` to leave it): its giver gone from the story (a quest under way fails, an offer is
+  withdrawn), or a unique item its step needs gone for good ("[SIDE QUEST FAILED] Wine: a Vintage
+  Wine is gone for good."). A deadline does not run while the player is held in a cell
+  (`pause_when_held`). A quest written without a description is put to the player by what it
+  needs, in words.
+- **The ending.** The epilogue recalls them (`epilogue`): "[SIDE QUESTS] Along the way you saw A
+  full purse through; failed at Rumours from the Archive; left Charting the storm unfinished."
+  Conditions remember them too: `side_quest_failed: <key>`, `side_quest_declined: <key>`.
+
+**The mission.** Completing a side quest helps the story's mission (`aids_mission`). With `lead`,
+the way toward the place where the mission advances next opens from where the player stands. The
+route follows the map, toward the place that pulls hardest for the quest. The story tells it:
+"[LEAD] Charting the storm pays off for your quest: the way to the Sewers is open." With `ally`, its
+giver becomes an ally, who then leads the player on and helps in checks (`npc_goals`). Nothing
+happens when the story has no mission, the mission is won, or the way is known already.
+
+**Training.** A story's fitness, the training objective, has a `side_quests` term
+(`fitness.side_quests`; see [docs/AI.md](AI.md)):
+
+```
+completed x complete_bonus (10) + steps done x step_bonus (3)
+  + those that helped the mission x mission_aid_bonus (6) - failed x fail_penalty (4)
+  - (once the story has ended) those left under way x unfinished_penalty (2)
+```
+
+The storyteller's ranking also pulls toward the next step of a side quest under way: a step on the
+way to a place it names counts too, a giver waiting for a hand-over pulls hardest, and the pull
+grows as a deadline nears. It also pulls toward someone who offers one. The pull is
+`side_quest_settings.rank_weight` (2.0) × the storyteller's own learned trait `side_quest_bias`
+(a genome trait apart from the mission's `goal_bias`, bounds `genome_bounds.side_quest_bias`), so
+training can tune the mission and the side quests apart. Every side-quest moment is also something
+new for the director's sense of rhythm, and a development of its own (`side_quest`) for the
+fitness's rhythm terms. Training therefore favours storytellers whose stories see side quests through;
+like every fitness term it is tuned on the Weights page and can be calibrated to the judge
+(`fitness.term_weights.side_quests`). In training the simulated players answer offers as players
+would: most often by taking them on; the *quester* always prefers to, since a side quest helps the
+quest. A storyteller playing a story itself (`evolution.player: storyteller`) answers no offers,
+so its offers lapse; set `accept: auto` for such training.
+
+**The player's choices.** With `side_quest_settings.guide` (on), one of the choices shown works
+toward a side quest under way, or leads to someone who offers one, as one works toward the mission
+(`priority_side_quest` in the author's decision trace; offers: `side_quest_offer`). The people in a
+scene list the side quests they offer (`people[].side_quests`), and the studio marks them ❗.
+
+**What follows from them.** Conditions can ask about side quests (`side_quest_active: <key>`,
+`side_quest_done: <key>`, `talked_to: <NPC>`; see [Conditions and effects](#conditions-and-effects)).
+A mission, an event, a dialogue line or another side quest can therefore follow from one.
+
+**Where they show.**
+- The play state lists the story's side quests (`side_quests`: key, title, description, giver,
+  status (`offered`, `active`, `completed`, `failed`, `declined`), steps, what the current step
+  still needs, the turns it was offered, started and ended, and `aided_mission`: `lead` or `ally`
+  when it helped).
+- Each turn of the journal says what happened to them (`side_quests`: offered, started, declined,
+  lapsed, stage, completed, failed).
+- The session report has `side_quests: {completed, failed, declined, unfinished, aided_mission}`,
+  and the profile keeps the side quests it completed (`progression.side_quests_completed`).
+- Save games, snapshots and the UNP's session parameters (`side_quests: {key: {status, stage}}`)
+  carry them. A session rebuilt from its parameters stands where its side quests stood, and
+  nothing is told or paid again.
+
+**Checks and editing.** The side quests are checked like missions: goal keys, the names they refer
+to, rewards and conditions. In addition:
+- the giver must be an NPC of the world who is not hostile;
+- `start` and `fail_if` must be valid conditions, and `on_fail` a valid effect list;
+- `repeatable` must be true or false;
+- `accept` must be `choice` or `auto`;
+- `aids_mission` must be `lead`, `ally` or `none`, and `ally` needs a giver.
+
+They are edited in 🌍 World → 🎯 Missions → *🧭 Side quests*, through
+`PUT /v1/documents/side_quests`, or by a UNP with `POST /world/patch` (kind `side_quests`; see
+[docs/UNP.md](UNP.md)). A change that breaks one of these rules is refused, and nothing is written.
 
 ### Starting locations
 
@@ -838,12 +1024,40 @@ be always available, and "Move to" was how travel was recognised. Actions
 now carry their `source` (location, npc, item, event, navigation,
 conversation), so renaming anything, including travel options, is safe.
 
+### Action identities
+
+Every action has a stable **id** in play, independent of the text it is shown with: the player's
+choices carry it (PlayState `choices[].id`) and a client chooses with it (`action_id`), so
+rewriting an action's name, an item named in place of `{...}`, or two people offering an action of
+the same name never mixes choices up. The exported ANE AI gives the same ids (its view's `choices[].id`,
+`POST /games/<id>/choose {"action_id", "state_version"}`; [docs/UNP.md](UNP.md#the-view)).
+
+```yaml
+- id: ask_crown            # optional: the action's identity (its name is used when it has none)
+  name: Ask about the crown
+```
+
+| Offered by | Id | Example |
+| --- | --- | --- |
+| a place, person, item, event | `<kind>:<owner>:<id or name>` (as slugs) | `npc:gate-guard:ask-crown` |
+| talking with someone, approaching them, leaving them | `talk:` / `approach:` / `leave:<person>` | `approach:oracle` |
+| travel, fast travel along a known way | `go:<place>` / `travel:<place>` | `go:market` |
+| looking around after a place drew the player in; stepping away from an event | `look:<place>` / `fallback:<event>` | `look:harbor` |
+| taking an offered [side quest](#side-quests) on, or turning it down | `side-quest:<quest>:accept` / `:decline` | `side-quest:charting-the-storm:accept` |
+
+Give an action an `id` when its name may change and saves or clients should keep recognising it;
+the ids of one entry's actions must differ (the editors refuse a duplicate). Without one, the
+authored name is its identity, so renaming it gives it a new one. Two actions of one entry with the
+same name and no `id` are told apart by where they are written (a short digest is added). An
+author's decision trace (`GET /v1/sessions/{id}/decisions`) also gives each action's
+`content_ref`, e.g. `world_definition.characters[Guard].actions[2]`.
+
 ### Story messages
 
 Every sentence the engine adds to a story lives in
-[`config/messages.yaml`](../config/messages.yaml), 53 messages in all: travel,
-arrivals, discoveries, leads, events, encounters, failures, missions, and
-endings. Rewrite any of them:
+[`config/messages.yaml`](../config/messages.yaml), 130 messages in all: travel,
+arrivals, discoveries, leads, events, encounters, failures, missions, side quests,
+and endings. Rewrite any of them:
 
 ```yaml
 messages:
@@ -1077,6 +1291,7 @@ can change is written as **one effect list**
 | Action (location, NPC, item, event) | It is not offered (`required_object`, `required_tag`, and `required_coins` still work) |
 | NPC dialogue line | The next line is tried |
 | Mission | It is not drawn |
+| Side quest (`enabled_if`, `start`, `fail_if`) | It is not offered / does not start / does not fail |
 | Mission goal (`goal.condition`) | The mission is not complete |
 
 **A condition** is a tree. `all`, `any`, and `not` combine conditions; the
@@ -1108,6 +1323,9 @@ enabled_if:
 | `action_done: A` | A was taken successfully (with or without its `(NPC) ` prefix) |
 | `outcome_tag: t` | an outcome tagged t succeeded |
 | `mission: m` | m is the story's mission |
+| `talked_to: N` | the player dealt with N in this story (any action with them, talking too) |
+| `side_quest_active: q` / `side_quest_done: q` | the side quest q is under way / was completed in this story |
+| `side_quest_failed: q` / `side_quest_declined: q` | the side quest q failed / was turned down, let go or withdrawn in this story |
 
 **Shorthand.** Everything written before trees existed still works: a mapping
 of variable names is `all` of its comparisons, and a list is `all` of its

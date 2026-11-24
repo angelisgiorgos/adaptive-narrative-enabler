@@ -42,7 +42,8 @@ BUILTIN_VARIABLES = {"playthroughs": "int"}  # read-only, maintained by the vari
 GROUPS = ("all", "any", "not")
 COMPARISONS = ("variable", "stat", "resource")
 FACTS = ("has_item", "item_collected", "visited", "at_location", "npc_removed", "event_done", "event_succeeded",
-         "event_failed", "action_done", "outcome_tag", "mission", "secret_known")
+         "event_failed", "action_done", "outcome_tag", "mission", "secret_known", "talked_to", "side_quest_active",
+         "side_quest_done", "side_quest_failed", "side_quest_declined")
 KEYWORDS = frozenset(GROUPS + COMPARISONS + FACTS)  # cannot be variable names (shorthand would be ambiguous)
 RESOURCES = ("coins", "health", "turn")
 TRUE = ("all", ())
@@ -52,8 +53,11 @@ _FACT_REFERENCES = {
     "has_item": "items", "item_collected": "items", "visited": "locations", "at_location": "locations",
     "npc_removed": "npcs", "event_done": "events", "event_succeeded": "events", "event_failed": "events",
     "action_done": None, "outcome_tag": None, "mission": "missions", "secret_known": "npcs",
+    "talked_to": "npcs", "side_quest_active": "side_quests", "side_quest_done": "side_quests",
+    "side_quest_failed": "side_quests", "side_quest_declined": "side_quests",
 }
-_FACT_LABELS = {"items": "item", "locations": "location", "npcs": "NPC", "events": "event", "missions": "mission"}
+_FACT_LABELS = {"items": "item", "locations": "location", "npcs": "NPC", "events": "event", "missions": "mission",
+                "side_quests": "side quest"}
 _ACTION_PREFIX = re.compile(r"^\s*(\([^)]*\)|\[[^\]]*\])\s*")
 
 
@@ -233,6 +237,27 @@ def holds(raw, facts):
     return evaluate(normalize(raw), facts)
 
 
+def explain(raw, facts):
+    """Why a condition does not hold, leaf by leaf (as ``evaluate`` decides it; empty when it holds):
+    [{kind, name, op, expected, actual, negated}]: for ``all`` the parts that fail, for ``any``
+    every part (none holds), for ``not`` the part that holds. Only reads ``facts``."""
+    def walk(tree, negated):
+        kind = tree[0]
+        if kind in ("all", "any"):
+            failing = [child for child in tree[1] if evaluate(child, facts) == negated]
+            return [leaf for child in failing for leaf in walk(child, negated)]
+        if kind == "not":
+            return walk(tree[1], not negated)
+        if kind == "fact":
+            return [{"kind": tree[1], "name": tree[2], "op": None, "expected": not negated,
+                     "actual": facts.fact(tree[1], tree[2]), "negated": negated}]
+        return [{"kind": kind, "name": tree[1], "op": tree[2], "expected": tree[3],
+                 "actual": facts.quantity(kind, tree[1]), "negated": negated}]
+
+    tree = normalize(raw)
+    return [] if evaluate(tree, facts) else walk(tree, False)
+
+
 class StoryFacts:
     """What conditions read from a story in progress (a GameState)."""
 
@@ -276,6 +301,13 @@ class StoryFacts:
             return state.mission is not None and state.mission.name == name
         if kind == "secret_known":  # the NPC's secret came out in this story (story_beats)
             return name in state.__dict__.get("revealed_secrets", {})
+        if kind == "talked_to":  # the player dealt with this NPC in this story (an action with them)
+            return state.character_interactions.get(name, 0) > 0
+        if kind in ("side_quest_active", "side_quest_done", "side_quest_failed", "side_quest_declined"):
+            record = (state.__dict__.get("side_quests") or {}).get(name)  # core_engine/side_quests.py
+            wanted = {"side_quest_active": "active", "side_quest_done": "completed", "side_quest_failed": "failed",
+                      "side_quest_declined": "declined"}[kind]
+            return bool(record) and record.get("status") == wanted
         return False
 
 
@@ -328,7 +360,8 @@ def goal_condition(key, value):
 class References:
     """Names a condition or an effect may refer to. A field left as None is not checked."""
 
-    def __init__(self, variables=None, stats=None, items=None, locations=None, npcs=None, events=None, missions=None):
+    def __init__(self, variables=None, stats=None, items=None, locations=None, npcs=None, events=None, missions=None,
+                 side_quests=None):
         self.variables = variables  # name -> {type, ...} (persistent variable definitions)
         self.stats = None if stats is None else set(stats)
         self.items = None if items is None else set(items)
@@ -336,6 +369,7 @@ class References:
         self.npcs = None if npcs is None else set(npcs)
         self.events = None if events is None else set(events)
         self.missions = None if missions is None else set(missions)
+        self.side_quests = None if side_quests is None else set(side_quests)
 
     @classmethod
     def from_world(cls, world):
@@ -349,6 +383,7 @@ class References:
             npcs=[entry.get("name") for entry in world.get("characters") or [] if isinstance(entry, dict)],
             events=list(world.get("events") or {}),
             missions=list(world.get("missions") or {}),
+            side_quests=list(world.get("side_quests") or {}),
         )
 
     @classmethod
@@ -358,6 +393,7 @@ class References:
             variables=dict(variables), stats=list(stats),
             items=[obj.name for obj in world.objects], locations=list(world.locations),
             npcs=[char.name for char in world.characters], events=list(world.events), missions=list(world.missions),
+            side_quests=list(getattr(world, "side_quests", None) or {}),
         )
 
     def variable_type(self, name):

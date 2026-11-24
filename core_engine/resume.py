@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import random
 
-from . import conditions
+from . import conditions, side_quests
+from .context import with_state_context
 
 FORMAT = "ane.session_state/1"
 PLAYER_FIELDS = ("stat_points", "stat_changes", "inventory", "add_items", "remove_items", "coins", "health",
@@ -39,6 +40,7 @@ def _whole(value, field):
         raise ParameterError(f"`{field}` must be a whole number, not {value!r}.") from None
 
 
+@with_state_context
 def parameters(state):
     """The session's parameters (JSON-ready)."""
     mission = state.mission
@@ -64,6 +66,7 @@ def parameters(state):
         "variables": {k: v for k, v in state.variables.items() if k in state.variable_specs},
         "mission": None if mission is None else {"key": mission.name, "title": mission.title,
                                                  "stage": getattr(state, "mission_stage", 0), "won": bool(state.won)},
+        "side_quests": side_quests.parameters(state),  # {key: {status, stage}}
         "actions_succeeded": sorted(state.succeeded_actions),
         "unique_actions": state.unique_actions(),
         "events": [{"event": e["event"], "result": e.get("result"), "location": e.get("location")}
@@ -139,6 +142,7 @@ def _find_action(state, name, owner=None, source=None):
     return None
 
 
+@with_state_context  # it calls the story's own rules (GameState._repeat_rule, _action_scope)
 def _mark_done(state, name, where=None, owner=None, source=None, succeeded=True, kept=False, turn=None):
     """A one-time action (or any action) taken: used up as its repeat rule says, remembered."""
     state.succeeded_actions |= conditions.action_keys(name) if succeeded else set()
@@ -167,6 +171,7 @@ def _clear(state):
 
 # ---- the player, set by the UNP ---------------------------------------------------------------
 
+@with_state_context
 def apply_player(state, player):
     """Set the player's state from the UNP: stat_points (a full allocation), stat_changes, inventory
     (exactly these items), add_items / remove_items, coins, health, max_health, variables.
@@ -223,11 +228,13 @@ def apply_player(state, player):
         applied.append("variables")
     state.update_power()
     _clear(state)
+    state._changed()  # the options shown before are of an older state now
     return applied
 
 
 # ---- what happened in the UNP ------------------------------------------------------------------
 
+@with_state_context
 def sync(state, event):
     """Take one event from the UNP into the session: {"type": action_done, "action", "owner"?,
     "where"?, "succeeded"?} | item_gained/item_lost {"item"} | npc_removed {"npc"} |
@@ -262,6 +269,7 @@ def sync(state, event):
     state.update_power()
     state.__dict__.setdefault("sync_log", []).append({"turn": state.actions_taken, **event})
     _clear(state)
+    state._changed()  # the options shown before are of an older state now
     state._finalize_if_ended()  # the goal may be reached by what the player did in the UNP
     return kind
 
@@ -330,6 +338,7 @@ def rebuild(genome, params, store=None, profile=None, seed=None, world=None):
     if state.mission is not None and params.get("mission"):
         stages = getattr(state.mission, "stages", None) or []
         state.mission_stage = max(0, min(int(params["mission"].get("stage", 0)), max(0, len(stages) - 1)))
+    side_quests.restore(state, params.get("side_quests"))  # as they stood: nothing told or paid again
     state.succeeded_actions |= {str(key) for key in params.get("actions_succeeded") or []}
     for entry in params.get("unique_actions") or []:
         _mark_done(state, entry["action"], entry.get("where"), entry.get("owner"), entry.get("source"),

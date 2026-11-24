@@ -31,7 +31,7 @@ for its users, and [WORLD.md](WORLD.md) describes the world format (conditions, 
 | Headers | `X-ANE-Client: studio` marks the request as coming from the studio. The records then say `origin: studio`, and runs belong to the user `test`. Any other client sends `X-ANE-User: <opaque id>` when it starts a run (see below). |
 | CORS | Off by default. Set `ANE_CORS_ORIGINS=https://my-frontend.example,…` on the API to enable it. It then allows `GET PUT PATCH POST DELETE` and the headers `Content-Type`, `Authorization`, `X-ANE-Client` and `X-ANE-User`, without credentials. |
 | Timeouts | Most calls return in under a second. The synchronous runs (`POST /v1/simulations`, and `play`, `continue` and `retrain` under `/v1/records/engines/{id}/`) can take minutes, and the studio allows 900 s. A frontend should use the job form of those endpoints instead (see [Long work: jobs](#long-work-jobs)). |
-| One process | The API holds games, jobs, recent runs and download links in memory, in a single worker. A restart loses them. Treat a `404` for a session, job or artifact as "gone", and offer to start again. |
+| One process | The API holds jobs, recent runs and download links in memory, in a single worker, and a restart loses them. Play sessions are saved as they are played and come back after a restart (`GET /v1/sessions` lists them). Treat a `404` for a session, job or artifact as "gone", and offer to start again. |
 
 **Whose run it is.** Requests that start training (`POST /v1/simulations`, `POST /v1/jobs/simulations`,
 and `continue` or `retrain` under `/v1/records/engines/{id}/` and `/v1/jobs/engines/{id}/`) must
@@ -39,6 +39,11 @@ identify the user. A frontend that is not the studio sends `X-ANE-User`, set to 
 uses for the logged-in user. The id is opaque: 1-128 characters from letters, digits and `. _ : -`,
 never a name or an e-mail address. Without the header the API answers `400` and nothing runs.
 `GET /v1/records/runs?user_id=` lists one user's runs.
+
+**Whose game it is.** A play session belongs to the user who started it (`X-ANE-User`, or `test`
+for the studio). Send the same header on every request about it: for anyone else it answers `404`.
+Listing saved games (`GET /v1/sessions`, `GET /v1/saves`) and save slots need the header (`400`
+without one). A session started without the header is anonymous: whoever has its id can use it.
 
 ### Errors
 
@@ -150,6 +155,13 @@ restart its id answers `404`.
   `was`, `moved`, `changed_since`, `message`). A `409` means the name has been taken again or the
   entry is gone, a `400` means the item no longer fits the world, and a `404` means it was undone
   already or is older than the 200 most recent deletions.
+- **A save never reaches a game in progress.** A saved edit (world, tuning, rules), an upload or
+  *Use built-in config* is used by what starts afterwards; a game already open keeps the world and
+  tuning it started with until it ends, and a game with a trained engine always plays that engine's
+  own (`GET /v1/reference` → `activation.configuration` is the note to show; every save's `message`
+  says it too). After a save, do not re-render an open game's scene expecting the change: start a
+  new game to play it. Each game runs with its own configuration, so two games (two engines) can be
+  open and played in turn ([docs/AI.md](AI.md#engine-contexts-which-configuration-a-game-reads-and-when-settings-take-effect)).
 - **Unsaved changes.** The studio tracks a draft per form and asks before discarding it:
   when the user switches entry or section, leaves the page, or reloads. It also keeps drafts in
   browser storage so they survive a reload. The view sections give the details for each form.
@@ -177,7 +189,8 @@ them and refresh them after a configuration upload or reset.
 
 ### Play state
 
-`GET /v1/sessions/{id}`, `POST /v1/sessions/{id}/actions` (body `{"action": "<one of actions>"}`),
+`GET /v1/sessions/{id}`, `POST /v1/sessions/{id}/actions` (body `{"action_id": "<a choice's id>",
+"state_version": <the state's>}`, or as before `{"action": "<one of actions>"}`),
 `POST /v1/sessions/{id}/end`, the result of a training job, and every endpoint that starts a game
 all answer with the same object. Excerpt from a real response:
 
@@ -186,7 +199,13 @@ all answer with the same object. Excerpt from a real response:
  "session_id": "208293b8…", "ended": false, "won": false, "end_reason": null,
  "scene": "## Tavern\n\n**Quest:** A face for the Palace · stage 1/3: …",
  "actions": ["(Merchant) Ask about forbidden merchandise", "(Merchant) Talk with Merchant", "…"],
- "choices": [{"name": "(Merchant) Ask about forbidden merchandise", "check": null}, "…"],
+ "choices": [{"id": "npc:merchant:ask-about-forbidden-merchandise", "name": "(Merchant) Ask about forbidden merchandise",
+              "label": "(Merchant) Ask about forbidden merchandise", "category": "person", "owner": "Merchant",
+              "source": {"kind": "npc", "name": "Merchant"}, "location": "Tavern", "requirements": {},
+              "check": null, "skill_check": null, "failure_risk": null, "available": true,
+              "availability": "offered", "repeat": "once", "one_time": true, "takes_turn": true,
+              "members": null}, "…"],
+ "state_version": 7,
  "last_turn": "> (Merchant) Ask about the market thief\n\nRESULT: \"Patched cloak, …\"",
  "turn_summary": {"turn": 1, "action": "(Merchant) Ask about the market thief", "with": "Merchant",
                   "where": "Tavern", "moved_to": null, "check": null, "succeeded": true, "told": "…",
@@ -226,8 +245,16 @@ all answer with the same object. Excerpt from a real response:
 }
 ```
 
-- Send back **one of `actions` exactly as given**. Any other string is refused with `400` ("That
-  choice is no longer available"), so after that error, reload the session.
+- **Choose by id:** send a choice's `id` (`choices[].id`) as `action_id`, with the `state_version` of the
+  state you showed. An id names what offers the choice (`npc:<person>:<action>`, `location:<place>:<action>`,
+  `go:<place>`, `approach:<person>`, ...), not its text or its position, so it stays right when two people
+  offer choices of the same name. The game moved on since (another tab, a UNP update): `409` with
+  `detail: {code: "stale_state", message, state_version, offered}`; an id not offered now: `409`
+  `action_unavailable`. Nothing is done in either case: show the current state (`GET /v1/sessions/{id}`).
+- Older clients send back **one of `actions` exactly as given** (`{"action": ...}`). Any other string is
+  refused with `400` ("That choice is no longer available"), so after that error, reload the session.
+- `choices` lists only what the player may choose. Why anything else is not offered is for authors:
+  `GET /v1/sessions/{id}/decisions` ([🔍 Author: why these choices](#play-decisions)); never show it to players.
 - `scene` and `last_turn` are Markdown, ready to render. The structured fields are there for a
   client that draws its own panels, as the studio's ▶ Play view does.
 - The game is over when `ended` is true. It then offers no `actions`, and
@@ -818,6 +845,9 @@ Cross-view refreshes into this view:
 | Every mission as YAML (advanced) › missions.yaml | yaml-editor (accordion, closed) | `GET /v1/documents/missions` → `yaml` | — | Must be `world_definition: {missions: …}` (checked by the API) |
 | Validate & save missions | button | — | — | — |
 | Reload from disk | button | — | — | — |
+| 🧭 Side quests: optional quests besides the mission › side_quests.yaml | yaml-editor (accordion `#world-side-quests`, closed) | `GET /v1/documents/side_quests` → `yaml` | — | Must be `world_definition: {side_quests: …}`; the API checks it like missions, plus `giver`, `start`, `fail_if`, `on_fail`, `repeatable` ([docs/WORLD.md](WORLD.md#side-quests)) |
+| Validate & save side quests | button | — | — | — |
+| Reload from disk (side quests) | button | — | — | — |
 
 **Actions.**
 | Trigger | Request | Body / params | On success | Errors & guards |
@@ -831,6 +861,8 @@ Cross-view refreshes into this view:
 | ↶ Undo `(undo_delete_mission_ui)` | `POST /v1/deletions/{token}/restore` | token = newest history item's `undo.token` | Response `name` (key) and `message`. Pops the history (saved to localStorage). If the Mission form has no unsaved changes: `GET /v1/missions/{name}` loads it, the picker selects it, and the baseline is reset. Otherwise only the picker choices are refreshed (`GET /v1/missions`) and the message gets " Your unsaved mission changes were kept: pick it to edit.". The YAML is reloaded (`GET /v1/documents/missions`) unless it is dirty. Status = message | Empty history → "Nothing to undo.". 404 → item dropped, bar shows "⚠ **Not restored:** <detail>". 409/400 → item kept (try again), same note |
 | Validate & save missions `(form_save_ui → save_document)` | `PUT /v1/documents/missions` | `{yaml}` from the editor | Response `yaml` and `message`. Picker choices refreshed (`GET /v1/missions`; the value is kept). The YAML is reloaded (`GET /v1/documents/missions`) and its baseline reset. The Mission form is reloaded (`GET /v1/missions/{state.key}`) unless it is dirty. Status = message | 400 (invalid YAML / missions) → toast; nothing changes. If the YAML removed or renamed the mission open in a clean form, the reload's `GET /v1/missions/{key}` returns 404. The save has already happened, but the step fails with a toast and the view is not updated |
 | Reload from disk `(form_reload_ui)` | `GET /v1/documents/missions` | — | The YAML replaces the draft; its baseline is reset | — |
+| Validate & save side quests `(form_save_ui → save_document)` | `PUT /v1/documents/side_quests` | `{yaml}` from the editor | Response `yaml` and `message` ("Saved n side quest(s). New stories offer them."). Its baseline is reset. Status = message | 400 (invalid YAML, or a side quest that breaks the rules: the message lists each problem) → toast; nothing is written |
+| Reload from disk (side quests) `(form_reload_ui)` | `GET /v1/documents/side_quests` | — | The YAML replaces the draft; its baseline is reset | — |
 | Prompt › 💾 Save / Discard / Stay `(form_resolve_ui)` | per part as above | — | See draft model | — |
 
 **Client-side logic to reimplement.**
@@ -857,7 +889,7 @@ Cross-view refreshes into this view:
   - The bar is hidden when there is no text.
 - **Form-editor draft model** (shared by 🎯 Missions, 📜 Story rules and 🗺 Map; `form_part_status_ui`, `form_pick_ui`, `form_resolve_ui`, `section_choice_ui`, `nav_choice_ui`):
   - **State.** `forms_base = {editor: {part: canonical}}`. `drafts_dirty = {editor: [parts]}`; this object is shared with 📝 Entries under the key `entries`. Editors and their parts (label in parentheses):
-    - `missions`: `mission` ("Mission form": Key, Title, Description, Weight, Offered only if, Rewards, Steps) and `missions_yaml` ("Missions as YAML").
+    - `missions`: `mission` ("Mission form": Key, Title, Description, Weight, Offered only if, Rewards, Steps), `missions_yaml` ("Missions as YAML") and `side_quests_yaml` ("Side quests as YAML"; no conflict or staleness with the other two).
     - `rules`: `rules` ("Story rules", the 18 rule fields), `messages` ("Story messages"), `variables` ("Persistent variables"), `values` ("Stored values of a profile") and `stats` ("Character stats").
     - `map`: `borders` ("Borders") and `map_yaml` ("Map as YAML").
   - **Canonical value** (`_plain`):
@@ -1393,12 +1425,12 @@ Job result = `SimulationResponse` fields used: `report` (markdown string), `run_
 
 ## ▶ Play
 
-Top tab `id="play"` (banner `#nav-play`, address `?section=play`). The play session id (`session_id`, "token") is kept in page memory and in browser storage (localStorage key `ane-play-session`, written whenever it changes). On page load (`restore_game_ui`) a kept id is reopened with `GET /v1/sessions/{session_id}` (the game screen and the story are drawn, the New game panel folds); a `404` (the API restarted) clears the kept id, any other error keeps it for the next load. The same token is what ⚙ Advanced → 🔌 Integration and 📦 Export ("This game's storyteller") act on.
+Top tab `id="play"` (banner `#nav-play`, address `?section=play`). The play session id (`session_id`, "token") is kept in page memory and in browser storage (localStorage key `ane-play-session`, written whenever it changes). On page load (`restore_game_ui`) a kept id is reopened with `GET /v1/sessions/{session_id}` (the game screen and the story are drawn, the New game panel folds); after a restart of the API the game comes back from its save. A `404` (the game was removed, or saving is off) clears the kept id, any other error keeps it for the next load. The same token is what ⚙ Advanced → 🔌 Integration and 📦 Export ("This game's storyteller") act on.
 
 ### ▶ Play › 🎮 New game
 <a id="play-setup"></a>`view: play-setup` (accordion "🎮 New game", open; folds after any successful game start)
 
-**Purpose.** Choose a trained engine, player profile, quest and character stats, then start a game (or continue a save game file).
+**Purpose.** Choose a trained engine, player profile, quest and character stats, then start a game. Saved games are opened in [📂 Saved games](#play-saved-games).
 
 **On open.**
 - App load: `GET /v1/exports/engines` → "Trained AI" (newest selected, current value kept if still listed); `GET /v1/missions/playable?profile={default profile}` → quest choices + overview; `GET /v1/engines/{engine_id}/card` for the selected engine (card accordion); `GET /v1/judge/status` (judge accordion).
@@ -1413,7 +1445,6 @@ Top tab `id="play"` (banner `#nav-play`, address `?section=play`). The play sess
 | "Quest" | dropdown | `[("Any quest (the story draws one)", "")]` + playable missions with `available` true: (`title`, `key`) | "" | info "Or let the story draw one." |
 | "Character" | dropdown | hard-coded `[("Story default","story default"),("Random","random"),("Balanced","balanced"),("My own points","defined")]` | "story default" | info "My own points: set them below." |
 | "▶ New game" | button (primary) | — | | |
-| "📂 Continue a save game" | file-upload(.json) button | — | | upload triggers immediately |
 | "↻ Refresh" | button | — | | |
 | "🏷 About this engine: its result card" | markdown (accordion, closed) | `GET /v1/engines/{engine_id}/card` | | `#play-engine-card`; same renderer as Train |
 | Play status | status-line (below the setup) | start/continue/save messages | "" | |
@@ -1425,7 +1456,6 @@ Top tab `id="play"` (banner `#nav-play`, address `?section=play`). The play sess
 | "Trained AI" changed (`engine_card_ui`) | `GET /v1/engines/{engine_id}/card` | — | card markdown | 404 → "*No card for engine `{id}`.*" |
 | "Player profile" changed (`playable_quests_ui`) | `GET /v1/missions/playable?profile={profile}` | profile (omitted if empty) | Quest choices replaced, value reset to ""; quests overview refreshed | |
 | "▶ New game" (`play_new_game_ui`) | `POST /v1/engines/{engine_id}/play` (`engine_id` = "latest" when nothing chosen); then `GET /v1/sessions/{session_id}/journal`, `GET /v1/sessions/{session_id}/transcript` | player body (see client logic) | `session_id` → token; game screen from the response (Play › Game screen); story; status = `report` ("Playing the finished run of … (engine `xxxxxxxx`): its world, with its storyteller."); setup folds; Integration's session line updated | 409 no finished run ("No finished run yet: train the AI first…"); 400 mission not open / unknown; 400 invalid stat points ("Your stat points are invalid: …"); client: points YAML must be a mapping ("The stat points must be a mapping of stat names to points.") |
-| "📂 Continue a save game" (`play_continue_ui`) | `POST /v1/sessions/load`, then journal + transcript | `{"savegame": <parsed JSON file>, "session_id": <current token or null>}` | new `session_id` → token; game screen; story; status "Continued exactly where it was saved." (`restored:"exact"`) or "Rebuilt from its parameters ({note or 'no usable snapshot'})."; setup folds | client: no file → "Choose a save game (.json) to continue."; unreadable JSON → "Not a JSON save game: …"; 400 from API |
 | "↻ Refresh" (`play_runs_ui`) | `GET /v1/exports/engines`, `GET /v1/records/engines` | — | "Trained AI" re-listed (value kept if present, else newest); "Recorded engine" (Another engine) re-listed | |
 
 **Client-side logic to reimplement.**
@@ -1526,6 +1556,38 @@ Response of `/v1/stats/allocate`: `{mode, points: {stat:int}, values: {stat:int 
 
 **Navigation.** Text points to 🌍 World → Story rules and ⚙ Advanced → Integration (no buttons).
 
+### ▶ Play › 📂 Saved games
+<a id="play-saved-games"></a>`view: play-saved-games` (accordion "📂 Saved games: continue, restart or open a save", open; below New game)
+
+**Purpose.** Open a saved game as a normal action: every game is saved as it is played, so a game
+in progress (also after a restart of the API) and the player's save slots are listed to continue,
+restart or delete. A save game file (`ane.savegame/1`, e.g. from the ANE AI) can still be opened.
+
+**On open.** App load, "Player profile" changed, "↻", and after every game start: `GET /v1/sessions?profile={profile}&status=active` and `GET /v1/saves?profile={profile}` → the list (the selection kept when still listed, else the first). Either request failing (saving off: `400`) → an empty list with info "Saved games are off on this server."
+
+**Components.**
+
+| Component | Kind | Value / choices from | Default | Constraints & notes |
+|---|---|---|---|---|
+| "Saved games" | dropdown | games in progress: ("▶ In progress · {profile} · {location} · turn {turn} · {updated_at[:16]}", `session:{session_id}`); then saves: ("💾 {slot} · {profile} · {location} · turn {turn} · {updated_at[:16]}", `save:{save_id}`) | first | `#play-saved-list`; info "{n} saved game(s)" or "No saved games yet: every game you play is saved as you play it." |
+| "↻" | button | — | | re-lists |
+| "▶ Continue" | button (primary) | — | | |
+| "↺ Restart from the beginning" | button | — | | |
+| "🗑 Delete save" | button (danger) | — | | save slots only |
+| "🧹 Clean up finished games" | button (small) | — | | |
+| "📂 Open a save game file" | file-upload(.json) button (in the closed accordion "A save game file (ane.savegame/1, e.g. from the ANE AI)") | — | | upload triggers immediately |
+
+**Actions.**
+
+| Trigger | Request | Body / params | On success | Errors & guards |
+|---|---|---|---|---|
+| "▶ Continue" on `session:` (`open_saved_game_ui`) | `POST /v1/sessions/{session_id}/continue`, then journal + transcript | — | token; game screen; story; status "Continued where you left it." (`restored:"live"`), "Continued exactly where it was saved." (`exact`) or "Rebuilt from its parameters ({note})."; setup folds; list re-read | nothing chosen → "Choose a saved game first (↻ to list them)."; 404 (gone); 409 `session_unrecoverable` (its save cannot be read) |
+| "▶ Continue" on `save:` (`open_saved_game_ui`) | `POST /v1/saves/{save_id}/restore`, then journal + transcript | `{}` | the new `session_id` → token; as above | 404 (not yours, or deleted); 400 (a save of an ended game); 409 (damaged) |
+| "↺ Restart from the beginning" (`restart_saved_game_ui`) | `POST /v1/sessions/{session_id}/restart` (the chosen game in progress; for a save or nothing chosen: the game being played), then journal + transcript | — | the new `session_id` → token; game screen; status "Started again from the beginning."; the old game is `abandoned` | nothing to restart → "Choose a game in progress (▶) to restart, or start a game first." |
+| "🗑 Delete save" (`delete_saved_game_ui`) | `DELETE /v1/saves/{save_id}` | — | status "Deleted the save **{slot}**."; list re-read | a game in progress chosen → "Only save slots (💾) are deleted here; a game in progress ends with *End the game*." |
+| "🧹 Clean up finished games" (`cleanup_games_ui`) | `POST /v1/sessions/cleanup` | `{}` | status "🧹 Removed {n} finished game(s): finished games are kept {retention_days} days, at most {keep_finished} per user. Save slots and games in progress are kept." | |
+| "📂 Open a save game file" (`play_continue_ui`) | `POST /v1/sessions/load`, then journal + transcript | `{"savegame": <parsed JSON file>, "session_id": <current token or null>}` | new `session_id` → token; game screen; story; status "Continued exactly where it was saved." (`restored:"exact"`) or "Rebuilt from its parameters ({note or 'no usable snapshot'})."; setup folds | client: no file → "Choose a save game (.json) to continue."; unreadable JSON → "Not a JSON save game: …"; 400 from API |
+
 ### ▶ Play › Game screen
 <a id="play-game"></a>`view: play-game`
 
@@ -1542,7 +1604,9 @@ Response of `/v1/stats/allocate`: `{mode, points: {stat:int}, values: {stat:int 
 | Scene card | markdown | `place_markdown(state)` | placeholder | |
 | Turn card ("What happened") | markdown | `turn_summary`, `last_turn` | hidden | visible when non-empty |
 | Choice buttons ×12 | button | `actions[i]` + check from `choices[]` | hidden | the server offers ≤ `player_options.limit` (default 6); beyond 12 the HUD says "⚠ N more choice(s) than this screen shows (12): lower `player_options.limit` …". A rebuild should render every item of `actions` |
-| "💾 Save game" | button (small) | — | | |
+| Save slot name | textbox | — | "" | placeholder "Save slot name (empty: a new manual save)"; 64 characters at most |
+| "💾 Save" | button (small) | — | | |
+| "⬇ Save game file" | button (small) | — | | |
 | "End the game" | button (small, danger) | — | | no confirmation |
 | "Save game (JSON)" | file-download | `GET /v1/sessions/{session_id}/savegame` | hidden | shown after a save |
 | Quest card (right column) | markdown | `quest_markdown(quest, journal)` | placeholder | |
@@ -1552,9 +1616,10 @@ Response of `/v1/stats/allocate`: `{mode, points: {stat:int}, values: {stat:int 
 
 | Trigger | Request | Body / params | On success | Errors & guards |
 |---|---|---|---|---|
-| Choice button i (`play_choose_ui`) | `POST /v1/sessions/{session_id}/actions`, then journal + transcript | `{"action": actions[i]}` (`actions` = the list from the last state) | whole screen + People/Journey/Story re-rendered from the PlayState | no token → "Start a new game first (choose a trained AI and press New game)."; i ≥ len(actions) → "That choice is no longer there."; 400 action not offered; 404 session gone |
+| Choice button i (`play_choose_ui`) | `POST /v1/sessions/{session_id}/actions`, then journal + transcript | `{"action_id": choices[i].id, "state_version": state_version, "action": actions[i]}` (the choice of button i, matched to `choices` by name; `{"action": actions[i]}` when the state has no ids) | whole screen + People/Journey/Story re-rendered from the PlayState | no token → "Start a new game first (choose a trained AI and press New game)."; i ≥ len(actions) → "That choice is no longer there."; 409 `stale_state` / `action_unavailable` (the game moved on, e.g. in another tab) → a warning toast with the API's message, then `GET /v1/sessions/{session_id}` re-renders the current choices (nothing was done); 400 action not offered; 404 session gone |
 | "End the game" (`play_end_ui`) | `POST /v1/sessions/{session_id}/end`, then journal + transcript | — | screen re-rendered (ending banner, no choices; `session_report` shown in People & map) | no token → "Start a new game first."; 404 |
-| "💾 Save game" (`download_savegame_ui`) | `GET /v1/sessions/{session_id}/savegame` | — | JSON (`ane.savegame/1`) offered as file `savegame-{session_id[:8]}.json`; download made visible; Play status "Saved after {parameters.turns or 0} turn(s) at **{parameters.current_location}** (`{format}`). *Continue a save game* goes on from it, here or in the ANE AI." The session goes on | no token → "Start a game first in ▶ Play (New game, another engine, or continue a save game)." |
+| "💾 Save" (`save_to_slot_ui`) | `POST /v1/sessions/{session_id}/saves` | `{"slot": <name, trimmed> or null}` | Play status "💾 Saved to **{slot}** ({location}, turn {turn}). The game goes on."; Saved games re-listed | no token → "Start a game first in ▶ Play (New game, another engine, or continue a save game)."; 422 name too long |
+| "⬇ Save game file" (`download_savegame_ui`) | `GET /v1/sessions/{session_id}/savegame` | — | JSON (`ane.savegame/1`) offered as file `savegame-{session_id[:8]}.json`; download made visible; Play status "Saved after {parameters.turns or 0} turn(s) at **{parameters.current_location}** (`{format}`). *Continue a save game* goes on from it, here or in the ANE AI." The session goes on | no token → "Start a game first in ▶ Play (New game, another engine, or continue a save game)." |
 
 **Client-side logic to reimplement** (`_play_screen`):
 - Ending: `ended` → "## 🏆 Quest complete\n{end_reason}" if `won` else "## The end\n{end_reason}".
@@ -1563,7 +1628,8 @@ Response of `/v1/stats/allocate`: `{mode, points: {stat:int}, values: {stat:int 
 - Turn card: if `turn_summary` and `last_turn` contains a line starting with "> " → `turn_card_markdown`; elif `last_turn` → "### What happened\n" + `story_markdown(last_turn)`; else hidden. `turn_card_markdown(s, last_turn)`: "### What happened"; "**▶ Turn {s.turn}: you chose _{action without leading '(…) '}_**" + " — with {s.with}" (unless already in the text) + " · at {s.where}"; if `s.check`: "🎲 **{stat}** check: rolled {roll}, needed {needed} or less → **passed ✓** / **failed ✗**"; if `s.told`: "> " + ("✗ " if not succeeded and no check) + told; change chips (below) + "⚡ {event}" joined " · "; "🏆 **Quest complete!**" if `quest_complete` else "🎯 **Quest step done:** {quest_done joined ' · '} → **now:** {quest_now}"; then up to 6 further story lines of `last_turn` (parsed by `_story_line`, skipping kinds action/result/arrival/met and tags QUEST / MISSION COMPLETE) in `<small>`.
 - Change chips (`_changes`): "❤ +n/−n" (`health_change`), "🪙 ±n" (`coin_change`), "🎒 got {item}" per `items_gained`, "🎒 {item} gone" per `items_lost`, "📍 {moved_to}" + " (new place)" if in `new_places`, "👤 met {met joined}". Minus sign is U+2212.
 - Choice button label: "{i+1}.  {action}" + "   ·   🎲 {check text}" when `choices[name==action].check`; check text = "{stat} {chance}%" + " (fail: {risk.health} health, {risk.coins} coins, sent to the {risk.sent_to})" (only non-zero/non-null parts; parenthesis omitted when none).
-- Quest card (`quest_markdown(quest, journal)`): no quest → "### 🎯 Quest\nThis story has no quest: explore as you like."; else "### 🎯 {title}", "*{description}*", progress "`{'▰'×done}{'▱'×rest}` **{done} of {n} steps**", per stage "✅|▶️|▫️ **{title}**" (+ " · turn T" for done stages, T = first journal turn whose `quest_done` contains the title; + "  \n{description}" for the current stage); status "completed" → "🏆 **Completed** at turn T." (T = first journal entry with `quest_complete`); other non-"in progress" status → "**{Status}.**"; in progress with `todo` → "**To do now:** {todo joined '; '}".
+- Quest card (`quest_markdown(quest, journal)`): no quest → "### 🎯 Quest\nThis story has no quest: explore as you like."; else "### 🎯 {title}", "*{description}*", progress "`{'▰'×done}{'▱'×rest}` **{done} of {n} steps**", per stage "✅|▶️|▫️ **{title}**" (+ " · turn T" for done stages, T = first journal turn whose `quest_done` contains the title; + "  \n{description}" for the current stage); status "completed" → "🏆 **Completed** at turn T." (T = first journal entry with `quest_complete`); other non-"in progress" status → "**{Status}.**"; in progress with `todo` → "**To do now:** {todo joined '; '}". Then, when `side_quests` is not empty (`side_quests_markdown`): "#### 🧭 Side quests" and per side quest "❗|▶️|✅|✗|▫️ **{title}**" (offered, active, completed, failed, declined) + " · for {giver}"; offered: "  \nOn offer: take it on or turn it down (the first choices)." + "  \nIn it for you: {rewards}." when `rewards`; active and `ready`: "  \n📦 Done: take it back to {giver}."; active: "  \nNow: {current stage title}", "  \n**To do:** {todo joined '; '}" and "  \n⏳ {turns_left} turn(s) left." when `turns_left` is not null; otherwise " · {status}" + " · it helped your quest" when `aided_mission`.
+- Side-quest chips in the turn card (`_changes`, from the journal entry's `side_quests`): "❗ side quest offered: {title}", "🧭 new side quest: {title}", "▫️ turned down: {title}", "▫️ let go: {title}" (lapsed), "🧭 {title}: {stage} done", "📦 {title}: done, take it back", "⏳ hurry: {title}", "✅ side quest done: {title}", "✗ side quest failed: {title}".
 - You card (`you_markdown`): "### 🧍 You"; "⚡ power {power:.2f}"; "🎒 {inventory joined or '*nothing yet*'}"; "📊 {stat} **{value}** (+{value − stat_points[stat]} when larger)" joined " · "; "💾 {k} {v}" for `variables` except `playthroughs`; if `stakes.alert`: "🚨 alert {alert}/{max}" + " — the watch is looking for you" when alert ≥ `warn_at`; if `last_check`: "🎲 last check: {stat} {roll} vs {target} — passed|failed".
 - `actions` from the latest state are kept client-side; buttons send exactly those strings.
 
@@ -1633,6 +1699,38 @@ Response of `/v1/stats/allocate`: `{mode, points: {stat:int}, values: {stat:int 
 
 **Navigation.** None.
 
+### ▶ Play › 🔍 Author: why these choices
+<a id="play-decisions"></a>`view: play-decisions` (accordion "🔍 Author: why these choices (shown, hidden, blocked)", closed)
+
+**Purpose.** For authors testing a world: why each action is offered to the player now, or hidden, or
+blocked. It is never part of the player's choices (they stay the buttons above).
+
+**On open.** Nothing.
+
+**Components.**
+
+| Component | Kind | Value / choices from | Default | Constraints & notes |
+|---|---|---|---|---|
+| Note | markdown | static | "For authors: why each action is offered …" | |
+| "Explain the current choices" | button | — | | |
+| Decisions | markdown | response | "" | |
+
+**Actions.**
+
+| Trigger | Request | Body / params | On success | Errors & guards |
+|---|---|---|---|---|
+| "Explain the current choices" (`decisions_ui`) | `GET /v1/sessions/{session_id}/decisions` | — | `decisions_markdown(trace)` → Decisions | no token → "Start a game first."; 404 session gone; 403 the server switched author diagnostics off (`ANE_AUTHOR_DIAGNOSTICS=off`) |
+
+**Client-side logic to reimplement.** `ended` → "The game has ended: nothing is offered.". Else: "**Now:**
+{location} · mode **{mode}**" (+ " · event *{event.title}*", " · talking with **{talking_to}**") + " · state
+{state_version}"; "**Limits:** up to {limits.cap or limits.limit} of {limits.limit} choices shown now (tension
+{tension})" + " · {n} shown · {n} hidden · {n} blocked"; each note as "> ℹ️ {message}"; then a table | | Choice |
+Id | Why | with one row per `actions[]` entry (already ordered: shown, hidden, blocked): ✅/👁‍🗨/⛔ + status,
+label (+ " (rank n)"), `` `id` ``, and the reasons as "`code` message" joined by "; ". Asking changes nothing
+in the game (no turn, no dice, no encounter, nothing saved).
+
+**Navigation.** None.
+
 ### ▶ Play › ⚖ Judge this playthrough
 <a id="play-judge"></a>`view: play-judge` (accordion "⚖ Judge this playthrough (Gemma 4 as a game critic)", closed)
 
@@ -1692,7 +1790,8 @@ Response of `/v1/stats/allocate`: `{mode, points: {stat:int}, values: {stat:int 
 | `stat_points` | {stat: int} | allocated points | You (bonus "+n" = stats − stat_points) |
 | `last_check` | {stat, roll: int, target: int, passed: bool, step: int}\|null | | You "🎲 last check" |
 | `quest` | {key, title, description, status: "in progress"\|"completed"\|"failed", stages: [{title, description, state: "done"\|"current"\|"todo"}], todo: string[]}\|null | | quest card; HUD "🎯 … now:" |
-| `people` | [{name, called, description, wants: string\|null, hostile: bool, talks: int, quest: bool, helped: int, ally: bool, role: string\|null, importance: int 0-3}] (empty when ended) | people here | scene "👥"; People card "here now", "★" |
+| `side_quests` | [{key, title, description, giver: string\|null, status: "offered"\|"active"\|"completed"\|"failed"\|"declined", reason: "condition"\|"time"\|"giver_gone"\|null, stages: [{title, description, state}], todo: string[], ready: bool, rewards: string, deadline: int\|null, turns_left: int\|null, turn_in: bool, aids_mission: "lead"\|"ally"\|"none", aided_mission: "lead"\|"ally"\|null, follows: string\|null, offered: int\|null, started: int\|null, ended: int\|null}] | the story's side quests, in the order they were offered or started; an `offered` one is answered with its two choices, a `ready` one handed over with its own (`choices[]` with category `side_quest`, ids `side-quest:<quest>:accept` / `:decline` / `:turn-in`, first, `takes_turn: false`) | quest card "🧭 Side quests"; the choice buttons |
+| `people` | [{name, called, description, wants: string\|null, hostile: bool, talks: int, quest: bool, helped: int, ally: bool, side_quests: string[], role: string\|null, importance: int 0-3}] (empty when ended) | people here; `side_quests`: titles of the side quests they offer now | scene "👥" (❗ when they offer one); People card "here now", "★", "❗ offers a side quest: …" |
 | `people_met` | [{name, called, where: string[], talks: int, hostile: bool, gone: bool, ally: bool, role, importance: int}] | | People card |
 | `map` | {current: string, previous: string\|null, places: [{name, visited: bool, locked: bool}], paths: [[a, b]], one_way: [[from, to]]}\|null | | People card "### Map" |
 | `choices` | [{name: string, check: {stat: string, chance: int 0-100, bonus: int, risk: {health: int≤0, coins: int≤0, sent_to: string\|null}\|null}\|null}] (empty when ended) | | choice-button labels |
@@ -2131,7 +2230,7 @@ Destination `id=advanced` (`#dest-advanced`). Lead text: "Technical settings: th
 | hyperparameters.yaml | yaml-editor | `GET /v1/hyperparameters` `.yaml` | — | |
 | Validate & save all hyperparameters | button | — | — | |
 | advanced status | markdown | message | empty | |
-| **Accordion "The active configuration (read only)"** (closed) | | | | note "Every configuration file merged (or the uploaded configuration): what new games and runs use now." |
+| **Accordion "The active configuration (read only)"** (closed) | | | | note "Every configuration file merged (or the uploaded configuration): what new games and runs use now." (games already in progress keep their own) |
 | Show | button | — | — | |
 | config source | markdown | see logic | empty | |
 | active configuration | yaml-editor (read-only) | `GET /v1/config` `.config` | empty | |
@@ -2478,7 +2577,8 @@ the API disagree, or when this guide names a request the API does not have.
 | `POST` | `/v1/simulations` | — (studio: /v1/jobs/simulations (with progress)) |  |
 | `POST` | `/v1/engines/load` | [play-other-engine](#play-other-engine), [play-state-reference](#play-state-reference) | Start a game with a saved engine: |
 | `GET` | `/v1/sessions/{session_id}` | [play-state-reference](#play-state-reference), [train-engines](#train-engines) |  |
-| `POST` | `/v1/sessions/{session_id}/actions` | [play-game](#play-game), [play-state-reference](#play-state-reference) | Take one of the actions the last response offered; anything else is refused (400). |
+| `POST` | `/v1/sessions/{session_id}/actions` | [play-game](#play-game), [play-state-reference](#play-state-reference) | Take one of the actions the last response offered: by `action_id` (with `state_version`: 409 when stale), or by `action` (its name). |
+| `GET` | `/v1/sessions/{session_id}/decisions` | [play-decisions](#play-decisions) | Authors only: why each action is shown, hidden or blocked now (reason codes and explanations); changes nothing. |
 | `POST` | `/v1/sessions/{session_id}/end` | [play-game](#play-game), [play-state-reference](#play-state-reference) | End the session where it stands (the player stops). |
 | `GET` | `/v1/simulations/work` | — (studio: /v1/simulations/resolve (its `work`, with every other resolved setting)) | What a run would ask for before it starts, as the run itself counts it (each value left out: |
 | `POST` | `/v1/simulations/resolve` | [train-records](#train-records), [train-run](#train-run) | What a run with these settings would execute, before it starts: |
@@ -2486,7 +2586,15 @@ the API disagree, or when this guide names a request the API does not have.
 | `PATCH` | `/v1/sessions/{session_id}/player` | [advanced-integration](#advanced-integration), [play-state-reference](#play-state-reference) | Set the player's state as a UNP does: |
 | `POST` | `/v1/sessions/{session_id}/sync` | [advanced-integration](#advanced-integration), [play-state-reference](#play-state-reference) | What happened in the UNP's game: |
 | `GET` | `/v1/sessions/{session_id}/savegame` | [advanced-integration](#advanced-integration), [play-game](#play-game) | The session's save game (ane.savegame/1): |
-| `POST` | `/v1/sessions/load` | [advanced-integration](#advanced-integration), [play-setup](#play-setup), [play-state-reference](#play-state-reference) | Continue a save game as a new play session: |
+| `POST` | `/v1/sessions/load` | [advanced-integration](#advanced-integration), [play-saved-games](#play-saved-games), [play-state-reference](#play-state-reference) | Continue a save game as a new play session: |
+| `GET` | `/v1/sessions` | [play-saved-games](#play-saved-games) | Your play sessions, saved as they are played, the most recent first. |
+| `POST` | `/v1/sessions/{session_id}/continue` | [play-saved-games](#play-saved-games) | Continue a session where it stands (restored from its last save when needed). |
+| `POST` | `/v1/sessions/{session_id}/restart` | [play-saved-games](#play-saved-games) | Start the session's adventure again as a new session. |
+| `POST` | `/v1/sessions/{session_id}/saves` | [play-game](#play-game) | Save the session into one of your save slots. |
+| `GET` | `/v1/saves` | [play-saved-games](#play-saved-games) | Your save slots. |
+| `POST` | `/v1/saves/{save_id}/restore` | [play-saved-games](#play-saved-games) | Continue one of your saves as a new session. |
+| `DELETE` | `/v1/saves/{save_id}` | [play-saved-games](#play-saved-games) | Delete one of your saves. |
+| `POST` | `/v1/sessions/cleanup` | [play-saved-games](#play-saved-games) | Apply the retention policy to finished sessions now. |
 | `GET` | `/v1/world/catalogue` | [advanced-integration](#advanced-integration), [global-loads](#global-loads), [grow](#grow), [header](#header) | The world as the exported ANE AI sends it to a UNP (``GET /world``, ane.world/1): |
 | `GET` | `/v1/sessions/{session_id}/report` | — (studio: the play state carries the report: /v1/sessions/{id}/end) | The report of an ended session (as sent to the UNP); 409 while the session goes on. |
 | `GET` | `/v1/progression` | [advanced-integration](#advanced-integration), [play-quests-savegame](#play-quests-savegame) | A player's save game: |

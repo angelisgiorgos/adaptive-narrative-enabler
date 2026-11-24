@@ -217,6 +217,12 @@ class Action(Conditional):
     """
     retry_on_failure = False  # class default: games saved before the field existed load unchanged
     until = None              # a condition: once it holds, the action is no longer offered
+    # Where it was written (core_engine/choices.py: its stable id and provenance), set by the builder:
+    # ``key`` the authored ``id`` (else its authored name, before the owner prefix and templates) and
+    # ``content_ref`` its place in the configuration ("world_definition.characters[Guard].actions[2]").
+    # None for actions the engine makes itself (travel, talk, approach, ...), and in older save games.
+    key = None
+    content_ref = None
     __deepcopy__ = _deepcopy
 
     def __init__(self, name, outcomes, character_name=None, 

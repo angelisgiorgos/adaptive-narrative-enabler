@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import random
 
+from .context import with_state_context
+
 MODES = ("simulated", "storyteller")
 DEFAULT_MIX = {"follower": 2, "explorer": 1, "quester": 2, "cautious": 1, "random": 1}
 
@@ -119,6 +121,8 @@ class Quester(Player):
             said = action.name.split(") ", 1)[-1].lower()  # the choice, as the quest log may name it
             if len(said) > 3 and said in todo:
                 weight += 6.0
+            if action.source == "side_quest":  # a side quest helps the quest (side_quest_settings.aids_mission)
+                weight += 2.0 if getattr(action, "key", None) == "accept" else 0.0
             weights.append(weight)
         return weights
 
@@ -167,6 +171,7 @@ def player_for(seed, mix=None):
     return PLAYERS[names[_weighted(rng, [mix[name] for name in names])]](rng)
 
 
+@with_state_context
 def take_turn(state, player):
     """One choice: ``player`` chooses among the choices shown; False when the story cannot go on.
     The options are ranked once and shared by the choices shown and the step. Approaching
@@ -186,11 +191,12 @@ def take_turn(state, player):
         return False
     chosen = options[player.choose(state, options)]
     went_on = state.take_option(chosen, ranked=ranked)
-    if chosen.source in ("approach", "leave"):
+    if chosen.source in ("approach", "leave"):  # (a side quest taken on changes the ranking: not kept)
         state._ranking_after_free_step = ((state.actions_taken, len(state.history)), actions, pairs)
     return went_on
 
 
+@with_state_context
 def play(state, max_steps, player=None):
     """Play ``state`` for up to ``max_steps`` turns: ``player`` chooses, or, with None, the
     storyteller takes its own favourite choice (the older evaluation, ``evolution.player:

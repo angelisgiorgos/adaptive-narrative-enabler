@@ -132,7 +132,8 @@ class EngineModel:
 
     @classmethod
     def capture(cls, genome, score=None, checkpoint=None, memory=None, source="", parent_id=None, learning=None):
-        """A model of ``genome`` with the active configuration and its tag vectors."""
+        """A model of ``genome`` with the active configuration and its tag vectors (those of the
+        bound engine context, e.g. the training run's, else the process-wide ones)."""
         active = config.as_dict()
         traits = genome.traits() if isinstance(genome, Genome) else dict(genome)
         return cls(active, traits, score=score, checkpoint=checkpoint, memory=memory,
@@ -156,29 +157,46 @@ class EngineModel:
     def world_id(self):
         return config_id(self.config)
 
+    def context(self, seed=None):
+        """The EngineContext of this model: its own world and tuning, storyteller and the tag vectors
+        it was trained with, frozen. Nothing process-wide changes: games and runs that bind it read
+        it, everything else goes on reading the process-wide configuration."""
+        from .context import EngineContext
+
+        return EngineContext(self.config, genome=self.genome_traits, tag_vectors=self.tag_vectors, seed=seed,
+                             source=f"engine {self.id}")
+
     def activate(self):
-        """Make this model's world and tuning the active configuration, with the tag
-        vectors it was trained with (process-wide, like the studio's upload)."""
+        """Make this model's world and tuning the process-wide configuration, with the tag vectors it
+        was trained with (and only those: another engine's are forgotten), like the studio's upload.
+
+        This changes what starts afterwards *without* an engine context of its own (the editors'
+        view of the active configuration, a new training run). Games and runs already going keep
+        their own context; ``context()`` / ``new_game`` / ``build_world`` never need this."""
+        from utils.tag_similarity import reset_tag_vectors
+
         config.use_override(self.config)
+        reset_tag_vectors()
         if self.tag_vectors:
             load_tag_vectors(self.tag_vectors)
 
-    def build_world(self):
-        """The game world (WorldGraph) this storyteller plays."""
+    def build_world(self, context=None):
+        """The game world (WorldGraph) this storyteller plays (built in its own context)."""
         from .builder import build_world
 
-        self.activate()
-        return build_world(self.genome)
+        with (context or self.context()).bind():
+            return build_world(self.genome)
 
     def new_game(self, seed=None, **kwargs):
-        """A new game (GameState) told by this storyteller; ``kwargs`` as GameState
-        (start, mission, profile, store, stats, stats_mode, ...)."""
+        """A new game (GameState) told by this storyteller, running with this model's own frozen
+        context; ``kwargs`` as GameState (start, mission, profile, store, stats, stats_mode, ...)."""
         import random
 
         from .game_state import GameState
 
-        world = self.build_world()
-        return GameState(world, self.genome, rng=random.Random(seed), **kwargs)
+        context = self.context(seed=seed)
+        world = self.build_world(context)
+        return GameState(world, self.genome, rng=random.Random(seed), context=context, **kwargs)
 
     def world_yaml(self):
         """The world and tuning as one YAML document (a combined configuration)."""
@@ -195,12 +213,13 @@ class EngineModel:
 
         if not self.checkpoint:
             raise ValueError("This model has no training state to continue; retrain it instead.")
-        self.activate()
-        memory = ModelMemory(self.memory) if self.checkpoint["settings"].get("warm_start") or self.memory else None
-        evolution = NarrativeEvolution.from_checkpoint(build_world, fitness, self.checkpoint, generations=generations,
-                                                       memory=memory, map_fn=map_fn)
-        result = evolution.run(progress=progress, resume=self.checkpoint, checkpoint=checkpoint)
-        return result, EngineModel.from_training(evolution, result, source=f"continued from {self.id}", parent_id=self.id)
+        with self.context(seed=self.checkpoint.get("seed")).bind():
+            memory = ModelMemory(self.memory) if self.checkpoint["settings"].get("warm_start") or self.memory else None
+            evolution = NarrativeEvolution.from_checkpoint(build_world, fitness, self.checkpoint, generations=generations,
+                                                           memory=memory, map_fn=map_fn)
+            result = evolution.run(progress=progress, resume=self.checkpoint, checkpoint=checkpoint)
+            return result, EngineModel.from_training(evolution, result, source=f"continued from {self.id}",
+                                                     parent_id=self.id)
 
     def retrain(self, settings=None, seed=None, progress=None, map_fn=None, checkpoint=None):
         """A new run (``settings`` as evolution settings) whose first population starts
@@ -209,14 +228,15 @@ class EngineModel:
         from .evolution import ModelMemory, NarrativeEvolution
         from .fitness import fitness
 
-        self.activate()
-        memory = ModelMemory(self.memory)
-        memory.remember([(self.score if self.score is not None else 0.0, self.genome)],
-                        size=max(len(self.memory) + 1, 12))
-        evolution = NarrativeEvolution(build_world, fitness, settings={**(settings or {}), "warm_start": True},
-                                       seed=seed, memory=memory, map_fn=map_fn)
-        result = evolution.run(progress=progress, checkpoint=checkpoint)
-        return result, EngineModel.from_training(evolution, result, source=f"retrained from {self.id}", parent_id=self.id)
+        with self.context(seed=seed).bind():
+            memory = ModelMemory(self.memory)
+            memory.remember([(self.score if self.score is not None else 0.0, self.genome)],
+                            size=max(len(self.memory) + 1, 12))
+            evolution = NarrativeEvolution(build_world, fitness, settings={**(settings or {}), "warm_start": True},
+                                           seed=seed, memory=memory, map_fn=map_fn)
+            result = evolution.run(progress=progress, checkpoint=checkpoint)
+            return result, EngineModel.from_training(evolution, result, source=f"retrained from {self.id}",
+                                                     parent_id=self.id)
 
     # ---- saving and loading ----------------------------------------------------------------
 

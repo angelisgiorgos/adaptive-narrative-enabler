@@ -119,7 +119,8 @@ changed since training.
   it had never stopped: two generations, saved, loaded in another process, and
   continued for two more give the same storytellers, scores, and history as
   four uninterrupted generations (checked in the tests). The engine's own world
-  and tag vectors are activated first, whatever configuration is active.
+  and tag vectors are its run's own (its engine context), whatever configuration is active or
+  becomes active while it trains.
 - **Retraining** starts a new run on the engine's world, with its first
   population seeded from the engine's storyteller and memory.
 - **Lineage.** A continued or retrained engine records its parent engine.

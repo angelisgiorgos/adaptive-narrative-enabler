@@ -63,7 +63,15 @@ curiosity, drive toward the mission, and avoiding repetition. Each generation:
    `scenario_duplication` (the same place, action and outcome told again) and
    `world_extension` (too little of the world discovered, or a known map without
    branches). Each shows in the breakdown as `loss_<name>`, and every NPC whose
-   goal the story fulfilled adds `base.npc_goal_bonus`. **Rhythm**
+   goal the story fulfilled adds `base.npc_goal_bonus`. **Side quests**
+   (`fitness.side_quests`, the breakdown's `side_quests`) add `complete_bonus` per
+   side quest completed, `step_bonus` per step done and `mission_aid_bonus` per
+   completed one that helped the mission, and take `fail_penalty` per one failed
+   and (once the story has ended) `unfinished_penalty` per one left under way
+   ([docs/WORLD.md](WORLD.md#side-quests)); the storyteller's ranking pulls toward a
+   side quest's next step by `side_quest_settings.rank_weight` x its own trait
+   `side_quest_bias`, so training tunes how hard storytellers pursue them, apart
+   from the mission. **Rhythm**
    (`fitness.rhythm`) rewards what makes a story worth playing turn after turn:
    `predictability` costs every calm turn in a row beyond `calm_allowed`,
    `variety_of_play` counts the kinds of development the story offers (new
@@ -158,7 +166,7 @@ evolution:
   benchmark_top_k: 3            # champions are chosen on the benchmark among the 3 best
   min_diversity: 0.08           # below this: more immigrants...
   max_immigrant_rate: 0.3       # ...up to this share, and wider mutation
-  evaluation_threads: auto      # processes playing stories at once (auto: the CPUs)...
+  evaluation_threads: auto      # processes playing stories at once (auto: the physical cores; cpus: every CPU; or a number)...
   max_evaluation_processes: 16  # ...at most this many
   parallel_backend: processes
 ```
@@ -167,12 +175,31 @@ With a reproducibility seed, a run is fully reproducible: the same seed gives
 the same storytellers, stories, and learning curve, in one process or many.
 
 **Speed.** Every run (the studio, the API, the terminal) plays a generation's stories in a pool
-of processes, one story per task, so all CPUs stay busy (the studio and the API start the
+of processes, one story per task, so every core stays busy (the studio and the API start the
 processes afresh and give them the world, which is safe in a server with threads). The
 benchmark's stories are fixed, so a storyteller kept from the generation before (an elite)
-keeps its benchmark score instead of playing them again. Tag similarity, similarity-based
+keeps its benchmark score instead of playing them again, and the run's preview story (the
+champion's best benchmark story) is chosen from the scores the benchmark already has: only
+that one story is played again in the run's own process. Tag similarity, similarity-based
 spawn rules and the places where the quest can advance are cached. None of this changes a
 score: a run gives the same result, only sooner.
+
+How many processes: `evaluation_threads: auto` starts one per **physical core** this process may
+use (a container's CPU set included), at most `max_evaluation_processes`. Stories are pure Python
+and CPU-bound, so a core's second hardware thread adds next to nothing: on a 10-core / 20-thread
+CPU a run with 10, 12, 16 or 20 processes takes the same time (17.6–17.9 s for population 40 × 2
+stories, 3 generations), and 10 leave memory and CPU to the API, the studio and an LLM server.
+`cpus` uses every logical CPU, a number exactly that many; `parallel_backend: threads` shares one
+interpreter (one core at a time) and is only for debugging. Measured on that machine (population 20
+× 2 stories, 2 generations, benchmark 3 × 10): one process 57 s, 10 processes 11.4 s, with the same
+storytellers, scores and preview story. A process started without the tag vectors computed loads
+the embedding model once (about 5 s); a long-running API or studio pays it once. Evaluations
+(*⚖ Evaluate*: `POST /v1/evaluations/...`) play their stories in such a pool too.
+
+A script that starts training itself (`main.story_pool`, `python -m` of your own module) must run
+it under `if __name__ == "__main__":`: the processes are started afresh and import that script;
+without the guard they cannot start, the run says so (`[EVOLUTION] The evaluation processes
+stopped ...; the stories are played here.`) and plays every story in one process.
 
 ## Who controls what: the director and the player
 
@@ -261,6 +288,18 @@ and evolution can learn what makes stories engaging:
   Harbor → Market → Harbor loops wear out. Each earlier showing of the same
   outcome text lowers that outcome by `novelty_bias ×
   outcome_objective.repetition_penalty`.
+- **Side quests (`genome.side_quest_bias`, bounds `[0.2, 1.0]`).** How hard the
+  storyteller pursues side quests, apart from the mission's `goal_bias`: an option
+  that advances a side quest under way (or is a step on the way to a place it
+  names, or back to a giver waiting for a hand-over) gains
+  `side_quest_settings.rank_weight` × `side_quest_bias` × how much it advances it,
+  more as a deadline nears. `fitness.side_quests` rewards stories that complete
+  side quests (and those that help the mission), so evolution learns the trait.
+  It was added without changing anything else a seed decides: it is drawn,
+  crossed and mutated with a random stream of its own (derived from the caller's,
+  without drawing from it), so every other trait of a seeded genome, population
+  and run is what it was before. Storytellers saved before it take the midpoint
+  of its bounds (0.6), and their save games still continue exactly.
 - **Variety fitness (`fitness.variety`).** Stories earn
   `distinct_choice_weight` (30) × the share of choices that were distinct,
   minus `repeated_outcome_penalty` (2) per outcome shown again. Evolution
@@ -377,7 +416,9 @@ their number follows the moment instead of always being the same:
 
 1. What the moment is about comes first: a prisoner's ways out, the action
    that best advances the quest's current stage (or the step toward it), the
-   payoff of an open clue, and the best way on.
+   action that best works toward a side quest under way, or meets someone who
+   offers one (`side_quest_settings.guide`), the payoff of an open clue, and the
+   best way on.
 2. Then the rest in the storyteller's order, at most `travel_limit` (3) ways
    on and `talk_limit` (2) "Talk with" options, and beyond `min` (3) none that
    rank in the lowest `relevance` (25%) of the options now.
@@ -422,6 +463,70 @@ whether they reached the UNP). The offline engine has the same: `POST /games/<id
 `GET /games/<id>/report`, `GET /progression/<profile>`. A UNP can also save a session
 (`POST /games/<id>/save`), cancel it (its status, outcome `suspended`, and its save game), and
 continue it later, exactly or from parameters it changed ([docs/UNP.md](UNP.md)).
+
+## Engine contexts: which configuration a game reads, and when settings take effect
+
+Every game, training run and evaluation runs with its own **engine context**
+([`core_engine/context.py`](../core_engine/context.py)): a frozen copy, taken when it starts, of
+everything that decides how it plays.
+
+| In the context | What it is |
+| --- | --- |
+| `world` / `settings` | the world definition and the whole configuration (tuning, rules, messages, stats), deep-copied: read-only views |
+| `genome_traits` | the storyteller (a game's; a training run's context has none) |
+| `hyperparameters` | the training settings (`evolution`) |
+| `tag_space` / `tag_vectors` | the tag vectors similarity reads, with their own caches (a trained engine's own vectors, or every tag encoded by the embedding model) |
+| `world_version` | a digest of the configuration (the same as `EngineModel.world_id` for an engine's) |
+| `seed` | the seed of what runs with it (provenance; the dice are the game's own) |
+
+**Who takes which context.**
+
+| What starts | Its context |
+| --- | --- |
+| A game with a trained engine (studio, API, `EngineModel.new_game`) | the engine's own world, tuning, storyteller and trained tag vectors (`EngineModel.context()`) |
+| Any other game (a new run's game, a preview, a save game loaded) | the process-wide configuration as it is at that moment (`EngineContext.capture()`) |
+| A training run (`NarrativeEvolution`) | the context bound when it is created (an engine's, for continue/retrain), else the process-wide configuration then; its game afterwards gets the same |
+| An evaluation | its world and tag vectors are copied when it starts and played in a process of its own |
+| A UNP runtime session (ANE AI) | the package's world with the UNP patches accepted before it started |
+
+**When settings take effect.** A save in an editor, an upload, *Use built-in config*, a UNP world
+patch, or a game started with another engine change the **process-wide** configuration at once:
+what starts afterwards (new games, training runs, evaluations, jobs still queued) reads it. Nothing
+running changes: a game in progress keeps the configuration it started with until it ends, and so
+does a running training job. Two sessions with two different engines can be played at the same
+time, their turns alternating, each exactly as if it were played alone.
+
+**How the engine reads it.** `utils.config_loader.config.get` (and `config.as_dict`) read the
+context bound in the current thread, else the process-wide configuration, so the rules' modules
+read the right one without change. A `GameState` keeps its context and binds it on every call
+(its public methods and the private ones other modules call); module functions that take a state
+(`fitness`, `resume.*`, `snapshot.dump`, `savegame.make`, `players.play`, the session helpers)
+bind the state's context too. A thread pool started inside a bound block does not inherit it:
+work handed to one goes through `propagate` (training does this itself; a pool of processes is
+started from the run's configuration instead). `config.process_get` / `config.process_dict` read
+the process-wide configuration whatever is bound (editors, the active-configuration view).
+
+**Tag vectors.** Each context reads its own tag space, so one engine's trained vectors never reach
+another world: a tag an engine was trained without is neutral (a zero vector) only within that
+engine's context. Spaces with the same vectors and embedding model are shared (one cache per
+engine, not per game). The process-wide vectors (`load_tag_vectors`, what code with no context
+reads) are those of the engine or upload in use: activating an engine replaces them, and a save or
+*Use built-in config* (`config.clear_override`) forgets them. The spawn rules cache
+(`spawn_strategy: similarity`) is kept per tag space.
+
+**Determinism.** A context changes what a game reads, not how it draws: with a fixed seed a game,
+a training run or a continued training gives exactly the stories and scores it gave before
+(checked in `tests/test_engine_context.py`, and against stories recorded before contexts existed).
+
+**Compatibility.** `config.get`, `config.use_override`, `EngineModel.activate()` and
+`load_tag_vectors` keep working: they set the process-wide configuration (the studio still makes a
+loaded engine's world the active one, so its editors show it). A save game keeps the configuration
+hash of its session's context: one saved by a session started before an editor save loads exactly
+only while that configuration is in use, else it is rebuilt from its parameters; a UNP runtime
+knows every world revision it served since its last persisted patch and restores such a save game
+exactly. Tests and debugging tools that change a setting to probe a story already set up use
+`follow_process_config(state)`, which makes that state read the process-wide configuration live
+inside the block; real play never does.
 
 ## Story beats: who matters, the climax, failures, travel, stakes, reveals
 
