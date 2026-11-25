@@ -6,9 +6,10 @@ authoring, evolution, play and records all live behind the API.
 
 The connection (``StudioAPI``, below):
 
-* ``ANE_API_URL`` set (e.g. ``http://hamlet-ane-api:8005``): HTTP to that API, so
-  the studio and other clients share one engine (sessions, runs, records).
-* not set: the same API, served inside this process (no separate server).
+* always HTTP to the API at ``ANE_API_URL`` (Compose: ``http://hamlet-ane-api:8005``; the
+  public deployment: ``http://ane.hamlet.iti.gr``), or ``http://127.0.0.1:8005`` when it is
+  unset. The studio never serves the API itself, so it and every other client share one engine
+  (sessions, runs, records); start the API first.
 
 Every request says it comes from the studio (``X-ANE-Client: studio``), so runs and
 stories are recorded with the studio as their origin. Errors arrive as ``APIError``
@@ -37,7 +38,6 @@ as one other clients use (the studio reaches the same function through another e
 
 from __future__ import annotations
 
-import atexit
 import copy
 import functools
 import html
@@ -45,8 +45,6 @@ import json
 import logging
 import os
 import re
-import shutil
-import tempfile
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -56,137 +54,13 @@ from starlette.middleware import Middleware
 import pandas as pd
 import yaml
 
+# The connection to the REST API: HTTP only (studio_client.py), to ANE_API_URL or, when it is
+# unset, http://127.0.0.1:8005. Re-exported here (app.APIError, app.StudioAPI, ...).
+from studio_client import (
+    CLIENT_HEADER, DEFAULT_API_URL, PUBLIC_API_URL, APIError, JobCancelledError, StudioAPI,
+)
+
 LOG = logging.getLogger("ane.studio")
-
-
-# ---- the connection to the REST API ------------------------------------------------------------
-
-CLIENT_HEADER = {"X-ANE-Client": "studio"}
-
-
-class APIError(Exception):
-    """A request the API refused or could not serve; the message is the API's."""
-
-    def __init__(self, message, status=None):
-        super().__init__(message)
-        self.status = status
-
-
-class JobCancelledError(APIError):
-    """A job that was cancelled (POST /v1/jobs/{id}/cancel): what it had done is in ``partial``."""
-
-    def __init__(self, job):
-        partial = job.get("partial") or {}
-        super().__init__(f"The job was cancelled. {partial.get('note') or ''}".strip(), None)
-        self.job = job
-
-
-class StudioAPI:
-    def __init__(self, base_url=None, timeout=900):
-        base_url = base_url if base_url is not None else os.environ.get("ANE_API_URL", "").strip()
-        if base_url:
-            import httpx
-
-            self.mode = "http"
-            self.base_url = base_url.rstrip("/")
-            self._client = httpx.Client(base_url=self.base_url, timeout=timeout, headers=CLIENT_HEADER)
-        else:
-            from fastapi.testclient import TestClient
-
-            import api  # served inside this process (the only import of the API's code)
-
-            self.mode = "in-process"
-            self.base_url = "in-process"
-            self._client = TestClient(api.api, raise_server_exceptions=False, headers=CLIENT_HEADER)
-        self._downloads = Path(tempfile.mkdtemp(prefix="ane-studio-"))
-        atexit.register(shutil.rmtree, self._downloads, ignore_errors=True)
-
-    def close(self):
-        self._client.close()
-
-    # ---- requests --------------------------------------------------------------------------
-
-    def _send(self, method, path, **kwargs):
-        """The response of a request; APIError when it fails or the API refuses it."""
-        try:
-            response = self._client.request(method, path, **kwargs)
-        except Exception as exc:  # connection refused, timeout, ...
-            raise APIError(f"The API at {self.base_url} could not be reached: {exc}") from exc
-        if response.status_code >= 400:
-            raise APIError(_error_message(response), response.status_code)
-        return response
-
-    def request(self, method, path, **kwargs):
-        """The JSON a request returns (or the response, for anything else)."""
-        response = self._send(method, path, **kwargs)
-        if response.headers.get("content-type", "").startswith("application/json"):
-            return response.json()
-        return response
-
-    def get(self, path, **params):
-        return self.request("GET", path, params={k: v for k, v in params.items() if v is not None})
-
-    def put(self, path, body=None, **params):
-        return self.request("PUT", path, json=body, params={k: v for k, v in params.items() if v is not None})
-
-    def patch(self, path, body=None, **params):
-        return self.request("PATCH", path, json=body, params={k: v for k, v in params.items() if v is not None})
-
-    def post(self, path, body=None, files=None, **params):
-        params = {k: v for k, v in params.items() if v is not None}
-        if files is not None:
-            return self.request("POST", path, files=files, params=params)
-        return self.request("POST", path, json=body, params=params)
-
-    def delete(self, path, **params):
-        return self.request("DELETE", path, params={k: v for k, v in params.items() if v is not None})
-
-    def upload(self, path, files, **params):
-        """POST local files: ``files`` maps a form field to a local path (None: left out)."""
-        handles = {field: open(local, "rb") for field, local in files.items() if local}
-        try:
-            return self.post(path, files={field: (Path(handle.name).name, handle) for field, handle in handles.items()},
-                             **params)
-        finally:
-            for handle in handles.values():
-                handle.close()
-
-    def download(self, url, filename=None):
-        """Fetch a file the API offers (a path such as /v1/artifacts/<id>) into a local file."""
-        if not url:
-            return None
-        response = self._send("GET", url)
-        name = filename or _filename(response) or Path(url.split("?")[0]).name or "download"
-        target = Path(tempfile.mkdtemp(dir=self._downloads)) / name  # the API's file name, never overwritten
-        target.write_bytes(response.content)
-        return str(target)
-
-    def wait(self, job, on_progress=None, interval=0.5, patience=60):
-        """Poll a job (POST /v1/jobs/...) until it ends: its result when finished; APIError when it failed
-        (or is no longer known: 404); JobCancelledError when it was cancelled (cancel_requested goes on
-        until it stops). A lost connection to the API is tried again for ``patience`` seconds."""
-        lost = None
-        while True:
-            try:
-                job = self.get(f"/v1/jobs/{job['id']}")
-                lost = None
-            except APIError as exc:
-                if exc.status is not None:  # the API answered: e.g. 404, the job is gone
-                    raise
-                lost = lost or time.monotonic()
-                if time.monotonic() - lost > patience:
-                    raise
-                time.sleep(max(interval, 1.0))
-                continue
-            if on_progress is not None and job.get("progress"):
-                on_progress(job["progress"])
-            if job["status"] == "finished":
-                return job["result"]
-            if job["status"] == "failed":
-                raise APIError(job["error"] or "The job failed.")
-            if job["status"] == "cancelled":
-                raise JobCancelledError(job)
-            time.sleep(interval)
 
 
 # ---- YAML for the studio's code editors -------------------------------------------------------
@@ -204,21 +78,6 @@ def from_yaml(text, what="the YAML"):
         return yaml.safe_load(text or "")
     except yaml.YAMLError as exc:
         raise APIError(f"{what} is not valid YAML: {exc}") from exc
-
-
-def _error_message(response):
-    try:
-        detail = response.json().get("detail")
-    except ValueError:
-        return f"{response.status_code}: {response.text[:500]}"
-    if isinstance(detail, list):  # request validation errors
-        return "; ".join(f"{'.'.join(str(p) for p in item.get('loc', [])[1:])}: {item.get('msg')}" for item in detail)
-    return str(detail)
-
-
-def _filename(response):
-    match = re.search(r'filename="?([^";]+)"?', response.headers.get("content-disposition", ""))
-    return match.group(1) if match else None
 
 
 API = StudioAPI()
@@ -8467,8 +8326,8 @@ def build_app():
     return demo
 
 
-# The engine's worker processes (training stories, evaluations) are spawned, and a spawned
-# process imports the script that started the studio again, as __mp_main__: it needs no UI.
+# A process spawned from this script (as __mp_main__) needs no UI; the studio itself starts none
+# (training, evaluation and play run in the API).
 demo = build_app() if __name__ != "__mp_main__" else None
 
 

@@ -1,13 +1,21 @@
 # Adaptive Narrative Enabler HTTP API
 
-The Compose stack runs the complete Gradio UI and REST API as separate services
-from the same image. They share persistent configuration, artifact, and model
-cache volumes.
+The Compose stack runs the Gradio studio and the REST API as separate services
+from the same image. The API holds the persistent configuration, artifact,
+records and model cache volumes; the studio holds none.
 
-The studio is a client of this API: every tab works through the endpoints
-below (`ANE_API_URL`, set to `http://hamlet-ane-api:8005` by Compose), and
-whatever it does, other clients can do too. Without `ANE_API_URL`, `python
-app.py` serves the same API inside the studio's process.
+**Public deployment:** <http://ane.hamlet.iti.gr> (interactive documentation at
+<http://ane.hamlet.iti.gr/docs>, ReDoc at `/redoc`, health at `/healthz`). It is
+the `api` service of `compose.yaml` (port 8005) behind the reverse proxy;
+`ANE_PUBLIC_URL` (Compose: `http://ane.hamlet.iti.gr`) lists it in the
+documentation's server list beside the server it is opened on.
+
+The studio is a client of this API and does everything through it over HTTP:
+every tab works through the endpoints below, and whatever it does, other
+clients can do too. It finds the API at `ANE_API_URL` (Compose:
+`http://hamlet-ane-api:8005`; any other API, e.g. the public one, works too) or,
+when that is unset, at `http://127.0.0.1:8005`. It never serves the API itself,
+so the API must be running before the studio starts.
 
 **Building another frontend?** [FRONTEND.md](FRONTEND.md) describes every studio view as
 requests and JSON fields: what each screen loads, its components, its actions, the client-side logic
@@ -15,6 +23,7 @@ to reimplement, and an index of which view uses which endpoint.
 
 | URL | Purpose |
 |---|---|
+| `http://ane.hamlet.iti.gr/docs` | The public deployment's interactive documentation |
 | `http://localhost:8003` | Adaptive Narrative Studio |
 | `http://localhost:8005/docs` | Interactive Swagger documentation |
 | `http://localhost:8005/redoc` | ReDoc API documentation |
@@ -43,7 +52,8 @@ docker run --rm -p 8003:8003 \
   adaptive-narrative-enabler python app.py
 ```
 
-Leave out `ANE_API_URL` to run the studio with its own API inside.
+Without `ANE_API_URL` the studio looks for the API at `http://127.0.0.1:8005`;
+`-e ANE_API_URL=http://ane.hamlet.iti.gr` runs a studio on the public API.
 
 ## How the API behaves
 
@@ -61,10 +71,8 @@ the first one's games, and a restart forgets everything that lives in memory:
 | Download links `/v1/artifacts/{id}` (the files stay in `ANE_ARTIFACT_DIR`, the links do not) | Generated configurations, engine models and exports (`ANE_ARTIFACT_DIR`) |
 | An uploaded configuration (`POST /v1/config/upload`), until `POST /v1/config/reset` or a restart | |
 
-The studio (`app.py`) is a client of this API. With `ANE_API_URL` it uses the
-API service, and its games, runs and jobs are the API's. Without
-`ANE_API_URL` it serves the API inside its own process, which then holds that
-state.
+The studio (`app.py`) is a client of this API: its games, runs and jobs are the
+API's, and it holds none of this state itself.
 
 ### Writes: checked first, then saved whole
 

@@ -42,7 +42,7 @@ jobs:
           python -m pip install -r requirements.txt
 
       - name: Compile every module
-        run: python -m compileall -q api.py app.py main.py backend core_engine evaluator narrative_runtime utils tests
+        run: python -m compileall -q api.py app.py studio_client.py main.py backend core_engine evaluator narrative_runtime utils tests
 
       - name: Run the test suite (one process per module, in parallel)
         run: |

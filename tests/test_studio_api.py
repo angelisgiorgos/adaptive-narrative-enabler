@@ -1,5 +1,6 @@
 """Studio and REST API coverage: actions, missions, rules, profiles, play state, the studio's
-services and jobs, app parameters, and the studio as a client of the API (in-process and HTTP)."""
+services and jobs, app parameters, and the studio as a client of the API (HTTP; in tests, the API in
+this process)."""
 try:  # recording goes to a temporary folder, not the real records database
     import records_sandbox  # noqa: F401
 except ImportError:  # run as tests.<module>
@@ -4519,8 +4520,8 @@ class AppSettingsTests(unittest.TestCase):
 
 class StudioIsAnAPIClientTests(_Sandbox):
     def test_the_studio_uses_no_backend_code(self):
-        """app.py imports nothing of the project at module level; only its in-process
-        mode imports the API (api.py) to serve it, and nothing else."""
+        """The studio never serves the API: app.py imports nothing of the project but its HTTP
+        client (studio_client.py), which imports nothing of the project at all (not api.py)."""
         root = Path(__file__).resolve().parent.parent
         project = {p.stem for p in root.glob("*.py")} | {p.name for p in root.iterdir() if (p / "__init__.py").exists()}
 
@@ -4529,8 +4530,49 @@ class StudioIsAnAPIClientTests(_Sandbox):
             return names | {n.module.split(".")[0] for n in nodes if isinstance(n, ast.ImportFrom) and n.module}
 
         tree = ast.parse((root / "app.py").read_text())
-        self.assertEqual(imported(tree.body) & project, set())
-        self.assertEqual(imported(ast.walk(tree)) & project, {"api"})
+        self.assertEqual(imported(list(ast.walk(tree))) & project, {"studio_client"})
+        client = ast.parse((root / "studio_client.py").read_text())
+        self.assertEqual(imported(list(ast.walk(client))) & project, set())
+
+    def test_the_studio_reaches_the_api_over_http_by_default(self):
+        """Without a test client: HTTP to ANE_API_URL, or to http://127.0.0.1:8005 when it is unset
+        or empty; an explicit URL wins over both and over a test client."""
+        import studio_client
+
+        self.assertEqual(studio_client.api_url({}), "http://127.0.0.1:8005")
+        self.assertEqual(studio_client.api_url({"ANE_API_URL": "  "}), "http://127.0.0.1:8005")
+        self.assertEqual(studio_client.api_url({"ANE_API_URL": "http://ane.hamlet.iti.gr/"}), "http://ane.hamlet.iti.gr")
+        self.assertEqual(studio_client.PUBLIC_API_URL, "http://ane.hamlet.iti.gr")
+        explicit = studio_client.StudioAPI("http://hamlet-ane-api:8005/")
+        self.addCleanup(explicit.close)
+        self.assertEqual((explicit.mode, explicit.base_url), ("http", "http://hamlet-ane-api:8005"))
+        with patch.dict(os.environ, {"ANE_API_URL": "http://ane.hamlet.iti.gr"}):
+            from_env = studio_client.StudioAPI()
+        self.addCleanup(from_env.close)
+        self.assertEqual((from_env.mode, from_env.base_url), ("http", "http://ane.hamlet.iti.gr"))
+        factory = studio_client._TEST_CLIENT_FACTORY
+        self.addCleanup(studio_client.use_test_client, factory)
+        studio_client.use_test_client(None)
+        with patch.dict(os.environ, {"ANE_API_URL": ""}):
+            default = studio_client.StudioAPI()
+        self.addCleanup(default.close)
+        self.assertEqual((default.mode, default.base_url), ("http", "http://127.0.0.1:8005"))
+        with self.assertRaises(studio_client.APIError) as caught:  # nothing listens there in the tests
+            studio_client.StudioAPI("http://127.0.0.1:9").get("/healthz")
+        self.assertIn("could not be reached", str(caught.exception))
+
+    def test_the_public_deployment_is_listed_in_the_documentation(self):
+        self.assertEqual(api.openapi_servers(""), [{"url": "/", "description": "This server"}])
+        self.assertEqual(api.openapi_servers("http://ane.hamlet.iti.gr"),
+                         [{"url": "/", "description": "This server"},
+                          {"url": "http://ane.hamlet.iti.gr", "description": "The public deployment"}])
+        servers = TestClient(api.api).get("/openapi.json").json()["servers"]
+        self.assertEqual(servers[0]["url"], "/")
+
+    def test_the_tests_studio_uses_the_api_in_this_process(self):
+        import app
+        self.assertEqual(app.API.mode, "test")
+        self.assertIs(app.APIError, __import__("studio_client").APIError)
 
     def test_studio_handlers_go_through_the_api(self):
         import app

@@ -2,6 +2,10 @@
 modes, one runtime for the evaluator and the editor's suggester, and evolution's worker
 processes spawned (not forked) once an embedded engine holds a GPU context. No GPU or vLLM
 install is needed: vLLM and the server are replaced by fakes."""
+try:  # recording goes to a temporary folder; the studio talks to the API in this process
+    import records_sandbox  # noqa: F401
+except ImportError:
+    from tests import records_sandbox  # noqa: F401
 import io
 import json
 import sys

@@ -75,7 +75,12 @@ Against a running deployment:
 
 ```bash
 python packaging/docker_smoke_test.py --api http://127.0.0.1:8005 --ui http://127.0.0.1:8003
+python packaging/docker_smoke_test.py --api http://ane.hamlet.iti.gr --ui ''   # the public API (records the run)
 ```
+
+The studio (`app.py`) only talks HTTP to an API (`studio_client.py`). The tests import
+`tests/records_sandbox.py`, which gives it the API served in the test process instead
+(`studio_client.use_test_client`), unless a test sets `ANE_API_URL`.
 
 ## Building the ANE AI runtimes
 
