@@ -6,7 +6,7 @@ authoring, evolution, play and records all live behind the API.
 
 The connection (``StudioAPI``, below):
 
-* ``ANE_API_URL`` set (e.g. ``http://hamlet-ane-api:8004``): HTTP to that API, so
+* ``ANE_API_URL`` set (e.g. ``http://hamlet-ane-api:8005``): HTTP to that API, so
   the studio and other clients share one engine (sessions, runs, records).
 * not set: the same API, served inside this process (no separate server).
 

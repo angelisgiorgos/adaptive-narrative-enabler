@@ -26,8 +26,8 @@ for its users, and [WORLD.md](WORLD.md) describes the world format (conditions, 
 
 | Setting | Value |
 | --- | --- |
-| Base URL | `http://<host>:8004` (Compose). Every route is under `/v1`, except `/healthz`, `/docs`, `/redoc` and `/openapi.json`. |
-| Typed client | Generate one from `GET /openapi.json`, for example with `npx openapi-typescript http://localhost:8004/openapi.json -o api.d.ts`. |
+| Base URL | `http://<host>:8005` (Compose). Every route is under `/v1`, except `/healthz`, `/docs`, `/redoc` and `/openapi.json`. |
+| Typed client | Generate one from `GET /openapi.json`, for example with `npx openapi-typescript http://localhost:8005/openapi.json -o api.d.ts`. |
 | Headers | `X-ANE-Client: studio` marks the request as coming from the studio. The records then say `origin: studio`, and runs belong to the user `test`. Any other client sends `X-ANE-User: <opaque id>` when it starts a run (see below). |
 | CORS | Off by default. Set `ANE_CORS_ORIGINS=https://my-frontend.example,…` on the API to enable it. It then allows `GET PUT PATCH POST DELETE` and the headers `Content-Type`, `Authorization`, `X-ANE-Client` and `X-ANE-User`, without credentials. |
 | Timeouts | Most calls return in under a second. The synchronous runs (`POST /v1/simulations`, and `play`, `continue` and `retrain` under `/v1/records/engines/{id}/`) can take minutes, and the studio allows 900 s. A frontend should use the job form of those endpoints instead (see [Long work: jobs](#long-work-jobs)). |

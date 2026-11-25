@@ -5,7 +5,7 @@ from the same image. They share persistent configuration, artifact, and model
 cache volumes.
 
 The studio is a client of this API: every tab works through the endpoints
-below (`ANE_API_URL`, set to `http://hamlet-ane-api:8004` by Compose), and
+below (`ANE_API_URL`, set to `http://hamlet-ane-api:8005` by Compose), and
 whatever it does, other clients can do too. Without `ANE_API_URL`, `python
 app.py` serves the same API inside the studio's process.
 
@@ -16,9 +16,9 @@ to reimplement, and an index of which view uses which endpoint.
 | URL | Purpose |
 |---|---|
 | `http://localhost:8003` | Adaptive Narrative Studio |
-| `http://localhost:8004/docs` | Interactive Swagger documentation |
-| `http://localhost:8004/redoc` | ReDoc API documentation |
-| `http://localhost:8004/healthz` | API container health check |
+| `http://localhost:8005/docs` | Interactive Swagger documentation |
+| `http://localhost:8005/redoc` | ReDoc API documentation |
+| `http://localhost:8005/healthz` | API container health check |
 
 ## Run with Docker
 
@@ -27,7 +27,7 @@ docker compose up --build
 ```
 
 Open the UI at <http://localhost:8003> and API documentation at
-<http://localhost:8004/docs>. Edited configuration, exported simulation
+<http://localhost:8005/docs>. Edited configuration, exported simulation
 artifacts, and Hugging Face models use persistent named volumes. Set
 `ANE_CONFIG_VOLUME=./config` before starting Compose if you specifically want a
 host bind mount (its files must be writable by container UID 10001). The service intentionally uses one Uvicorn worker because runtime
@@ -37,9 +37,9 @@ To build and run without Compose:
 
 ```bash
 docker build -t adaptive-narrative-enabler .
-docker run --rm -p 8004:8004 adaptive-narrative-enabler
+docker run --rm -p 8005:8005 adaptive-narrative-enabler
 docker run --rm -p 8003:8003 \
-  -e ANE_UI_PORT=8003 -e ANE_API_URL=http://<api-host>:8004 \
+  -e ANE_UI_PORT=8003 -e ANE_API_URL=http://<api-host>:8005 \
   adaptive-narrative-enabler python app.py
 ```
 
@@ -268,7 +268,7 @@ recording switches itself off and requests still succeed.
 - `GET /v1/records/runs?user_id=<id>` lists one user's runs; every run says its `user_id`.
 
 ```bash
-curl -X POST http://localhost:8004/v1/simulations -H 'Content-Type: application/json' \
+curl -X POST http://localhost:8005/v1/simulations -H 'Content-Type: application/json' \
      -H 'X-ANE-User: 8f14e45f-ceea-467f-a8f5-b1c3e1c2d6aa' -d '{"candidate_count": 8, "generations": 5}'
 ```
 
@@ -790,13 +790,13 @@ The schemas and validation constraints are available in `/docs`.
 List authored locations:
 
 ```bash
-curl http://localhost:8004/v1/entities/Locations
+curl http://localhost:8005/v1/entities/Locations
 ```
 
 Run a short evolution:
 
 ```bash
-curl -X POST http://localhost:8004/v1/simulations \
+curl -X POST http://localhost:8005/v1/simulations \
   -H 'content-type: application/json' \
   -d '{"candidate_count":8,"generations":5,"simulation_steps":16,"deterministic":true}'
 ```
@@ -804,7 +804,7 @@ curl -X POST http://localhost:8004/v1/simulations \
 Use the returned `session_id` and one of its exact `actions` values:
 
 ```bash
-curl -X POST http://localhost:8004/v1/sessions/SESSION_ID/actions \
+curl -X POST http://localhost:8005/v1/sessions/SESSION_ID/actions \
   -H 'content-type: application/json' \
   -d '{"action":"ACTION_FROM_THE_RESPONSE"}'
 ```
@@ -812,6 +812,6 @@ curl -X POST http://localhost:8004/v1/sessions/SESSION_ID/actions \
 Upload a complete configuration or saved engine:
 
 ```bash
-curl -F file=@config.yaml http://localhost:8004/v1/config/upload
-curl -F file=@narrative-engine.zip http://localhost:8004/v1/engines/load
+curl -F file=@config.yaml http://localhost:8005/v1/config/upload
+curl -F file=@narrative-engine.zip http://localhost:8005/v1/engines/load
 ```

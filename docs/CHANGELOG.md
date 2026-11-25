@@ -7,6 +7,15 @@ that introduces them.
 
 ## [Unreleased]
 
+### The API on port 8005
+
+#### Changed
+- The API listens on port 8005 (was 8004), inside the container and on the host, as the studio does on
+  8003: the image (`ANE_PORT`, `EXPOSE`, health check, command), Compose (`api` command, port mapping
+  `${ANE_API_PORT:-8005}:8005`, health check, the studio's `ANE_API_URL=http://hamlet-ane-api:8005`),
+  the Docker smoke test, CI and the docs. Clients and a studio with `ANE_API_URL`/`ANE_STUDIO_API_URL`
+  set to port 8004 must change it to 8005.
+
 ### A faster studio
 
 #### Changed

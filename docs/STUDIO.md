@@ -58,8 +58,8 @@ inside its process; to use an API that is already running (shared with other
 clients), point it there:
 
 ```bash
-python -m uvicorn api:app --port 8004 &
-ANE_API_URL=http://localhost:8004 python app.py
+python -m uvicorn api:app --port 8005 &
+ANE_API_URL=http://localhost:8005 python app.py
 ```
 
 ### Docker, UI, and REST API
@@ -71,8 +71,8 @@ docker compose up --build
 ```
 
 The complete UI is available at `http://localhost:8003`, the REST API at
-`http://localhost:8004/v1`, and interactive API documentation at
-`http://localhost:8004/docs`. The judge (Gemma 4 on vLLM, a GPU) is a separate service, off
+`http://localhost:8005/v1`, and interactive API documentation at
+`http://localhost:8005/docs`. The judge (Gemma 4 on vLLM, a GPU) is a separate service, off
 unless started: `docker compose --profile judge up -d judge` serves it to the API at
 `http://hamlet-ane-judge:8000/v1` (`ANE_JUDGE_URL`; [`docs/LLM.md`](LLM.md)). The judge's views
 in the studio say whether it is ready and, if not, why and what to do. See [`docs/API.md`](API.md) for how the API
@@ -89,7 +89,7 @@ endpoints ([`docs/API.md`](API.md)); `app.py` imports none of the
 backend, so whatever the studio can do, any other client of the API can do
 too. `StudioAPI`, at the top of [`app.py`](../app.py), is the connection:
 
-- With `ANE_API_URL` set (Compose sets `http://hamlet-ane-api:8004`), the
+- With `ANE_API_URL` set (Compose sets `http://hamlet-ane-api:8005`), the
   studio talks to that API over HTTP. The studio and other clients then share
   one engine: the same sessions, runs, learning memory, and records.
 - Without it (`python app.py`), the studio serves the same API inside its own

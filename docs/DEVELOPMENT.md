@@ -74,7 +74,7 @@ a temporary folder, and `ANE_SAVE_DIR` can point saves elsewhere.
 Against a running deployment:
 
 ```bash
-python packaging/docker_smoke_test.py --api http://127.0.0.1:8004 --ui http://127.0.0.1:8003
+python packaging/docker_smoke_test.py --api http://127.0.0.1:8005 --ui http://127.0.0.1:8003
 ```
 
 ## Building the ANE AI runtimes

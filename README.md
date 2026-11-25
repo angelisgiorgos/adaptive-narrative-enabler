@@ -33,12 +33,12 @@ conda env create -f environment.yml          # or: pip install -r requirements.t
 conda activate adaptive-narrative-enabler
 
 python app.py                                # the studio (it serves the API inside its process)
-python -m uvicorn api:app --port 8004        # the REST API on its own (docs at /docs)
+python -m uvicorn api:app --port 8005        # the REST API on its own (docs at /docs)
 python main.py                               # the terminal generator
 ```
 
 With Docker, `docker compose up --build` serves the studio at `http://localhost:8003` and the API
-at `http://localhost:8004/v1` (interactive documentation at `/docs`).
+at `http://localhost:8005/v1` (interactive documentation at `/docs`).
 
 In the studio, the workflow banner leads through the work: create the world (*🌍 World*), train the
 AI (*🧠 Train*), then **play your world** in *▶ Play*: choose a trained AI (a
