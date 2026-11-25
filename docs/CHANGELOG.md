@@ -73,8 +73,8 @@ that introduces them.
 - `encounters.captive_release` (5): a player an encounter sent to a cell is let out after this many
   turns there, also with the director's `release_after` off.
 - UNP parameters (`ane.session_state/1`) carry `encounters` (attacks, standing changes, rewards paid).
-- `ANE_LLM_WATCHER=off`: no idle-model watcher in this process; the studio's in-process API starts and
-  stops the watcher.
+- `ANE_LLM_WATCHER=off`: no idle-model watcher in this process (the API starts and stops it; the
+  studio, an HTTP client of the API, runs none).
 
 #### Changed
 - Built-in configuration: `side_story.enabled: true`, `fitness.version: 2`. A configuration without
