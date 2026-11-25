@@ -48,6 +48,18 @@ messages:
   side_quest_way: "[LEAD] {source} points you the way to the {location}."  # {source} (the giver, or "What you heard") {location} {title}
   side_quest_item_gone: "[SIDE QUEST FAILED] {title}: {item} is gone for good."  # {title} {item}
   side_quest_epilogue: "[SIDE QUESTS] Along the way you {summary}."  # {summary}: saw ... through; failed at ...; left ... unfinished
+  encounter_ambush: "[AMBUSH] {title}! In the {location}, they were waiting for you."  # {title} {location} {faction} {npc}
+  encounter_hostile_patrol: "[PATROL] {title}: a patrol bars your way in the {location}."  # {title} {location} {faction} {npc}
+  encounter_faction_attack: "[ATTACK] {faction} strike: {title}."  # {title} {location} {faction} {npc}
+  encounter_npc_assault: "[ASSAULT] {npc} turns on you: {title}."  # {title} {location} {faction} {npc}
+  encounter_location_raid: "[RAID] The {location} is under attack: {title}."  # {title} {location} {faction} {npc}
+  encounter_environmental_threat: "[DANGER] {title}: the {location} itself turns against you."  # {title} {location} {faction} {npc}
+  encounter_defensive_encounter: "[DEFEND] {title}: someone needs you to hold the line in the {location}."  # {title} {location} {faction} {npc}
+  encounter_spared: "[SPARED] You go down, but not for good: {title} leaves you bruised, at 1 health."  # {title}: a dynamic encounter lost, the player spared (encounters.lethal: false)
+  side_story_reveal: "[SIDE STORY] {title} turned up something about your quest: {text}"  # {title} {text}: the side quest's texts.reveal
+  side_story_callback: "[CALLBACK] {title}: {text}"  # {title} {text}: a side quest's texts.callback, an encounter result's callback
+  side_story_callback_ally: "[CALLBACK] {title}: {giver} has not forgotten what you did, and stands with you now."  # {title} {giver}
+  side_story_callback_lead: "[CALLBACK] {title}: what you learned then shows you the way now."  # {title} {giver}
   finale_start_free: "[FINALE] Time is running out: the story nears its end."
   end_stalled: "The story stalled in {location} for too long."  # {location}
   end_dungeon: "The traveler was thrown into the {location}."  # {location}

@@ -571,6 +571,160 @@
 "editor_suggester.temperature": [
 "973b372a514f91db"
 ],
+"encounters": [
+"00835e7dc5ff73fc",
+"b4c15de598f55e03"
+],
+"encounters.after_loss_separation": [
+"4a44dc15364204a8"
+],
+"encounters.alert_weight": [
+"7932a07a8cbc0885"
+],
+"encounters.captive_release": [
+"ef2d127de37b942b"
+],
+"encounters.categories": [
+"b229dabe801d978f"
+],
+"encounters.categories.ambush": [
+"6af466b19cee499e"
+],
+"encounters.categories.ambush.enabled": [
+"b5bea41b6c623f7c"
+],
+"encounters.categories.ambush.weight": [
+"d0ff5974b6aa52cf"
+],
+"encounters.categories.defensive_encounter": [
+"fe100f7e8a5c853f"
+],
+"encounters.categories.defensive_encounter.enabled": [
+"b5bea41b6c623f7c"
+],
+"encounters.categories.defensive_encounter.weight": [
+"1e9d7c27c8bbc8dd"
+],
+"encounters.categories.environmental_threat": [
+"6af466b19cee499e"
+],
+"encounters.categories.environmental_threat.enabled": [
+"b5bea41b6c623f7c"
+],
+"encounters.categories.environmental_threat.weight": [
+"d0ff5974b6aa52cf"
+],
+"encounters.categories.faction_attack": [
+"6af466b19cee499e"
+],
+"encounters.categories.faction_attack.enabled": [
+"b5bea41b6c623f7c"
+],
+"encounters.categories.faction_attack.weight": [
+"d0ff5974b6aa52cf"
+],
+"encounters.categories.hostile_patrol": [
+"6af466b19cee499e"
+],
+"encounters.categories.hostile_patrol.enabled": [
+"b5bea41b6c623f7c"
+],
+"encounters.categories.hostile_patrol.weight": [
+"d0ff5974b6aa52cf"
+],
+"encounters.categories.location_raid": [
+"fe100f7e8a5c853f"
+],
+"encounters.categories.location_raid.enabled": [
+"b5bea41b6c623f7c"
+],
+"encounters.categories.location_raid.weight": [
+"1e9d7c27c8bbc8dd"
+],
+"encounters.categories.npc_assault": [
+"6af466b19cee499e"
+],
+"encounters.categories.npc_assault.enabled": [
+"b5bea41b6c623f7c"
+],
+"encounters.categories.npc_assault.weight": [
+"d0ff5974b6aa52cf"
+],
+"encounters.danger_tags": [
+"3c840342c22a600b"
+],
+"encounters.danger_tags.abandoned": [
+"221764976efe0413"
+],
+"encounters.danger_tags.dark": [
+"221764976efe0413"
+],
+"encounters.danger_tags.guarded": [
+"44896b09365746b5"
+],
+"encounters.danger_tags.threat": [
+"b4af4e0d40391d3a"
+],
+"encounters.danger_tags.wild": [
+"f3e360d89952f40d"
+],
+"encounters.difficulty": [
+"d0ff5974b6aa52cf"
+],
+"encounters.difficulty_points": [
+"4a44dc15364204a8"
+],
+"encounters.enabled": [
+"b5bea41b6c623f7c"
+],
+"encounters.factions": [
+"44136fa355b3678a"
+],
+"encounters.hostility_weight": [
+"d2cbad71ff333de6"
+],
+"encounters.in_climax": [
+"fcbcf165908dd18a"
+],
+"encounters.in_conversation": [
+"fcbcf165908dd18a"
+],
+"encounters.in_finale": [
+"fcbcf165908dd18a"
+],
+"encounters.lethal": [
+"fcbcf165908dd18a"
+],
+"encounters.max_chance": [
+"221764976efe0413"
+],
+"encounters.max_per_session": [
+"4e07408562bedb8b"
+],
+"encounters.min_health": [
+"f3e360d89952f40d"
+],
+"encounters.min_separation": [
+"e7f6c011776e8db7"
+],
+"encounters.no_repeat_last": [
+"b5bea41b6c623f7c"
+],
+"encounters.opening_turns": [
+"4e07408562bedb8b"
+],
+"encounters.rate": [
+"bb1a364b44db6381"
+],
+"encounters.safe_tags": [
+"e6c2cd045189fad7"
+],
+"encounters.template_cooldown": [
+"f5ca38f748a1d6ea"
+],
+"encounters.tension_weight": [
+"d2cbad71ff333de6"
+],
 "evolution": [
 "1d1c90b6b2079a6e",
 "33822f8e96831ec1",
@@ -707,13 +861,15 @@
 "02818b2aab0a68b4",
 "2b42fbfadc762782",
 "48b7b2314bdd9749",
+"5052033a4a3093e6",
 "abd62035010cd2d7",
 "b21bd628b8e5e5f1",
 "be2de918f802c3e6",
 "bf114a70ed072b3d",
 "c29233aab20f0e81",
 "c4b3907dc55b915a",
-"cf8dbbcf8db57734"
+"cf8dbbcf8db57734",
+"f71c73e5d2c73314"
 ],
 "fitness.base": [
 "0fffde6826012300",
@@ -1093,11 +1249,15 @@
 "4b227777d4dd1fc6"
 ],
 "fitness.side_quests": [
+"063213a98516b6d8",
 "6449c16241862eb2",
 "a58f175027118c6a"
 ],
 "fitness.side_quests.complete_bonus": [
 "4a44dc15364204a8"
+],
+"fitness.side_quests.diminishing": [
+"b4af4e0d40391d3a"
 ],
 "fitness.side_quests.fail_penalty": [
 "4b227777d4dd1fc6"
@@ -1105,11 +1265,61 @@
 "fitness.side_quests.mission_aid_bonus": [
 "e7f6c011776e8db7"
 ],
+"fitness.side_quests.repeat_factor": [
+"a30a043314fa8929"
+],
 "fitness.side_quests.step_bonus": [
 "4e07408562bedb8b"
 ],
 "fitness.side_quests.unfinished_penalty": [
 "d4735e3a265e16ee"
+],
+"fitness.side_story": [
+"04fff664a971f6c6",
+"89c6be3866539516"
+],
+"fitness.side_story.completion_weight": [
+"e7f6c011776e8db7"
+],
+"fitness.side_story.density_penalty": [
+"d59eced1ded07f84"
+],
+"fitness.side_story.density_target": [
+"7932a07a8cbc0885"
+],
+"fitness.side_story.diversity_kinds": [
+"6b51d431df5d7f14",
+"e7f6c011776e8db7"
+],
+"fitness.side_story.diversity_min_decisions": [
+"4b227777d4dd1fc6"
+],
+"fitness.side_story.diversity_weight": [
+"e7f6c011776e8db7"
+],
+"fitness.side_story.drift_allowed": [
+"f5ca38f748a1d6ea"
+],
+"fitness.side_story.drift_penalty": [
+"f5ca38f748a1d6ea"
+],
+"fitness.side_story.filler_penalty": [
+"e7f6c011776e8db7"
+],
+"fitness.side_story.interruption_penalty": [
+"2c624232cdd22177"
+],
+"fitness.side_story.payoff_weight": [
+"6b51d431df5d7f14"
+],
+"fitness.side_story.relevance_weight": [
+"2c624232cdd22177"
+],
+"fitness.side_story.repeat_penalty": [
+"4a44dc15364204a8"
+],
+"fitness.side_story.unresolved_penalty": [
+"e7f6c011776e8db7"
 ],
 "fitness.story_length": [
 "ae10bf6fc8209bc8"
@@ -1181,6 +1391,9 @@
 "624b60c58c9d8bfb"
 ],
 "fitness.variety.repeated_outcome_penalty": [
+"d4735e3a265e16ee"
+],
+"fitness.version": [
 "d4735e3a265e16ee"
 ],
 "fitness.visit_penalty": [
@@ -2042,6 +2255,69 @@
 "side_quest_settings.remind_after": [
 "e7f6c011776e8db7"
 ],
+"side_story": [
+"84132732e8dc9110"
+],
+"side_story.agency": [
+"b5bea41b6c623f7c"
+],
+"side_story.backoff_relevance": [
+"d2cbad71ff333de6"
+],
+"side_story.callbacks": [
+"5cf7504d9781301d"
+],
+"side_story.deadline_turns": [
+"4e07408562bedb8b"
+],
+"side_story.decline_backoff": [
+"d4735e3a265e16ee"
+],
+"side_story.enabled": [
+"b5bea41b6c623f7c"
+],
+"side_story.encounter_appetite": [
+"b5bea41b6c623f7c"
+],
+"side_story.finale_pull": [
+"a30a043314fa8929"
+],
+"side_story.hold_in_climax": [
+"b5bea41b6c623f7c"
+],
+"side_story.hold_in_event": [
+"b5bea41b6c623f7c"
+],
+"side_story.hold_in_finale": [
+"b5bea41b6c623f7c"
+],
+"side_story.idle_pull": [
+"d2cbad71ff333de6"
+],
+"side_story.intro_gap": [
+"d4735e3a265e16ee"
+],
+"side_story.main_idle_turns": [
+"6b51d431df5d7f14"
+],
+"side_story.max_callbacks": [
+"d4735e3a265e16ee"
+],
+"side_story.max_open_threads": [
+"4b227777d4dd1fc6"
+],
+"side_story.max_side_share": [
+"d2cbad71ff333de6"
+],
+"side_story.meaningful_relevance": [
+"d2cbad71ff333de6"
+],
+"side_story.relevance_weight": [
+"d84bdb34d4eeef40"
+],
+"side_story.share_window": [
+"4a44dc15364204a8"
+],
 "simulation": [
 "01ad2bf736535439",
 "c2e2ef36fc30a04b"
@@ -2240,6 +2516,7 @@
 "a30a043314fa8929"
 ],
 "story_rules": [
+"a92403efa5db2d2e",
 "da58cd737bab21ab",
 "ebb2daae96ead541"
 ],
@@ -2254,6 +2531,9 @@
 ],
 "story_rules.early_goal_avoidance": [
 "d0ff5974b6aa52cf"
+],
+"story_rules.failure_counts": [
+"b5bea41b6c623f7c"
 ],
 "story_rules.failure_tags": [
 "a4e45d39032fc955"
@@ -2761,6 +3041,7 @@
 "0131c71ad636a0c2",
 "01a38507da1d56cb",
 "048f0accb0fbf79f",
+"0597c75d3f77d825",
 "11def9b95befe701",
 "1cace454197aa0a5",
 "2531e86f0ae9fcf3",
@@ -2768,6 +3049,7 @@
 "59a414f8ea6c7b8d",
 "625c41ffd1ed8cbe",
 "8a1374e642c52bef",
+"a3b639e0ca371506",
 "c3199c8e96a38cd1",
 "cce2eea57ceed348",
 "d381ec9df372f216",
@@ -2843,6 +3125,30 @@
 ],
 "messages.encounter": [
 "7757ac15b36894cc"
+],
+"messages.encounter_ambush": [
+"3100f086b6ebde91"
+],
+"messages.encounter_defensive_encounter": [
+"c1bbb2cd9d00e39e"
+],
+"messages.encounter_environmental_threat": [
+"39121feee8e4633e"
+],
+"messages.encounter_faction_attack": [
+"289b93f22d3b57ec"
+],
+"messages.encounter_hostile_patrol": [
+"061bd84a6bbf5fc3"
+],
+"messages.encounter_location_raid": [
+"6443f38ac251e5fc"
+],
+"messages.encounter_npc_assault": [
+"bd4558dbbf443500"
+],
+"messages.encounter_spared": [
+"6b420888a683420a"
 ],
 "messages.end_abandoned": [
 "1305a5e5e5e56939"
@@ -3108,6 +3414,18 @@
 ],
 "messages.side_quest_way": [
 "e4c1cacc0e6abc9a"
+],
+"messages.side_story_callback": [
+"fb25448f8e6714a2"
+],
+"messages.side_story_callback_ally": [
+"f98ee18d602ff262"
+],
+"messages.side_story_callback_lead": [
+"fb6926f4bcfa0eac"
+],
+"messages.side_story_reveal": [
+"741d37d476ca50e5"
 ],
 "messages.spawn": [
 "b22e58b08773f25c"
@@ -3542,6 +3860,32 @@
 "discovery_nodes.npc_social_weight": 0.3,
 "editor_suggester.max_new_tokens": 256,
 "editor_suggester.temperature": 0.7,
+"encounters.after_loss_separation": 10,
+"encounters.alert_weight": 0.15,
+"encounters.captive_release": 5,
+"encounters.categories.ambush.weight": 1.0,
+"encounters.categories.defensive_encounter.weight": 0.8,
+"encounters.categories.environmental_threat.weight": 1.0,
+"encounters.categories.faction_attack.weight": 1.0,
+"encounters.categories.hostile_patrol.weight": 1.0,
+"encounters.categories.location_raid.weight": 0.8,
+"encounters.categories.npc_assault.weight": 1.0,
+"encounters.danger_tags.abandoned": 0.3,
+"encounters.danger_tags.dark": 0.3,
+"encounters.danger_tags.guarded": 0.2,
+"encounters.danger_tags.threat": 0.6,
+"encounters.danger_tags.wild": 0.4,
+"encounters.difficulty": 1.0,
+"encounters.difficulty_points": 10,
+"encounters.hostility_weight": 0.5,
+"encounters.max_chance": 0.3,
+"encounters.max_per_session": 3,
+"encounters.min_health": 0.4,
+"encounters.min_separation": 6,
+"encounters.opening_turns": 3,
+"encounters.rate": 0.06,
+"encounters.template_cooldown": 20,
+"encounters.tension_weight": 0.5,
 "evolution.alternatives_weight": 40,
 "evolution.benchmark_top_k": 3,
 "evolution.blend_crossover_chance": 0.55,
@@ -3663,10 +4007,26 @@
 "fitness.setup_payoff.unmatched_payoff_penalty": 3,
 "fitness.setup_payoff.unmatched_setup_penalty": 4,
 "fitness.side_quests.complete_bonus": 10,
+"fitness.side_quests.diminishing": 0.6,
 "fitness.side_quests.fail_penalty": 4,
 "fitness.side_quests.mission_aid_bonus": 6,
+"fitness.side_quests.repeat_factor": 0.25,
 "fitness.side_quests.step_bonus": 3,
 "fitness.side_quests.unfinished_penalty": 2,
+"fitness.side_story.completion_weight": 6,
+"fitness.side_story.density_penalty": 40,
+"fitness.side_story.density_target": 0.15,
+"fitness.side_story.diversity_kinds": 12,
+"fitness.side_story.diversity_min_decisions": 4,
+"fitness.side_story.diversity_weight": 6,
+"fitness.side_story.drift_allowed": 20,
+"fitness.side_story.drift_penalty": 20,
+"fitness.side_story.filler_penalty": 6,
+"fitness.side_story.interruption_penalty": 8,
+"fitness.side_story.payoff_weight": 12,
+"fitness.side_story.relevance_weight": 8,
+"fitness.side_story.repeat_penalty": 10,
+"fitness.side_story.unresolved_penalty": 6,
 "fitness.story_length.bonus": 25,
 "fitness.story_length.max": 60,
 "fitness.story_length.min": 20,
@@ -3684,6 +4044,7 @@
 "fitness.unexpected_events.variety_bonus": 6,
 "fitness.variety.distinct_choice_weight": 30,
 "fitness.variety.repeated_outcome_penalty": 2,
+"fitness.version": 2,
 "fitness.visit_penalty": 5,
 "fitness.volatility.pair_weight": 5,
 "fitness.volatility_pair_weight": 10,
@@ -3822,6 +4183,19 @@
 "side_quest_settings.offer_turns": 3,
 "side_quest_settings.rank_weight": 2.0,
 "side_quest_settings.remind_after": 6,
+"side_story.backoff_relevance": 0.5,
+"side_story.deadline_turns": 3,
+"side_story.decline_backoff": 2,
+"side_story.finale_pull": 0.25,
+"side_story.idle_pull": 0.5,
+"side_story.intro_gap": 2,
+"side_story.main_idle_turns": 12,
+"side_story.max_callbacks": 2,
+"side_story.max_open_threads": 4,
+"side_story.max_side_share": 0.5,
+"side_story.meaningful_relevance": 0.5,
+"side_story.relevance_weight": 2.0,
+"side_story.share_window": 10,
 "skill_check_resolution.damage_mitigation_per_point": 25,
 "skill_check_resolution.dangerous_failure_damage": 2,
 "skill_check_resolution.difficulty_penalty": 0,
