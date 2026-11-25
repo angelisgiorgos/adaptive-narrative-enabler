@@ -298,7 +298,7 @@ class SharingTests(unittest.TestCase):
         self.judge, self.augmenter = self._server("judge"), self._server("augmenter")
         env = {"ANE_JUDGE_URL": self.judge + "/v1", "ANE_JUDGE_MODEL": "google/gemma-4-E4B-it",
                "ANE_AUGMENT_URL": self.augmenter + "/v1", "ANE_AUGMENT_MODEL": "Qwen/Qwen3.5-4B",
-               "ANE_LLM_SHARING": ""}
+               "ANE_LLM_SHARING": "", "ANE_LLM_WATCHER": ""}   # the watcher as configured (tests switch it off)
         patcher = patch.dict("os.environ", env)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -436,7 +436,22 @@ class SharingTests(unittest.TestCase):
         with patch.dict("os.environ", {"ANE_LLM_SHARING": "off"}):
             self.assertEqual(turns.sleep_idle_servers(), [])                            # nothing would wake them
         self.assertFalse(turns.start_watcher(every=0))
+        with patch.dict("os.environ", {"ANE_LLM_WATCHER": "off"}):
+            self.assertFalse(turns.start_watcher(every=0.05))                         # switched off for the process
         self.assertEqual(self.events, [])
+
+    def test_the_studio_starts_no_watcher(self):
+        """The studio is an HTTP client of the API (studio_client.py): the API it talks to runs the
+        watcher at its own startup (test_the_api_starts_and_stops_the_watcher), the studio none."""
+        import app
+
+        turns = llm_model_loader.TURNS
+        with patch.dict(config._config, {"llm_sharing": {**config.get("llm_sharing"), "watch_seconds": 30}}):
+            client = app.StudioAPI(base_url="http://127.0.0.1:9")
+            self.assertEqual(client.mode, "http")
+            self.assertIsNone(turns._watcher)
+            client.close()
+        self.assertIsNone(turns._watcher)
 
     def test_the_api_starts_and_stops_the_watcher(self):
         from fastapi.testclient import TestClient

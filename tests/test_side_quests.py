@@ -106,6 +106,8 @@ class _Quiet(unittest.TestCase):
             patch.dict(config._config["unexpected_events"], {"enabled": False}),
             patch.dict(config._config, {"npc_roles": {**(config.get("npc_roles") or {}), "enabled": False}}),
             patch.dict(config._config["conversations"], {"enabled": False}),
+            # The side quests' own rules (the side-story policy on top of them: tests/test_side_story.py).
+            patch.dict(config._config, {"side_story": {**config.get("side_story"), "enabled": False}}),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -776,7 +778,8 @@ class SavedTests(unittest.TestCase):
     def _under_way(self, store=None, profile="sq"):
         """A story of the shipped world with "A full purse" under way."""
         with patch.dict(config._config, {"side_quest_settings": {**config.get("side_quest_settings"),
-                                                                 "offer_cooldown": 0}}):  # several at once
+                                                                 "offer_cooldown": 0},   # several at once
+                                         "side_story": {**config.get("side_story"), "intro_gap": 0}}):
             state = GameState(engine.build_world(self.genome), self.genome, rng=random.Random(5), store=store,
                               profile=profile, start="Tavern")
         state.coins = 1

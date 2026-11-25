@@ -1145,6 +1145,7 @@ class TrainResultTests(_Sandbox):
         body = answer.json()
         self.assertEqual((body["session_id"], body["game_started"], body["scene"], body["actions"]), (None, False, "", []))
         self.assertTrue(body["engine_id"] and body["run_id"] and body["engine_download_url"] and body["learning"])
+        self.assertEqual(body["learning"]["fitness_version"], 2)                          # fitness.version
         self.assertNotIn("Player profile", body["report"])
         self.assertEqual(set(sessions.SESSIONS), before)                                 # no session
         self.assertEqual(persistent.VariableStore().recent_starts("train-only"), [])     # the profile untouched
@@ -2302,6 +2303,7 @@ class EngineNamesTests(_Sandbox):
         self.assertEqual(card["world"]["summary"]["locations"], len(store.config.get("world_definition.locations")))
         self.assertEqual(card["settings"]["main"]["pop_size"], 1)    # what its training ran with
         self.assertEqual(card["fitness"]["training"], listed["score"])
+        self.assertEqual(card["fitness"]["version"], 2)                # the scoring it was trained with
         self.assertEqual(card["evaluations"], [])
         self.assertEqual(set(card["scaling_traits"]), {"voyage_bias", "goal_bias", "novelty_bias", "event_prob",
                                                        "chaos_bias"})

@@ -552,6 +552,16 @@ class UnityLibraryTests(unittest.TestCase):
         unused = [f"{m} {p}" for m, p in routes if not any(c == m and re.fullmatch(p, path) for c, path in calls)]
         self.assertEqual(unused, ["POST /evolve"])  # offline training: off unless --allow-evolve
 
+    def test_every_kind_of_entity_has_its_route(self):
+        from narrative_runtime.server import _routes
+
+        routes = [pattern for method, pattern, _ in _routes(types.SimpleNamespace(engine=None)) if method == "GET"]
+        for kind in ("locations", "npcs", "items", "events", "missions", "side_quests"):  # side_quests: an underscore
+            with self.subTest(kind=kind):
+                matched = [p for p in routes if re.fullmatch(p, f"/world/{kind}/charting_the_storm")]
+                self.assertEqual(len(matched), 1)
+                self.assertEqual(re.fullmatch(matched[0], f"/world/{kind}/charting_the_storm")["kind"], kind)
+
     def test_the_client_sends_what_the_ane_ai_takes(self):
         source = (self.LIBRARY / "Runtime" / "AneAiClient.cs").read_text(encoding="utf-8")
         to_json = source[source.index("public Dictionary<string, object> ToJson()"):]

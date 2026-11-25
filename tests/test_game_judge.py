@@ -177,3 +177,74 @@ class JudgeEndpointTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _legacy_prompt(digest):
+    """The prompt as it was before optional content (a playthrough without any still gets it)."""
+    criteria = "\n".join(f"- {name}: {meaning}" for name, meaning in CRITERIA.items())
+    keys = ", ".join(f'"{name}": <1-10>' for name in CRITERIA)
+    return f"""You are a demanding video game critic. Below is the log of one playthrough of a narrative
+game: each line is a turn (the place, the player's choice, what happened, and what changed).
+
+Judge it as a GAME a player experiences, not as prose. Score each criterion from 1 (bad) to 10
+(excellent); use the whole scale and reserve 8-10 for genuinely strong play:
+{criteria}
+
+Then give "engagement": how engaging the playthrough is overall for a player, from 1 to 10.
+
+Reply with ONE JSON object and nothing else:
+{{"scores": {{{keys}}}, "engagement": <1-10>, "best_moment": "Turn <n>: <why it works>",
+"weakest_moment": "Turn <n>: <why it falls flat>", "verdict": "<one sentence>"}}
+
+PLAYTHROUGH:
+{digest}
+"""
+
+
+class OptionalContentTests(unittest.TestCase):
+    """The judge tells meaningful optional content (side quests, dynamic encounters) from filler."""
+
+    SIDE = [dict(TURNS[0], text="[SIDE QUEST] The Priest asks a favour of you: The ledger."),
+            dict(TURNS[1], text="[AMBUSH] Thieves! In the Market, they were waiting for you.")]
+
+    def test_a_playthrough_without_it_gets_the_same_prompt_as_before(self):
+        digest = digest_turns(TURNS)
+        self.assertEqual(build_prompt(digest), _legacy_prompt(digest))
+        self.assertNotIn("optional_content", build_prompt(digest))
+
+    def test_with_it_the_judge_is_asked_about_it(self):
+        from evaluator.game_judge import has_optional_content
+
+        digest = digest_turns(self.SIDE)
+        self.assertTrue(has_optional_content(digest))
+        self.assertIn("[SIDE QUEST] The Priest asks a favour", digest)                  # a beat the judge sees
+        prompt = build_prompt(digest)
+        self.assertIn("MEANINGFUL", prompt)
+        self.assertIn('"optional_content": {"score": <1-10>', prompt)
+
+    def test_its_answer_is_read_and_averaged(self):
+        reply = json.loads(_reply(7))
+        reply["optional_content"] = {"score": 8, "meaningful": 2, "filler": 1, "note": "The ledger pays off."}
+        parsed = parse_judgement(json.dumps(reply))
+        self.assertEqual(parsed["optional_content"], {"score": 8.0, "meaningful": 2, "filler": 1,
+                                                      "filler_share": 1 / 3, "note": "The ledger pays off."})
+        self.assertIsNone(parse_judgement(_reply(7))["optional_content"])                # none given
+        self.assertEqual(parse_judgement('{"engagement": 6, "agency": 5, "optional_content": 3}')
+                         ["optional_content"]["score"], 3.0)
+        second = dict(reply, optional_content={"score": 4, "meaningful": 0, "filler": 2})
+        judge = GameJudge(runtime=FakeRuntime([json.dumps(reply), json.dumps(second)]), samples=2)
+        result = judge.judge_turns(self.SIDE)
+        self.assertEqual((result["optional_content"]["score"], result["optional_content"]["filler"],
+                          result["optional_content"]["samples"]), (6.0, 1.5, 2))
+
+    def test_a_benchmark_compares_the_judge_s_split_with_the_engine_s(self):
+        from evaluator.judge_benchmark import summary
+
+        rows = [{"fitness": f, "engagement": e, "scores": {c: 5 for c in CRITERIA}, "judgements": [e],
+                 "engine_filler_share": share,
+                 "optional_content": {"score": score, "filler_share": judged}, "fitness_version": 2}
+                for f, e, share, score, judged in ((1, 5, 0.0, 8, 0.1), (2, 6, 0.5, 5, 0.4), (3, 7, 1.0, 2, 0.9))]
+        result = summary(rows)
+        self.assertEqual((result["fitness_version"], result["optional_stories"]), (2, 3))
+        self.assertEqual(result["optional_content"], 5)
+        self.assertAlmostEqual(result["filler_engine_vs_judge"], 1.0)
