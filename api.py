@@ -309,14 +309,30 @@ class SimulationResponse(PlayState):
 ARTIFACTS: dict[str, Path] = {}
 ARTIFACT_DIR = Path(os.getenv("ANE_ARTIFACT_DIR", str(store.PROJECT_ROOT / "artifacts")))
 
+# Where the API is deployed for everyone (e.g. http://ane.hamlet.iti.gr, set by Compose): offered in
+# the interactive documentation's server list beside this server. Empty: this server only.
+PUBLIC_URL = os.getenv("ANE_PUBLIC_URL", "").strip().rstrip("/")
+
+
+def openapi_servers(public_url=PUBLIC_URL):
+    """The OpenAPI `servers`: this server (relative, wherever /docs is opened), then the public one."""
+    servers = [{"url": "/", "description": "This server"}]
+    if public_url:
+        servers.append({"url": public_url, "description": "The public deployment"})
+    return servers
+
+
 api = FastAPI(
     title="Adaptive Narrative Enabler API",
     summary="World authoring, configuration, evolution, and interactive play",
     version="1.0.0",
     description=(
-        "Every operation exposed by Adaptive Narrative Studio is available here. "
+        "Every operation exposed by Adaptive Narrative Studio is available here: the studio is a "
+        "client of this API and does everything through it. "
         "This service is stateful and must run with one worker."
+        + (f" Public deployment: {PUBLIC_URL} (documentation at {PUBLIC_URL}/docs)." if PUBLIC_URL else "")
     ),
+    servers=openapi_servers(),
 )
 
 @api.exception_handler(StarletteHTTPException)

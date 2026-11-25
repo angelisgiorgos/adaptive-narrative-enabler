@@ -1,13 +1,21 @@
 # Adaptive Narrative Enabler HTTP API
 
-The Compose stack runs the complete Gradio UI and REST API as separate services
-from the same image. They share persistent configuration, artifact, and model
-cache volumes.
+The Compose stack runs the Gradio studio and the REST API as separate services
+from the same image. The API holds the persistent configuration, artifact,
+records and model cache volumes; the studio holds none.
 
-The studio is a client of this API: every tab works through the endpoints
-below (`ANE_API_URL`, set to `http://hamlet-ane-api:8004` by Compose), and
-whatever it does, other clients can do too. Without `ANE_API_URL`, `python
-app.py` serves the same API inside the studio's process.
+**Public deployment:** <http://ane.hamlet.iti.gr> (interactive documentation at
+<http://ane.hamlet.iti.gr/docs>, ReDoc at `/redoc`, health at `/healthz`). It is
+the `api` service of `compose.yaml` (port 8005) behind the reverse proxy;
+`ANE_PUBLIC_URL` (Compose: `http://ane.hamlet.iti.gr`) lists it in the
+documentation's server list beside the server it is opened on.
+
+The studio is a client of this API and does everything through it over HTTP:
+every tab works through the endpoints below, and whatever it does, other
+clients can do too. It finds the API at `ANE_API_URL` (Compose:
+`http://hamlet-ane-api:8005`; any other API, e.g. the public one, works too) or,
+when that is unset, at `http://127.0.0.1:8005`. It never serves the API itself,
+so the API must be running before the studio starts.
 
 **Building another frontend?** [FRONTEND.md](FRONTEND.md) describes every studio view as
 requests and JSON fields: what each screen loads, its components, its actions, the client-side logic
@@ -15,10 +23,11 @@ to reimplement, and an index of which view uses which endpoint.
 
 | URL | Purpose |
 |---|---|
+| `http://ane.hamlet.iti.gr/docs` | The public deployment's interactive documentation |
 | `http://localhost:8003` | Adaptive Narrative Studio |
-| `http://localhost:8004/docs` | Interactive Swagger documentation |
-| `http://localhost:8004/redoc` | ReDoc API documentation |
-| `http://localhost:8004/healthz` | API container health check |
+| `http://localhost:8005/docs` | Interactive Swagger documentation |
+| `http://localhost:8005/redoc` | ReDoc API documentation |
+| `http://localhost:8005/healthz` | API container health check |
 
 ## Run with Docker
 
@@ -27,7 +36,7 @@ docker compose up --build
 ```
 
 Open the UI at <http://localhost:8003> and API documentation at
-<http://localhost:8004/docs>. Edited configuration, exported simulation
+<http://localhost:8005/docs>. Edited configuration, exported simulation
 artifacts, and Hugging Face models use persistent named volumes. Set
 `ANE_CONFIG_VOLUME=./config` before starting Compose if you specifically want a
 host bind mount (its files must be writable by container UID 10001). The service intentionally uses one Uvicorn worker because runtime
@@ -37,13 +46,14 @@ To build and run without Compose:
 
 ```bash
 docker build -t adaptive-narrative-enabler .
-docker run --rm -p 8004:8004 adaptive-narrative-enabler
+docker run --rm -p 8005:8005 adaptive-narrative-enabler
 docker run --rm -p 8003:8003 \
-  -e ANE_UI_PORT=8003 -e ANE_API_URL=http://<api-host>:8004 \
+  -e ANE_UI_PORT=8003 -e ANE_API_URL=http://<api-host>:8005 \
   adaptive-narrative-enabler python app.py
 ```
 
-Leave out `ANE_API_URL` to run the studio with its own API inside.
+Without `ANE_API_URL` the studio looks for the API at `http://127.0.0.1:8005`;
+`-e ANE_API_URL=http://ane.hamlet.iti.gr` runs a studio on the public API.
 
 ## How the API behaves
 
@@ -61,10 +71,8 @@ the first one's games, and a restart forgets everything that lives in memory:
 | Download links `/v1/artifacts/{id}` (the files stay in `ANE_ARTIFACT_DIR`, the links do not) | Generated configurations, engine models and exports (`ANE_ARTIFACT_DIR`) |
 | An uploaded configuration (`POST /v1/config/upload`), until `POST /v1/config/reset` or a restart | |
 
-The studio (`app.py`) is a client of this API. With `ANE_API_URL` it uses the
-API service, and its games, runs and jobs are the API's. Without
-`ANE_API_URL` it serves the API inside its own process, which then holds that
-state.
+The studio (`app.py`) is a client of this API: its games, runs and jobs are the
+API's, and it holds none of this state itself.
 
 ### Writes: checked first, then saved whole
 
@@ -268,7 +276,7 @@ recording switches itself off and requests still succeed.
 - `GET /v1/records/runs?user_id=<id>` lists one user's runs; every run says its `user_id`.
 
 ```bash
-curl -X POST http://localhost:8004/v1/simulations -H 'Content-Type: application/json' \
+curl -X POST http://localhost:8005/v1/simulations -H 'Content-Type: application/json' \
      -H 'X-ANE-User: 8f14e45f-ceea-467f-a8f5-b1c3e1c2d6aa' -d '{"candidate_count": 8, "generations": 5}'
 ```
 
@@ -790,13 +798,13 @@ The schemas and validation constraints are available in `/docs`.
 List authored locations:
 
 ```bash
-curl http://localhost:8004/v1/entities/Locations
+curl http://localhost:8005/v1/entities/Locations
 ```
 
 Run a short evolution:
 
 ```bash
-curl -X POST http://localhost:8004/v1/simulations \
+curl -X POST http://localhost:8005/v1/simulations \
   -H 'content-type: application/json' \
   -d '{"candidate_count":8,"generations":5,"simulation_steps":16,"deterministic":true}'
 ```
@@ -804,7 +812,7 @@ curl -X POST http://localhost:8004/v1/simulations \
 Use the returned `session_id` and one of its exact `actions` values:
 
 ```bash
-curl -X POST http://localhost:8004/v1/sessions/SESSION_ID/actions \
+curl -X POST http://localhost:8005/v1/sessions/SESSION_ID/actions \
   -H 'content-type: application/json' \
   -d '{"action":"ACTION_FROM_THE_RESPONSE"}'
 ```
@@ -812,6 +820,6 @@ curl -X POST http://localhost:8004/v1/sessions/SESSION_ID/actions \
 Upload a complete configuration or saved engine:
 
 ```bash
-curl -F file=@config.yaml http://localhost:8004/v1/config/upload
-curl -F file=@narrative-engine.zip http://localhost:8004/v1/engines/load
+curl -F file=@config.yaml http://localhost:8005/v1/config/upload
+curl -F file=@narrative-engine.zip http://localhost:8005/v1/engines/load
 ```

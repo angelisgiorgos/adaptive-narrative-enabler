@@ -4,7 +4,10 @@ Checks that the API is healthy, serves the world (missions, failure lint), runs 
 evolution that starts a game, and plays one turn of it; and that the studio is up.
 Only the standard library is used, so it runs on any CI runner or host.
 
-    python packaging/docker_smoke_test.py --api http://127.0.0.1:8004 --ui http://127.0.0.1:8003
+    python packaging/docker_smoke_test.py --api http://127.0.0.1:8005 --ui http://127.0.0.1:8003
+    python packaging/docker_smoke_test.py --api http://ane.hamlet.iti.gr --ui ''   # the public API
+
+(The run and the game it starts are recorded by the API it tests, as any client's are.)
 """
 import argparse
 import io
@@ -53,7 +56,7 @@ def check(label, condition, detail=""):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--api", default="http://127.0.0.1:8004")
+    parser.add_argument("--api", default="http://127.0.0.1:8005")
     parser.add_argument("--ui", default="http://127.0.0.1:8003", help="the studio's URL ('' to skip it)")
     parser.add_argument("--wait", type=int, default=300, help="seconds to wait for each service")
     parser.add_argument("--export-platform", help="also export an ANE AI for this platform (e.g. linux-x64)...")

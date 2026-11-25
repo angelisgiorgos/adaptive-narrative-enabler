@@ -7,6 +7,34 @@ that introduces them.
 
 ## [Unreleased]
 
+### The API on port 8005
+
+#### Changed
+- The API listens on port 8005 (was 8004), inside the container and on the host, as the studio does on
+  8003: the image (`ANE_PORT`, `EXPOSE`, health check, command), Compose (`api` command, port mapping
+  `${ANE_API_PORT:-8005}:8005`, health check, the studio's `ANE_API_URL=http://hamlet-ane-api:8005`),
+  the Docker smoke test, CI and the docs. Clients and a studio with `ANE_API_URL`/`ANE_STUDIO_API_URL`
+  set to port 8004 must change it to 8005.
+
+### The public deployment, and a studio that only talks to the API
+
+#### Added
+- The API's public deployment, <http://ane.hamlet.iti.gr> (documentation at `/docs`), in the README,
+  API.md, FRONTEND.md, STUDIO.md, UNP.md and DEVELOPMENT.md. `ANE_PUBLIC_URL` (Compose:
+  `http://ane.hamlet.iti.gr`) adds it to the OpenAPI `servers` beside this server (`/`), and to the
+  API's description; empty, only this server is listed.
+- `studio_client.py`: the studio's HTTP client (`StudioAPI`, `APIError`, `JobCancelledError`, moved
+  from `app.py`, which re-exports them), with `api_url()`, `DEFAULT_API_URL` and `PUBLIC_API_URL`.
+
+#### Changed
+- The studio always talks HTTP to an API and never serves the API itself: to `ANE_API_URL`, or to
+  `http://127.0.0.1:8005` when it is unset or empty (it used to serve the API inside its own process
+  then). Start the API before the studio (`python -m uvicorn api:app --port 8005`).
+- Compose: the `ui` service no longer mounts the API's volumes nor sets `ANE_RECORDS_DIR`;
+  `ANE_STUDIO_API_URL` empty now means the `api` service (it used to mean the API inside the studio).
+- Tests give the studio the API served in the test process (`tests/records_sandbox.py`,
+  `studio_client.use_test_client`); the studio's code holds no in-process mode.
+
 ### A faster studio
 
 #### Changed

@@ -25,7 +25,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     ANE_HOST=0.0.0.0 \
-    ANE_PORT=8004 \
+    ANE_PORT=8005 \
     ANE_UI_HOST=0.0.0.0 \
     ANE_UI_PORT=8003 \
     ANE_DATA_DIR=/app/config \
@@ -57,10 +57,10 @@ RUN useradd --create-home --uid 10001 app \
 
 USER app
 VOLUME ["/app/config", "/app/artifacts", "/app/saves", "/var/cache/huggingface"]
-EXPOSE 8003 8004
+EXPOSE 8003 8005
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/healthz')"
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8005/healthz')"
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["python", "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8004", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips=*"]
+CMD ["python", "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8005", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips=*"]

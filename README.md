@@ -32,13 +32,17 @@ engine plays the world as a game, in the studio or offline inside another game a
 conda env create -f environment.yml          # or: pip install -r requirements.txt (Python 3.10+)
 conda activate adaptive-narrative-enabler
 
-python app.py                                # the studio (it serves the API inside its process)
-python -m uvicorn api:app --port 8004        # the REST API on its own (docs at /docs)
+python -m uvicorn api:app --port 8005        # the REST API (docs at /docs)
+python app.py                                # the studio, a client of the API at http://127.0.0.1:8005
+                                             # (ANE_API_URL=http://ane.hamlet.iti.gr: the public one)
 python main.py                               # the terminal generator
 ```
 
 With Docker, `docker compose up --build` serves the studio at `http://localhost:8003` and the API
-at `http://localhost:8004/v1` (interactive documentation at `/docs`).
+at `http://localhost:8005/v1` (interactive documentation at `/docs`).
+
+The API is deployed at **<http://ane.hamlet.iti.gr>** (interactive documentation at
+<http://ane.hamlet.iti.gr/docs>).
 
 In the studio, the workflow banner leads through the work: create the world (*🌍 World*), train the
 AI (*🧠 Train*), then **play your world** in *▶ Play*: choose a trained AI (a

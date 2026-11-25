@@ -70,12 +70,13 @@ zips in `runtimes/` before building the image (or in `ANE_RUNTIMES_DIR`) to expo
 
 Finished runs are kept: in the records, or, when recording is off (a records folder the
 container cannot write), with the saves (`ANE_SAVE_DIR/engines`, the newest 20), so a run can be
-exported after a restart.
+exported after a restart. The examples use the public deployment; use `http://localhost:8005` for
+your own API.
 
 ```bash
-curl http://localhost:8000/v1/exports/engines
+curl http://ane.hamlet.iti.gr/v1/exports/engines
 # -> {"engines": [{"engine_id": "3f2a...", "created_at": "...", "source": "studio run ...", "score": 71.4, ...}]}
-curl -X POST http://localhost:8000/v1/exports -H 'Content-Type: application/json' \
+curl -X POST http://ane.hamlet.iti.gr/v1/exports -H 'Content-Type: application/json' \
      -d '{"source": "engine", "engine_id": "3f2a...", "platform": "windows-x64", "name": "my-ane-ai"}'
 # -> {"download_url": "/v1/files/...", "platform": "windows-x64", "engine_id": "3f2a...", "code_version": "...", ...}
 ```

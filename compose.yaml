@@ -1,6 +1,6 @@
 name: hamlet-ane
 
-x-studio-volumes: &studio-volumes
+x-api-volumes: &api-volumes
   - ${ANE_CONFIG_VOLUME:-narrative-config}:/app/config
   - narrative-artifacts:/app/artifacts
   - narrative-saves:/app/saves  # persistent variables across playthroughs
@@ -24,15 +24,14 @@ services:
       ANE_UI_HOST: 0.0.0.0
       ANE_UI_PORT: 8003
       ANE_UI_SHARE: ${ANE_UI_SHARE:-false}
-      # The studio does everything through the API service (one engine, one set of
-      # sessions, runs and records). ANE_STUDIO_API_URL= (empty) serves the API
-      # inside the studio instead.
-      ANE_API_URL: ${ANE_STUDIO_API_URL-http://hamlet-ane-api:8004}
-      ANE_RECORDS_DIR: /data/angelisg/ane
+      # The studio does everything through the API service over HTTP (one engine, one set of
+      # sessions, runs and records); it never serves the API itself, so it needs none of the
+      # API's volumes. ANE_STUDIO_API_URL points it at another API, e.g. the public deployment
+      # http://ane.hamlet.iti.gr (empty: the api service below).
+      ANE_API_URL: ${ANE_STUDIO_API_URL:-http://hamlet-ane-api:8005}
     depends_on:
       api:
         condition: service_healthy
-    volumes: *studio-volumes
     networks:
       hamlet-shared-network:
         aliases:
@@ -50,11 +49,13 @@ services:
       context: .
     image: hamlet-ane:latest
     init: true
-    command: ["python", "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8004", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips=*"]
+    command: ["python", "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8005", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips=*"]
     ports:
-      - "${ANE_API_BIND_ADDRESS:-0.0.0.0}:${ANE_API_PORT:-8004}:8004"
+      - "${ANE_API_BIND_ADDRESS:-0.0.0.0}:${ANE_API_PORT:-8005}:8005"
     environment:
       ANE_CORS_ORIGINS: ${ANE_CORS_ORIGINS:-}
+      # Where this API is published (behind the reverse proxy to port 8005): listed in /docs.
+      ANE_PUBLIC_URL: ${ANE_PUBLIC_URL-http://ane.hamlet.iti.gr}
       ANE_RECORDS_DIR: /data/angelisg/ane
       # Config entries (names) or settings (paths) edited in the volume that take this release's
       # defaults on the next start, or `all` (a backup is kept in .ane-backups/). Empty: keep them.
@@ -67,14 +68,14 @@ services:
       ANE_AUGMENT_URL: ${ANE_AUGMENT_URL-http://hamlet-ane-augmenter:8000/v1}
       # The judge and the augmenter take turns on one GPU (on); off when each has a GPU of its own.
       ANE_LLM_SHARING: ${ANE_LLM_SHARING:-on}
-    volumes: *studio-volumes
+    volumes: *api-volumes
     networks:
       hamlet-shared-network:
         aliases:
           - hamlet-ane-api
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/healthz')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8005/healthz')"]
       interval: 30s
       timeout: 5s
       retries: 3
