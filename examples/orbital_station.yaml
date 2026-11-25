@@ -464,6 +464,52 @@ world_definition:
           - stealth
           - success
           remove_npc: true
+    security_sweep:                  # a dynamic encounter, called in by the alert (stakes.alert)
+      title: A security drone sweep
+      tags: [threat, guards, drones]
+      descriptions:
+      - Red light floods the corridor. "Unregistered biosign. Remain where you are."
+      encounter:
+        category: hostile_patrol
+        tags_any: [industrial, guarded, shaft, vault]
+        min_alert: 2                 # only once the station is looking for you...
+        danger: 1.5                  # ...and likelier the higher the alert (encounters.alert_weight)
+        max_per_story: 2
+        cooldown: 12
+        on_win:
+          text: "The drone's last log scrolls past: whoever flagged you paid in black-market credit."
+          effects: [{change_variable: {respect: 1}}]
+        on_loss:
+          text: Security has your face on file now; the next sweep will come sooner.
+      actions:
+      - name: Short out the drone
+        skill_check: {stat: attack}
+        outcomes:
+        - desc: A spark, a whine, and the drone drops dead to the deck.
+          tags: [combat, success]
+        - desc: The drone stuns you and tows you to the brig.
+          tags: [combat, failure]
+          send_to: Brig
+          on_check: fail
+      - name: Slip into the maintenance shafts
+        skill_check: {stat: stealth}
+        outcomes:
+        - desc: You squeeze through a vent before its beam finds you.
+          tags: [stealth, success]
+        - desc: Its beam pins you halfway in; a shock to the leg.
+          tags: [stealth, failure]
+          health_change: -2
+          on_check: fail
+      - name: Flash the data shard as clearance
+        required_object: Data Shard
+        outcomes:
+        - desc: The drone reads the shard's credentials and powers down, apologising.
+          tags: [stealth, success]
+      - name: Raise your hands
+        outcomes:                    # no check: the sweep can always end, at a price
+        - desc: The drone scans you, logs you, and escorts you to the brig.
+          tags: [failure]
+          send_to: Brig
     interrogation:
       title: Accusing the smuggler
       tags:
@@ -541,6 +587,8 @@ world_definition:
         variables:
           respect:
             gte: 2
+encounters:                        # this world's encounter policy (the rest from the built-in one)
+  danger_tags: {guarded: 0.4, industrial: 0.2}
 game_state:
   arrest_location: Brig
 location_constraints:

@@ -1293,7 +1293,7 @@ Shared notes for every Train/Play request:
 
 Job result = `SimulationResponse` fields used: `report` (markdown string), `run_id` (string|null), `engine_id` (string|null), `config_download_url`, `engine_download_url` (string, `/v1/artifacts/{id}`), `learning.best_score` (float), `learning.generations_run` (int), `learning.history[]` ({generation, best, mean, worst, spread, diversity, mutation_step, validation, improved}), `learning.learned_traits[]` ({trait, meaning, value, population_mean, bounds, tendency "high|moderate|low"}), `training.resolved` / `training.executed` (dicts with keys of `effective` + `executed.warm_started` int), `training.remembered`. With `start_game:false`: `session_id` null, `game_started` false.
 
-`GET /v1/engines/{engine_id}/card` fields used: `engine_id`, `run_id`, `name` (string|null), `label`, `default_label`, `created_at` (ISO), `kind` ("Run"|"Continued run"|"Retrained run"|"Generation champion"|"Loaded engine"), `world.summary.{locations,npcs,items,events,missions}` (int), `world.id`, `world.current` (bool|null), `generations` (int|null), `generation` (int|null, champion only), `resumable` (bool), `settings.main` / `settings.other` ({key: scalar}), `fitness.training` (float|null), `fitness.improvement` (float|null), `fitness.early_stopped` (bool|null), `judge_in_training` (float|null), `evaluations[]` (newest first: {kind "judge"|…, engagement, story_fitness, judged, stories, at}). 404 = no card.
+`GET /v1/engines/{engine_id}/card` fields used: `engine_id`, `run_id`, `name` (string|null), `label`, `default_label`, `created_at` (ISO), `kind` ("Run"|"Continued run"|"Retrained run"|"Generation champion"|"Loaded engine"), `world.summary.{locations,npcs,items,events,missions}` (int), `world.id`, `world.current` (bool|null), `generations` (int|null), `generation` (int|null, champion only), `resumable` (bool), `settings.main` / `settings.other` ({key: scalar}), `fitness.training` (float|null), `fitness.improvement` (float|null), `fitness.early_stopped` (bool|null), `fitness.version` (int: the scoring it was trained with, 1 for engines from before versions; not drawn yet), `judge_in_training` (float|null), `evaluations[]` (newest first: {kind "judge"|…, engagement, story_fitness, judged, stories, at}). 404 = no card.
 
 **Client-side logic to reimplement.**
 - Overrides body (`_run_overrides`): include `candidate_count`=population, `generations`, `episodes`=stories, `simulation_steps`=steps, `seed` — each only when its "Set … for this run" checkbox is on and the value is non-empty (as int). `deterministic` = true/false only when Reproducibility is "on"/"off" (omit for "default"). `warm_start` = true/false only for "on"/"off".
@@ -1719,7 +1719,7 @@ blocked. It is never part of the player's choices (they stay the buttons above).
 
 | Trigger | Request | Body / params | On success | Errors & guards |
 |---|---|---|---|---|
-| "Explain the current choices" (`decisions_ui`) | `GET /v1/sessions/{session_id}/decisions` | — | `decisions_markdown(trace)` → Decisions | no token → "Start a game first."; 404 session gone; 403 the server switched author diagnostics off (`ANE_AUTHOR_DIAGNOSTICS=off`) |
+| "Explain the current choices" (`decisions_ui`) | `GET /v1/sessions/{session_id}/decisions` | — | `decisions_markdown(trace)` → Decisions; when the world has side quests or attack templates, a **Side content** line from the trace's `side_story` and `encounters` (held, with the `hold` code and its meaning from `side_story.codes`, or "may come"; the attack `gate`) and **Could come next** (up to 3 eligible `side_story.candidates` by `score`: title, kind, relevance, status). Read only: the studio decides nothing | no token → "Start a game first."; 404 session gone; 403 the server switched author diagnostics off (`ANE_AUTHOR_DIAGNOSTICS=off`) |
 
 **Client-side logic to reimplement.** `ended` → "The game has ended: nothing is offered.". Else: "**Now:**
 {location} · mode **{mode}**" (+ " · event *{event.title}*", " · talking with **{talking_to}**") + " · state
@@ -1837,7 +1837,7 @@ picker and Export's "Recorded engine" picker are re-fetched (labels change, valu
 - `generations` int|null, `generation` int (present only for a generation champion without a model file)
 - `resumable` bool
 - `settings.main` {key: scalar}, `settings.other` {key: scalar}
-- `fitness.training` number|null, `fitness.improvement` number|null, `fitness.early_stopped` bool|null (`fitness.history` [number] is not drawn)
+- `fitness.training` number|null, `fitness.improvement` number|null, `fitness.early_stopped` bool|null (`fitness.history` [number] and `fitness.version` int, the scoring it was trained with, are not drawn)
 - `judge_in_training` number|null
 - `evaluations[]` (newest first, max 10): `kind` ("judge"|"calibration"), `at` ISO, `stories` int, `judged` int,
   `engagement` number|null, `criteria` {name: number}?, `story_fitness` number?, `cv_spearman` number? (calibration)

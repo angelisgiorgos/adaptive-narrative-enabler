@@ -228,12 +228,12 @@ def _references() -> conditions.References:
 
 def condition_reference() -> dict:
     """What a condition can say in the current world (core_engine/conditions.py), for a builder: {groups,
-    operators, facts: {fact: {refers_to (items | locations | npcs | events | missions | null: free text),
-    names}}, comparisons: {variable: {name: type}, stat: [names], resource: [names]}}."""
+    operators, facts: {fact: {refers_to (items | locations | npcs | events | missions | side_quests | null:
+    free text), names}}, comparisons: {variable: {name: type}, stat: [names], resource: [names]}}."""
     refs = _references()
     names = {"items": sorted(refs.items or []), "locations": list(refs.locations or []),
              "npcs": sorted(refs.npcs or []), "events": sorted(refs.events or []),
-             "missions": list(refs.missions or [])}
+             "missions": list(refs.missions or []), "side_quests": list(refs.side_quests or [])}
     variables = {name: (spec or {}).get("type") if isinstance(spec, dict) else None
                  for name, spec in (refs.variables or {}).items()}
     variables.update({name: kind for name, kind in conditions.BUILTIN_VARIABLES.items() if name not in variables})
@@ -931,7 +931,9 @@ POLICY_FIELDS = {"Events": EVENT_POLICY_FIELDS, "Items": ITEM_POLICY_FIELDS}
 POLICY_HELP = {
     "Events": "# When the event may start (every way in follows these rules):\n"
               "#   trigger: action | random   chance: 0.2 (random, per turn)   weight: 1 (random)\n"
-              "#   cooldown: 3 (turns)   max_occurrences: 2   repeat: once | per_location | per_visit | always\n",
+              "#   cooldown: 3 (turns)   max_occurrences: 2   repeat: once | per_location | per_visit | always\n"
+              "#   encounter: {category, tags_any, ...}  a template of the encounter director (docs/WORLD.md,\n"
+              "#   \"Dynamic encounters\"); a PUT replaces the whole policy, so keep it here to keep it.\n",
     "Items": "# unique: true makes the item exist once per story, at `location` (or where it fits best).\n",
 }
 
@@ -979,7 +981,10 @@ def _checked_policy(kind: str, name: str, policy) -> dict:
     unknown = sorted(set(policy) - set(POLICY_FIELDS[kind]))
     errors = [f"Unknown field(s) {', '.join(unknown)}; use {', '.join(POLICY_FIELDS[kind])}."] if unknown else []
     if kind == "Events":
-        errors += event_policy_errors(policy, f"Event '{name}'")
+        # The event's own actions too: an encounter needs choices that can never only be lost.
+        actions = (_record(kind, name)[2] or {}).get("actions") or []
+        errors += event_policy_errors({**policy, "actions": actions}, f"Event '{name}'",
+                                      config.get("world_definition") or {})
     else:
         errors += item_policy_errors(policy, f"Item '{name}'", set(config.get("world_definition.locations") or {}))
     if errors:

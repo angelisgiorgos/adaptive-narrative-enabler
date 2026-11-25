@@ -35,6 +35,106 @@ that introduces them.
 - Tests give the studio the API served in the test process (`tests/records_sandbox.py`,
   `studio_client.use_test_client`); the studio's code holds no in-process mode.
 
+### Side-story orchestration and fitness version 2
+
+#### Added
+- `core_engine/side_story.py` and the policy `side_story` (hyperparameters.yaml): the director weighs
+  the main quest (stage, turns since it moved, climax, finale), open threads, the player's earlier
+  answers to offers, danger and recent attacks before letting new side content in. It holds it in an
+  event, a waiting climax, the finale, while a side quest's clock runs out, when the main quest has
+  stood still (`main_idle_turns`), with too many threads open, too much side content lately, right
+  after the last introduction, and (after offers turned down in a row) for anything that does not
+  bear on the quest. One candidate policy scores side quests and attack templates by fit plus
+  relevance to the main story (`relevance_weight`) with the storyteller's appetite (its existing
+  `side_quest_bias` and `threat_prob` traits; no new trait). The storyteller's pull toward side
+  quests eases while the main quest stands still and in the climax and finale.
+- Agency: what the story sets up (an encounter's `side_quest`) is always an offer (`agency`).
+- Connections: side quest `texts.reveal` (told when completed, `[SIDE STORY]`) and `texts.callback`,
+  encounter results' `callback`; up to `max_callbacks` callbacks near the climax (`[CALLBACK]`),
+  also for completed side quests that helped the mission (`callbacks: all`). The Frozen Monastery's
+  thieves and their hideout use them.
+- What a story keeps: `main_progress_turns`, `side_story_log` (introductions, with the hold the policy
+  gave even when off), `side_story_links` (what each optional thread led to).
+- Fitness version 2 (`fitness.version`, `core_engine/fitness.VERSIONS`): the terms `side_relevance`,
+  `side_payoff`, `side_completion`, `side_filler`, `side_unresolved`, `encounter_repetition`,
+  `side_interruptions`, `main_drift` and `decision_diversity` (`fitness.side_story`; shares and means,
+  never counts), and side quests with diminishing returns (`fitness.side_quests.diminishing`,
+  `repeat_factor`: bounded, no contract farming). docs/AI.md "Side-story objective terms" gives each
+  term and why its default weight.
+- The fitness version on the evolution summary (`fitness_version`), the engine card
+  (`fitness.version`), judge benchmarks and baseline comparisons.
+- The judge tells meaningful optional content from filler: `optional_content` (score, meaningful,
+  filler, filler share) when a playthrough has side quests or attacks; benchmarks report it and the
+  agreement of the judge's filler share with the engine's (`filler_engine_vs_judge`).
+- Decision trace `side_story` (the plan, candidates, codes) and `encounters.codes`; the studio's
+  "Explain the current choices" shows a side-content line.
+- `story_rules.failure_counts` (true): an unchecked action that tells a failure outcome (surrendering)
+  counts as failed in every event; `false` restores the old behaviour.
+- `encounters.captive_release` (5): a player an encounter sent to a cell is let out after this many
+  turns there, also with the director's `release_after` off.
+- UNP parameters (`ane.session_state/1`) carry `encounters` (attacks, standing changes, rewards paid).
+- `ANE_LLM_WATCHER=off`: no idle-model watcher in this process; the studio's in-process API starts and
+  stops the watcher.
+
+#### Changed
+- Built-in configuration: `side_story.enabled: true`, `fitness.version: 2`. A configuration without
+  them is unchanged (policy off, version 1). Main-only worlds tell the same stories; with version 1
+  and the policy off the shipped world gives the same scores seed for seed. With the policy on, the
+  shipped world's 30 seeded stories kept their endings and mission stages; their text and some
+  side-quest results differ. No controlled evaluation of narrative quality has been run.
+- Fitness scores of version 2 are not comparable with version 1 scores.
+- Recorded stories of a play session are only listed and read for that session's user (and the
+  studio); `404` for someone else's.
+
+#### Fixed
+- The exported runtime's `GET /world/side_quests/<name>` answered `404` (its route did not match an
+  underscore).
+- `GET /v1/conditions/reference` gave the side-quest facts no names.
+- `side_story`: a first side quest offered on turn 1 was counted as all of the recent turns.
+- Docs: API.md now covers the event policy's `encounter` block (a `PUT` without it removes it), the
+  side-quest fields, statuses and moments, the journal's `encounter`, the saved-games envelopes and
+  what persistence off really refuses, the judge status `sleeping` / `sharing`, deletions kept across
+  restarts, the condition reference's side quests, retrain fields, `limit` / `offset`, and the
+  status codes `403`, `409` and `503`.
+
+### Dynamic hostile encounters: the encounter director
+
+#### Added
+- An encounter director (`core_engine/encounters.py`) starts authored encounters, rarely, when the
+  story makes them plausible. Templates are ordinary events with an `encounter` block: category
+  (ambush, hostile_patrol, faction_attack, npc_assault, location_raid, environmental_threat,
+  defensive_encounter), where (`tags_any`, `tags_none`), when (`min_turn`, `stages`, tension, alert,
+  Power, faction hostility, the event's own conditions on missions, side quests and past actions),
+  how often (`max_per_story`, `cooldown`), `difficulty`, and what follows (`on_win`, `on_loss`,
+  `on_escape`: text, effects, faction standing, a side quest set up, a later consequence;
+  `rewards_once`). The player's choices are the event's actions (fight, defend, evade, escape,
+  negotiate, surrender, seek help) with their conditions and the existing checks, item bonuses and
+  health. The studio's and API's event policy editor edits the `encounter` block.
+- Policy `encounters` in hyperparameters.yaml:
+  - rates and context weights (`rate`, `max_chance`, `danger_tags`, `tension_weight`,
+    `alert_weight`, `hostility_weight`);
+  - safe places (`safe_tags`) and pacing (`opening_turns`, `min_separation`,
+    `after_loss_separation`, `max_per_session`, `template_cooldown`, `no_repeat_last`);
+  - `min_health`, `difficulty`, and `lethal: false` (a lost encounter leaves 1 health);
+  - interruptions (`in_finale`, `in_climax`, `in_conversation`);
+  - `categories` and `factions`.
+- Never during an event, a pending choice (side quest offer or hand-over, bargain), a cell, a
+  conversation, a waiting climax or the finale (unless allowed), and always after a hostile NPC's
+  mandatory encounter. Deterministic: its roll uses a stream derived from the story's dice and the
+  moment, not the dice.
+- Factions: `encounters.factions` (standing, `hostile_below`, a persistent variable), changed by
+  encounters' outcomes; condition `faction_hostile: <name>`.
+- `side_quests.hook`: an encounter's outcome sets up a side quest (offered or started).
+- Journal `encounter`, save games `dynamic_encounters` / `faction_shift` / `encounter_rewards`,
+  decision trace `encounters`. Messages `encounter_<category>`, `encounter_spared`. Validation: a
+  category, at least two choices and one without a check, known NPCs and side quests.
+- Examples: thieves on the Frozen Monastery's glacier route (a faction, every kind of choice, a side
+  quest hook); a security-drone sweep on the Orbital Station called in by the alert.
+
+#### Changed
+- An encounter's outcome told as a failure (giving in, being caught) counts as a loss for the
+  encounter (on_loss), even without a check.
+
 ### Side quests that live in the story
 
 #### Added

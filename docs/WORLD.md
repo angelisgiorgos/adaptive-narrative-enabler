@@ -430,6 +430,8 @@ world_definition:
       texts:                           # the story's own words for its moments
         offer: '{giver} unrolls a ragged chart: "Bring me one older than the storm."'
         complete: '{giver} spreads the old chart beside the new: "There. The island."'
+        reveal: The old chart marks a reef the new ones forgot.   # what it turned up about the main quest
+        callback: The reef on the old chart keeps your keel off the rocks.   # told near the climax
 ```
 
 | Field | Meaning |
@@ -444,7 +446,7 @@ world_definition:
 | `follows` | Another side quest: this one is offered only once that one is completed, in this story or one of the profile's before: a chain |
 | `fail_if` | A condition that fails it while it is under way; then `on_fail` (an effect list) applies |
 | `on_decline` | Effects when it is turned down, or the offer is let go (a disappointed giver) |
-| `texts` | The story's own words for its moments, instead of the messages: `offer`, `accept`, `decline`, `ready`, `turn_in`, `complete`, `fail`, `remind`; they may use `{title}`, `{giver}`, `{reward}` (its rewards in words), `{todo}`, `{turns}` (turns left) |
+| `texts` | The story's own words for its moments, instead of the messages: `offer`, `accept`, `decline`, `ready`, `turn_in`, `complete`, `fail`, `remind`; and two that tie it to the main story ([docs/AI.md](AI.md#side-story-orchestration)): `reveal` (told when it is completed, `[SIDE STORY]`: what it turned up about the main quest) and `callback` (told near the climax, `[CALLBACK]`, once it is completed). They may use `{title}`, `{giver}`, `{reward}` (its rewards in words), `{todo}`, `{turns}` (turns left) |
 | `tags` | What it is about. When several side quests could come, the story offers first the one that fits it now: tags shared with the place (1 each) and with what the last turns brought (0.5 each); a side quest on the mission's thread (it wants what the mission wants: 2; a place it names is where the mission advances next: 1) |
 | `reactions` | What the story does to it: `[{when, then, effects, text, while}]`. When the condition `when` comes to hold while the quest is `active` (default), `offered` or `any`, the reaction happens once: its `text` is told (placeholders as in `texts`), its `effects` apply, and `then` does to the quest: `complete`, `fail` (reason `story`), `advance` (its next step, or done), `withdraw` (the offer, or the quest, is taken back) or `none` |
 | `repeatable` | `false` (default): once a profile has completed it, it is not offered in that profile's later stories |
@@ -516,10 +518,27 @@ happens when the story has no mission, the mission is won, or the way is known a
 (`fitness.side_quests`; see [docs/AI.md](AI.md)):
 
 ```
-completed x complete_bonus (10) + steps done x step_bonus (3)
-  + those that helped the mission x mission_aid_bonus (6) - failed x fail_penalty (4)
-  - (once the story has ended) those left under way x unfinished_penalty (2)
+version 1:  completed x complete_bonus (10) + steps done x step_bonus (3)
+              + those that helped the mission x mission_aid_bonus (6) - failed x fail_penalty (4)
+              - (once the story has ended) those left under way x unfinished_penalty (2)
+version 2:  the same, but the k-th completed, step or aid is worth diminishing (0.6) ^ (k - 1),
+            and one like a side quest done already (same giver and goal) repeat_factor (0.25)
+            times that again: at most 47.5 however many; threads left open count in
+            fitness.side_story (side_unresolved) instead
 ```
+
+The built-in configuration scores with version 2 (`fitness.version`), which adds the side-story
+terms: how much side content bears on the main story, whether it led somewhere or was filler, open
+threads, repeated attacks, interruptions, long stretches without main-quest progress and the
+variety of the player's decisions ([docs/AI.md](AI.md#side-story-objective-terms)).
+
+**When they are offered.** The side-story policy (`side_story`,
+[docs/AI.md](AI.md#side-story-orchestration)) lets a new side quest in only when the main story
+has room: not in an event, a waiting climax or the finale, not while a side quest's clock is nearly
+out or the main quest has stood still for long, not with too many threads open or right after
+another. Of those that could be offered, the one that fits the story and bears most on the main
+quest comes first. A side quest an encounter sets up is always offered, never started for the
+player.
 
 The storyteller's ranking also pulls toward the next step of a side quest under way: a step on the
 way to a place it names counts too, a giver waiting for a hand-over pulls hardest, and the pull
@@ -809,6 +828,125 @@ the event's actions:
 An unknown event name is rejected when saving from the studio or the API. At
 run time it is ignored with a note in the transcript.
 
+### Dynamic encounters
+
+Besides a hostile NPC's own encounter (above), which always comes first, an **encounter director**
+([`core_engine/encounters.py`](../core_engine/encounters.py)) can start an attack by itself when
+the story makes one plausible: an ambush on a lonely road, a patrol answering the alarm, a faction
+striking back. By default it is rare and always has a reason.
+
+**An encounter is an authored event** (`events.yaml`) with an `encounter` block. Its title,
+descriptions and tags are the scene, and its actions are the player's choices: fight, defend,
+evade, escape, negotiate, pay, surrender or seek help. Each action works as any event action
+does, with its conditions (`enabled_if`, `required_coins`, `required_object`), skill checks,
+outcomes and effects. Every encounter must offer at least two choices, one of them without a
+check (giving in, paying, fleeing), so that it can never only be lost.
+
+```yaml
+events:
+  glacier_thieves:
+    title: Thieves on the glacier route
+    tags: [threat, ambush]
+    encounter:
+      category: ambush          # ambush | hostile_patrol | faction_attack | npc_assault |
+                                # location_raid | environmental_threat | defensive_encounter
+      faction: Glacier Thieves  # who attacks (encounters.factions)
+      tags_any: [glacier]       # only where the place has one of these tags
+      min_turn: 3
+      on_win:  {text: "...", standing: {Glacier Thieves: -1}, side_quest: the_thieves_hideout}
+      on_loss: {text: "...", side_quest: the_thieves_hideout}
+    actions:
+    - {name: Fight them off, skill_check: {stat: attack}, outcomes: [...]}
+    - {name: Pay the toll, required_coins: 4, outcomes: [...]}
+    - {name: Call for the monks, enabled_if: {trust: {gte: 1}}, outcomes: [...]}
+    - {name: Surrender your pack, outcomes: [...]}      # no check: always a way out
+```
+
+| `encounter` field | Meaning |
+| --- | --- |
+| `category` | What kind of encounter it is (its intro line, `encounter_<category>` in the messages; its weight in `encounters.categories`) |
+| `tags_any` / `tags_none` | Only where the place has one of `tags_any` (empty: anywhere not safe); never where it has one of `tags_none` |
+| `weight`, `danger` | Its weight among those that could start; × its chance |
+| `difficulty` | × the checks of its actions (with `encounters.difficulty`): `encounters.difficulty_points` (10) harder per 1.0 above 1, easier below |
+| `faction`, `hostile_only` | Who attacks; with `hostile_only` (the default for `faction_attack`) only while that faction is hostile |
+| `npc` | The NPC behind it (an `npc_assault` needs them in the scene); it is gone when they are removed |
+| `min_turn`, `stages` | Not before this turn; only in these stages of the story: `early`, `middle`, `late` (thirds of the action limit) |
+| `min_tension`, `max_tension` | The story's tension (0-1: danger a moment ago, a prisoner, the finale, the watch hunting the player) |
+| `min_alert`, `max_alert` | The watch's alert level (`stakes.alert`): a patrol only once the player is wanted |
+| `min_power` | The player's Power: no encounter they cannot hope to face |
+| `max_per_story`, `cooldown` | At most this many times in a story (1); turns before it can come again (`encounters.template_cooldown`) |
+| `on_win`, `on_loss`, `on_escape` | What follows a win, a loss (a failed check, or an outcome told as a failure: giving in, being caught) or stepping away: `text`, `effects`, `standing` (`{faction: change}`), `side_quest` (a rescue or an investigation the encounter sets up: offered to the player, who may turn it down, with `side_story.agency`), `consequence` (a later consequence, `consequences.kinds`), `callback` (a line told near the climax, [docs/AI.md](AI.md#side-story-orchestration)) |
+| `rewards_once` | `on_win`'s effects are given once per story, however often it is won (true) |
+
+The event's own rules still apply (`enabled_if`, `repeat`, `max_occurrences`, `cooldown`), so a
+template can ask about completed missions and side quests, what the player did
+(`action_done`, `event_done`), variables or the time.
+
+**The policy** (`encounters` in `hyperparameters.yaml`; a world file can set its own, like the
+examples) decides how often and when:
+
+| Setting | Effect |
+| --- | --- |
+| `enabled` | The director on or off (authored encounters of hostile NPCs are not affected) |
+| `rate`, `max_chance` | The chance per eligible turn (6%), never above 30% |
+| `danger_tags` | The place's tags make it likelier: × (1 + the sum of their values) |
+| `tension_weight`, `alert_weight`, `hostility_weight` | × (1 + tension × 0.5), × (1 + alert × 0.15), × 1.5 for a hostile faction |
+| `opening_turns` | None in the first 3 turns |
+| `min_separation`, `after_loss_separation` | Turns between two attacks (6; a hostile NPC's encounter counts too), counted from when the last ended; 10 after a lost one |
+| `max_per_session`, `template_cooldown`, `no_repeat_last` | At most 3 attacks in a story; 20 turns before the same one again; never the same one twice in a row |
+| `safe_tags` | No attack where the place has one of these tags (safe, sanctuary, home, medical, quiet, cloister, garden) |
+| `min_health` | No attack while the player is below 40% of their maximum health |
+| `difficulty`, `difficulty_points` | How hard every encounter's checks are |
+| `lethal` | `false`: a lost encounter leaves the player at 1 health (`encounter_spared`), and the story goes on through its consequences |
+| `captive_release` | A player an encounter left locked in (an outcome that sends them to a cell, `send_to`) is let out after this many turns there (5), whether or not the director's own `release_after` is on; 0 leaves it to the director and the cell's own way out |
+| `in_finale`, `in_climax`, `in_conversation` | Whether an attack may interrupt the finale, a climax that waits, or a conversation (no, no, no) |
+| `categories` | Each category on or off, and its weight |
+| `factions` | `{name: {standing, hostile_below, variable}}`: a faction's standing (or a persistent variable's value), changed by the story's encounters (`standing` in their outcomes); below `hostile_below` it is hostile (`faction_hostile: <name>` in conditions) |
+
+An attack never comes while an event is in progress or another choice waits for an answer (a
+side quest on offer or ready to hand over, a bargain), while the player is held in a cell, or
+before the mandatory encounter of a hostile NPC in the scene, nor while the side-story policy holds
+side content back (`side_story`: a clock running, the main quest standing still, too many threads
+open, too much side content lately; [docs/AI.md](AI.md#side-story-orchestration)). With that policy
+on, an attack's chance is also x (0.5 + the storyteller's `threat_prob`) and attacks that bear on
+the main story are picked more often. When one may come, a single roll
+decides. The roll and the choice between candidates use a random stream derived from the story's
+dice and the moment (their state, the turn and the place), not the dice themselves. A fixed story
+state and seed therefore always give the same encounters, and a story where no attack comes is
+the same as without the director.
+
+**What it leaves.**
+- The journal entry of the turn that met it has `encounter: {event, category, faction, npc,
+  result}`, and the transcript has its lines.
+- Save games keep `dynamic_encounters` (every attack with its turn, place, faction and result),
+  `faction_shift` and `encounter_rewards`.
+- The author's decision trace (`GET /v1/sessions/{id}/decisions`) has `encounters`: why no attack
+  can come now (`gate`), each template's status (eligible, or why not) with its chance, the
+  factions' standing and what each code means (`codes`).
+- The UNP's session parameters (`ane.session_state/1`) carry `encounters` (`attacks`, `factions`,
+  `rewards_paid`), so a session rebuilt from them keeps the attacks met and the standings.
+
+**Examples.** [`examples/frozen_monastery.yaml`](../examples/frozen_monastery.yaml): thieves on the
+glacier route.
+- They strike only on the glacier, from turn 3.
+- The player can fight, hold the ledge, talk them down, pay, call for the monks (once the
+  monastery trusts them) or surrender.
+- Either way, the thieves' trail sets up the side quest *The thieves' hideout*, and beating them
+  makes the faction more hostile.
+
+[`examples/orbital_station.yaml`](../examples/orbital_station.yaml): a security-drone sweep.
+- It comes only once the alert is 2 or more, and more often the higher it rises.
+- The player can short out the drone, slip into the shafts, show a data shard as clearance (if
+  carried) or raise their hands, which means the brig, not the end: the brig's own way out
+  ("Search for an exit"), the director's release (`director.release_after`) and, whatever the
+  director's settings, the encounter's own (`encounters.captive_release`, 5 turns) let them out.
+
+**Giving in is a loss** (`story_rules.failure_counts`, true): an action with no skill check whose
+told outcome is a failure-branch outcome (tagged with a `story_rules.failure_tags` tag, or
+`on_check: fail`), such as surrendering, counts as failed in every event, not only in encounters:
+the event ends `event_failed`, and goals and conditions read it so. `false` restores the earlier
+behaviour (counted as succeeded). No shipped story changes with it.
+
 ### Conversations
 
 The people present are approached one at a time (`conversations` in `hyperparameters.yaml`,
@@ -1055,7 +1193,7 @@ author's decision trace (`GET /v1/sessions/{id}/decisions`) also gives each acti
 ### Story messages
 
 Every sentence the engine adds to a story lives in
-[`config/messages.yaml`](../config/messages.yaml), 130 messages in all: travel,
+[`config/messages.yaml`](../config/messages.yaml), 142 messages in all: travel,
 arrivals, discoveries, leads, events, encounters, failures, missions, side quests,
 and endings. Rewrite any of them:
 

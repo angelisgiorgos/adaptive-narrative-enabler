@@ -18,7 +18,7 @@ import re
 
 from utils.config_loader import config
 
-from . import rules
+from . import rules, side_story
 from .actions import Action, Outcome
 from .world import Event
 
@@ -133,6 +133,7 @@ class StoryBeats:
         state["armed"] = name
         self._pending_event = (name, antagonist)
         self._say("climax_start", title=title)
+        side_story.callbacks(self, "climax")  # resolved side stories come back before the showdown
         self.tags_seen.append(["finale", "threat"])
 
     @staticmethod

@@ -68,10 +68,15 @@ curiosity, drive toward the mission, and avoiding repetition. Each generation:
    side quest completed, `step_bonus` per step done and `mission_aid_bonus` per
    completed one that helped the mission, and take `fail_penalty` per one failed
    and (once the story has ended) `unfinished_penalty` per one left under way
-   ([docs/WORLD.md](WORLD.md#side-quests)); the storyteller's ranking pulls toward a
+   ([docs/WORLD.md](WORLD.md#side-quests)); in fitness version 2 each one more is worth
+   `diminishing` times the one before (bounded, no count farming) and the side-story terms
+   join (`fitness.side_story`, ["Side-story objective terms"](#side-story-objective-terms));
+   the storyteller's ranking pulls toward a
    side quest's next step by `side_quest_settings.rank_weight` x its own trait
    `side_quest_bias`, so training tunes how hard storytellers pursue them, apart
-   from the mission. **Rhythm**
+   from the mission. Dynamic encounters (`core_engine/encounters.py`) are events like any other
+   to the fitness: they count as events and fights, and losing one is a failure that leads on,
+   never the end (`encounters.lethal: false`). **Rhythm**
    (`fitness.rhythm`) rewards what makes a story worth playing turn after turn:
    `predictability` costs every calm turn in a row beyond `calm_allowed`,
    `variety_of_play` counts the kinds of development the story offers (new
@@ -293,8 +298,13 @@ and evolution can learn what makes stories engaging:
   that advances a side quest under way (or is a step on the way to a place it
   names, or back to a giver waiting for a hand-over) gains
   `side_quest_settings.rank_weight` × `side_quest_bias` × how much it advances it,
-  more as a deadline nears. `fitness.side_quests` rewards stories that complete
-  side quests (and those that help the mission), so evolution learns the trait.
+  more as a deadline nears, less while the main quest stands still or in the
+  climax and the finale (`side_story.idle_pull`, `finale_pull`). `fitness.side_quests`
+  rewards stories that complete side quests (and those that help the mission), and
+  `fitness.side_story` side content that bears on the main story and leads somewhere, so
+  evolution learns the trait. The same trait orders nothing among side quests on offer
+  (fit and relevance do) but is reported as the storyteller's `appetite`; for attacks the
+  appetite is `0.5 + threat_prob` (`side_story.encounter_appetite`): no new trait was needed.
   It was added without changing anything else a seed decides: it is drawn,
   crossed and mutated with a random stream of its own (derived from the caller's,
   without drawing from it), so every other trait of a seeded genome, population
@@ -463,6 +473,124 @@ whether they reached the UNP). The offline engine has the same: `POST /games/<id
 `GET /games/<id>/report`, `GET /progression/<profile>`. A UNP can also save a session
 (`POST /games/<id>/save`), cancel it (its status, outcome `suspended`, and its save game), and
 continue it later, exactly or from parameters it changed ([docs/UNP.md](UNP.md)).
+
+## Side-story orchestration
+
+The director weaves optional content (side quests, [docs/WORLD.md](WORLD.md#side-quests); dynamic
+hostile encounters, [docs/WORLD.md](WORLD.md#dynamic-encounters)) into the main story with one
+policy, `side_story` in hyperparameters.yaml (`core_engine/side_story.py`). It does not replace the
+side-quest rules or the encounter director: both still decide what *can* come (givers, start
+conditions, eligibility, rates, cooldowns); the policy decides whether the *story* has room for
+it now and which comes first.
+
+**What it weighs** (`side_story.plan`, the decision trace's `side_story`): the main quest (its
+stage, turns since it last moved, whether a climax waits or the finale has begun), the optional
+quests and open threads (side quests under way or on offer, open clues), the player's previous
+choices (offers taken on, turned down, several in a row), the current danger (tension, alert,
+health) and recent encounters, and how much of the last `share_window` turns went to optional
+content.
+
+**When it holds new side content** (`hold`, a code): an event under way (`hold_in_event`), a
+climax waiting (`hold_in_climax`), the finale (`hold_in_finale`), a side quest with
+`deadline_turns` or fewer left (a clock runs), the main quest still for `main_idle_turns` turns
+(counted from `mission_settings.pursuit_start_step`), `max_open_threads` threads open, optional
+content above `max_side_share` of the recent turns, less than `intro_gap` turns since the last
+introduction, and, after `decline_backoff` offers turned down in a row, anything below
+`backoff_relevance`. Side quests wait (they are offered when the story has room, if they still can
+be); attacks do not come (the encounter director's gate reports the code). A side quest an
+encounter sets up (a rescue, an investigation) is a consequence, not a new introduction: only the
+event, climax, finale and deadline moments hold it, and it is recorded as an interruption if one
+of them was under way.
+
+**One candidate policy** (`candidates`): every side quest that could be offered and every
+encounter template that could start is scored alike: its fit to the story now (side quests: tags
+shared with the place and the last turns, the mission's thread; attacks: their weight and
+category) plus its **relevance** to the main story (0-1) x `relevance_weight`, with the
+storyteller's appetite (its genome: `side_quest_bias`; for attacks `0.5 + threat_prob`, which also
+scales their chance with `encounter_appetite`). Relevance of a side quest: it helps the mission
+(`aids_mission` lead or ally: 0.3), reveals something about it (`texts.reveal`: 0.3), calls back
+near the climax (`texts.callback`: 0.1), wants what the mission wants (0.3) or leads where it
+advances (0.2), its giver matters (importance 2+: 0.1). Of an attack: someone who matters is behind
+it (0.3), it can set up a side quest (0.3), calls back (0.1), changes a standing or queues a
+consequence (0.1), it comes on the mission's way (0.2). The storyteller's ranking pulls toward side
+quests under way x `idle_pull` while the main quest stands still and x `finale_pull` in the climax
+and the finale.
+
+**Agency.** The director offers, the player decides: what the story sets up is always an offer
+(`agency`; a quest written `accept: auto` still starts by itself when its own conditions hold, as
+its author wrote), and nothing optional is completed for the player (a side quest completes when
+its goal holds, or when the player hands it over). The guide keeps one option toward a side quest
+among the choices; it never takes a turn for the player.
+
+**Connections.** A completed side quest's `texts.reveal` is told (`[SIDE STORY]`): what it turned up
+about the main quest, with `aids_mission: lead` the way there opening too. An encounter's outcome
+can set up a rescue or an investigation (`on_win` / `on_loss` `side_quest`). Helping someone
+(`aids_mission: ally`) makes them an ally: a bonus in checks (`npc_goals.ally_check_bonus`) and a
+hand in the climax (`climax.ally_choice`). Near the climax (when it is announced, or when the
+finale begins, once a story) up to `max_callbacks` resolved side stories are called back
+(`[CALLBACK]`): a side quest's `texts.callback` or an encounter result's `callback`; with
+`callbacks: all`, also a few words for a completed side quest that helped the mission.
+
+**What the story keeps** (plain data in snapshots and save games): `main_progress_turns`,
+`side_story_log` (every introduction with the hold the policy gave, computed even when the policy is
+off, and whether it interrupted) and `side_story_links` (what each optional thread led to: reward,
+change, aid, ally, reveal, callback, hook, standing, consequence, captured, follow_up, cost).
+
+**Compatibility.** A configuration without a `side_story` section has the policy off: its stories
+are told as before. A world without side quests and encounter templates tells the same story with
+the policy on or off (the shipped world without its side quests, six seeds: the same digest). With
+the shipped world's five side quests, 30 seeded stories played by the simulated players kept the
+same ending and mission stage seed for seed (9 missions won, 1 death, 20 still under way at 40
+turns); the side quests came out nearly alike (14 completed either way; 4 failed instead of 3, 27
+turned down or lapsed instead of 28), and the text differs (when offers come, callbacks). This is a
+compatibility check, not a measure of narrative quality.
+
+## Side-story objective terms
+
+**Fitness versions.** `fitness.version` names the scoring (`core_engine/fitness.VERSIONS`): **1** is
+the objective before side-story orchestration (a configuration without `fitness.version` is scored
+so, exactly as before: the shipped world with version 1 and the policy off gives the same scores,
+seed for seed); **2** (the built-in configuration) adds the terms below and makes side quests worth
+less for each one more. Scores of different versions are not comparable: an evolution's summary
+and an engine's card (`fitness.version`), judge benchmarks and baseline comparisons carry the
+version they were scored with, and engines trained before versions are version 1.
+
+Every version 2 term is a **share or a mean**, never a count, so neither more side content nor a
+longer story scores more by itself, and every key is in every breakdown (0 when it does not apply),
+so stories compare term by term. All of them are 0 in a story without optional content, except the
+last two, which concern every story. Defaults (`fitness.side_story`):
+
+| Term | What it measures | Default | Why this weight |
+| --- | --- | --- | --- |
+| `side_relevance` | `relevance_weight` x the mean relevance (0-1) to the main story of the side quests taken on and the attacks fought | 8 | Under one side quest's `complete_bonus` (10): bearing on the quest is worth about as much as seeing one through, never more. |
+| `side_payoff` | `payoff_weight` x the share of resolved optional threads that were **meaningful** (they led to something the story goes on with: a change of a variable or item, an aid, an ally, a reveal, a callback, a rescue or investigation set up, a standing change, a consequence, a capture, a follow-up, a cost; or relevance >= `side_story.meaningful_relevance`) | 12 | The largest side term: consequences are what tells optional content from filler, and the judge's `payoff` criterion asks for the same. Still a fifth of a won mission (`mission_win_bonus` 60). |
+| `side_completion` | `completion_weight` x the share of side quests taken on that were completed | 6 | Half a `complete_bonus`: finishing what the player took on matters, but the count-based bonus already rewards it. |
+| `side_filler` | -`filler_penalty` x the share of resolved optional threads that were **filler** (resolved, no consequence, relevance below the threshold) | 6 | As large as `side_completion`: a story full of filler loses what completing it gained. |
+| `side_unresolved` | -`unresolved_penalty` x the share of optional threads taken on that are still open when the story ends (not by death) | 6 | Replaces version 1's `unfinished_penalty` (2 per quest, a count) with a share. |
+| `encounter_repetition` | -(`repeat_penalty` x the share of attacks that repeated an earlier one + `density_penalty` x the attacks per turn above `density_target`) | 10, 40, 0.15 | One repeated attack in two costs 5, about what an event lived through gains (`rhythm.event_bonus` 5), so spam cannot pay for itself; 0.15 per turn is about one attack in seven turns, twice the director's default spacing. |
+| `side_interruptions` | -`interruption_penalty` x the share of introductions that broke into the main story (an event, a climax, the finale, a clock, a stalled main quest) | 8 | Measured whether or not the policy holds them back, so a configuration without the policy is scored on the same scale; with the policy on it is near 0. |
+| `main_drift` | -`drift_penalty` x (the longest stretch without main-quest progress - `drift_allowed`) / the story's turns | 20, 20 turns | The shipped `mission_settings.pursuit_start_step` is 18: the opening is for finding one's feet, so 20 turns cost nothing; in 40-turn stories that never advance it costs 10. |
+| `decision_diversity` | `diversity_weight` x the normalised entropy of the approaches of the player's meaningful decisions (a check's stat, else the kind of choice and its tag; taking a side quest on or turning it down), over `diversity_kinds` (12), x less below `diversity_min_decisions` (4) | 6 | In the shipped world the entropy is 0.64-1.0 of `log 12` (median about 9 approaches), so the term spreads from 3.8 to 6; with 6 kinds it was at 0.88 or more of its maximum in every story (mean 0.996), so it told stories apart hardly at all. |
+
+`fitness.side_quests` in version 2: the k-th side quest completed is worth `diminishing`^(k-1) x
+`complete_bonus`, steps and mission aids decay alike, and a side quest like one done already (the
+same giver and goal kind, such as a repeated contract) is worth `repeat_factor` times that again.
+The term is bounded by (`complete_bonus` + `step_bonus` + `mission_aid_bonus`) / (1 - `diminishing`)
+(47.5 with the defaults) however many side quests a story holds; version 1 grew without end.
+
+**Scale.** In 30 seeded shipped stories (40 turns, simulated players) the whole fitness was about
+730 (sd about 245); the seven side terms together moved a story's score by -4 to +22,
+`main_drift` by 0 to -10 and `decision_diversity` gave 3.8 to 6. They
+are nudges among storytellers whose stories are otherwise alike, not a new objective. The defaults
+are reasoned, not fitted: `calibrate-fitness` can weigh every term against the judge
+(`fitness.term_weights`), and only a controlled evaluation (the judge's pairwise comparisons, people
+playing) can say whether stories got better. None has been run for this change.
+
+**The judge.** When a playthrough has optional content, the judge also says which optional threads
+were meaningful and which filler, and scores what they added (`optional_content`,
+[docs/LLM.md](LLM.md)); a judge benchmark reports its mean and how the judge's filler share agrees
+with the engine's (`filler_engine_vs_judge`, Spearman), so the engine's labels can be checked
+against a reader's.
 
 ## Engine contexts: which configuration a game reads, and when settings take effect
 

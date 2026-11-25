@@ -84,11 +84,15 @@ import string
 
 from utils.config_loader import config
 
+from . import side_story
+
 STATUSES = ("offered", "active", "completed", "failed", "declined")
 ACCEPT = ("choice", "auto")
 AIDS = ("lead", "ally", "none")
 # The moments a side quest may tell in its own words (``texts``), and the values they may use.
-TEXTS = ("offer", "accept", "decline", "ready", "turn_in", "complete", "fail", "remind")
+TEXTS = ("offer", "accept", "decline", "ready", "turn_in", "complete", "fail", "remind",
+         # side_story: what completing it turned up about the main quest; its callback near the climax
+         "reveal", "callback")
 TEXT_FIELDS = ("title", "giver", "reward", "todo", "turns")
 # Journal events that bring something new (the director's rhythm, fitness developments).
 MOMENTS = ("offered", "started", "stage", "ready", "completed", "failed", "reacted", "withdrawn")
@@ -190,6 +194,27 @@ def offered(state, quest):
                         or quest.giver in state.removed_npcs):
         return False
     return quest.start is None or quest.start.holds(state.facts)
+
+
+def hook(state, key):
+    """The story sets a side quest up (an encounter's outcome: core_engine/encounters.py): it is offered
+    (accept: choice) or starts now, whoever gives it and whatever its start condition; not when it is
+    unknown, already in this story, completed by the profile before (unless repeatable) or switched
+    off (enabled_if). Returns whether it was set up."""
+    quest = quests(state).get(key)
+    if quest is None or quest.name in records(state) or not settings()["enabled"]:
+        return False
+    if (not quest.repeatable and _done_before(state, quest.name)) or not state.is_enabled(quest):
+        return False
+    story = side_story.settings()
+    side_story.note(state, "hook", quest.name, quest.title, side_story.quest_relevance(state, quest))
+    # The director offers, the player decides (side_story.agency): what the story sets up is an offer.
+    if accept_mode(quest) == "choice" or (story["enabled"] and story["agency"]):
+        _offer(state, quest)
+    else:
+        _start(state, quest)
+        _progress(state, quest)
+    return True
 
 
 def _follows_done(state, quest):
@@ -385,12 +410,17 @@ def _values(state, quest, **more):
     return values
 
 
+def format_text(state, quest, text, **values):
+    """One of the quest's own texts with its values ({title}, {giver}, ...) filled in."""
+    return string.Formatter().vformat(str(text), (), _Blank(_values(state, quest, **values))).strip()
+
+
 def _tell(state, quest, moment, message, **values):
     """Tell a moment of the quest: its own words (``texts``) when it has them, else the message."""
     own = (getattr(quest, "texts", None) or {}).get(moment)
     if own:
-        line = string.Formatter().vformat(str(own), (), _Blank(_values(state, quest, **values)))
-        if line.strip():
+        line = format_text(state, quest, own, **values)
+        if line:
             state.history.append(line)
         return
     if message:
@@ -484,6 +514,7 @@ def _finish(state, quest, status, reason=None, what=None):
         state._run_effects(quest.rewards)
         _tell(state, quest, "complete", "side_quest_complete", title=quest.title)
         record["aided"] = _aid_mission(state, quest)
+        side_story.completed(state, quest, record["aided"])  # what it led to; its reveal (texts.reveal)
         return
     record["reason"] = reason
     message = {"time": "side_quest_expired", "giver_gone": "side_quest_giver_gone",
@@ -491,6 +522,7 @@ def _finish(state, quest, status, reason=None, what=None):
     _tell(state, quest, "fail", message, title=quest.title, giver=state._called(quest.giver) if quest.giver else "",
           item=state._called(what) if what else "")
     state._run_effects(quest.on_fail)
+    side_story.failed(state, quest)
 
 
 def _aid_mission(state, quest):
@@ -668,11 +700,23 @@ def update(state):
     candidates = [quest for quest in every.values() if offered(state, quest)]
     if candidates and taken < cfg["max_active"] and story_allows_new(state, cfg):
         order = {key: number for number, key in enumerate(every)}
-        if cfg["fit"]:  # what fits the story now first; written order among equals
+        story = side_story.settings()
+        if story["enabled"]:
+            # The side-story policy: what fits the story and bears on the main quest first, and nothing
+            # while the main story needs the room (side_story.hold).
+            candidates.sort(key=lambda quest: (-side_story.priority(state, quest, story), order[quest.name]))
+        elif cfg["fit"]:  # what fits the story now first; written order among equals
             candidates.sort(key=lambda quest: (-fit(state, quest), order[quest.name]))
         room = cfg["max_active"] - taken
         for quest in candidates[:1 if cfg["offer_cooldown"] else room]:
+            if story["enabled"] and side_story.hold(state, "offer", side_story.quest_relevance(state, quest),
+                                                    story) is not None:
+                continue  # not now (or the one before took the room)
             state.__dict__["_side_quest_last_new"] = state.actions_taken
+            side_story.note(state, "offer" if accept_mode(quest) == "choice" else "start", quest.name, quest.title,
+                            side_story.quest_relevance(state, quest))
+            if getattr(quest, "follows", None):
+                side_story.link(state, "side_quest", quest.follows, "follow_up", quest.name)
             if accept_mode(quest) == "choice":
                 _offer(state, quest)
                 continue
@@ -844,19 +888,43 @@ def summary(state):
     return found
 
 
-def fitness_term(state, cfg):
-    """The side quests' share of a story's fitness (fitness.side_quests): completed x complete_bonus +
-    steps done x step_bonus + those that helped the mission x mission_aid_bonus - failed x
-    fail_penalty - (once the story has ended) those left under way x unfinished_penalty: a story that
-    closes the threads it opens is worth more."""
+def fitness_term(state, cfg, version=1):
+    """The side quests' share of a story's fitness (fitness.side_quests).
+
+    Version 1: completed x complete_bonus + steps done x step_bonus + those that helped the mission x
+    mission_aid_bonus - failed x fail_penalty - (once the story has ended) those left under way x
+    unfinished_penalty. Version 2 (fitness.version): each one more is worth ``diminishing`` times the
+    one before (a side quest like one done already, the same giver and goal, ``repeat_factor`` times
+    that again), so the term is bounded however many side quests a story holds: at most
+    (complete_bonus + step_bonus + mission_aid_bonus) / (1 - diminishing); threads left open count in
+    fitness.side_story (side_unresolved) instead."""
     done = summary(state)
-    steps = sum(1 for entry in state.__dict__.get("side_quest_events") or [] if entry.get("what") == "stage")
-    unfinished = sum(1 for key in done["unfinished"] if records(state)[key].get("status") == "active")
-    return (len(done["completed"]) * float(cfg.get("complete_bonus", 10))
-            + steps * float(cfg.get("step_bonus", 3))
-            + len(done["aided_mission"]) * float(cfg.get("mission_aid_bonus", 6))
-            - len(done["failed"]) * float(cfg.get("fail_penalty", 4))
-            - (unfinished * float(cfg.get("unfinished_penalty", 2)) if state.ended else 0.0))
+    events = state.__dict__.get("side_quest_events") or []
+    steps = sum(1 for entry in events if entry.get("what") == "stage")
+    if version < 2:
+        unfinished = sum(1 for key in done["unfinished"] if records(state)[key].get("status") == "active")
+        return (len(done["completed"]) * float(cfg.get("complete_bonus", 10))
+                + steps * float(cfg.get("step_bonus", 3))
+                + len(done["aided_mission"]) * float(cfg.get("mission_aid_bonus", 6))
+                - len(done["failed"]) * float(cfg.get("fail_penalty", 4))
+                - (unfinished * float(cfg.get("unfinished_penalty", 2)) if state.ended else 0.0))
+    decay = min(0.95, max(0.0, float(cfg.get("diminishing", 0.6))))
+    repeat = min(1.0, max(0.0, float(cfg.get("repeat_factor", 0.25))))
+
+    def series(count):
+        return sum(decay ** index for index in range(count))
+
+    seen, completed_value = {}, 0.0
+    order = sorted(done["completed"], key=lambda key: (records(state)[key].get("ended") or 0, key))
+    for index, key in enumerate(order):
+        quest = quests(state).get(key)
+        signature = (getattr(quest, "giver", None), tuple(sorted(_stage_goal(quest, 0)[0] or {}))) if quest else key
+        completed_value += decay ** index * repeat ** seen.get(signature, 0)
+        seen[signature] = seen.get(signature, 0) + 1
+    return (completed_value * float(cfg.get("complete_bonus", 10))
+            + series(steps) * float(cfg.get("step_bonus", 3))
+            + series(len(done["aided_mission"])) * float(cfg.get("mission_aid_bonus", 6))
+            - len(done["failed"]) * float(cfg.get("fail_penalty", 4)))
 
 
 def restore(state, saved):

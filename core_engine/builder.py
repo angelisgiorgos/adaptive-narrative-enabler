@@ -225,7 +225,7 @@ def _build_spawn_rules(locations, locations_cfg, config_wd):
     return {parent: list(children) for parent, children in spawn_rules_cfg.items()}
 
 DIALOGUE_FIELDS = {"text", "enabled_if", "effects"}
-EVENT_POLICY_FIELDS = ("trigger", "chance", "weight", "cooldown", "max_occurrences", "repeat")
+EVENT_POLICY_FIELDS = ("trigger", "chance", "weight", "cooldown", "max_occurrences", "repeat", "encounter")
 ITEM_POLICY_FIELDS = ("unique", "location")
 
 
@@ -237,7 +237,7 @@ def _is_whole(value):
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def event_policy_errors(data, where):
+def event_policy_errors(data, where, world=None):
     """Problems with when an event may start: trigger, chance, weight, cooldown,
     max_occurrences and repeat."""
     errors = []
@@ -258,6 +258,18 @@ def event_policy_errors(data, where):
         errors.append(f"{where}: `max_occurrences` must be a whole number of 1 or more.")
     if data.get("repeat", "always") not in Event.REPEAT:
         errors.append(f"{where}: `repeat` must be one of {', '.join(Event.REPEAT)}.")
+    if data.get("encounter") is not None:
+        from .encounters import spec_errors
+
+        errors.extend(spec_errors(data["encounter"], where, world))
+        if trigger == "random":
+            errors.append(f"{where}: an encounter is started by the encounter director, not `trigger: random`.")
+        actions = data.get("actions") or []
+        if len(actions) < 2:
+            errors.append(f"{where}: an encounter needs at least two choices (fight, evade, negotiate, ...).")
+        elif all(isinstance(a, dict) and a.get("skill_check") for a in actions):
+            errors.append(f"{where}: an encounter needs a choice without a skill check (surrender, flee, pay, ...), "
+                          "so that it can never only be lost.")
     return errors
 
 
@@ -346,7 +358,11 @@ def logic_errors(world):
     for name, data in (world.get("events") or {}).items():
         condition((data or {}).get("enabled_if"), f"Event '{name}'.enabled_if")
         actions(data or {}, f"Event '{name}'")
-        errors.extend(event_policy_errors(data or {}, f"Event '{name}'"))
+        errors.extend(event_policy_errors(data or {}, f"Event '{name}'", world))
+        encounter = (data or {}).get("encounter")
+        for key in ("on_win", "on_loss", "on_escape"):
+            if isinstance(encounter, dict) and isinstance(encounter.get(key), dict):
+                effect_list(encounter[key].get("effects"), f"Event '{name}'.encounter.{key}.effects")
     for name, data in (world.get("missions") or {}).items():
         data = data or {}
         condition(data.get("enabled_if"), f"Mission '{name}'.enabled_if")

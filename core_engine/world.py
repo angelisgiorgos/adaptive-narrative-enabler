@@ -163,12 +163,15 @@ class Event(Conditional):
     ``trigger: random``, which may also start it by itself: each turn it can
     start, it does with probability ``chance``; ``weight`` picks between random
     events that hit in the same turn.
+    An ``encounter`` block makes it a dynamic encounter the encounter director may start
+    when the story makes it plausible (core_engine/encounters.py).
     """
     REPEAT = ("once", "per_location", "per_visit", "always")
     TRIGGERS = ("action", "random")
 
     def __init__(self, name, title=None, tags=None, descriptions=None, actions=None, enabled_if=None,
-                 trigger="action", chance=None, weight=1.0, cooldown=0, max_occurrences=None, repeat="always"):
+                 trigger="action", chance=None, weight=1.0, cooldown=0, max_occurrences=None, repeat="always",
+                 encounter=None):
         self.name = name
         self.enabled_if = enabled_if
         self.trigger = trigger or "action"
@@ -184,6 +187,12 @@ class Event(Conditional):
         self.tags = set(tags or [])
         self.descriptions = descriptions or []
         self.actions = actions or []
+        if encounter is not None:
+            from .encounters import EncounterSpec
+
+            self.encounter = EncounterSpec(encounter, name)
+        else:
+            self.encounter = None
 
 
 class Mission(Conditional):

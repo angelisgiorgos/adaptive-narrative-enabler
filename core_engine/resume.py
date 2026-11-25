@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import random
 
-from . import conditions, side_quests
+from . import conditions, encounters, side_quests
 from .context import with_state_context
 
 FORMAT = "ane.session_state/1"
@@ -67,6 +67,7 @@ def parameters(state):
         "mission": None if mission is None else {"key": mission.name, "title": mission.title,
                                                  "stage": getattr(state, "mission_stage", 0), "won": bool(state.won)},
         "side_quests": side_quests.parameters(state),  # {key: {status, stage}}
+        "encounters": encounters.parameters(state),  # {attacks, factions, rewards_paid}
         "actions_succeeded": sorted(state.succeeded_actions),
         "unique_actions": state.unique_actions(),
         "events": [{"event": e["event"], "result": e.get("result"), "location": e.get("location")}
@@ -339,6 +340,7 @@ def rebuild(genome, params, store=None, profile=None, seed=None, world=None):
         stages = getattr(state.mission, "stages", None) or []
         state.mission_stage = max(0, min(int(params["mission"].get("stage", 0)), max(0, len(stages) - 1)))
     side_quests.restore(state, params.get("side_quests"))  # as they stood: nothing told or paid again
+    encounters.restore(state, params.get("encounters"))    # the attacks, standing changes and rewards paid
     state.succeeded_actions |= {str(key) for key in params.get("actions_succeeded") or []}
     for entry in params.get("unique_actions") or []:
         _mark_done(state, entry["action"], entry.get("where"), entry.get("owner"), entry.get("source"),

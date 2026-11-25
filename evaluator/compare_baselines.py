@@ -115,6 +115,8 @@ def describe(states, rows):
         "engagement": judged.get("engagement"), "engagement_ci95": _ci95(engagements),
         "criteria": judged.get("criteria"), "fitness_vs_judge": judged.get("fitness_vs_judge"),
         "retest_difference": judged.get("retest_difference"), "judged": judged.get("judged"),
+        "fitness_version": judged.get("fitness_version"), "optional_content": judged.get("optional_content"),
+        "filler_engine_vs_judge": judged.get("filler_engine_vs_judge"),
     }
 
 

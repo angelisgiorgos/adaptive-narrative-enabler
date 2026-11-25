@@ -17,6 +17,8 @@ from .story_beats import StoryBeats
 from .scope import SessionScope
 from . import progression
 from . import side_quests as side_quest_rules
+from . import side_story
+from . import encounters as encounter_rules
 from . import conditions, effects, rules, starts, variables as persistent
 from utils.tag_similarity import semantic_tag_similarity
 from .context import EngineContext, binds_own_context
@@ -265,6 +267,9 @@ class GameState(StoryBeats, SessionScope):
             self.side_quests_done_before = []
         self.side_quests = {}       # side quest -> {status, stage, started, ended} (core_engine/side_quests.py)
         self.side_quest_events = []  # what happened to them, turn by turn
+        self.dynamic_encounters = []  # the encounter director's attacks (core_engine/encounters.py)
+        self.faction_shift = {}       # faction -> standing changed by this story's encounters
+        self.encounter_rewards = []   # templates whose on_win was paid (rewards_once)
         mission, start = self._choose_mission_and_start(mission, start)
         # Route planning caches filled by the choice are rebuilt on first use in play.
         for cache in ("_viability_cache", "_item_sites_cache", "_site_index", "_goal_sites_cache", "_route_cache"):
@@ -1173,6 +1178,7 @@ class GameState(StoryBeats, SessionScope):
             done = stages[self.mission_stage]
             self.mission_stage += 1
             self.last_quest_progress = self.actions_taken
+            side_story.note_main_progress(self)
             following = stages[self.mission_stage]
             self._run_effects(done["rewards"])
             message = self.narrate("stage_complete", done=done["title"], next=following["title"],
@@ -1678,6 +1684,7 @@ class GameState(StoryBeats, SessionScope):
             self.tags_seen.append(["finale"])
             if self.interactive or self.verbose:
                 print(f"  >>> {message}")
+            side_story.callbacks(self, "finale")  # resolved side stories come back (once a story)
 
     def _recap(self):
         """The journey in a few words, for the epilogue of a won story: the quest's steps, the
@@ -1724,6 +1731,7 @@ class GameState(StoryBeats, SessionScope):
         elif self.mission and not self.won and (self._mission_completed or self._goal_met(self.mission)) and (
                 getattr(self, "mission_stage", 0) >= len(getattr(self.mission, "stages", None) or [None]) - 1):
             self.won = True
+            side_story.note_main_progress(self)
             complete = self.narrate("mission_complete", title=self.mission.title)
             self.history.append(complete)
             if self.interactive or self.verbose:
@@ -2305,6 +2313,10 @@ class GameState(StoryBeats, SessionScope):
                 stat=result.stat, roll=result.roll, target=result.target,
             ))
             succeeded = result.passed
+        elif rules.settings()["failure_counts"] and rules.is_failure(attempt, failure_tags):
+            # No check, and what happens is the failure branch (a surrender, a capture written
+            # with failure outcomes only): it is told, and it counts as a failure.
+            return attempt, attempt, None, False
         else:
             succeeded = attempt.success_probability(
                 genome=self.genome, state=self, action=action,
@@ -2388,6 +2400,8 @@ class GameState(StoryBeats, SessionScope):
         # Side quests under way (or offered by someone not met yet) pull too: their weight x the
         # storyteller's learned side_quest_bias (core_engine/side_quests.ranking_weight).
         side_pull = side_quest_rules.ranking_weight(self)
+        if side_pull:  # less while the main quest stands still, in the climax and the finale (side_story)
+            side_pull *= side_story.pull_factor(self)
         ranked = []
         for a in actions:
             all_o_tags = []
@@ -2941,8 +2955,9 @@ class GameState(StoryBeats, SessionScope):
         self._refresh_scene()
 
         # A hostile NPC in the scene confronts the player before anything else; then
-        # an authored random event may start by itself.
-        if self._start_encounter() or self._schedule_random_event():
+        # an authored random event may start by itself; then, rarely and only when the story
+        # makes it plausible, the encounter director's attack (core_engine/encounters.py).
+        if self._start_encounter() or self._schedule_random_event() or encounter_rules.maybe_start(self):
             if trace is not None:
                 trace.event_mode(self.active_event, started=True)
             return self._available_event_actions()
@@ -3489,12 +3504,19 @@ class GameState(StoryBeats, SessionScope):
 
     def _release_if_held_too_long(self):
         """The director does not let a prison end the story: a player still locked in
-        after director.release_after turns there is let out (and the story goes on)."""
+        after director.release_after turns there is let out (and the story goes on). A player a
+        dynamic encounter put there is let out after encounters.captive_release turns at most,
+        with or without the director."""
         director = self._director()
-        if director is None or self.ended or self.active_event or not self._location_is_locked():
+        if self.ended or self.active_event or not self._location_is_locked():
             return False
-        if self.consecutive_steps_in_location < int(director.get("release_after", 5)):
+        limits = [int(director.get("release_after", 5))] if director is not None else []
+        held = encounter_rules.captive_release(self)
+        if held is not None:
+            limits.append(held)
+        if not limits or self.consecutive_steps_in_location < min(limits):
             return False
+        encounter_rules.freed(self)
         prison = self.current.name
         self.confined_in = None
         self.unlocked_locations.add(prison)
@@ -3786,7 +3808,7 @@ class GameState(StoryBeats, SessionScope):
             print(f"  >>> {message}")
         return True
 
-    def _finish_event(self, action, succeeded):
+    def _finish_event(self, action, succeeded, outcome=None):
         """End the active event after one of its actions, or chain into the next event."""
         event = self.active_event
         return_location = self.event_return_location
@@ -3801,6 +3823,7 @@ class GameState(StoryBeats, SessionScope):
         # How it was resolved, for goals and conditions (event_succeeded / event_failed).
         entry["result"] = "abandoned" if action.source == "event_fallback" else ("success" if succeeded else "failure")
         entry["ended_step"] = self.actions_taken
+        encounter_rules.resolved(self, event, entry, outcome)  # a dynamic encounter: spared, its follow-up
         if self.health_player.is_dead:
             return
 
@@ -4110,6 +4133,8 @@ class GameState(StoryBeats, SessionScope):
                 "quest_now": stages[after_stage] if stages and after_stage < len(stages) and not entry.get("won") else None,
                 "quest_complete": bool(entry.get("won")) and not won,
                 "side_quests": side_quest_rules.events_at(self, turn),  # started, a step done, completed, failed
+                # a dynamic encounter this turn met (it started as the turn's choices were set out)
+                "encounter": encounter_rules.at_turn(self, turn - 1) if turn else None,
                 "ended": bool(entry.get("ended")), "end_reason": self.end_reason if entry.get("ended") else None,
             })
             health, coins, stage, won = entry.get("health"), entry.get("coins"), after_stage, won or bool(entry.get("won"))
@@ -4311,7 +4336,7 @@ class GameState(StoryBeats, SessionScope):
 
         # Any choice inside an event ends it; a successful trigger action starts one.
         if in_event:
-            self._finish_event(action, calculated_success)
+            self._finish_event(action, calculated_success, outcome=told)
             if climax_turn:
                 self._resolve_climax(action, calculated_success)
         elif (
@@ -4864,6 +4889,7 @@ class GameState(StoryBeats, SessionScope):
             bonus += int(self.role_of(opponent)[1].get("check_modifier", 0))
         # What worked before is harder now (variation), and a watch on edge is harder to get past (stakes).
         bonus -= self._repeat_penalty(action) + self._alert_check_penalty(action, tags)
+        bonus -= encounter_rules.check_penalty(self, action)  # a dynamic encounter's difficulty
         return bonus
 
     def _opponent(self, action):

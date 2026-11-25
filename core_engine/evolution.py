@@ -283,8 +283,12 @@ class EvolutionResult:
 
     def summary(self):
         first = self.history[0] if self.history else None
+        from .fitness import version
+
         return {
             "best_score": round(self.best_score, 3),
+            # The scoring the scores were made with (fitness.version): not comparable across versions.
+            "fitness_version": version(),
             "generations_run": self.generations_run,
             "early_stopped": self.early_stopped,
             "warm_started_from_memory": self.warm_started,

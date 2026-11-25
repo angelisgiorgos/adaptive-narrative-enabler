@@ -43,7 +43,7 @@ GROUPS = ("all", "any", "not")
 COMPARISONS = ("variable", "stat", "resource")
 FACTS = ("has_item", "item_collected", "visited", "at_location", "npc_removed", "event_done", "event_succeeded",
          "event_failed", "action_done", "outcome_tag", "mission", "secret_known", "talked_to", "side_quest_active",
-         "side_quest_done", "side_quest_failed", "side_quest_declined")
+         "side_quest_done", "side_quest_failed", "side_quest_declined", "faction_hostile")
 KEYWORDS = frozenset(GROUPS + COMPARISONS + FACTS)  # cannot be variable names (shorthand would be ambiguous)
 RESOURCES = ("coins", "health", "turn")
 TRUE = ("all", ())
@@ -55,6 +55,7 @@ _FACT_REFERENCES = {
     "action_done": None, "outcome_tag": None, "mission": "missions", "secret_known": "npcs",
     "talked_to": "npcs", "side_quest_active": "side_quests", "side_quest_done": "side_quests",
     "side_quest_failed": "side_quests", "side_quest_declined": "side_quests",
+    "faction_hostile": None,  # a faction of encounters.factions (free text)
 }
 _FACT_LABELS = {"items": "item", "locations": "location", "npcs": "NPC", "events": "event", "missions": "mission",
                 "side_quests": "side quest"}
@@ -308,6 +309,10 @@ class StoryFacts:
             wanted = {"side_quest_active": "active", "side_quest_done": "completed", "side_quest_failed": "failed",
                       "side_quest_declined": "declined"}[kind]
             return bool(record) and record.get("status") == wanted
+        if kind == "faction_hostile":  # core_engine/encounters.py: its standing below hostile_below
+            from .encounters import hostile
+
+            return hostile(state, name)
         return False
 
 

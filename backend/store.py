@@ -33,6 +33,46 @@ OPTIONAL_CONFIG_PATHS = {
     "action_selection.event_trigger_weight",
     "world_definition.missions",
     "world_definition.side_quests",   # worlds written before side quests have none
+    # Side-story orchestration and fitness version 2 (configurations written before them: off, version 1).
+    "side_story",
+    "side_story.enabled",
+    "side_story.agency",
+    "side_story.hold_in_event",
+    "side_story.hold_in_climax",
+    "side_story.hold_in_finale",
+    "side_story.deadline_turns",
+    "side_story.main_idle_turns",
+    "side_story.max_open_threads",
+    "side_story.share_window",
+    "side_story.max_side_share",
+    "side_story.intro_gap",
+    "side_story.decline_backoff",
+    "side_story.backoff_relevance",
+    "side_story.relevance_weight",
+    "side_story.encounter_appetite",
+    "side_story.idle_pull",
+    "side_story.finale_pull",
+    "side_story.callbacks",
+    "side_story.max_callbacks",
+    "side_story.meaningful_relevance",
+    "fitness.version",
+    "fitness.side_quests.diminishing",
+    "fitness.side_quests.repeat_factor",
+    "fitness.side_story",
+    "fitness.side_story.relevance_weight",
+    "fitness.side_story.payoff_weight",
+    "fitness.side_story.completion_weight",
+    "fitness.side_story.filler_penalty",
+    "fitness.side_story.unresolved_penalty",
+    "fitness.side_story.repeat_penalty",
+    "fitness.side_story.density_target",
+    "fitness.side_story.density_penalty",
+    "fitness.side_story.interruption_penalty",
+    "fitness.side_story.drift_allowed",
+    "fitness.side_story.drift_penalty",
+    "fitness.side_story.diversity_weight",
+    "fitness.side_story.diversity_kinds",
+    "fitness.side_story.diversity_min_decisions",
     "side_quest_settings",
     "side_quest_settings.enabled",
     "side_quest_settings.max_active",
@@ -53,6 +93,31 @@ OPTIONAL_CONFIG_PATHS = {
     "side_quest_settings.pause_when_held",
     "side_quest_settings.epilogue",
     "fitness.side_quests.unfinished_penalty",
+    "encounters",
+    "encounters.enabled",
+    "encounters.rate",
+    "encounters.max_chance",
+    "encounters.opening_turns",
+    "encounters.min_separation",
+    "encounters.after_loss_separation",
+    "encounters.max_per_session",
+    "encounters.template_cooldown",
+    "encounters.no_repeat_last",
+    "encounters.safe_tags",
+    "encounters.danger_tags",
+    "encounters.tension_weight",
+    "encounters.alert_weight",
+    "encounters.hostility_weight",
+    "encounters.min_health",
+    "encounters.difficulty",
+    "encounters.difficulty_points",
+    "encounters.lethal",
+    "encounters.in_finale",
+    "encounters.in_climax",
+    "encounters.in_conversation",
+    "encounters.captive_release",
+    "encounters.categories",
+    "encounters.factions",
     "fitness.side_quests",
     "fitness.side_quests.complete_bonus",
     "fitness.side_quests.step_bonus",
@@ -156,6 +221,7 @@ OPTIONAL_CONFIG_PATHS = {
     "spawn_selection.target_tag_weight",
     "player_options.way_back",
     "story_rules.gate_payoffs",
+    "story_rules.failure_counts",   # configurations written before it: counted as failed (the default)
     "fitness.objective_losses",
     "fitness.base.npc_goal_bonus",
     "director.surprise",
@@ -431,6 +497,7 @@ FREE_FORM_PATHS = {
     "npc_roles.roles", "travel.first_trip.by_tag", "fitness.term_weights", "consequences.kinds",
     "session_scope.keep_share",
     "stakes.alert.raise_on_success", "stakes.alert.raise_on_failure",
+    "encounters.factions", "encounters.danger_tags",
 }
 
 
@@ -458,6 +525,12 @@ def _validate_complete_config(candidate: object, reference: object, path: str = 
         errors.extend(starts.validate_settings(starts.settings({"start_selection": candidate})))
     if path == "story_rules" and isinstance(candidate, dict):
         errors.extend(rules.validate_settings(rules.settings({"story_rules": candidate})))
+    if path == "side_story":
+        from core_engine import side_story
+
+        errors.extend(side_story.validate_settings(candidate))
+    if path == "fitness.version" and (isinstance(candidate, bool) or candidate not in (1, 2)):
+        errors.append("`fitness.version` must be 1 (the scoring before side-story terms) or 2.")
     if path in ("npc_behaviour", "location_behaviour"):  # rules the writer adds: checked as rules, not by shape
         return rules.validate_behaviour("npc" if path == "npc_behaviour" else "location", candidate)
     if path == "evolution.score_aggregate" and candidate not in AGGREGATES:
@@ -488,6 +561,10 @@ def _validate_complete_config(candidate: object, reference: object, path: str = 
                 elif unknown := sorted(set(goal) - set(Mission.GOAL_KEYS)):
                     errors.append(f"Mission `{name}` has unknown goal keys: {', '.join(unknown)}.")
         return errors
+    if path == "world_definition.side_quests":  # a world's own side quests (their rules: content_rules)
+        if not isinstance(candidate, dict):
+            return ["`world_definition.side_quests` must be a mapping."]
+        return [f"Side quest `{name}` must be a mapping." for name, entry in candidate.items() if not isinstance(entry, dict)]
     if path == "world_definition.events":
         if not isinstance(candidate, dict):
             return ["`world_definition.events` must be a mapping."]
@@ -841,6 +918,9 @@ LOGIC_SECTIONS = {
     "scene": "Which NPCs and items appear in a scene.",
     "skill_check_resolution": "How hard skill checks are, over time, and how the damage-reduction stat softens combat.",
     "mission_settings": "Missions: pacing of goal pursuit and route planning.",
+    "side_story": "Side-story orchestration: when the director lets side quests and attacks into the main story (not in a climax, the finale, while a clock runs or the main quest stands still, not too many threads or too much side content at once), which comes first (fit and relevance to the main story), the player's say (offers, not obligations), callbacks near the climax, and how the storyteller's pull toward side quests eases when the main story needs it.",
+    "llm_sharing": "Sharing one GPU between the judge (vLLM) and the augmenter: who sleeps while the other works, how long to wait for the GPU, and the background watcher that puts an idle model to sleep (watch_seconds).",
+    "encounters": "The encounter director: how rare dynamic hostile encounters are, where they never come, how far apart and how many, how hard, whether losing one can kill, when they may interrupt, their categories and factions.",
     "side_quest_settings": "Side quests: how many at once, offered as a choice or started at once, how long an offer waits, what a completed one does for the mission, and how strongly the storyteller pursues them.",
     "story_rules": "Rules that keep stories coherent, paced and varied: failure outcomes, text-consistent routes, holding back from the mission early, moving on instead of stalling, repetition and backtracking costs, tie-breaking, items and clue payoffs.",
     "start_selection": "Where stories start: how strongly a player's recent starts are discouraged, and the single start of worlds without starting locations.",

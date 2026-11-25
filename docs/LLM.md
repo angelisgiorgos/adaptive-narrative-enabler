@@ -113,10 +113,12 @@ session they **take turns** (`llm_sharing`, on by default; `utils/llm_model_load
 - Before a model generates, the other is put to sleep once nothing of its is running (vLLM's sleep
   level 1: its weights go to CPU memory and its GPU memory is freed), and its own is woken.
 - A model that has stopped running is put to sleep after `idle_seconds` (5), so it waits in CPU memory.
-- A background watcher in the API (started with it) puts to sleep, every `watch_seconds` (30), a model
-  that is awake while nothing of it runs: one that loaded awake when its container started, or that
-  something else woke. So no model holds its GPU memory while no evaluation runs; the next request
-  wakes it (a few seconds). `watch_seconds: 0` turns the watcher off.
+- A background watcher in the API (started and stopped with it; the studio, a client of the API,
+  runs none) puts to sleep, every
+  `watch_seconds` (30), a model that is awake while nothing of it runs: one that loaded awake when
+  its container started, or that something else woke. So no model holds its GPU memory while no
+  evaluation runs; the next request wakes it (a few seconds). `watch_seconds: 0` turns the watcher
+  off; `ANE_LLM_WATCHER=off` turns it off for one process (the tests do).
 - Requests of the same model at the same time (a judge benchmark) share one wake; a request of the
   other model waits until they have finished (`wait_seconds`, 900, at most).
 - Measured on a TITAN RTX: waking takes 1–2 s and going to sleep about 1 s; the first switch after the
@@ -155,6 +157,20 @@ with the overall **engagement**, the best and the weakest moment and a verdict.
 `llm_judge.samples` judgements are averaged; their spread says how sure the
 judge is.
 
+**Optional content.** When the digest shows optional content (side quests: `[SIDE QUEST]`,
+`[SIDE STORY]`; dynamic encounters: `[AMBUSH]`, `[PATROL]`, `[ATTACK]`, `[ASSAULT]`, `[RAID]`,
+`[DANGER]`, `[DEFEND]`), the prompt also asks the judge to count each optional thread as
+**meaningful** (it connects to the main quest, changes what happens later, reveals something or
+pays off near the end) or **filler** (it could be cut without changing anything), and to score
+what it added from 1 to 10: `optional_content` `{score, meaningful, filler, filler_share, note,
+samples}` (the mean of the samples that gave one; `null` without optional content). A playthrough
+without optional content gets exactly the prompt it got before, so its judgements stay comparable.
+The engine labels the same threads itself (`core_engine/side_story.classify`, the fitness's
+`side_payoff` / `side_filler`); a judge benchmark reports the judge's mean `optional_content`, how
+many stories had some, and the Spearman agreement of the judge's filler share with the engine's
+(`filler_engine_vs_judge`, from 3 stories on). That agreement is what to look at before trusting
+the engine's labels: they are rules, not a reader.
+
 ```python
 from evaluator.game_judge import GameJudge
 result = GameJudge().judge_state(state)   # or judge_turns(recorded turns, meta)
@@ -171,8 +187,9 @@ result["engagement"], result["scores"], result["verdict"]
 - Benchmark: `python -m evaluator.judge_benchmark --stories 15 --server
   http://127.0.0.1:8000/v1` plays stories with the current engine (or `--engine ID`,
   a recorded one), judges each twice and prints the mean engagement, the criteria,
-  the fitness's agreement with the judge (Spearman) and the judge's test-retest
-  difference.
+  the fitness's agreement with the judge (Spearman), the judge's test-retest
+  difference, the fitness version the stories were scored with (`fitness_version`) and,
+  where stories had optional content, `optional_content` and `filler_engine_vs_judge`.
 
 The judge also calibrated the fitness. Over 50 judged stories, the terms that ran
 against the judge's engagement (volatility -0.38, scene contrast -0.33, combat

@@ -303,6 +303,7 @@ The session's parameters (`ane.session_state/1`), the same object a save game ca
 | `variables` | The persistent variables |
 | `mission` | `{"key", "title", "stage", "won"}` or null |
 | `side_quests` | `{key: {"status": "offered" \| "active" \| "completed" \| "failed" \| "declined", "stage", "ready", "turns_left"?}}`: the side quests of the session (`ready`: done, to be handed over to its giver; `turns_left`: of a deadline); a session rebuilt from them stands where they stood (nothing told or paid again; an offer is put to the player again) |
+| `encounters` | `{"attacks": [{"turn", "event", "category", "location", "faction", "npc", "result"}], "factions": {faction: standing change}, "rewards_paid": [event]}`: the dynamic encounters met ([WORLD.md](WORLD.md#dynamic-encounters)); a session rebuilt from them keeps them (nothing told or paid again). Parameters written before it have none: nothing is restored |
 | `actions_succeeded`, `unique_actions` | Actions that succeeded; one-time actions and every attempt at them |
 | `events` | Events and their results |
 | `people_met`, `removed_npcs`, `allies`, `defeated`, `alert` | The people of the story |

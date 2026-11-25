@@ -478,6 +478,11 @@ def decision_trace(state, limit=None, order=None, session_id=None):
     if state.ended:
         return {"session_id": session_id, "state_version": state.state_version, "ended": True, "mode": "ended",
                 "shown": [], "actions": [], "entities": [], "notes": [], "limits": {}, "codes": _codes()}
+    from .encounters import explain as encounter_view
+    from .side_story import plan as side_story_view
+
+    encounters_now = encounter_view(state)  # read only: why an attack could or could not come
+    side_story_now = side_story_view(state)  # read only: what the director weighs before side content
     probe = copy.deepcopy(state)          # its own dice (a copy of the story's), scene and conversation
     probe.__dict__["_store"] = None       # nothing it does is saved to the player's profile
     probe.__dict__["interactive"] = probe.__dict__["verbose"] = False
@@ -509,6 +514,8 @@ def decision_trace(state, limit=None, order=None, session_id=None):
         "actions": actions,
         "entities": entities,
         "notes": notes,
+        "encounters": encounters_now,
+        "side_story": side_story_now,
         "codes": _codes(),
     }
 
