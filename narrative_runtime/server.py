@@ -208,7 +208,7 @@ def _routes(server):
         ("GET", r"/world", lambda m, b: (200, engine.catalogue())),
         ("POST", r"/world/patch", lambda m, b: (200, engine.patch_world(b))),
         ("POST", r"/world/reset", lambda m, b: (200, engine.reset_patches())),
-        ("GET", r"/world/(?P<kind>[a-z]+)/(?P<name>[^/]+)", lambda m, b: (200, engine.entity(m["kind"], m["name"]))),
+        ("GET", r"/world/(?P<kind>[a-z_]+)/(?P<name>[^/]+)", lambda m, b: (200, engine.entity(m["kind"], m["name"]))),
         ("GET", r"/progression/(?P<profile>[^/]+)", lambda m, b: (200, engine.progression(m["profile"]))),
         ("GET", r"/games", lambda m, b: (200, {"games": [{"game_id": g.id, "profile": g.state.profile,
                                                           "ended": bool(g.state.ended)} for g in engine.games.values()]})),

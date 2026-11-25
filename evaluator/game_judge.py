@@ -12,6 +12,13 @@ with an overall ``engagement`` (1-10), the best and the weakest moment and a one
 verdict. Several samples (``llm_judge.samples``) are averaged, and their spread is kept
 as a measure of how sure the judge is.
 
+When the playthrough has optional content (side quests, dynamic encounters: lines marked
+OPTIONAL_MARKERS), the judge is also asked to tell meaningful optional content (it connects
+to the main quest, changes what happens later, reveals something, pays off near the end)
+from filler (it could be cut without changing anything): ``optional_content`` {score (1-10:
+what it added), meaningful, filler (threads of each kind), filler_share, note}. A playthrough
+without optional content gets the same prompt as before, so its judgements stay comparable.
+
     judge = GameJudge()
     result = judge.judge_state(state)          # a GameState that was played
     result = judge.judge_turns(turns, meta)     # a recorded story (records.get_story)
@@ -56,7 +63,18 @@ BEATS = ("[QUEST]", "[MISSION COMPLETE]", "[UNEXPECTED EVENT]", "[TWIST]", "[CAL
          "[NPC REMOVED]", "[RELEASED]", "[UNLOCKED]", "[BACK]", "[ROUTE]", "[EVENT DISCOVERY]", "You collected",
          # The engine's own beats (core_engine/story_beats.py).
          "[REVEAL]", "[TRIUMPH]", "[CLIMAX]", "[SETBACK]", "[REVELATION]", "[ANOTHER WAY]", "[REFUND]",
-         "[ON THE WAY]", "[ALERT]", "[MANHUNT]", "[SECRET]", "[CONSEQUENCE]", "[LAST TIME]")
+         "[ON THE WAY]", "[ALERT]", "[MANHUNT]", "[SECRET]", "[CONSEQUENCE]", "[LAST TIME]",
+         # Optional content: side quests and dynamic encounters (core_engine/side_quests.py, encounters.py).
+         "[SIDE QUEST", "[SIDE STORY]", "[AMBUSH]", "[PATROL]", "[ATTACK]", "[ASSAULT]", "[RAID]", "[DANGER]",
+         "[DEFEND]", "[SPARED]")
+# The beats that mark optional content: a digest with one of them asks the judge about it.
+OPTIONAL_MARKERS = ("[SIDE QUEST", "[SIDE STORY]", "[AMBUSH]", "[PATROL]", "[ATTACK]", "[ASSAULT]", "[RAID]",
+                    "[DANGER]", "[DEFEND]")
+
+
+def has_optional_content(digest):
+    """Whether a story digest shows optional content (a side quest, a dynamic encounter)."""
+    return any(marker in (digest or "") for marker in OPTIONAL_MARKERS)
 
 
 def _beats(text, limit=4, chars=150):
@@ -157,9 +175,23 @@ def digest_state(state, **kwargs):
     return digest_turns(turns, meta, **kwargs)
 
 
+OPTIONAL_INSTRUCTIONS = """
+The playthrough also has OPTIONAL content: side quests (lines marked [SIDE QUEST] or [SIDE STORY])
+and attacks that are not part of the main quest ([AMBUSH], [PATROL], [ATTACK], [ASSAULT], [RAID],
+[DANGER], [DEFEND]). Count each optional thread as MEANINGFUL when it connects to the main quest,
+changes what happens later, reveals something or pays off near the end, and as FILLER when it could
+be cut without changing anything. Then score "optional_content" from 1 (filler that gets in the way)
+to 10 (optional content that makes the game richer).
+"""
+
+
 def build_prompt(digest):
     criteria = "\n".join(f"- {name}: {meaning}" for name, meaning in CRITERIA.items())
     keys = ", ".join(f'"{name}": <1-10>' for name in CRITERIA)
+    optional = has_optional_content(digest)
+    extra = OPTIONAL_INSTRUCTIONS if optional else ""
+    extra_key = (', "optional_content": {"score": <1-10>, "meaningful": <threads>, "filler": <threads>, '
+                 '"note": "<one sentence>"}') if optional else ""
     return f"""You are a demanding video game critic. Below is the log of one playthrough of a narrative
 game: each line is a turn (the place, the player's choice, what happened, and what changed).
 
@@ -168,10 +200,10 @@ Judge it as a GAME a player experiences, not as prose. Score each criterion from
 {criteria}
 
 Then give "engagement": how engaging the playthrough is overall for a player, from 1 to 10.
-
+{extra}
 Reply with ONE JSON object and nothing else:
 {{"scores": {{{keys}}}, "engagement": <1-10>, "best_moment": "Turn <n>: <why it works>",
-"weakest_moment": "Turn <n>: <why it falls flat>", "verdict": "<one sentence>"}}
+"weakest_moment": "Turn <n>: <why it falls flat>", "verdict": "<one sentence>"{extra_key}}}
 
 PLAYTHROUGH:
 {digest}
@@ -225,11 +257,52 @@ def parse_judgement(text):
         match = re.search(r'"?engagement"?\s*[:=]\s*(\d+(?:\.\d+)?)', cleaned, flags=re.I)
         engagement = _clamp(match.group(1)) if match else statistics.mean(scores.values())
     return {
-        "scores": scores, "engagement": engagement,
+        "scores": scores, "engagement": engagement, "optional_content": _optional(data, cleaned),
         "best_moment": str((data or {}).get("best_moment", "")) if isinstance(data, dict) else "",
         "weakest_moment": str((data or {}).get("weakest_moment", "")) if isinstance(data, dict) else "",
         "verdict": str((data or {}).get("verdict", "")) if isinstance(data, dict) else "",
     }
+
+
+def _count(value):
+    try:
+        number = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return max(0, number)
+
+
+def _optional(data, cleaned):
+    """The judge's word on optional content: {score, meaningful, filler, filler_share, note}, or None
+    when it gave none (a playthrough without optional content is not asked)."""
+    raw = data.get("optional_content") if isinstance(data, dict) else None
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        raw = {"score": raw}
+    if not isinstance(raw, dict):
+        match = re.search(r'"?optional_content"?\s*[:=]\s*(\d+(?:\.\d+)?)', cleaned or "", flags=re.I)
+        if not match:
+            return None
+        raw = {"score": match.group(1)}
+    score, meaningful, filler = _clamp(raw.get("score")), _count(raw.get("meaningful")), _count(raw.get("filler"))
+    if score is None and meaningful is None and filler is None:
+        return None
+    threads = (meaningful or 0) + (filler or 0)
+    return {"score": score, "meaningful": meaningful, "filler": filler,
+            "filler_share": (filler or 0) / threads if threads else None, "note": str(raw.get("note", ""))}
+
+
+def combine_optional(judgements):
+    """The mean of the samples' optional_content (those that gave one), or None."""
+    given = [j.get("optional_content") for j in judgements if j.get("optional_content")]
+    if not given:
+        return None
+
+    def mean(key):
+        values = [g[key] for g in given if g.get(key) is not None]
+        return statistics.mean(values) if values else None
+
+    return {"score": mean("score"), "meaningful": mean("meaningful"), "filler": mean("filler"),
+            "filler_share": mean("filler_share"), "note": given[0].get("note", ""), "samples": len(given)}
 
 
 # ---- pairwise: which of two playthroughs is the better game --------------------------------
@@ -355,7 +428,7 @@ class GameJudge:
                 judgements.append(parsed)
         if not judgements:
             return {"engagement": None, "scores": {}, "spread": None, "samples": self.samples, "parsed": 0,
-                    "verdict": "The judge's reply could not be read.", "raw": raw}
+                    "optional_content": None, "verdict": "The judge's reply could not be read.", "raw": raw}
         scores = {name: statistics.mean(j["scores"][name] for j in judgements if name in j["scores"])
                   for name in CRITERIA if any(name in j["scores"] for j in judgements)}
         engagements = [j["engagement"] for j in judgements]
@@ -364,6 +437,7 @@ class GameJudge:
             "scores": scores,
             "spread": statistics.pstdev(engagements) if len(engagements) > 1 else 0.0,
             "samples": self.samples, "parsed": len(judgements),
+            "optional_content": combine_optional(judgements),
             "verdict": judgements[0]["verdict"], "best_moment": judgements[0]["best_moment"],
             "weakest_moment": judgements[0]["weakest_moment"], "raw": raw,
         }

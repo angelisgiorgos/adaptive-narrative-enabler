@@ -45,7 +45,9 @@ from .world import Character, Event, ItemInstance, Location, Mission, Object
 FORMAT = "ane.snapshot/1"
 SKIP = {"_context", "_decision_trace", "_site_index", "_question_cache", "_ranking_after_free_step", "_turn", "_store", "facts", "world", "genome", "rng", "combat", "health_player", "stats",
         "narrate"}
-OBJECTS = {cls.__name__: cls for cls in (Action, Outcome, Event, ItemInstance, CheckResult)}
+from .encounters import EncounterSpec  # noqa: E402  an event's encounter block (core_engine/encounters.py)
+
+OBJECTS = {cls.__name__: cls for cls in (Action, Outcome, Event, ItemInstance, CheckResult, EncounterSpec)}
 
 
 class SnapshotError(ValueError):

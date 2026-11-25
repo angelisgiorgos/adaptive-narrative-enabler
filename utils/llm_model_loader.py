@@ -241,8 +241,11 @@ class Turns:
 
     def start_watcher(self, every=None):
         """Run ``sleep_idle_servers`` in the background every ``every`` seconds (llm_sharing.watch_seconds;
-        0: none), first right away. Started once (the API at its start)."""
+        0: none), first right away. Started once (the API at its start, the studio's in-process API too);
+        ANE_LLM_WATCHER=off switches it off for the process."""
         every = float(sharing()["watch_seconds"] if every is None else every)
+        if os.environ.get("ANE_LLM_WATCHER", "").strip().lower() in {"0", "false", "no", "off"}:
+            return False  # switched off for this process (tests, a machine without the model servers)
         if every <= 0 or (self._watcher is not None and self._watcher.is_alive()):
             return False
         self._stop = threading.Event()
