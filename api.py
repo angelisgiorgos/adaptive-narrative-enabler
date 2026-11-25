@@ -241,7 +241,8 @@ class PlayState(BaseModel):
         default=None, description="The last turn, as a player follows it (GET /v1/sessions/{id}/journal: every turn): "
         "{turn, action, with, where, moved_to, check {stat, roll, needed, passed}, succeeded, told, health, "
         "health_change, coins, coin_change, items_gained, items_lost, met, new_places, event, quest_done, quest_now, "
-        "quest_complete, ended, end_reason}.")
+        "quest_complete, ended, end_reason, side_quests (their moments that turn), encounter {event, category, "
+        "faction, npc, result} (a dynamic encounter that began) or null}.")
     mission: str | None = Field(default=None, description="Title of the story's mission, if any.")
     won: bool = Field(default=False, description="True once the mission goal has been achieved.")
     location: str | None = None
@@ -284,7 +285,8 @@ class PlayState(BaseModel):
     choices: list[dict[str, Any]] = Field(
         default_factory=list, description="The offered actions, in the order of `actions`: [{id (stable: choose "
         "with it, POST .../actions `action_id`), name and label (the text shown), category (place, person, item, "
-        "event, talk, approach, leave, look, travel, fast_travel), owner, source {kind, name} (what offers it), "
+        "event, talk, approach, leave, look, travel, fast_travel, side_quest: take an offered side quest on, turn it "
+        "down or hand it over, no turn), owner, source {kind, name} (what offers it), "
         "location, requirements {item, item_tag, item_used, coins, consumes_item, collects_item, triggers_event} "
         "(what applies), check {stat, chance (0-100), bonus, risk} or null (as before), skill_check {stat, chance, "
         "bonus} or null, failure_risk {health, coins, sent_to} or null (what failing costs), available (true: "
@@ -898,8 +900,10 @@ def put_entity_actions(kind: Literal["Locations", "NPCs", "Items", "Events"], na
 class EntityPolicy(BaseModel):
     policy: dict[str, Any] = Field(
         description="Events: when the event may start (trigger: action|random, chance, weight, cooldown, "
-        "max_occurrences, repeat: once|per_location|per_visit|always). Items: unique, location. "
-        "Fields left out use their defaults; a PUT replaces the whole policy.",
+        "max_occurrences, repeat: once|per_location|per_visit|always) and its `encounter` block (a template of "
+        "the encounter director: category, where, when, on_win / on_loss / on_escape; docs/WORLD.md, \"Dynamic "
+        "encounters\"). Items: unique, location. Fields left out use their defaults; a PUT replaces the whole "
+        "policy (an `encounter` block left out is removed).",
     )
 
 
@@ -1331,7 +1335,20 @@ class DecisionTrace(BaseModel):
         "present_not_visible, absent, carried; events: active, can_start, blocked), reason}]."))
     notes: list[dict[str, Any]] = Field(default_factory=list, description="[{code, message, detail}]: the moment "
                                         "(the loop filter set aside, an event's fallback, an event that would start).")
-    codes: dict[str, dict[str, str]] = Field(default_factory=dict, description="Every reason code: {status, meaning}.")
+    encounters: dict[str, Any] | None = Field(default=None, description=(
+        "The encounter director (core_engine/encounters.explain): {enabled, gate (why no attack can come now, or "
+        "null), stage, attacks (this story's), factions {name: {standing, hostile}}, candidates [{event, category, "
+        "status (eligible or why not), chance}], codes {code: meaning} (its gate and status codes)}."))
+    side_story: dict[str, Any] | None = Field(default=None, description=(
+        "Side-story orchestration (core_engine/side_story.plan): {enabled, hold (why no new side content may come "
+        "now, or null), main {mission, stage, won, idle, climax, finale}, threads {side_quests, clues, count}, "
+        "player {taken, declined, declined_in_a_row}, danger {tension, alert, health, recent_encounters, "
+        "side_share}, pull (x the storyteller's pull toward side quests), candidates [{kind (side_quest | "
+        "encounter), key, title, eligible, status, relevance, fit, appetite, score}], introductions, links "
+        "(the last five of each), summary, codes {code: meaning}}."))
+    codes: dict[str, dict[str, str]] = Field(default_factory=dict, description=(
+        "Every reason code of shown / hidden / blocked actions: {status, meaning} (the encounter and side-story "
+        "codes are in their own sections' codes)."))
 
 
 AUTHOR_DIAGNOSTICS_ENV = "ANE_AUTHOR_DIAGNOSTICS"
@@ -1362,7 +1379,7 @@ def session_decisions(session_id: str):
 def end_session(session_id: str):
     """End the session where it stands (the player stops). Like a story that ends by itself,
     it counts as a session: the player's progression is saved and the session's report goes to
-    the UNP (``report`` in the response)."""
+    the UNP (``session_report`` in the response)."""
     with sessions.SESSION_LOCK:
         if session_id not in sessions.SESSIONS:
             raise HTTPException(status_code=404, detail="Play session not found.")
@@ -1682,8 +1699,8 @@ def cleanup_games(body: CleanupRequest = Body(default_factory=CleanupRequest)):
 @api.get("/v1/world/catalogue", tags=["Engine export"])
 def get_world_catalogue():
     """The world as the exported ANE AI sends it to a UNP (``GET /world``, ane.world/1): every
-    location, NPC, item, event and mission with all its fields, the stats, variables, routes and
-    starting locations."""
+    location, NPC (with its npc_roles), item, event, mission and side quest with all its fields, the
+    stats, variables, routes and starting locations."""
     return sessions.world_catalogue()
 
 
@@ -1702,7 +1719,8 @@ def get_session_report(session_id: str):
 @api.get("/v1/progression", tags=["Evolution and play"])
 def get_progression(profile: str | None = None):
     """A player's save game: {profile, playthroughs, goals_achieved (each goal once per save
-    game), sessions (their reports, with their delivery to the UNP), values, updated}."""
+    game), side_quests_completed, sessions (their reports, with their delivery to the UNP), values,
+    updated}."""
     try:
         return sessions.progression(profile)
     except Exception as exc:
@@ -1900,17 +1918,45 @@ def retrain_recorded_engine(engine_id: str, body: EngineRetrainRequest, origin: 
         _fail(exc)
 
 
+def _story_visible(story, request: Request) -> bool:
+    """Whether who asks may read a recorded story: one of no play session (training, evaluation), of a
+    session that is theirs or anonymous; the studio reads every one. A story of someone else's session
+    is not there for them (as the session itself is not), nor one whose session is gone (whose it was
+    is no longer known)."""
+    session_id = story.get("session_id")
+    user, _ = _identify(request.headers)
+    if not session_id or user == records.DEFAULT_USER:
+        return True
+    try:
+        owner = sessions._owner(session_id)
+    except LookupError:
+        return False
+    return owner is None or owner == user
+
+
 @api.get("/v1/records/stories", tags=["Records"])
-def list_recorded_stories(run_id: str | None = None, engine_id: str | None = None, kind: str | None = None,
-                          origin: str | None = None, session_id: str | None = None, limit: int = 200, offset: int = 0):
-    return {"stories": _records(records.list_stories, run_id=run_id, engine_id=engine_id, kind=kind, origin=origin,
-                                session_id=session_id, limit=limit, offset=offset)}
+def list_recorded_stories(request: Request, run_id: str | None = None, engine_id: str | None = None,
+                          kind: str | None = None, origin: str | None = None, session_id: str | None = None,
+                          limit: int = 200, offset: int = 0):
+    """Recorded stories, newest first (``limit``, ``offset``): those who asks may read (_story_visible:
+    a page can hold fewer than ``limit`` when some are someone else's)."""
+    found = _records(records.list_stories, run_id=run_id, engine_id=engine_id, kind=kind, origin=origin,
+                     session_id=session_id, limit=limit, offset=offset)
+    return {"stories": [story for story in found if _story_visible(story, request)]}
+
+
+def _visible_story(story_id: str, request: Request) -> dict:
+    story = _records(records.get_story, story_id)
+    if not _story_visible(story, request):
+        raise HTTPException(status_code=404, detail="Story not found.")
+    return story
 
 
 @api.get("/v1/records/stories/{story_id}", tags=["Records"])
-def get_recorded_story(story_id: str):
-    """A story with its parameters, result, transcript and every turn."""
-    return _records(records.get_story, story_id)
+def get_recorded_story(story_id: str, request: Request):
+    """A story with its parameters, result, transcript and every turn (404 for a story of someone
+    else's play session)."""
+    return _visible_story(story_id, request)
 
 
 def _judged(work):
@@ -1924,14 +1970,14 @@ def _judged(work):
 
 
 @api.post("/v1/records/stories/{story_id}/judge", tags=["Records"])
-def judge_recorded_story(story_id: str):
+def judge_recorded_story(story_id: str, request: Request):
     """Gemma 4 as a game critic: how engaging a recorded playthrough is for a player. Returns
     ``engagement`` (1-10), ``scores`` (agency, pacing, surprise, payoff, exploration, stakes,
     coherence, replayability; 1-10), ``spread`` (between the judge's samples), ``verdict``,
     ``best_moment`` and ``weakest_moment``. 503 when no language model is available."""
     from evaluator.game_judge import GameJudge, digest_turns
 
-    story = _records(records.get_story, story_id)
+    story = _visible_story(story_id, request)
     meta = {key: story.get(key) for key in ("mission", "start_location", "end_kind", "end_reason", "won")}
     return _judged(lambda: GameJudge().judge_digest(digest_turns(story["turn_records"], meta)))
 
@@ -2302,9 +2348,10 @@ def delete_one_mission(key: str):
 @api.post("/v1/deletions/{token}/restore", tags=["World authoring"])
 def restore_deletion(token: str):
     """Undo a deletion: ``token`` is the ``undo.token`` of a DELETE of an entry, an action or a mission
-    (kept in this process, for its recent deletions). The record goes back whole, and only it (never a
-    whole file): where it was when its list is as the deletion left it, else next to its old neighbour
-    (``changed_since``, ``moved``). 404: no such deletion (undone already, or the API restarted); 409: its
+    (kept with the saves, deletions.json: the most recent 200, across restarts). The record goes back whole,
+    and only it (never a whole file): where it was when its list is as the deletion left it, else next to
+    its old neighbour (``changed_since``, ``moved``). 404: no such deletion (undone already, or older than
+    the most recent 200); 409: its
     name is taken again, or its entry is gone (nothing is overwritten); 400: it would now be invalid."""
     try:
         return content.restore_deletion(token)

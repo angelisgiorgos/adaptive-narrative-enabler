@@ -3337,6 +3337,31 @@ def judgement_markdown(result, title="Judgement"):
 DECISION_ICONS = {"shown": "✅", "hidden": "👁‍🗨", "blocked": "⛔"}
 
 
+def _side_content_lines(trace):
+    """The trace's side content, as read (never decided here): whether the side-story policy lets new
+    side content in now, whether an attack could come, and the opportunities that could come next."""
+    side, attacks = trace.get("side_story") or {}, trace.get("encounters") or {}
+    if not side.get("candidates") and not attacks.get("candidates") and not (side.get("threads") or {}).get("side_quests"):
+        return []  # a world without side quests and attack templates: nothing to say
+    parts = []
+    if side.get("enabled"):
+        hold = side.get("hold")
+        parts.append(f"held (`{hold}`: {(side.get('codes') or {}).get(hold, hold)})" if hold else "may come")
+    else:
+        parts.append("side-story policy off")
+    if attacks.get("candidates"):
+        gate = attacks.get("gate")
+        parts.append(f"attacks: `{gate}`" if gate else "an attack could come")
+    lines = ["**Side content:** " + " · ".join(parts)]
+    ready = [c for c in side.get("candidates") or [] if c.get("eligible")]
+    if ready:
+        ready.sort(key=lambda c: -float(c.get("score") or 0))
+        lines.append("**Could come next:** " + "; ".join(
+            f"{_cell_text(c.get('title') or c.get('key'), 40)} ({c['kind'].replace('_', ' ')}, relevance "
+            f"{float(c.get('relevance') or 0):.1f}, `{c.get('status')}`)" for c in ready[:3]))
+    return lines
+
+
 def decisions_markdown(trace):
     """The author's view of a game's choices now (GET /v1/sessions/{id}/decisions): what is shown,
     hidden and blocked, and why, with the reason codes. Never part of the player's screen."""
@@ -3352,6 +3377,7 @@ def decisions_markdown(trace):
              + " · " + " · ".join(f"{count} {status}" for status, count in (trace.get("counts") or {}).items())]
     for note in trace.get("notes") or []:
         lines.append(f"> ℹ️ {note['message']}")
+    lines += _side_content_lines(trace)
     lines += ["", "| | Choice | Id | Why |", "| --- | --- | --- | --- |"]
     for entry in trace.get("actions") or []:
         why = "; ".join(f"`{r['code']}` {r['message']}" for r in entry["reasons"])
