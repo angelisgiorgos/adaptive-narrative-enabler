@@ -138,7 +138,7 @@ class CompatibilityTests(unittest.TestCase):
         breakdown = fitness._fitness_breakdown(state)
         for term in SIDE_TERMS + ("main_drift", "decision_diversity"):
             self.assertNotIn(term, breakdown)                                              # no version 2 terms
-        self.assertEqual(fitness.version(), 2)                                             # the built-in scoring
+        self.assertEqual(fitness.version(), 3)                                             # the built-in scoring (with relationships)
         self.assertEqual(fitness.version({"fitness": {}}), 1)                              # written before versions
         self.assertEqual(fitness.version({"fitness": {"version": 7}}), 1)                  # unknown: as before
         cfg = config.get("fitness.side_quests")

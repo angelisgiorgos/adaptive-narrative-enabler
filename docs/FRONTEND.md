@@ -228,9 +228,11 @@ all answer with the same object. Excerpt from a real response:
                       {"title": "Walk into the Palace", "description": "…", "state": "todo"}],
            "todo": ["Get the Official's Mask"]},
  "people": [{"name": "Merchant", "called": "a Merchant", "description": "…", "wants": null, "hostile": false,
-             "talks": 1, "quest": false, "helped": 0, "ally": false, "role": "bystander", "importance": 0}],
+             "talks": 1, "quest": false, "helped": 0, "ally": false, "role": "bystander", "importance": 0,
+             "disposition": "neutral", "faction": null}],
  "people_met": [{"name": "Merchant", "called": "a Merchant", "where": ["Tavern"], "talks": 1, "hostile": false,
-                 "gone": false, "ally": false, "role": "bystander", "importance": 0}],
+                 "gone": false, "ally": false, "role": "bystander", "importance": 0, "disposition": "neutral",
+                 "faction": null}],
  "map": {"current": "Tavern", "previous": null,
          "places": [{"name": "Market", "visited": false, "locked": false}, {"name": "Tavern", "visited": true, "locked": false}],
          "paths": [["Market", "Tavern"]], "one_way": []},
@@ -1651,7 +1653,7 @@ restart or delete. A save game file (`ane.savegame/1`, e.g. from the ANE AI) can
 **Actions.** None.
 
 **Client-side logic to reimplement** (`people_markdown` + `map_markdown` + `session_markdown`):
-- "### People met" (or "Nobody yet."); per `people_met[]`: "- **{name}** · met at {where joined ', '}" + notes joined " · ": "here now" (name in `people[]`), "★ can help with your quest" (that `people[]` entry's `quest`), "⚠ hostile", "gone from the story", "spoken with {talks}×", "♥ ally", "◆ {role}" when `importance ≥ 2`.
+- "### People met" (or "Nobody yet."); per `people_met[]`: "- **{name}** · met at {where joined ', '}" + notes joined " · ": "here now" (name in `people[]`), "★ can help with your quest" (that `people[]` entry's `quest`), "⚠ hostile", "gone from the story", "spoken with {talks}×", "♥ ally", else by `disposition`: "😠 against you" (hostile), "🤨 wary of you" (wary), "🙂 friendly" (friendly), nothing for neutral; "⚑ {faction}" when `faction` is set (a faction that is not public comes as `null`); "◆ {role}" when `importance ≥ 2`. Never trust or hostility numbers: those are for authors.
 - "### Map": build adjacency from `map.paths` (both ways) and `map.one_way` (from → "to (one way)"); per `map.places[]`: "- " + "📍 " if name == `map.current` + "**{name}**" + " 🔒" if locked + " *(not visited)*" if not visited + " → {sorted neighbours joined ', ' or 'no known way on'}".
 - "### This session's cast": if any non-empty `cast.left_out[kind]`: "Not in this session (its goal does not need them): {kind}: a, b; …."
 - "### One-time actions": per `unique_actions[]`: "- {action} ({where}, turn {turn}): done | failed, still on offer (`kept`) | failed, used up".
@@ -1719,7 +1721,7 @@ blocked. It is never part of the player's choices (they stay the buttons above).
 
 | Trigger | Request | Body / params | On success | Errors & guards |
 |---|---|---|---|---|
-| "Explain the current choices" (`decisions_ui`) | `GET /v1/sessions/{session_id}/decisions` | — | `decisions_markdown(trace)` → Decisions; when the world has side quests or attack templates, a **Side content** line from the trace's `side_story` and `encounters` (held, with the `hold` code and its meaning from `side_story.codes`, or "may come"; the attack `gate`) and **Could come next** (up to 3 eligible `side_story.candidates` by `score`: title, kind, relevance, status). Read only: the studio decides nothing | no token → "Start a game first."; 404 session gone; 403 the server switched author diagnostics off (`ANE_AUTHOR_DIAGNOSTICS=off`) |
+| "Explain the current choices" (`decisions_ui`) | `GET /v1/sessions/{session_id}/decisions` | — | `decisions_markdown(trace)` → Decisions; when the world has side quests or attack templates, a **Side content** line from the trace's `side_story` and `encounters` (held, with the `hold` code and its meaning from `side_story.codes`, or "may come"; the attack `gate`) and **Could come next** (up to 3 eligible `side_story.candidates` by `score`: title, kind, relevance, status); then, when `relationships.enabled`, **People and factions** (authors only), from `relationships` (`_relationship_lines`): per NPC the story touched (trust or hostility not 0, memories, a goal advanced or done, or a disposition other than neutral; a generic NPC: per copy, `place`) "- **{npc}** at the {place} ({faction}) · {disposition} · trust {trust} · hostility {hostility}" + " · goals: {id} ✓ \| {id} {progress}/{needed}" + " · remembers: {last 3 memory kinds}"; per faction with a standing or a status other than neutral "- ⚑ **{faction}** · standing {standing} · {status}"; per `due` reaction "- ⏳ reaction `{id}` waiting (`{blocked}`)". Read only: the studio decides nothing | no token → "Start a game first."; 404 session gone; 403 the server switched author diagnostics off (`ANE_AUTHOR_DIAGNOSTICS=off`) |
 
 **Client-side logic to reimplement.** `ended` → "The game has ended: nothing is offered.". Else: "**Now:**
 {location} · mode **{mode}**" (+ " · event *{event.title}*", " · talking with **{talking_to}**") + " · state
@@ -1791,8 +1793,8 @@ in the game (no turn, no dice, no encounter, nothing saved).
 | `last_check` | {stat, roll: int, target: int, passed: bool, step: int}\|null | | You "🎲 last check" |
 | `quest` | {key, title, description, status: "in progress"\|"completed"\|"failed", stages: [{title, description, state: "done"\|"current"\|"todo"}], todo: string[]}\|null | | quest card; HUD "🎯 … now:" |
 | `side_quests` | [{key, title, description, giver: string\|null, status: "offered"\|"active"\|"completed"\|"failed"\|"declined", reason: "condition"\|"time"\|"giver_gone"\|null, stages: [{title, description, state}], todo: string[], ready: bool, rewards: string, deadline: int\|null, turns_left: int\|null, turn_in: bool, aids_mission: "lead"\|"ally"\|"none", aided_mission: "lead"\|"ally"\|null, follows: string\|null, offered: int\|null, started: int\|null, ended: int\|null}] | the story's side quests, in the order they were offered or started; an `offered` one is answered with its two choices, a `ready` one handed over with its own (`choices[]` with category `side_quest`, ids `side-quest:<quest>:accept` / `:decline` / `:turn-in`, first, `takes_turn: false`) | quest card "🧭 Side quests"; the choice buttons |
-| `people` | [{name, called, description, wants: string\|null, hostile: bool, talks: int, quest: bool, helped: int, ally: bool, side_quests: string[], role: string\|null, importance: int 0-3}] (empty when ended) | people here; `side_quests`: titles of the side quests they offer now | scene "👥" (❗ when they offer one); People card "here now", "★", "❗ offers a side quest: …" |
-| `people_met` | [{name, called, where: string[], talks: int, hostile: bool, gone: bool, ally: bool, role, importance: int}] | | People card |
+| `people` | [{name, called, description, wants: string\|null, hostile: bool, talks: int, quest: bool, helped: int, ally: bool, side_quests: string[], role: string\|null, importance: int 0-3, disposition: "hostile"\|"wary"\|"neutral"\|"friendly"\|"ally"\|null, faction: string\|null}] (empty when ended) | people here; `side_quests`: titles of the side quests they offer now; `disposition`: how they feel about the player (null with `relationships.enabled: false`); `faction`: who they stand with (null when none, or not public) | scene "👥" (❗ when they offer one); People card "here now", "★", "❗ offers a side quest: …" |
+| `people_met` | [{name, called, where: string[], talks: int, hostile: bool, gone: bool, ally: bool, role, importance: int, disposition, faction}] | | People card (disposition, faction) |
 | `map` | {current: string, previous: string\|null, places: [{name, visited: bool, locked: bool}], paths: [[a, b]], one_way: [[from, to]]}\|null | | People card "### Map" |
 | `choices` | [{name: string, check: {stat: string, chance: int 0-100, bonus: int, risk: {health: int≤0, coins: int≤0, sent_to: string\|null}\|null}\|null}] (empty when ended) | | choice-button labels |
 | `ways_on` | [{name, visited: bool, toward_quest: bool}] (empty when ended) | travel targets | — |

@@ -212,7 +212,14 @@ paths (where the records, saves and models are): only a file's name, when it mat
   offers; danger and recent attacks; the storyteller's side-quest `pull`; every side quest and
   encounter template as a `candidate` with its `relevance` to the main story, `fit`, `appetite` and
   `score`; the last introductions and what optional threads led to; `codes`; docs/AI.md
-  "Side-story orchestration"), and `codes` lists every reason code of the actions. The trace also
+  "Side-story orchestration"), `relationships` shows people and factions as only authors see
+  them (every NPC's, or for a generic NPC every copy's (`place`), `trust`, `hostility`, `attitude`,
+  `disposition`, `faction`, `goals` with how they advance and their progress, `memories`, `related`,
+  `never`, `home`, `kin` and `haunts` (place: presence); every faction's
+  `standing`, `status`, `members`, `relations` and `reacts_to`; the reactions `due` with why each
+  is held back (`blocked`), those `fired`, and the latest `deeds` and transitions `log`; docs/WORLD.md
+  "People, factions and reactions"; the code `npc_refuses` marks a hostile NPC's withheld action),
+  and `codes` lists every reason code of the actions. The trace also
   has `turn`, `location`, `mode`, `event`, `talking_to`, `tension`, `limits`, `shown`, `counts`
   and `notes`, and each action its `id`, `label`, `category`, `key` and `content_ref` (the OpenAPI
   model `DecisionTrace` lists them all). It is made on a copy of the game: no turn,
@@ -247,7 +254,11 @@ paths (where the records, saves and models are): only a file's name, when it mat
   (`{alert, max, warn_at}`; at `max` a manhunt starts), `null` with
   `stakes.alert` off. `people` and `people_met` carry each NPC's `role` and
   `importance` (0-3) in this story (`npc_roles`); someone who matters may stay
-  out of sight until a lead, the road or enough turns bring them in.
+  out of sight until a lead, the road or enough turns bring them in. They also
+  carry `disposition` (`hostile`, `wary`, `neutral`, `friendly`, `ally`) and
+  `faction` (`null` for a faction that is not public): what a player may know.
+  Trust, hostility, memories and goal progress are for authors (the decision
+  trace's `relationships`).
 - A quest's last step is a showdown (`climax`): an event whose choices are
   offered like any other; the story is won when it is won (or, after setbacks,
   at a price). Fast travel (`Travel by known ways to …`) reaches a visited place
@@ -295,11 +306,14 @@ paths (where the records, saves and models are): only a file's name, when it mat
   with a `note`; a save game without a snapshot takes the storyteller of `session_id`). A save
   game of the ANE AI loads here, and one from here in the ANE AI. Fields that do not fit the
   world answer `400`. `GET /v1/world/catalogue` is the world as the ANE AI sends it
-  (`ane.world/1`: locations, NPCs with their `npc_roles`, items, events, missions and
-  `side_quests`). The parameters also carry `side_quests` (`{key: {status, stage, ready,
+  (`ane.world/1`: locations, NPCs with their `npc_roles`, items, events, missions,
+  `side_quests` and `factions`). The parameters also carry `side_quests` (`{key: {status, stage, ready,
   turns_left}}`) and `encounters` (`{attacks, factions, rewards_paid}`: the dynamic encounters
-  met, the factions' standing changes and the rewards already paid), so a session rebuilt from
-  them keeps them.
+  met, the factions' standing changes and the rewards already paid) and `relationships`
+  (`{npcs: {npc or npc@place: {trust, hostility, disposition, memories}}, kin: {npc: {trust,
+  hostility}}, goals: {npc: {progress, done}}, moved, haunts, fired, due}`: what people think of the
+  player (a generic NPC per copy, and what word reached the others), their goals, where they moved,
+  the reactions delivered and still due), so a session rebuilt from them keeps them.
 - A finished story has `ended: true` and offers no more actions.
 - Real play saves persistent variables to its `profile` (`save_on` in the
   story rules). Evaluated stories during evolution do not
@@ -921,10 +935,11 @@ one); `tests/test_studio_coverage.py` checks it.
   - `people`: the people here (`name`, `called` with its article,
     `description`, `wants`, `hostile`, `talks` (times spoken with), `quest`
     (they can help with the mission now), `helped` (times helped with their
-    goal), `ally` (their goal is fulfilled) and `side_quests` (the titles of the side
-    quests they offer now)).
+    goal), `ally` (their goal is fulfilled), `side_quests` (the titles of the side
+    quests they offer now), `disposition` (how they feel about the player) and
+    `faction` (who they stand with, `null` when it is not public)).
   - `people_met`: everyone met in the story (`name`, `called`, `where`,
-    `talks`, `hostile`, `gone`, `ally`).
+    `talks`, `hostile`, `gone`, `ally`, `disposition`, `faction`).
   - `ways_on`: every place one can travel to from here now (`name`,
     `visited`, `toward_quest`); `actions` offer the most relevant of them.
   - `map`: the map as the player knows it, kept with the game: `current`,

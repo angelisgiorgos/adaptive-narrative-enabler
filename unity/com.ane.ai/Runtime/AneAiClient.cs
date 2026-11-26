@@ -209,7 +209,7 @@ namespace Ane.AI
                       cancellation);
 
         // ---- the world as parameters, and content from the UNP --------------------------------
-        /// <summary>Locations, npcs, items, events, missions, stats, variables, routes (ane.world/1).</summary>
+        /// <summary>Locations, npcs, items, events, missions, side_quests, factions, stats, variables, routes (ane.world/1).</summary>
         public Task<Dictionary<string, object>> WorldAsync() => SendAsync("GET", "world");
         public Task<Dictionary<string, object>> EntityAsync(string kind, string name) =>
             SendAsync("GET", $"world/{Part(kind)}/{Part(name)}");

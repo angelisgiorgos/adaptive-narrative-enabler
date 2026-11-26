@@ -30,7 +30,7 @@ internet connection.
 | 1.3 It runs locally, without an internet connection | A standalone program (Python and its libraries inside, no downloads); it listens on 127.0.0.1 only; the tag vectors it was trained with are in the package |
 | 1.4 The UNP stops it fully | `POST /shutdown`; also when the UNP's process ends, when stdin closes, or on SIGTERM; it exits with code 0 ([Stop](#stop)) |
 | 1.5 They talk after it starts | HTTP + JSON on 127.0.0.1 with a bearer token; events POSTed to the UNP's callback |
-| 1.5.1 It sends parameters | `GET /world` (locations, NPCs, items, events, missions with names, tags, goals, descriptions, actions, encounters, event titles; stats; variables), `GET /games/<id>/state` (the session's parameters), `GET /games/<id>` (the scene) |
+| 1.5.1 It sends parameters | `GET /world` (locations, NPCs, items, events, missions, side quests and factions with names, tags, goals, descriptions, actions, encounters, event titles, NPC factions, relationships and haunts; stats; variables), `GET /games/<id>/state` (the session's parameters), `GET /games/<id>` (the scene) |
 | 1.5.2 It receives parameters | `PATCH /games/<id>/player` (stats, items, coins, health, variables), `POST /games/<id>/sync` (what happened in the UNP), `POST /world/patch` (items, actions, tags, stats, any entity) |
 | 1.5.3 It continues a session from the UNP's parameters (load game) | `POST /games {"savegame": ...}`: exactly from the snapshot when it fits, else rebuilt from the parameters (which may be the UNP's own) |
 | 1.5.4 It sends the status of a session the UNP cancels (save game) | `POST /games/<id>/cancel`: the status (outcome `suspended`) and the save game, in the answer and in a `session.cancelled` event |
@@ -181,7 +181,7 @@ All paths are relative to the ready line's `url`. Bodies and answers are JSON ob
 | `GET /engine` | | The engine: name, storyteller, world summary, `code_version`, `protocol`, `data_dir`, `world_revision`, `games` |
 | `POST /shutdown` | `{"save": true, "end_sessions": false}` | `{"saved": [...], "ended": [...]}`, then the process exits |
 | `GET /world` | | The world catalogue (`ane.world/1`) |
-| `GET /world/<kind>/<name>` | | One entity; `kind`: `locations`, `npcs`, `items`, `events`, `missions`, `side_quests` |
+| `GET /world/<kind>/<name>` | | One entity; `kind`: `locations`, `npcs`, `items`, `events`, `missions`, `side_quests`, `factions` |
 | `POST /world/patch` | A [world patch](#world-content-post-worldpatch) | `{"revision", "persisted", "warnings", "patch_id"}`; 422 `{"errors": [...]}` |
 | `POST /world/reset` | `{}` | `{"revision"}`: the UNP's content kept in the data folder is dropped |
 | `GET /progression/<profile>` | | The profile's save game: goals achieved, sessions and their reports |
@@ -304,6 +304,7 @@ The session's parameters (`ane.session_state/1`), the same object a save game ca
 | `mission` | `{"key", "title", "stage", "won"}` or null |
 | `side_quests` | `{key: {"status": "offered" \| "active" \| "completed" \| "failed" \| "declined", "stage", "ready", "turns_left"?}}`: the side quests of the session (`ready`: done, to be handed over to its giver; `turns_left`: of a deadline); a session rebuilt from them stands where they stood (nothing told or paid again; an offer is put to the player again) |
 | `encounters` | `{"attacks": [{"turn", "event", "category", "location", "faction", "npc", "result"}], "factions": {faction: standing change}, "rewards_paid": [event]}`: the dynamic encounters met ([WORLD.md](WORLD.md#dynamic-encounters)); a session rebuilt from them keeps them (nothing told or paid again). Parameters written before it have none: nothing is restored |
+| `relationships` | `{"npcs": {npc or "npc@place": {"trust", "hostility", "disposition", "memories": [{"turn", "kind", "how", "about", "location"}]}}, "kin": {npc: {"trust", "hostility"}}, "goals": {npc: {"progress": {index: count}, "done": [index]}}, "moved": {npc: place}, "haunts": {npc: [place]}, "fired": {reaction id: turn}, "due": [...]}`: what people think of the player and remember (a generic NPC per copy, `"Merchant@Market"`, and in `kin` what word reached the other copies), their goals, where they moved (a generic NPC: new places in `haunts`), and their reactions delivered and still due ([WORLD.md](WORLD.md#people-factions-and-reactions)); faction standing changes are in `encounters.factions`. A session rebuilt from them keeps them (nothing told again). Parameters written before it have none: everyone starts as written |
 | `actions_succeeded`, `unique_actions` | Actions that succeeded; one-time actions and every attempt at them |
 | `events` | Events and their results |
 | `people_met`, `removed_npcs`, `allies`, `defeated`, `alert` | The people of the story |
@@ -354,7 +355,7 @@ Goals are checked afterwards: what the player did in the UNP can win the session
  "persist":     false}
 ```
 
-Kinds: `locations`, `npcs`, `items`, `events`, `missions`, `side_quests` ([side quests](WORLD.md#side-quests):
+Kinds: `locations`, `npcs`, `items`, `events`, `missions`, `side_quests`, `factions` ([factions](WORLD.md#people-factions-and-reactions): `{"upsert": {"factions": {"Dockers": {"reacts_to": {"helped": 1}}}}}`, no tags or actions; checked against the world's own `encounters.factions` too), `side_quests` ([side quests](WORLD.md#side-quests):
 `{"upsert": {"side_quests": {"lantern": {"title": "Light the lantern", "giver": "Dock Worker", "goal":
 {"location": "Harbor"}, "aids_mission": "ally"}}}}`; they have no tags or actions). `upsert` inserts or replaces whole
 entries; `update` changes fields of existing ones (`tags` stands for the kind's tag field; `null`

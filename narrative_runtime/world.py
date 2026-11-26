@@ -1,7 +1,8 @@
 """The world and the UNP: what the UNP reads (the catalogue) and what it changes (patches).
 
-The catalogue (``ane.world/1``, ``world_catalogue``): every location, NPC, item, event, mission and
-side quest with all its authored fields (names, tags, goals, descriptions, actions and their outcomes,
+The catalogue (``ane.world/1``, ``world_catalogue``): every location, NPC, item, event, mission, side
+quest and faction with all its authored fields (an NPC's faction, relationship, haunts, goals and
+reactions too) (names, tags, goals, descriptions, actions and their outcomes,
 encounters, roles, secrets, event titles, ...), the stats and variables, the map and the starting
 locations. Each entity carries its ``kind`` and ``name``.
 
@@ -17,7 +18,7 @@ configuration.
      "stats":       {"stats": {...}, "allocation": {...}, "tag_checks": {...}},
      "persist":     false}
 
-Kinds: locations, npcs, items, events, missions, side_quests. ``upsert`` inserts or replaces whole entries;
+Kinds: locations, npcs, items, events, missions, side_quests, factions. ``upsert`` inserts or replaces whole entries;
 ``update`` changes fields of existing ones (``tags`` stands for the kind's tag field; ``null``
 removes a field); ``delete`` removes entries; ``add_actions`` appends actions; ``tags`` adds or
 removes tags (or sets them with a list); ``stats`` changes the character stats. The result is
@@ -32,7 +33,9 @@ from core_engine import content_rules
 OPERATIONS = ("upsert", "update", "delete", "add_actions", "tags", "stats", "persist", "note")
 # The world's entity kinds, and its side quests (core_engine/side_quests.py), which a UNP reads and
 # patches like missions.
-KINDS = {**content_rules.KINDS, "side_quests": ("side_quests", "mapping")}
+KINDS = {**content_rules.KINDS, "side_quests": ("side_quests", "mapping"),
+         # who stands with whom (core_engine/relationships.py), read and patched like side quests
+         "factions": ("factions", "mapping")}
 TAG_FIELDS = content_rules.TAG_FIELDS
 
 
@@ -168,7 +171,8 @@ def patch_errors(config_data):
 
     world = (config_data or {}).get("world_definition") or {}
     roles = list(((config_data or {}).get("npc_roles") or {}).get("roles") or {})
-    errors = content_rules.world_errors(world, roles)
+    tuning_factions = list((((config_data or {}).get("encounters") or {}).get("factions")) or {})
+    errors = content_rules.world_errors(world, roles, tuning_factions=tuning_factions)
     character_stats = world.get("character_stats")
     if character_stats:
         errors += stats_module.validate_settings(character_stats)

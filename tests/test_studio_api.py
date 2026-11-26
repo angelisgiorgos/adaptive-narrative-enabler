@@ -1145,7 +1145,7 @@ class TrainResultTests(_Sandbox):
         body = answer.json()
         self.assertEqual((body["session_id"], body["game_started"], body["scene"], body["actions"]), (None, False, "", []))
         self.assertTrue(body["engine_id"] and body["run_id"] and body["engine_download_url"] and body["learning"])
-        self.assertEqual(body["learning"]["fitness_version"], 2)                          # fitness.version
+        self.assertEqual(body["learning"]["fitness_version"], 3)                          # fitness.version
         self.assertNotIn("Player profile", body["report"])
         self.assertEqual(set(sessions.SESSIONS), before)                                 # no session
         self.assertEqual(persistent.VariableStore().recent_starts("train-only"), [])     # the profile untouched
@@ -2303,7 +2303,7 @@ class EngineNamesTests(_Sandbox):
         self.assertEqual(card["world"]["summary"]["locations"], len(store.config.get("world_definition.locations")))
         self.assertEqual(card["settings"]["main"]["pop_size"], 1)    # what its training ran with
         self.assertEqual(card["fitness"]["training"], listed["score"])
-        self.assertEqual(card["fitness"]["version"], 2)                # the scoring it was trained with
+        self.assertEqual(card["fitness"]["version"], 3)                # the scoring it was trained with
         self.assertEqual(card["evaluations"], [])
         self.assertEqual(set(card["scaling_traits"]), {"voyage_bias", "goal_bias", "novelty_bias", "event_prob",
                                                        "chaos_bias"})
@@ -3159,9 +3159,9 @@ class EntrySaveChangesTests(_Sandbox):
         # tuning parameters that name it; the other files are edited in place (their comments kept).
         renamed = self.client.put("/v1/entities/Locations/Harbor/draft", json={"fields": {**fields, "name": "Old Harbor"}})
         self.assertEqual(renamed.status_code, 200, renamed.text)
-        self.assertEqual(renamed.json()["references"], {"locations.yaml": 6, "npcs.yaml": 2, "side_quests.yaml": 1,
-                                                        "hyperparameters.yaml": 2})  # a side quest's goal too
-        self.assertIn("Updated 11 reference(s) to `Harbor` → `Old Harbor`", renamed.json()["message"])
+        self.assertEqual(renamed.json()["references"], {"locations.yaml": 6, "npcs.yaml": 3, "side_quests.yaml": 1,
+                                                        "hyperparameters.yaml": 2})  # a side quest's goal, a haunt too
+        self.assertIn("Updated 12 reference(s) to `Harbor` → `Old Harbor`", renamed.json()["message"])
         for name in ("locations.yaml", "npcs.yaml", "hyperparameters.yaml", "missions.yaml", "variables.yaml"):
             self.assertEqual(content._renamed(self._yaml(name), "Harbor", "x")[1], 0, name)  # nothing names Harbor
         self.assertIn("Old Harbor", self._yaml("locations.yaml")["world_definition"]["routes"])

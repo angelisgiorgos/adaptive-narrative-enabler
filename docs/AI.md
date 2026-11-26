@@ -218,6 +218,7 @@ is the narrative controller, the director; the **player** chooses what to do.
 | When events and encounters come (`event_prob`, `chaos_bias`, `threat_prob`) | |
 | How the story answers: setups and payoffs, stakes, failures, the climax (`setup_prob`, story beats) | |
 | Which choices are shown, and in what order (`player_options`: the ranking by its traits, `voyage_bias`, `discovery_bias`, `goal_bias`, `novelty_bias`, ...) | |
+| Nothing of what people think: trust, hostility, dispositions, factions and reactions follow the world's rules and the player's deeds ([People and factions](#people-and-factions-who-acts-and-what-the-director-may-not-do)) | What they do to people (help, steal, betray, attack) |
 
 Before, evolution let the storyteller also take the player's turns: a story told without a
 player's choice took the storyteller's own favourite (`GameState._storyteller_pick`). A
@@ -536,6 +537,7 @@ A **session** is one story a player plays; a **save game** is a player profile.
 | Achieved goals leave the pool | An achieved goal is added to the save game (`progression.goals_once`) and is not drawn or offered again for that profile; *Reset profile* starts a new save game |
 | The progression is saved after each session | When a session ends (by itself, or `POST /v1/sessions/{id}/end`), its report is kept in the profile with its goal, and the playthrough is counted |
 | The UNP is told | The report (goal and outcome `achieved` or `failed`, stats, inventory, health, coins, the goals achieved so far) is POSTed as JSON to `session_report.url` (or `ANE_UNP_URL`, with `ANE_UNP_TOKEN` as a bearer token), in the background; its delivery is noted and it can be sent again |
+| People remember | NPC trust, hostility, memories and fulfilled goals, faction standing and the reactions due are in the save game and the session's parameters (`relationships`); across sessions, the NPCs configured to persist (`relationships.persist`) are kept in the profile ([People and factions](#people-and-factions-who-acts-and-what-the-director-may-not-do)) |
 | A session does not bring everything at once | `session_scope`: what the goal needs stays (its places and the ways there, the people, items and events it names); of the rest, the most valuable share of each kind joins (value: fit with the goal's places and people, things to do, the session's own variety) and the rest stays out. In the city a session keeps about 11 of 15 NPCs, 6 of 8 items and 15 of 16 places, and the goal stays reachable |
 
 The studio shows a session's cast, its one-time actions and its report beside the game, ends
@@ -544,6 +546,52 @@ whether they reached the UNP). The offline engine has the same: `POST /games/<id
 `GET /games/<id>/report`, `GET /progression/<profile>`. A UNP can also save a session
 (`POST /games/<id>/save`), cancel it (its status, outcome `suspended`, and its save game), and
 continue it later, exactly or from parameters it changed ([docs/UNP.md](UNP.md)).
+
+## People and factions: who acts, and what the director may not do
+
+NPCs remember the player, belong to factions and act on their own
+([`core_engine/relationships.py`](../core_engine/relationships.py); the format is in
+[docs/WORLD.md](WORLD.md#people-factions-and-reactions)). It extends what the engine already had
+(NPC goals with their keyword matching, `encounters.factions`, the side quests' giver, the NPCs'
+homes and tags), not a separate simulation:
+
+- **State** is plain data on the story: `npc_relations` (trust, hostility, disposition, memories),
+  `npc_goals_done` with the older `npc_goal_progress` and `allies`, `faction_shift` (the encounters'
+  standing changes, now changed by deeds too), `npc_reactions_due` / `npc_reactions_fired`,
+  `npc_deeds` and `relationship_log` (transitions and reactions). Snapshots carry all of it unchanged.
+- **When it runs.** An outcome is applied (its tags may be deeds, its goals' `opposes` setbacks),
+  then at the end of a turn (`_check_end_conditions`, after the side quests: explicit goals completed
+  by `complete_if`, dispositions settled, reactions whose `when` now holds queued, those due
+  delivered), and once more after the next scene is set (someone just met reacts at once). Signals
+  (deeds, quests, goals, mission stages, transitions, variable changes, meeting someone) queue the
+  reactions that answer them.
+- **Deterministic.** No dice: no draw from the story's random stream, and the order is the world's
+  (the order NPCs and factions are written in). A fixed seed gives the same story, relationships
+  included (`tests/test_relationships.py`).
+- **The guard** (`relationships.permits`). The director cannot make an NPC do what contradicts their
+  explicit state, whatever it ranks or wants. Nothing is done by someone gone or switched off.
+  Nothing in their `never` list is done. No offer, plea or praise comes from someone hostile. No
+  confrontation or threat comes from a friend or ally. Nothing their goals `oppose` happens through
+  them. It is checked for every reaction (held back, with the reason in the decision trace), for
+  side quests their giver offers (`side_quests.offered`, `offered_by`, `hook`), for encounters behind
+  an NPC (`npc_assault`: `npc_unwilling`) and for a hostile NPC's friendly actions (withheld:
+  `npc_refuses` in the decision trace). An action whose own `enabled_if` reads the relationship is
+  the author's decision and is not withheld.
+- **Appearances.** A generic NPC's visibility score gains `relationships.appearance` for their
+  disposition (friends come by more often). A generic NPC with `haunts` is found where they say,
+  every visit or now and then (a draw per story, NPC, place and visit, from the story's own
+  randomness: never its dice), and a place's regulars come before occasional visitors
+  (`relationships.haunt_weight`). A `move` reaction gives a unique NPC a new home, chosen by the
+  same location affinity as their first one (`_npc_location_affinity`), and a generic one a new
+  haunt. Someone who `seek`s the player joins the scene for that visit.
+- **One of many.** Each copy of a generic NPC (`Merchant@Market`) has their own record. What is done
+  to one reaches the others x `kin` (`state.npc_kin`: the changes all copies went through), so
+  robbing the merchant at the Market makes the Tavern's merchant warier, but not as wary.
+- **Training.** The storyteller's ranking pulls toward helping someone with an explicit goal (its
+  `supports` tags, like the keyword goals: `npc_goals.action_weight`) and toward a place where
+  someone waits to have their say (`relationships.reaction_pull`), both x (0.5 + `bias_social`).
+  Fitness version 3 rewards a story whose people and factions changed and acted
+  ([Fitness versions](#side-story-objective-terms)). `relationships.enabled: false` switches it all off.
 
 ## Side-story orchestration
 
@@ -621,8 +669,14 @@ compatibility check, not a measure of narrative quality.
 **Fitness versions.** `fitness.version` names the scoring (`core_engine/fitness.VERSIONS`): **1** is
 the objective before side-story orchestration (a configuration without `fitness.version` is scored
 so, exactly as before: the shipped world with version 1 and the policy off gives the same scores,
-seed for seed); **2** (the built-in configuration) adds the terms below and makes side quests worth
-less for each one more. Scores of different versions are not comparable: an evolution's summary
+seed for seed); **2** adds the terms below and makes side quests worth less for each one more;
+**3** (the built-in configuration) is version 2 with the relationships (`fitness.relationships`,
+`relationships.fitness_term`): `relationship_changes` (each distinct change of someone's feelings
+about the player, x `change_bonus`), `npc_reactions` (each reaction delivered, x `reaction_bonus`) and
+`faction_changes` (each distinct change of a faction's status, x `faction_bonus`). Each one more is
+worth `diminishing` x the one before, so the terms are bounded and going back and forth (hostile,
+then friendly, then hostile again) earns nothing more. A story whose world has no relationship content
+scores as in version 2. Scores of different versions are not comparable: an evolution's summary
 and an engine's card (`fitness.version`), judge benchmarks and baseline comparisons carry the
 version they were scored with, and engines trained before versions are version 1.
 

@@ -35,7 +35,7 @@ var ane = FindObjectOfType<AneAiBehaviour>();
 await ane.StartEngineAsync();
 var client = ane.Client;
 
-var world = await client.WorldAsync();                     // locations, npcs, items, events, missions, stats
+var world = await client.WorldAsync();                     // locations, npcs, items, events, missions, factions, stats
 var view = await client.NewGameAsync(new NewGameOptions {
     Profile = "player-1",
     Player = new Dictionary<string, object> { ["coins"] = 20, ["add_items"] = new[] { "Rusty Sword" } },

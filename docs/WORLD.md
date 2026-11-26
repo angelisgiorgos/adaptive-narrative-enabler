@@ -850,7 +850,7 @@ events:
     encounter:
       category: ambush          # ambush | hostile_patrol | faction_attack | npc_assault |
                                 # location_raid | environmental_threat | defensive_encounter
-      faction: Glacier Thieves  # who attacks (encounters.factions)
+      faction: Glacier Thieves  # who attacks (world `factions`, or encounters.factions)
       tags_any: [glacier]       # only where the place has one of these tags
       min_turn: 3
       on_win:  {text: "...", standing: {Glacier Thieves: -1}, side_quest: the_thieves_hideout}
@@ -901,7 +901,7 @@ examples) decides how often and when:
 | `captive_release` | A player an encounter left locked in (an outcome that sends them to a cell, `send_to`) is let out after this many turns there (5), whether or not the director's own `release_after` is on; 0 leaves it to the director and the cell's own way out |
 | `in_finale`, `in_climax`, `in_conversation` | Whether an attack may interrupt the finale, a climax that waits, or a conversation (no, no, no) |
 | `categories` | Each category on or off, and its weight |
-| `factions` | `{name: {standing, hostile_below, variable}}`: a faction's standing (or a persistent variable's value), changed by the story's encounters (`standing` in their outcomes); below `hostile_below` it is hostile (`faction_hostile: <name>` in conditions) |
+| `factions` | `{name: {standing, hostile_below, variable}}`: a faction's standing (or a persistent variable's value), changed by the story's encounters (`standing` in their outcomes) and by the player's deeds; below `hostile_below` it is hostile (`faction_hostile: <name>` in conditions). A world can write its factions itself, with members, relations and reactions ([People, factions and reactions](#people-factions-and-reactions)): one faction model for encounters and people |
 
 An attack never comes while an event is in progress or another choice waits for an answer (a
 side quest on offer or ready to hand over, a bargain), while the player is held in a cell, or
@@ -946,6 +946,211 @@ told outcome is a failure-branch outcome (tagged with a `story_rules.failure_tag
 `on_check: fail`), such as surrendering, counts as failed in every event, not only in encounters:
 the event ends `event_failed`, and goals and conditions read it so. `false` restores the earlier
 behaviour (counted as succeeded). No shipped story changes with it.
+
+### People, factions and reactions
+
+NPCs remember what the player does, belong to factions, pursue goals of their own and react on their
+own: they offer work, ask for help, warn, confront the player or move elsewhere. It all runs on the
+world's [conditions and effects](#conditions-and-effects) and on what NPCs already have (goals,
+tags, homes, dialogue and actions), in one module
+([`core_engine/relationships.py`](../core_engine/relationships.py)). It never rolls the story's dice,
+so a fixed seed gives the same story. Every field is optional; a world without them plays as before.
+The shipped world (`config/npcs.yaml`, `config/side_quests.yaml`) and both example worlds
+(`examples/frozen_monastery.yaml`, `examples/orbital_station.yaml`) have examples.
+
+**What an NPC thinks of the player.** Every NPC has *trust* and *hostility* (numbers, from their
+`relationship` at first), *memories* of the player's deeds, and a *disposition*:
+
+| Disposition | When |
+| --- | --- |
+| `hostile` | hostility reaches `relationships.hostile_at` (3), or the attitude falls to minus that, or their faction is hostile and their trust is below `friendly_at` |
+| `ally` | one of their goals was fulfilled |
+| `friendly` | attitude at `relationships.friendly_at` (2) or above |
+| `wary` | attitude below 0 |
+| `neutral` | otherwise |
+
+The *attitude* is trust - hostility + `relationships.faction_weight` (0.5) x their faction's standing.
+A change of disposition is a *transition*. It is logged, told when the player knows them
+(`[RELATIONSHIP] The Watchman now counts you an enemy.`; the `npc_now_*` messages) and is a
+signal that reactions can answer.
+
+```yaml
+# config/npcs.yaml
+- name: Gate Guard
+  faction: City Watch               # or listed in the faction's `members`
+  relationship: {trust: 0, hostility: 0, persist: true}   # where the player starts; persist: see below
+  related: {Captain of the Watch: 0.5}   # what is done to him reaches these people (x this)
+  never: [offer_quest]              # behaviours the director may never make him perform
+  hostile_event: guards_alerted     # once hostile, he seeks the player out and starts this event
+  activities:                       # what he is doing: the first that fits is added to his description
+  - {tags_any: [market], disposition: [wary, hostile], text: He keeps a hand on his cudgel while you are near.}
+  - {tags_any: [palace], when: {variable: palace_access, value: true}, text: He waves the carts through.}
+```
+
+**Deeds.** What the player does to people is a deed: `helped`, `betrayed`, `theft`, `crime` or
+`attacked`. An outcome tagged as `relationships.deed_tags` says (`theft`, `steal`, `pickpocket`,
+`attack`, `assault`, `betrayal`, `help`, `rescue`, ...) is a deed against the NPC acted with (an
+event's actions: the NPC behind the event), and the `deed` effect is one too. A side quest's end
+is a deed toward its giver: `quest_completed`, `quest_failed` or `quest_declined`. A deed changes:
+
+- its **target**'s trust and hostility (`relationships.deeds.<kind>`: `trust`, `hostility`);
+- the people **related** to the target (their `related`), by that change x `related`;
+- the **witnesses**, the other NPCs in the scene (`witness_trust`, `witness_hostility`). Attacking
+  someone already hostile is self-defence and troubles no one. Witnesses whose faction is set against
+  the target's (a negative `relations` either way) do not mind;
+- the **factions**: the target's (its `reacts_to` for the deed, else `deeds.<kind>.faction`), and
+  any faction whose `reacts_to` names it and whose member saw it (or every one with `everywhere: true`).
+
+Each NPC concerned remembers it (`how`: target, witness or heard), up to `relationships.max_memories`.
+
+**Factions** are written in the world. The factions of the tuning's `encounters.factions` still
+work, so dynamic encounters (`faction`, `hostile_only`) read the same standing:
+
+```yaml
+world_definition:
+  factions:
+    City Watch:
+      description: The guards and the captain who keep the city's peace.
+      standing: 0               # where the player starts (or `variable`: a persistent variable)
+      hostile_below: -2         # hostile below this (relationships.faction_hostile_below; 0 for a tuning faction)
+      friendly_at: 2
+      relations: {Thieves' Guild: -0.5}   # a change spills over to these factions, x this
+      reacts_to: {theft: -1, crime: -1, attacked: -2, helped: 0.5}
+      everywhere: false         # true: it hears of every such deed, witnessed or not
+      persist: false            # true with `variable`: the standing is kept in that persistent variable
+      public: true              # false: the player is not told who belongs to it
+      reactions: [...]          # like an NPC's, performed by a member (one in the scene first)
+```
+
+A faction's change of status (hostile, neutral, friendly) is told (`faction_now_*` messages). Its
+members' dispositions follow, and the change is a `faction` signal.
+
+**Goals.** A goal written as a sentence ("Collect bribes") still advances as before. An action with
+the NPC whose name, text or tags share a word with it helps; after `npc_goals.progress_needed` times
+they become an ally. This is the compatibility fallback. A goal can instead say exactly what helps:
+
+```yaml
+goals:
+- Save souls                        # a sentence: the keyword fallback
+- goal: Fill the chapel's cellar for the feast
+  id: chapel_feast                  # how conditions name it (default: its text, lower case, with _)
+  complete_if: {side_quest_done: a_gift_for_the_chapel}   # fulfilled as soon as this holds (any turn)
+  supports: [charity]               # an action with them whose outcome has one of these tags helps
+  progress_when: {action_done: Light a candle}            # or: an action with them helps when this holds after it
+  needed: 2                         # helps before it is fulfilled (npc_goals.progress_needed)
+  opposes: [theft]                  # an outcome with one of these, suffered or seen by them, sets it back
+  trust: 2                          # trust when fulfilled (relationships.goal_trust)
+  on_complete: [{change_coins: 3}]  # effects when fulfilled
+  reward: none                      # what an ally gives back: lead, item or none (npc_goals.reward)
+```
+
+A goal with `supports`, `progress_when` or `complete_if` is *explicit*, and its words no longer count.
+A fulfilled goal makes the NPC an ally (as before), adds trust, and is a `goal_completed` signal. A
+setback costs one step and `relationships.goal_setback` (trust -1, hostility +1), and is a
+`goal_opposed` signal.
+
+**Reactions** are what NPCs (and factions) do about what happens:
+
+```yaml
+reactions:
+- signal: theft                     # what it answers; without one, whenever `when` holds
+  about: me                         # me (done to them, or seen) | faction | related | anyone
+  when: {npc_trust: Priest, op: lt, value: 2}   # must hold when it is delivered
+  behaviour: warn                   # offer_quest | request_help | warn | confront | move | praise | threaten
+  where: scene                      # scene: they must be here | seek: they come to the player | anywhere
+  text: '{npc} looks at you sadly. "Put it back, child."'   # also {location} {faction}
+  side_quest: a_blessing_for_the_road   # offered (offer_quest, request_help)
+  event: guards_alerted             # started with them behind it (confront)
+  move_to: Palace                   # or move_to_tags: [religion]: the place that fits them best (move)
+  trust: 1                          # also hostility, standing {faction: n}, effects [...]
+  once: true                        # false: again after `cooldown` turns
+  expires: 8                        # turns it waits to be delivered (relationships.reaction_expiry)
+```
+
+Signals: `helped`, `betrayed`, `theft`, `crime`, `attacked`, `quest_completed` / `quest_failed` /
+`quest_declined` (`quest:` narrows it to one side quest), `goal_completed`, `goal_opposed`,
+`mission_stage` (`stage:` its number or title), `mission_complete`, `disposition` (`to:` the new
+one), `faction` (`faction:`, `to:`), `variable` (`variable:` a persistent variable that changed) and
+`met` (the player meets them in this story: with `npc_remembers`, an earlier story's encounter).
+Write `signal:`. A bare `on:` is read as `true` by YAML, though the engine still takes it.
+
+A reaction waits, at most `expires` turns, until it can be delivered. It is never delivered inside an
+event, it needs its `when` to hold, the NPC must be in the scene for `where: scene`, and at most
+`relationships.max_reactions_per_turn` are delivered each turn. Delivery happens at the end of a turn
+and again once the next scene is set, so someone the player meets reacts at once. Unless `where`
+says otherwise, `confront` seeks the player out, `warn` and `move` happen anywhere, and every other
+behaviour needs the NPC in the scene.
+
+**The director's guard.** The engine never makes an NPC act against their explicit state. An NPC who
+is gone or switched off performs nothing. They never perform a behaviour in their `never` list. A
+hostile NPC offers no quest, asks for no help and praises no one. A friendly NPC or an ally neither
+confronts nor threatens. Nothing tagged with what one of their goals `opposes` happens through them.
+This holds for reactions (one held back waits, and authors see why), for side quests their giver
+offers (a hostile giver offers none), for encounters behind an NPC (`npc_assault`: never a friend),
+and for a hostile NPC's own actions. Their friendly dealings (outcomes tagged
+`relationships.hostile_refuses_tags`, nothing in `aggressive_tags`) are withheld, and they refuse to
+talk (`npc_hostile_talk`), unless the action's own `enabled_if` asks about the relationship, because
+then the author decided.
+
+**What it unlocks.** Dialogue lines, actions, events, side quests (`start`) and missions take the
+conditions above: a line `enabled_if: {npc_disposition: Priest, op: in, value: [friendly, ally]}`, a
+quest offered once the Captain counts the player a friend, an encounter only while a faction is
+hostile.
+
+**Where people are.** A unique NPC lives in one place (their home). A generic NPC (a merchant, a
+guard) has a copy wherever they are found. By default that is wherever their tags fit. `haunts`
+says it exactly, with how often:
+
+```yaml
+- name: Merchant
+  unique: false
+  haunts:                                              # the first that matches a place decides
+  - {tags_any: [trade, commercial], presence: 1.0}     # the markets: at their stall every visit
+  - {places: [Festival of Masks], presence: 0.5}       # one visit in two
+  - {places: [Tavern], presence: 0.3}                  # now and then, over a drink
+  - {places: [Harbor], presence: 0.15}                 # seldom
+  # an entry with neither places nor tags_any matches anywhere their tags fit; no match: never there
+```
+
+`presence` is how often they are there: 1 every visit, 0 never, 0.3 about one visit in three. Each
+visit is decided once, by a draw fixed for the story, the NPC, the place and the visit. It uses the
+story's own randomness, never its dice, so the same visit gives the same answer and a fixed seed
+gives the same story. Every place with a presence above 0 counts as one of their places, for
+quests and leads too. A place's regulars are shown before occasional visitors when the scene has
+few places for people (`relationships.haunt_weight` x their presence). Haunts are for generic NPCs
+only; a unique NPC moves with a `move` reaction.
+
+A friendly NPC (or ally) comes by more often (`relationships.appearance`: a bonus to a generic NPC's
+visibility). A reaction with `move` gives a unique NPC a new home: the place named, or among the
+places with one of `move_to_tags` the one their tags and known places fit best (the same affinity
+that chooses their home). A generic NPC moved that way is found there every visit from then on,
+besides their haunts. One that seeks the player out joins the scene for that visit.
+
+**One of many.** Each copy of a generic NPC is their own person, with their own trust, hostility,
+disposition and memories (the merchant of the Market, `Merchant@Market`, is not the merchant of the
+Tavern). Word travels between them: what the player does to one reaches the others x their `kin`
+(`relationship.kin`, else `relationships.kin`: 0.5). With `kin: 0` they never hear of it; with
+`kin: 1` they are one person with one record (as a unique NPC is). A plain name in a condition,
+effect or reaction (`npc_trust: Merchant`) means the copy where the player is. `Merchant@Market`
+names one copy (`npc_remembers: Merchant@Market/theft`). Goals, allies and reactions belong to the
+NPC as a whole.
+
+**What is kept.** A save game keeps everything (snapshots), and the session's parameters carry it
+(`relationships`: each NPC's or copy's trust, hostility and memories, what kin heard, goals, moves
+and new haunts, reactions due and done). The world catalogue a UNP reads (`ane.world/1`) lists the
+`factions` beside the NPCs (whose own fields carry their faction, relationship, haunts, goals and
+reactions), and a UNP can patch them like side quests. Across stories,
+`relationships.persist` decides: `configured` (default) keeps the NPCs whose `relationship.persist`
+is true (their trust, hostility, memories and goals fulfilled) in the player's profile, `all` keeps
+everyone, `none` keeps no one. A faction's standing is kept through its persistent `variable` when it
+sets `persist: true`.
+
+**What the player sees.** The people here and met (`people`, `people_met`) carry their
+`disposition` and their `faction` (none for a faction that is not `public`), never the numbers,
+memories or goal progress. Authors see everything in the decision trace's `relationships` section
+(GET `/v1/sessions/{id}/decisions`): every NPC's trust, hostility, attitude, disposition, goals and
+how they advance, memories, the factions and their standing, the reactions waiting (and why), and the
+latest deeds and transitions.
 
 ### Conversations
 
@@ -1464,6 +1669,13 @@ enabled_if:
 | `talked_to: N` | the player dealt with N in this story (any action with them, talking too) |
 | `side_quest_active: q` / `side_quest_done: q` | the side quest q is under way / was completed in this story |
 | `side_quest_failed: q` / `side_quest_declined: q` | the side quest q failed / was turned down, let go or withdrawn in this story |
+| `npc_trust: N, op, value` / `npc_hostility: N, op, value` | N's trust in / hostility toward the player compares as stated ([People, factions and reactions](#people-factions-and-reactions)) |
+| `npc_disposition: N, op, value` | N is `hostile`, `wary`, `neutral`, `friendly` or `ally` (eq, ne, in, not_in) |
+| `faction_standing: F, op, value` | the faction F's standing with the player compares as stated |
+| `faction_hostile: F` / `faction_friendly: F` | F is hostile (standing below its `hostile_below`) / friendly (at its `friendly_at` or above) |
+| `npc_ally: N` | one of N's goals was fulfilled (they count the player a friend) |
+| `npc_goal_done: N/g` | N's goal g (its `id` or its text) was fulfilled |
+| `npc_remembers: N/d` | N remembers a deed d of the player's (`theft`, `helped`, `quest_completed`, ...) |
 
 **Shorthand.** Everything written before trees existed still works: a mapping
 of variable names is `all` of its comparisons, and a list is `all` of its
@@ -1495,6 +1707,11 @@ effects:
   - start_event: bandit_ambush             # once the current action is resolved
   - complete_mission: true                 # or the mission's id
   - end_story: You sail into the sunrise.  # the story ends with this text
+  - change_trust: {Priest: 1}              # people and factions; a number alone: the NPC who acts
+  - change_hostility: 2
+  - change_standing: {City Watch: -1}      # also moves the factions related to it
+  - deed: theft                            # the player did this to the NPC who acts (or {kind, npc})
+  - move_npc: {Priest: Palace}             # a unique NPC lives elsewhere from now on
 ```
 
 They go on outcomes (`effects:`, run before the outcome's other fields), on

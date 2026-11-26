@@ -7,6 +7,81 @@ that introduces them.
 
 ## [Unreleased]
 
+### People and factions that remember: relationships, factions and NPC reactions
+
+#### Added
+- `core_engine/relationships.py`: structured NPC state (trust, hostility, a disposition: hostile, wary,
+  neutral, friendly or ally; memories of the player's deeds), world factions (`world_definition.factions`:
+  standing, `hostile_below`, `friendly_at`, `relations` that spill a change over, `reacts_to` deeds,
+  `members`, `public`, `persist`, their own `reactions`), deeds (`helped`, `betrayed`, `theft`, `crime`,
+  `attacked` from outcome tags or the `deed` effect; `quest_completed` / `quest_failed` /
+  `quest_declined` to a side quest's giver) that reach the target, the people `related` to them, the
+  witnesses in the scene and the factions concerned, and disposition transitions (logged, told,
+  signalled). Docs: [docs/WORLD.md](WORLD.md#people-factions-and-reactions),
+  [docs/AI.md](AI.md#people-and-factions-who-acts-and-what-the-director-may-not-do).
+- NPC fields: `faction`, `relationship` (`trust`, `hostility`, `persist`), `related`, `never`,
+  `hostile_event`, `activities` (what they are doing, by place, disposition and condition) and
+  `reactions` (`signal` or `when`; `offer_quest`, `request_help`, `warn`, `confront`, `move`, `praise`,
+  `threaten`; `where`: scene, seek or anywhere; `side_quest`, `event`, `move_to` / `move_to_tags`, trust,
+  hostility, standing and effects; `once`, `cooldown`, `expires`).
+- Explicit NPC goals: `id`, `supports` (tags), `progress_when` and `complete_if` (conditions), `opposes`
+  (tags that set the goal back), `trust`, `on_complete` (effects). A goal written as a sentence keeps
+  the keyword matching as the compatibility fallback.
+- Conditions: `npc_trust`, `npc_hostility`, `faction_standing` (numbers), `npc_disposition`,
+  `faction_friendly`, `npc_ally`, `npc_goal_done: <npc>/<goal>`, `npc_remembers: <npc>/<deed>`.
+  Effects: `change_trust`, `change_hostility`, `change_standing`, `deed`, `move_npc`.
+- The director's guard (`relationships.permits`): no reaction, side-quest offer (`side_quests.offered`,
+  `offered_by`, `hook`) or NPC assault (`encounters`: `npc_unwilling`) that contradicts an NPC's state
+  (gone, `never`, hostile, friendly, a goal it `opposes`). A hostile NPC withholds their friendly
+  actions (decision trace code `npc_refuses`) and refuses to talk, unless the action's own condition
+  reads the relationship.
+- The `relationships` tuning section (`config/hyperparameters.yaml`) with its parameters described for
+  the studio (`backend/tuning_parameters.yaml`), and the story messages `npc_now_*`, `faction_now_*`,
+  `npc_offer_quest`, `npc_request_help`, `npc_warn`, `npc_confront`, `npc_praise`, `npc_threaten`,
+  `npc_moves`, `npc_seeks`, `npc_hostile_talk`, `npc_reaction` (`config/messages.yaml`).
+- What is kept: snapshots and save games carry everything; the session's parameters
+  (`ane.session_state/1`) carry `relationships`; the profile keeps the NPCs configured to persist
+  (`relationships.persist`; `VariableStore.npc_relations` / `record_npc_relations`).
+- What is shown: `people` and `people_met` carry `disposition` and `faction` (null for a faction that is
+  not public) for players; the decision trace (`GET /v1/sessions/{id}/decisions`) has a `relationships`
+  section for authors, shown in the studio's 🔍 Author view as **People and factions**.
+- Examples: the city's factions (City Watch, Thieves' Guild, Chapel), explicit and keyword goals side
+  by side (Priest, Captain of the Watch, Merchant), reactions (the Priest's praise and warning, the
+  Captain's warning and his offer of the new side quest `a_night_with_the_watch` once he counts the
+  player a friend, the Watch turning hostile), a theft (the Merchant's strongbox) and activities;
+  the Frozen Monastery's Brotherhood (the Abbot's warning, Brother Anselm's goal and dialogue, the
+  Hermit who moves away from bloodshed) and the Orbital Station's Station Security and Free Traders
+  (the Mechanic's goal and praise, the Smuggler's threat, the Captain's confrontation once Security is
+  hostile, the Data Shard taken as a theft).
+- Tests: `tests/test_relationships.py` (conditions and effects, deeds and witnesses, transitions and
+  hostile encounters, faction reactions, explicit and keyword goals, dialogue and withheld actions,
+  reactions and their delivery, the guard, the player's and the author's views, save games, session
+  parameters and the profile, deterministic replay, validation and the demo worlds).
+
+- Generic NPCs (a merchant, a guard) are found where their `haunts` say: `{places | tags_any, presence}`,
+  the first that matches a place deciding how often (1 every visit, 0.3 now and then, 0 never; one draw
+  per story, NPC, place and visit from the story's own randomness). Regulars are shown before occasional
+  visitors (`relationships.haunt_weight`); a `move` gives a generic NPC a new haunt. Decision trace code
+  `npc_elsewhere_this_visit`. The city's Merchant: the markets every visit, the Festival one visit in
+  two, the Tavern now and then, the Harbor seldom, nowhere else.
+- Each copy of a generic NPC is its own person (`Merchant@Market` in conditions, effects and the
+  parameters); word of the player reaches the other copies x `kin` (`relationship.kin`, `relationships.kin`).
+- Fitness version 3 (the built-in scoring): version 2 with `relationship_changes`, `npc_reactions` and
+  `faction_changes` (`fitness.relationships`, each one more worth less). The storyteller's ranking pulls
+  toward an explicit goal's `supports` and toward someone waiting with a reaction (`relationships.reaction_pull`).
+- The world catalogue (`ane.world/1`, `GET /world`, `GET /v1/world/catalogue`) lists `factions`; a UNP
+  reads them (`GET /world/factions/<name>`) and patches them like side quests. A patched or uploaded
+  world is checked against its own `encounters.factions`.
+
+#### Changed
+- The built-in `fitness.version` is 3: scores of version 2 and 3 are not compared (engine cards and
+  benchmarks carry their version).
+- `encounters.standing` / `encounters.hostile` read the one faction model (world factions, then the
+  tuning's `encounters.factions`, which keep `hostile_below: 0`); an encounter's `standing` change
+  goes through it (clamped to `relationships.limits.standing`, spilling over to related factions, told
+  when the faction's status changes).
+- A world-only configuration file keeps its own `factions` (`backend/store.WORLD_CONTENT`).
+
 ### Gameplay playtests: scenarios, checks, author notes and a replay
 
 #### Added

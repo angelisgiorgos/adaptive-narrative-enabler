@@ -783,8 +783,12 @@ class SavedTests(unittest.TestCase):
             state = GameState(engine.build_world(self.genome), self.genome, rng=random.Random(5), store=store,
                               profile=profile, start="Tavern")
         state.coins = 1
-        state.player_options()
-        state.take_option(state.player_options()[0])
+        options = state.player_options()
+        ids = choices.assign_ids(options, state)
+        # A turn in the Tavern that starts no event (no offer comes while one is under way); who is in the
+        # Tavern depends on the seed (the Merchant only drops by now and then: their haunts).
+        state.take_option(next(option for option, action_id in zip(options, ids)
+                               if not option.triggers_event and not action_id.startswith("leave")))
         self.assertEqual(state.side_quests.get("a_full_purse", {}).get("status"), "offered", state.side_quests)
         _take(state, "side-quest:a-full-purse:accept")                                # taken on, as a choice
         self.assertEqual(state.side_quests["a_full_purse"]["status"], "active")
@@ -794,7 +798,10 @@ class SavedTests(unittest.TestCase):
         world = config.get("world_definition") or {}
         self.assertEqual(set(world.get("side_quests") or {}), {"a_gift_for_the_chapel", "rumours_from_the_archive",
                                                                  "a_blessing_for_the_road", "charting_the_storm",
-                                                                 "a_full_purse"})
+                                                                 "a_full_purse",
+                                                                 # offered by the Captain once he is a friend
+                                                                 # (core_engine/relationships.py, tests/test_relationships.py)
+                                                                 "a_night_with_the_watch"})
         self.assertEqual(content_rules.side_quest_errors(world, world["side_quests"]), [])
         self.assertEqual(set(engine.build_world(self.genome).side_quests), set(world["side_quests"]))
 
