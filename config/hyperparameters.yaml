@@ -555,8 +555,45 @@ npc_goals:
   reward: lead            # an ally shows the way to a place they know (lead), an item (item), or nothing (none)
   ally_check_bonus: 15    # an ally's own checks are easier by this
   action_weight: 0.5      # the storyteller's pull toward helping someone (x 0.5 + bias_social)
+relationships:            # people and factions that remember (core_engine/relationships.py; docs/WORLD.md)
+  enabled: true
+  friendly_at: 2          # attitude (trust - hostility + faction_weight x the faction's standing) from which an NPC is friendly
+  hostile_at: 3           # hostility (or -attitude) from which an NPC is hostile
+  faction_weight: 0.5     # x a faction's standing in its members' attitude
+  faction_hostile_below: -2   # a world faction is hostile below this standing unless it sets hostile_below
+  limits: {trust: [-10, 10], hostility: [0, 10], standing: [-10, 10]}
+  max_memories: 8         # deeds each NPC remembers (the oldest are forgotten)
+  kin: 0.5                # a generic NPC (a merchant, a guard): how far word of the player travels between its copies (1: one person)
+  haunt_weight: 2.0       # x a generic NPC's presence here (haunts): regulars are shown before occasional visitors
+  reaction_pull: 1.0      # the storyteller's pull toward a place where someone waits with a reaction (x 0.5 + bias_social)
+  reaction_expiry: 8      # turns a reaction waits to be delivered (the NPC absent, the story in an event...)
+  max_reactions_per_turn: 1
+  announce: true          # tell the transitions the player can know of ([RELATIONSHIP], [FACTION])
+  witnesses: true         # the NPCs in the scene see what the player does
+  persist: configured     # none | configured (relationship.persist, a faction's persist) | all: kept in the profile
+  goal_trust: 2           # trust when one of an NPC's goals is fulfilled
+  goal_setback: {trust: -1, hostility: 1}   # an outcome one of their goals opposes
+  hostile_refuses_tags: [social, trade, information, help, blessing]   # a hostile NPC withholds such actions...
+  aggressive_tags: [combat, threat, confrontation, brawl, stealth, escape, deception]   # ...unless they are also these
+  appearance: {ally: 1.0, friendly: 0.5, neutral: 0.0, wary: -0.25, hostile: 0.0}   # + a generic NPC's visibility
+  deed_tags:              # outcome tags that make a deed against the NPC acted with (or the scene's)
+    theft: [theft, steal, stolen, pickpocket]
+    crime: [crime, murder, vandalism]
+    attacked: [attack, assault]
+    betrayed: [betrayal, betray, betrayed]
+    helped: [help, helped, rescue, aid]
+  deeds:                  # what each deed does: the target's trust and hostility, x related for the people close
+    # to them, the witnesses' (witness_trust, witness_hostility), and the target's faction standing (faction)
+    helped: {trust: 1, hostility: -1, faction: 0.5, related: 0.5}
+    betrayed: {trust: -3, hostility: 2, faction: -1, related: 0.5, witness_trust: -1}
+    theft: {trust: -1, hostility: 1, faction: -0.5, related: 0.5, witness_hostility: 1}
+    crime: {hostility: 1, faction: -1, related: 0.5, witness_hostility: 1}
+    attacked: {trust: -2, hostility: 3, faction: -1, related: 0.5, witness_hostility: 1}
+    quest_completed: {trust: 2, faction: 1, related: 0.5}
+    quest_failed: {trust: -1, faction: -0.5}
+    quest_declined: {}
 fitness:
-  version: 2              # the scoring (core_engine/fitness.VERSIONS); scores of different versions are not comparable
+  version: 3              # the scoring (core_engine/fitness.VERSIONS); scores of different versions are not comparable
   npc_interaction_cap: 3  # interactions per NPC that still add to the score (no reward for chat farming)
   side_quests:            # the training objective's share for side quests (core_engine/side_quests.fitness_term)
     complete_bonus: 10           # each side quest completed (version 2: the first; each one more x diminishing)
@@ -566,6 +603,11 @@ fitness:
     unfinished_penalty: 2        # version 1: each side quest still under way when the story ends (version 2: side_story)
     diminishing: 0.6             # version 2: each side quest, step or aid more is worth this x the one before (bounded)
     repeat_factor: 0.25          # version 2: ...and x this again when it is like one done already (same giver and goal)
+  relationships:          # version 3: people and factions that changed (core_engine/relationships.fitness_term)
+    change_bonus: 3              # each distinct change of someone's feelings about the player (x diminishing each one more)
+    reaction_bonus: 2            # each reaction delivered (someone acting on what happened)
+    faction_bonus: 3             # each change of a faction's status (hostile, neutral, friendly)
+    diminishing: 0.6             # each one more is worth this x the one before (bounded: no farming)
   side_story:             # version 2: side content as part of the story (core_engine/side_story.objective_terms), all shares or means
     relevance_weight: 8          # x the mean relevance (0..1) to the main story of the side content taken on or fought
     payoff_weight: 12            # x the share of resolved optional threads that led somewhere (meaningful)

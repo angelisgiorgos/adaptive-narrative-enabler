@@ -935,6 +935,9 @@ def side_quests_markdown(side_quests):
     return "\n\n".join(lines)
 
 
+DISPOSITION_NOTES = {"hostile": "😠 against you", "wary": "🤨 wary of you", "friendly": "🙂 friendly"}
+
+
 def people_markdown(game):
     """Everyone met in the story: where, how often spoken with, and who is hostile or gone."""
     met = game.get("people_met") or []
@@ -956,6 +959,10 @@ def people_markdown(game):
             notes.append(f"spoken with {person['talks']}×")
         if person.get("ally"):
             notes.append("♥ ally")
+        elif person.get("disposition") in DISPOSITION_NOTES:  # how they feel about you (never the numbers)
+            notes.append(DISPOSITION_NOTES[person["disposition"]])
+        if person.get("faction"):
+            notes.append(f"⚑ {person['faction']}")
         if (person.get("importance") or 0) >= 2:
             notes.append(f"◆ {person.get('role')}")  # someone who matters in this story (npc_roles)
         lines.append(f"- **{person['name']}** · met at {', '.join(person['where'])}"
@@ -3378,6 +3385,7 @@ def decisions_markdown(trace):
     for note in trace.get("notes") or []:
         lines.append(f"> ℹ️ {note['message']}")
     lines += _side_content_lines(trace)
+    lines += _relationship_lines(trace)
     lines += ["", "| | Choice | Id | Why |", "| --- | --- | --- | --- |"]
     for entry in trace.get("actions") or []:
         why = "; ".join(f"`{r['code']}` {r['message']}" for r in entry["reasons"])
@@ -3385,6 +3393,41 @@ def decisions_markdown(trace):
         lines.append(f"| {DECISION_ICONS.get(entry['status'], '')} {entry['status']} | {_cell_text(entry['label'], 60)}"
                      f"{rank} | `{entry['id']}` | {_cell_text(why, 220)} |")
     return "\n".join(lines)
+
+
+def _relationship_lines(trace):
+    """People and factions as only authors see them (the trace's `relationships`): those the story has
+    touched (trust, hostility, disposition, goals advanced, memories), the factions whose standing
+    moved, and the reactions waiting with why."""
+    rel = trace.get("relationships") or {}
+    if not rel.get("enabled"):
+        return []
+    lines = []
+    for npc in rel.get("npcs") or []:
+        goals = []
+        for goal in npc.get("goals") or []:
+            if goal["done"]:
+                goals.append(f"{goal['id']} ✓")
+            elif goal["progress"]:
+                goals.append(f"{goal['id']} {goal['progress']}/{goal['needed']}")
+        memories = [memory["kind"] for memory in (npc.get("memories") or [])[-3:]]
+        if not (npc["trust"] or npc["hostility"] or memories or goals or npc["disposition"] != "neutral"):
+            continue
+        name = f"**{npc['npc']}**" + (f" at the {npc['place']}" if npc.get("place") else "") \
+            + (f" ({npc['faction']})" if npc.get("faction") else "")
+        line = f"- {name} · {npc['disposition']} · trust {npc['trust']} · hostility {npc['hostility']}"
+        if goals:
+            line += " · goals: " + ", ".join(goals)
+        if memories:
+            line += " · remembers: " + ", ".join(memories)
+        lines.append(line)
+    for faction in rel.get("factions") or []:
+        if faction["standing"] or faction["status"] != "neutral":
+            lines.append(f"- ⚑ **{faction['faction']}** · standing {faction['standing']} · {faction['status']}")
+    for item in rel.get("due") or []:
+        blocked = f" (`{item['blocked']}`)" if item.get("blocked") else ""
+        lines.append(f"- ⏳ reaction `{item['id']}` waiting{blocked}")
+    return ["", "**People and factions** (authors only):"] + lines if lines else []
 
 
 @ui

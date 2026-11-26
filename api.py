@@ -278,7 +278,9 @@ class PlayState(BaseModel):
         "quest, helped, ally, side_quests, role, importance}] (talks: times spoken with; quest: they can help with the "
         "mission now; side_quests: the titles of the side quests they offer now; "
         "helped: times helped with their goal; ally: their goal is fulfilled; role and importance 0-3: how much they "
-        "matter in this story, npc_roles).")
+        "matter in this story, npc_roles; disposition: hostile|wary|neutral|friendly|ally and faction: who they stand "
+        "with, null for a faction that is not public, core_engine/relationships.py). Trust, hostility, memories and "
+        "goal progress are for authors (GET /v1/sessions/{id}/decisions `relationships`).")
     map: dict[str, Any] | None = Field(
         default=None, description="The map as the player knows it: {current, previous, places: [{name, visited, locked}], "
         "paths: [[a, b]] (both ways), one_way: [[from, to]]}.")
@@ -300,7 +302,7 @@ class PlayState(BaseModel):
         "options refused (409 `stale_state`).")
     people_met: list[dict[str, Any]] = Field(
         default_factory=list, description="Everyone met in this story: [{name, called, where, talks, hostile, gone, ally, "
-        "role, importance}].")
+        "role, importance, disposition, faction}].")
     ways_on: list[dict[str, Any]] = Field(
         default_factory=list, description="The places one can travel to from here now: [{name, visited, toward_quest}].")
     cast: dict[str, Any] | None = Field(
@@ -1346,6 +1348,16 @@ class DecisionTrace(BaseModel):
         "side_share}, pull (x the storyteller's pull toward side quests), candidates [{kind (side_quest | "
         "encounter), key, title, eligible, status, relevance, fit, appetite, score}], introductions, links "
         "(the last five of each), summary, codes {code: meaning}}."))
+    relationships: dict[str, Any] | None = Field(default=None, description=(
+        "People and factions (core_engine/relationships.explain), for authors only: {enabled, npcs [{npc, place (a "
+        "generic NPC's copy, or null), faction, trust, hostility, attitude, disposition, goals [{id, text, how (conditions | tags | keywords), progress, "
+        "needed, done, supports, opposes}], memories [{turn, kind, how (target | witness | heard), about, location}], "
+        "related, never, home, seeking, kin (generic NPCs: how far word travels between copies), haunts ({place: "
+        "presence}, or null), persist}], factions [{faction, standing, status (hostile | neutral | "
+        "friendly), base, shift, hostile_below, friendly_at, relations, members, reacts_to, world}], due (reactions "
+        "waiting: {id, owner, since, until, signal, blocked (why not yet: a code)}), fired {id: turn}, log (the last "
+        "transitions and reactions), deeds (the last deeds: {turn, kind, target, witnesses, location, quest, "
+        "justified}), codes {code: meaning}}."))
     codes: dict[str, dict[str, str]] = Field(default_factory=dict, description=(
         "Every reason code of shown / hidden / blocked actions: {status, meaning} (the encounter and side-story "
         "codes are in their own sections' codes)."))

@@ -11,17 +11,19 @@ See docs/AI.md, "What fitness is, and what it is not"."""
 from utils.config_loader import config
 from utils.tag_similarity import semantic_tag_similarity
 
-from . import rules, side_quests, side_story
+from . import relationships, rules, side_quests, side_story
 from .context import with_state_context
 
 # The scoring semantics (``fitness.version``). Scores of different versions are not comparable:
 # training records, engine cards and benchmarks carry the version they were scored with.
-FITNESS_VERSION = 2
+FITNESS_VERSION = 3
 VERSIONS = {
     1: "The terms before side-story orchestration (a configuration without fitness.version).",
     2: "Version 1, with side quests worth less for each one more (fitness.side_quests.diminishing, no count "
        "farming) and the side-story terms (fitness.side_story): relevance, payoff, completion, filler, "
        "unresolved threads, encounter repetition, interruptions, main-quest drift and decision diversity.",
+    3: "Version 2, with the relationships (fitness.relationships): people whose feelings about the player "
+       "changed, reactions delivered and factions whose status changed, each one more worth less.",
 }
 
 
@@ -388,6 +390,9 @@ def _fitness_breakdown(state):
         # Side content as part of the story: relevance, payoff, filler, repetition, interruptions,
         # main-quest drift and decision diversity (fitness.side_story; core_engine/side_story.py).
         breakdown.update(side_story.objective_terms(state, fitness_cfg.get("side_story") or {}))
+    if scoring >= 3:
+        # People and factions that changed, and reacted (fitness.relationships; core_engine/relationships.py).
+        breakdown.update(relationships.fitness_term(state, fitness_cfg.get("relationships") or {}))
     # The engine's own beats: the climax, triumphs, reveals, consequences, failures that led on.
     breakdown.update(_beats(state, fitness_cfg.get("beats", {})))
     # What the story lacks (objective_losses), subtracted.
