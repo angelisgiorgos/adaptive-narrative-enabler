@@ -353,7 +353,7 @@ def _entries(world, kind):
     return [(entry.get("name"), entry) for entry in raw if isinstance(entry, dict)]
 
 
-def world_errors(world, roles=None):
+def world_errors(world, roles=None, tuning_factions=None):
     """Every problem of a whole world (empty when it can be played): entries and their actions,
     NPC roles and secrets, missions, the map, and the engine's logic checks."""
     world = world or {}
@@ -387,5 +387,5 @@ def world_errors(world, roles=None):
     errors.extend(mission_errors(world, world.get("missions") or {}))
     errors.extend(side_quest_errors(world, world.get("side_quests") or {}))
     errors.extend(route_errors(world))
-    errors.extend(logic_errors(world))
+    errors.extend(logic_errors(world, tuning_factions))  # tuning_factions: its own encounters.factions (None: in use)
     return list(dict.fromkeys(errors))

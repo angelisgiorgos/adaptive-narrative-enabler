@@ -326,7 +326,8 @@ class EngineModel:
         missing = sorted(set(TRAIT_BOUNDS) - set(genome["traits"]) - set(Genome.added_field_defaults()))
         if missing:
             raise ValueError("The engine model's genome is missing: " + ", ".join(missing))
-        errors = logic_errors((config_data or {}).get("world_definition"))
+        errors = logic_errors((config_data or {}).get("world_definition"),  # with its own tuning's factions
+                              tuning_factions=list((((config_data or {}).get("encounters") or {}).get("factions")) or {}))
         if errors:
             raise ValueError("The engine model's world is invalid: " + "; ".join(errors[:5]))
         traits = {**Genome.added_field_defaults(), **genome["traits"]}

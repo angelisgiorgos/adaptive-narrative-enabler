@@ -193,7 +193,18 @@ def offered(state, quest):
     if quest.giver and (state.character_interactions.get(quest.giver, 0) <= 0
                         or quest.giver in state.removed_npcs):
         return False
+    if quest.giver and _giver_unwilling(state, quest):
+        return False
     return quest.start is None or quest.start.holds(state.facts)
+
+
+def _giver_unwilling(state, quest):
+    """Whether its giver would not offer it now: hostile to the player, never offers quests, or it
+    goes against one of their goals (core_engine/relationships.py, the director's guard)."""
+    from . import relationships
+
+    return relationships.permits(state, quest.giver, "offer_quest", getattr(quest, "tags", None) or ()) in (
+        "hostile", "forbidden", "opposes_goal")
 
 
 def hook(state, key):
@@ -205,6 +216,8 @@ def hook(state, key):
     if quest is None or quest.name in records(state) or not settings()["enabled"]:
         return False
     if (not quest.repeatable and _done_before(state, quest.name)) or not state.is_enabled(quest):
+        return False
+    if quest.giver and _giver_unwilling(state, quest):
         return False
     story = side_story.settings()
     side_story.note(state, "hook", quest.name, quest.title, side_story.quest_relevance(state, quest))
@@ -232,7 +245,7 @@ def offered_by(state, npc):
             continue
         if not quest.repeatable and _done_before(state, quest.name):
             continue
-        if state.is_enabled(quest) and _follows_done(state, quest) and (
+        if state.is_enabled(quest) and _follows_done(state, quest) and not _giver_unwilling(state, quest) and (
                 quest.start is None or quest.start.holds(state.facts)):
             titles.append(quest.title)
     return titles
@@ -475,6 +488,7 @@ def _decline(state, quest, what):
     if what == "declined":
         _tell(state, quest, "decline", "side_quest_declined", title=quest.title)
     state._run_effects(getattr(quest, "on_decline", None) or ())
+    _relations(state, quest, "quest_declined")
 
 
 def answer(state, key, choice):
@@ -515,6 +529,7 @@ def _finish(state, quest, status, reason=None, what=None):
         _tell(state, quest, "complete", "side_quest_complete", title=quest.title)
         record["aided"] = _aid_mission(state, quest)
         side_story.completed(state, quest, record["aided"])  # what it led to; its reveal (texts.reveal)
+        _relations(state, quest, "quest_completed")
         return
     record["reason"] = reason
     message = {"time": "side_quest_expired", "giver_gone": "side_quest_giver_gone",
@@ -523,6 +538,16 @@ def _finish(state, quest, status, reason=None, what=None):
           item=state._called(what) if what else "")
     state._run_effects(quest.on_fail)
     side_story.failed(state, quest)
+    _relations(state, quest, "quest_failed")
+
+
+def _relations(state, quest, kind):
+    """What its giver (and their faction, and the people close to them) make of how it ended: a deed
+    (core_engine/relationships.py), and the reactions it calls for (``on: quest_completed``, ...)."""
+    from . import relationships
+
+    relationships.deed(state, kind, target=quest.giver if quest.giver and not state._is_removed(quest.giver) else None,
+                       witnesses=[], quest=quest.name)
 
 
 def _aid_mission(state, quest):

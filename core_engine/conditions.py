@@ -27,6 +27,16 @@ Leaves compare a value, or test a fact of the story::
     outcome_tag: escape                            an outcome with this tag succeeded
     mission: expose_the_fence                      the story's mission
 
+People and factions (core_engine/relationships.py)::
+
+    npc_trust: Priest            op: gte  value: 2   an NPC's trust in the player (also `npc_hostility`)
+    faction_standing: City Watch op: lt   value: 0   a faction's standing with the player
+    npc_disposition: Priest      op: in   value: [friendly, ally]   hostile | wary | neutral | friendly | ally
+    faction_hostile: City Watch                    the faction is hostile (also `faction_friendly`)
+    npc_ally: Priest                               one of the NPC's goals was fulfilled
+    npc_goal_done: Priest/heal_the_sick            that goal of theirs (its id or text) was fulfilled
+    npc_remembers: Gate Guard/theft                the NPC remembers a deed of the player's
+
 ``op`` is eq (the default), ne, gt, gte, lt, lte, in or not_in.
 
 Shorthand, as written before trees existed: a mapping of variable names means
@@ -40,10 +50,11 @@ import re
 OPERATORS = ("eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in")
 BUILTIN_VARIABLES = {"playthroughs": "int"}  # read-only, maintained by the variable store
 GROUPS = ("all", "any", "not")
-COMPARISONS = ("variable", "stat", "resource")
+COMPARISONS = ("variable", "stat", "resource", "npc_trust", "npc_hostility", "faction_standing", "npc_disposition")
 FACTS = ("has_item", "item_collected", "visited", "at_location", "npc_removed", "event_done", "event_succeeded",
          "event_failed", "action_done", "outcome_tag", "mission", "secret_known", "talked_to", "side_quest_active",
-         "side_quest_done", "side_quest_failed", "side_quest_declined", "faction_hostile")
+         "side_quest_done", "side_quest_failed", "side_quest_declined", "faction_hostile", "faction_friendly",
+         "npc_ally", "npc_goal_done", "npc_remembers")
 KEYWORDS = frozenset(GROUPS + COMPARISONS + FACTS)  # cannot be variable names (shorthand would be ambiguous)
 RESOURCES = ("coins", "health", "turn")
 TRUE = ("all", ())
@@ -56,9 +67,12 @@ _FACT_REFERENCES = {
     "talked_to": "npcs", "side_quest_active": "side_quests", "side_quest_done": "side_quests",
     "side_quest_failed": "side_quests", "side_quest_declined": "side_quests",
     "faction_hostile": None,  # a faction of encounters.factions (free text)
+    "faction_friendly": "factions", "npc_ally": "npcs",
+    "npc_goal_done": "npc_pair", "npc_remembers": "npc_pair",  # "<npc>/<goal or deed>"
 }
+DISPOSITION_VALUES = ("hostile", "wary", "neutral", "friendly", "ally")
 _FACT_LABELS = {"items": "item", "locations": "location", "npcs": "NPC", "events": "event", "missions": "mission",
-                "side_quests": "side quest"}
+                "side_quests": "side quest", "factions": "faction"}
 _ACTION_PREFIX = re.compile(r"^\s*(\([^)]*\)|\[[^\]]*\])\s*")
 
 
@@ -275,6 +289,16 @@ class StoryFacts:
             return state.stats.value(name, state.combat.item_bonuses(state.inventory).get(name, 0))
         if kind == "resource":
             return {"coins": state.coins, "health": state.health, "turn": state.actions_taken}.get(name)
+        if kind in ("npc_trust", "npc_hostility", "faction_standing", "npc_disposition"):  # core_engine/relationships.py
+            from . import relationships
+
+            if kind == "faction_standing":
+                return relationships.standing(state, name)
+            if relationships.character(state, name) is None:
+                return None
+            if kind == "npc_disposition":
+                return relationships.disposition(state, name)
+            return relationships.trust(state, name) if kind == "npc_trust" else relationships.hostility(state, name)
         return None
 
     def fact(self, kind, name):
@@ -313,6 +337,18 @@ class StoryFacts:
             from .encounters import hostile
 
             return hostile(state, name)
+        if kind in ("faction_friendly", "npc_ally", "npc_goal_done", "npc_remembers"):
+            from . import relationships
+
+            if kind == "faction_friendly":
+                return relationships.faction_status(state, name) == "friendly"
+            if kind == "npc_ally":
+                return name in (state.__dict__.get("allies") or ())
+            npc, _, what = str(name).partition("/")
+            if kind == "npc_remembers":
+                return relationships.remembers(state, npc.strip(), what.strip())
+            index = relationships.goal_index(state, npc.strip(), what.strip())
+            return index is not None and index in relationships.goals_done(state, npc.strip())
         return False
 
 
@@ -366,7 +402,7 @@ class References:
     """Names a condition or an effect may refer to. A field left as None is not checked."""
 
     def __init__(self, variables=None, stats=None, items=None, locations=None, npcs=None, events=None, missions=None,
-                 side_quests=None):
+                 side_quests=None, factions=None):
         self.variables = variables  # name -> {type, ...} (persistent variable definitions)
         self.stats = None if stats is None else set(stats)
         self.items = None if items is None else set(items)
@@ -375,10 +411,12 @@ class References:
         self.events = None if events is None else set(events)
         self.missions = None if missions is None else set(missions)
         self.side_quests = None if side_quests is None else set(side_quests)
+        self.factions = None if factions is None else set(factions)
 
     @classmethod
-    def from_world(cls, world):
-        """From a ``world_definition`` mapping (configuration)."""
+    def from_world(cls, world, tuning_factions=None):
+        """From a ``world_definition`` mapping (configuration). ``tuning_factions``: the faction names
+        of its own tuning (encounters.factions; default: the configuration in use)."""
         world = world or {}
         return cls(
             variables=dict(world.get("variables") or {}),
@@ -389,6 +427,8 @@ class References:
             events=list(world.get("events") or {}),
             missions=list(world.get("missions") or {}),
             side_quests=list(world.get("side_quests") or {}),
+            factions=list(world.get("factions") or {}) + (
+                _tuning_factions() if tuning_factions is None else list(tuning_factions)),
         )
 
     @classmethod
@@ -399,6 +439,7 @@ class References:
             items=[obj.name for obj in world.objects], locations=list(world.locations),
             npcs=[char.name for char in world.characters], events=list(world.events), missions=list(world.missions),
             side_quests=list(getattr(world, "side_quests", None) or {}),
+            factions=list(getattr(world, "factions", None) or {}) + _tuning_factions(),
         )
 
     def variable_type(self, name):
@@ -407,6 +448,13 @@ class References:
             return BUILTIN_VARIABLES[name]
         spec = (self.variables or {}).get(name)
         return spec.get("type") if isinstance(spec, dict) else None
+
+
+def _tuning_factions():
+    """The factions the tuning names (encounters.factions): conditions may ask about them too."""
+    from utils.config_loader import config
+
+    return list((config.get("encounters") or {}).get("factions") or {})
 
 
 def matches_type(value, type_name, strict=False):
@@ -464,6 +512,13 @@ def _check(tree, refs, where, errors):
             errors.append(f"`{where}`: `{fact}` needs a name.")
             return
         field = _FACT_REFERENCES[fact]
+        if field == "npc_pair":
+            npc, slash, what = name.partition("/")
+            if not slash or not npc.strip() or not what.strip():
+                errors.append(f"`{where}`: `{fact}` takes `<NPC>/<{'goal' if fact == 'npc_goal_done' else 'deed'}>`.")
+            elif refs.npcs is not None and npc.strip() not in refs.npcs:
+                errors.append(f"`{where}`: unknown NPC `{npc.strip()}` in `{fact}`.")
+            return
         known = getattr(refs, field) if field else None
         if known is not None and name not in known:
             errors.append(f"`{where}`: unknown {_FACT_LABELS[field]} `{name}` in `{fact}`.")
@@ -483,6 +538,23 @@ def _check(tree, refs, where, errors):
             errors.append(f"`{where}` uses undefined stat `{name}`.")
             return
         type_name = "int"
+    elif kind in ("npc_trust", "npc_hostility", "npc_disposition"):
+        if refs.npcs is not None and name not in refs.npcs:
+            errors.append(f"`{where}`: unknown NPC `{name}` in `{kind}`.")
+            return
+        if kind == "npc_disposition":
+            values = value if isinstance(value, tuple) else (value,)
+            if op not in ("eq", "ne", "in", "not_in"):
+                errors.append(f"{label}: a disposition is compared with eq, ne, in or not_in.")
+            elif not all(v in DISPOSITION_VALUES for v in values):
+                errors.append(f"{label}: a disposition is one of {', '.join(DISPOSITION_VALUES)}.")
+            return
+        type_name = "float"
+    elif kind == "faction_standing":
+        if refs.factions is not None and name not in refs.factions:
+            errors.append(f"`{where}`: unknown faction `{name}` in `faction_standing`.")
+            return
+        type_name = "float"
     else:
         if name not in RESOURCES:
             errors.append(f"`{where}`: `resource` must be one of {', '.join(RESOURCES)}, not `{name}`.")

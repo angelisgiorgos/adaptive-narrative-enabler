@@ -39,7 +39,7 @@ SECTION_TITLES = {
     "transition_objective": "Travel choice (storyteller)", "action_selection": "Action choice (storyteller)",
     "spawn_selection": "New places (storyteller)", "unexpected_events": "Unexpected events",
     "power_model": "Player power", "game_state": "Game state", "story_rules": "Story rules", "scene": "Scenes",
-    "director": "Director", "npc_goals": "People's goals", "npc_leads": "People's leads", "evolution": "Training",
+    "director": "Director", "npc_goals": "People's goals", "relationships": "Relationships", "npc_leads": "People's leads", "evolution": "Training",
     "simulation": "Simulation", "fitness": "Story score (fitness)", "session_scope": "Session cast",
     "discovery_nodes": "Discovery", "mission_settings": "Missions", "side_quest_settings": "Side quests", "side_story": "Side stories", "encounters": "Encounters", "world_definition": "World", "climax": "Climax",
     "variation": "Variation", "travel": "Travel", "stakes": "Stakes",

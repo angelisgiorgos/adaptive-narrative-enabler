@@ -30,13 +30,30 @@ class Character(Conditional):
     DialogueLines chosen by condition when the player talks with the NPC."""
     role = None     # class defaults: games saved before these fields load unchanged
     secret = None
+    faction = None          # people and factions (core_engine/relationships.py)
+    relationship = {}       # {trust, hostility, persist}: where the player starts with them
+    related = {}            # NPC -> factor: what is done to them reaches these people
+    never = frozenset()     # behaviours the director may never make them perform
+    hostile_event = None    # the event they confront the player with once hostile
+    activities = ()         # what they are doing, by place, disposition and condition
+    reactions = ()          # what they do about what happens (relationships.reaction_spec)
+    haunts = ()             # a generic NPC's places: [{places, tags_any, presence}] (relationships.presence)
 
     def __init__(self, name, associated_tags, goals=None, 
                  descriptions=None, actions=None, 
                  known_locations=None, known_objects=None, unique=False,
                  encounter_event=None, encounter_repeat=False, enabled_if=None, dialogue=None, article=None,
-                 role=None, secret=None):
+                 role=None, secret=None, faction=None, relationship=None, related=None, never=None,
+                 hostile_event=None, activities=None, reactions=None, haunts=None):
         self.name = name
+        self.haunts = list(haunts or ())
+        self.faction = faction or None
+        self.relationship = dict(relationship or {})
+        self.related = {str(k): float(v) for k, v in (related or {}).items()}
+        self.never = frozenset(never or ())
+        self.hostile_event = hostile_event or None
+        self.activities = list(activities or ())
+        self.reactions = list(reactions or ())
         # The NPC's part in the story (npc_roles.roles), None: inferred from tags; and a
         # secret the story can reveal ({text, talks, clues, tags, effects}).
         self.role = role
@@ -304,6 +321,7 @@ class SideQuest(Mission):
 
 class WorldGraph:
     side_quests = {}  # worlds built before side quests have none
+    factions = {}     # world_definition.factions (core_engine/relationships.py); worlds built before have none
 
     def __init__(self):
         self.locations = {}
@@ -312,6 +330,7 @@ class WorldGraph:
         self.events = {}
         self.missions = {}
         self.side_quests = {}
+        self.factions = {}
         self.spawn_rules = defaultdict(list)
         self.routes = None  # authored map (world_definition.routes): place -> set of neighbours
 

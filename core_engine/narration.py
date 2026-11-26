@@ -162,6 +162,24 @@ DEFAULT_MESSAGES = {
     "mission_pool_done": "[MISSION] Every goal of this world has been achieved in this save game: explore freely.",
     "end_abandoned": "The traveler sets the story aside for now.",
     "resumed": "[RESUMED] The story goes on in the {location}.",
+    # People and factions (core_engine/relationships.py)
+    "npc_now_hostile": "[RELATIONSHIP] {npc} now counts you an enemy.",
+    "npc_now_wary": "[RELATIONSHIP] {npc} grows wary of you.",
+    "npc_now_neutral": "[RELATIONSHIP] {npc} no longer feels strongly about you.",
+    "npc_now_friendly": "[RELATIONSHIP] {npc} warms to you.",
+    "faction_now_hostile": "[FACTION] The {faction} turn against you.",
+    "faction_now_neutral": "[FACTION] The {faction} no longer hold strong feelings about you.",
+    "faction_now_friendly": "[FACTION] The {faction} look on you with favour.",
+    "npc_offer_quest": "{npc} has something to ask of you.",
+    "npc_request_help": "{npc} asks for your help.",
+    "npc_warn": "[WARNING] {npc} warns you: trouble is coming.",
+    "npc_confront": "[CONFRONTATION] {npc} confronts you about what you did.",
+    "npc_praise": "{npc} speaks well of you.",
+    "npc_threaten": "{npc} makes it plain you are not welcome here.",
+    "npc_moves": "[PEOPLE] {npc} leaves for the {location}.",
+    "npc_seeks": "{npc} seeks you out.",
+    "npc_hostile_talk": "{npc} refuses to speak with you.",
+    "npc_reaction": "{text}",
 }
 
 
@@ -189,6 +207,13 @@ EXTRA_FIELDS = {
     "encounter_location_raid": {"title", "location", "faction", "npc"},
     "encounter_environmental_threat": {"title", "location", "faction", "npc"},
     "encounter_defensive_encounter": {"title", "location", "faction", "npc"},
+    "npc_confront": {"location", "faction"},
+    "npc_offer_quest": {"location", "faction"},
+    "npc_praise": {"location", "faction"},
+    "npc_request_help": {"location", "faction"},
+    "npc_threaten": {"location", "faction"},
+    "npc_warn": {"location", "faction"},
+    "npc_reaction": {"npc"},
 }
 
 

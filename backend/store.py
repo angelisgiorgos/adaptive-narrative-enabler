@@ -33,6 +33,7 @@ OPTIONAL_CONFIG_PATHS = {
     "action_selection.event_trigger_weight",
     "world_definition.missions",
     "world_definition.side_quests",   # worlds written before side quests have none
+    "world_definition.factions",      # worlds written before factions have none (core_engine/relationships.py)
     # Side-story orchestration and fitness version 2 (configurations written before them: off, version 1).
     "side_story",
     "side_story.enabled",
@@ -56,6 +57,14 @@ OPTIONAL_CONFIG_PATHS = {
     "side_story.max_callbacks",
     "side_story.meaningful_relevance",
     "fitness.version",
+    "fitness.relationships",       # fitness version 3 (configurations written before it: none)
+    "fitness.relationships.change_bonus",
+    "fitness.relationships.reaction_bonus",
+    "fitness.relationships.faction_bonus",
+    "fitness.relationships.diminishing",
+    "relationships.kin",
+    "relationships.haunt_weight",
+    "relationships.reaction_pull",
     "fitness.side_quests.diminishing",
     "fitness.side_quests.repeat_factor",
     "fitness.side_story",
@@ -216,6 +225,7 @@ OPTIONAL_CONFIG_PATHS = {
     # Added with locked exits, scenario templates, objective losses, NPC goals and Power in fights.
     "navigation",
     "npc_goals",
+    "relationships",               # people and factions that remember (core_engine/relationships.py)
     "power_model.combat_stats",
     "power_model.check_weight",
     "spawn_selection.target_tag_weight",
@@ -529,8 +539,9 @@ def _validate_complete_config(candidate: object, reference: object, path: str = 
         from core_engine import side_story
 
         errors.extend(side_story.validate_settings(candidate))
-    if path == "fitness.version" and (isinstance(candidate, bool) or candidate not in (1, 2)):
-        errors.append("`fitness.version` must be 1 (the scoring before side-story terms) or 2.")
+    if path == "fitness.version" and (isinstance(candidate, bool) or candidate not in (1, 2, 3)):
+        errors.append("`fitness.version` must be 1 (the scoring before side-story terms), 2 (with them) or 3 "
+                      "(with the relationships).")
     if path in ("npc_behaviour", "location_behaviour"):  # rules the writer adds: checked as rules, not by shape
         return rules.validate_behaviour("npc" if path == "npc_behaviour" else "location", candidate)
     if path == "evolution.score_aggregate" and candidate not in AGGREGATES:
@@ -565,6 +576,10 @@ def _validate_complete_config(candidate: object, reference: object, path: str = 
         if not isinstance(candidate, dict):
             return ["`world_definition.side_quests` must be a mapping."]
         return [f"Side quest `{name}` must be a mapping." for name, entry in candidate.items() if not isinstance(entry, dict)]
+    if path == "world_definition.factions":  # a world's own factions (their rules: relationships.world_errors)
+        if not isinstance(candidate, dict):
+            return ["`world_definition.factions` must be a mapping."]
+        return [f"Faction `{name}` must be a mapping." for name, entry in candidate.items() if not isinstance(entry, dict)]
     if path == "world_definition.events":
         if not isinstance(candidate, dict):
             return ["`world_definition.events` must be a mapping."]
@@ -620,7 +635,7 @@ def _validate_complete_config(candidate: object, reference: object, path: str = 
             errors.append(f"`{label}` must be {type(reference).__name__}, not {type(candidate).__name__}.")
     return errors
 
-WORLD_CONTENT = ("locations", "characters", "objects", "events", "missions", "side_quests", "variables", "routes",
+WORLD_CONTENT = ("locations", "characters", "objects", "events", "missions", "side_quests", "factions", "variables", "routes",
                  "scenario_templates")
 LOCATION_KEYED = (("location_constraints",), ("action_selection", "location_penalties"))
 
@@ -686,7 +701,8 @@ def upload_config(uploaded_file):
     uploaded, errors, filled = complete_config(uploaded)  # a world-only file gets the built-in tuning
     errors += _validate_complete_config(uploaded, config.default_config())
     if not errors:  # every condition and effect list, against the uploaded world itself
-        errors = logic_errors(uploaded.get("world_definition"))
+        errors = logic_errors(uploaded.get("world_definition"),  # its own tuning's factions (encounters.factions)
+                              tuning_factions=list(((uploaded.get("encounters") or {}).get("factions")) or {}))
     if errors:
         preview = "\n".join(f"- {error}" for error in errors[:20])
         remainder = len(errors) - 20
@@ -933,6 +949,7 @@ LOGIC_SECTIONS = {
     "player_options": "The choices a player sees: how many, and in which order (the scene's order, or the storyteller's ranking).",
     "navigation": "Player-directed navigation: whether discoveries and hints move the player by themselves.",
     "npc_goals": "What helping an NPC with their goal takes, and what an ally gives back.",
+    "relationships": "People and factions that remember: how trust and hostility make an NPC friendly or hostile, what each deed (help, betrayal, theft, crime, attacks, quests) does to its target, the people close to them, the witnesses and factions, how many memories they keep, how long a reaction waits, and what is kept in the player's profile.",
     "location_constraints": "Prisons: which locations confine a player until an escape.",
     "unexpected_events": "Procedural unexpected events: how often, and their parts.",
     "authored_events": "Authored events: the fallback option.",

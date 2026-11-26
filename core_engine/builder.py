@@ -6,7 +6,7 @@ import math
 from utils.config_loader import config
 from utils.tag_similarity import current_space, semantic_tag_similarity
 
-from . import conditions, effects, rules, starts, stats, variables
+from . import conditions, effects, relationships, rules, starts, stats, variables
 from .actions import Action, Outcome, repetition_errors
 from .narration import message
 from .world import Character, DialogueLine, Event, Location, Mission, Object, SideQuest, WorldGraph
@@ -287,13 +287,15 @@ def item_policy_errors(data, where, locations=None):
     return errors
 
 
-def logic_errors(world):
+def logic_errors(world, tuning_factions=None):
     """Problems with every condition (``enabled_if``, mission goals) and effect list
     (outcome ``effects`` and variable changes, dialogue lines, mission ``rewards``)
     of a ``world_definition`` mapping, checked against its own variables, stats,
     items, locations, NPCs, events and missions. Empty when valid."""
+    # tuning_factions: the faction names of the world's own tuning (encounters.factions) when it is
+    # checked before it is in use (an upload, an engine model); default: the configuration in use.
     world = world or {}
-    refs = conditions.References.from_world(world)
+    refs = conditions.References.from_world(world, tuning_factions)
     errors = list(route_errors(world))
     expanded, template_errors = expand_templates(world)
     errors.extend(template_errors)
@@ -395,6 +397,7 @@ def logic_errors(world):
         for number, stage in enumerate(data.get("stages") or [], start=1):
             effect_list((stage or {}).get("rewards") if isinstance(stage, dict) else None,
                         f"Side quest '{name}'.stages[{number}].rewards")
+    errors.extend(relationships.world_errors(world, condition, effect_list, tuning_factions))  # factions, people
     planted = {str(value) for field, value, _ in threads if field == "setup_id"}
     for field, value, where in threads:
         if field != "setup_id" and str(value) not in planted:
@@ -403,23 +406,43 @@ def logic_errors(world):
 
 
 def npc_goals(raw):
-    """An NPC's goals as [{text, keywords, needed, reward}]: a goal is a sentence ("Collect
-    bribes"; its words are its keywords) or a mapping {goal, tags, needed, reward}."""
+    """An NPC's goals as [{text, id, keywords, needed, reward, explicit, ...}]: a goal is a sentence
+    ("Collect bribes"; its words are its keywords) or a mapping {goal, id, tags, needed, reward}. A
+    mapping with ``supports``, ``progress_when`` or ``complete_if`` is *explicit*: those decide its
+    progress instead of its keywords (core_engine/relationships.py); ``opposes``, ``trust`` and
+    ``on_complete`` apply to any goal."""
     import re
+
+    from .conditions import Condition
 
     stop = {"the", "a", "an", "of", "to", "and", "or", "for", "in", "on", "at", "with", "his", "her", "their",
             "your", "my", "one", "be", "is", "are", "from", "into", "every", "all"}
     goals = []
     for entry in raw or []:
+        extra = {}
         if isinstance(entry, dict):
             text = str(entry.get("goal") or entry.get("text") or "")
             words = [str(tag).lower() for tag in _coerce_list(entry.get("tags"))]
             needed, reward = entry.get("needed", None), entry.get("reward")
+            for field in ("progress_when", "complete_if"):
+                if entry.get(field):
+                    extra[field] = Condition(entry[field])
+            for field in ("supports", "opposes"):
+                if entry.get(field):
+                    extra[field] = [str(tag).lower() for tag in _coerce_list(entry[field])]
+            if entry.get("trust") is not None:
+                extra["trust"] = entry["trust"]
+            if entry.get("on_complete"):
+                extra["on_complete"] = effects.EffectList(entry["on_complete"])
+            goal_id = entry.get("id")
         else:
-            text, words, needed, reward = str(entry), [], None, None
+            text, words, needed, reward, goal_id = str(entry), [], None, None, None
         if not words:
             words = [w for w in re.findall(r"[a-z]+", text.lower()) if w not in stop and len(w) > 2]
-        goals.append({"text": text, "keywords": sorted(set(words)), "needed": needed, "reward": reward})
+        explicit = any(field in extra for field in ("supports", "progress_when", "complete_if"))
+        goals.append({"text": text, "id": str(goal_id or re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")),
+                      "keywords": sorted(set(words)), "needed": needed, "reward": reward, "explicit": explicit,
+                      **extra})
     return goals
 
 
@@ -672,6 +695,9 @@ def build_world(genome):
         loc.actions = actions_list
         world.add_location(loc)
 
+    # People and factions (core_engine/relationships.py)
+    world.factions = relationships.world_factions(config_wd)
+
     # 3. Spawn rules (the authored routes, Dynamic Similarity or Static)
     routes = route_map(config_wd)
     world.routes = {name: set(others) for name, others in routes.items()} if routes is not None else None
@@ -714,6 +740,14 @@ def build_world(genome):
             article=char_data.get("article"),
             role=char_data.get("role"),
             secret=_secret(char_data.get("secret")),
+            faction=char_data.get("faction"),
+            relationship=char_data.get("relationship"),
+            related=char_data.get("related"),
+            never=char_data.get("never"),
+            hostile_event=char_data.get("hostile_event"),
+            activities=char_data.get("activities"),
+            reactions=char_data.get("reactions"),
+            haunts=char_data.get("haunts"),
             dialogue=[
                 DialogueLine(line.get("text"), line.get("enabled_if"), _checked(effects.EffectList(line.get("effects"))))
                 for line in char_data.get("dialogue") or []

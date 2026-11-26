@@ -26,7 +26,7 @@ import copy
 import math
 
 from . import choices as choice_ids
-from . import conditions
+from . import conditions, relationships
 
 # code -> (status, what it means). The message of a reason says it for the case at hand.
 REASONS = {
@@ -79,6 +79,8 @@ REASONS = {
     "event_in_progress": ("blocked", "An event is in progress: only its choices are offered."),
     "encounter": ("blocked", "A hostile person confronts the player: the encounter's choices come first."),
     "no_small_talk": ("blocked", "A hostile person (an encounter) does not chat unless dialogue is written for them."),
+    "npc_refuses": ("blocked", "The person is hostile to the player and withholds their friendly dealings "
+                               "(relationships.hostile_refuses_tags), unless its own condition asks about them."),
     # blocked: the source entity
     "npc_absent": ("blocked", "The person is not in this scene."),
     "npc_not_visible": ("blocked", "The person is here but not among those the scene shows (scene.max_visible_npcs, "
@@ -89,7 +91,9 @@ REASONS = {
     "npc_not_revealed": ("blocked", "Someone who matters (npc_roles) not found yet."),
     "npc_appearances_used": ("blocked", "Already seen in as many visits as they appear in (npc_behaviour.appearances)."),
     "npc_lives_elsewhere": ("blocked", "A unique person lives elsewhere now."),
-    "npc_does_not_fit": ("blocked", "A generic person who does not fit this place's tags."),
+    "npc_does_not_fit": ("blocked", "A generic person who does not fit this place's tags (or none of their haunts)."),
+    "npc_elsewhere_this_visit": ("blocked", "A generic person who comes here now and then (their haunts' presence), "
+                                            "not in this visit."),
     "npc_not_placed": ("blocked", "Could be here, but the scene placed others (its slots are taken)."),
     "item_not_here": ("blocked", "The item is not in this place (or is carried: carried items offer no actions)."),
     "item_not_visible": ("blocked", "The item is here but not among those the scene shows."),
@@ -356,6 +360,9 @@ def _filter_reasons(state, a):
         why = state._event_blocked(event) if event is not None else None
         reasons.append(_reason("event_unavailable", f"The event it starts ({a.triggers_event}) cannot start now: "
                                                     f"{why}." if why else None, event=a.triggers_event))
+    char = next((c for c in state.world.characters if c.name == a.character_name), None) if a.character_name else None
+    if char is not None and relationships.refuses(state, char, a):
+        reasons.append(_reason("npc_refuses", npc=char.name, disposition=relationships.disposition(state, char.name)))
     if state._only_arrives_here(a):
         reasons.append(_reason("already_here", location=state.current.name))
     if state._out_of_reach(a):
@@ -420,6 +427,8 @@ def _npc_reason(state, char):
         return "npc_lives_elsewhere"
     if not char.unique and not state._npc_fits_location(char):
         return "npc_does_not_fit"
+    if not char.unique and relationships.here_this_visit(state, char) is False:
+        return "npc_elsewhere_this_visit"
     return "npc_not_placed"
 
 
@@ -482,6 +491,7 @@ def decision_trace(state, limit=None, order=None, session_id=None):
     from .side_story import plan as side_story_view
 
     encounters_now = encounter_view(state)  # read only: why an attack could or could not come
+    relationships_now = relationships.explain(state)  # read only: people, factions, reactions due
     side_story_now = side_story_view(state)  # read only: what the director weighs before side content
     probe = copy.deepcopy(state)          # its own dice (a copy of the story's), scene and conversation
     probe.__dict__["_store"] = None       # nothing it does is saved to the player's profile
@@ -516,6 +526,7 @@ def decision_trace(state, limit=None, order=None, session_id=None):
         "notes": notes,
         "encounters": encounters_now,
         "side_story": side_story_now,
+        "relationships": relationships_now,
         "codes": _codes(),
     }
 
