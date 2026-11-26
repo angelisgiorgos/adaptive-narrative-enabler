@@ -185,9 +185,18 @@ to 10 (optional content that makes the game richer).
 """
 
 
-def build_prompt(digest):
-    criteria = "\n".join(f"- {name}: {meaning}" for name, meaning in CRITERIA.items())
-    keys = ", ".join(f'"{name}": <1-10>' for name in CRITERIA)
+# Criteria a playtest asks for besides CRITERIA (evaluator/playtest.py): asked only when a caller
+# names them (GameJudge(extra_criteria=...)), so every other judgement keeps the same prompt.
+PLAYTEST_CRITERIA = {
+    "character_development": "the people met change, reveal themselves or change how they treat the player "
+                             "over the playthrough; relationships have weight",
+}
+
+
+def build_prompt(digest, extra_criteria=None):
+    asked = {**CRITERIA, **(extra_criteria or {})}
+    criteria = "\n".join(f"- {name}: {meaning}" for name, meaning in asked.items())
+    keys = ", ".join(f'"{name}": <1-10>' for name in asked)
     optional = has_optional_content(digest)
     extra = OPTIONAL_INSTRUCTIONS if optional else ""
     extra_key = (', "optional_content": {"score": <1-10>, "meaningful": <threads>, "filler": <threads>, '
@@ -220,12 +229,14 @@ def _clamp(value):
     return max(1.0, min(10.0, number))
 
 
-def parse_judgement(text):
+def parse_judgement(text, extra_criteria=None):
     """The judgement in a model's reply: {scores, engagement, best_moment, weakest_moment,
     verdict}, or None. Tolerates code fences, prose around the JSON, trailing commas and
-    scores given as "criterion: 7" lines."""
+    scores given as "criterion: 7" lines. ``extra_criteria``: criteria asked besides CRITERIA
+    (their scores are read too, never required)."""
     if not text:
         return None
+    extra = [name for name in (extra_criteria or {}) if name not in CRITERIA]
     cleaned = re.sub(r"```(?:json)?", "", text)
     data = None
     start, end = cleaned.find("{"), cleaned.rfind("}")
@@ -252,6 +263,14 @@ def parse_judgement(text):
                     scores[name] = _clamp(match.group(1))
     if not scores:
         return None
+    for name in extra:
+        value = _clamp(((data.get("scores") if isinstance(data.get("scores"), dict) else data) or {}).get(name)) \
+            if isinstance(data, dict) else None
+        if value is None:
+            match = re.search(rf'"?{name}"?\s*[:=]\s*(\d+(?:\.\d+)?)', cleaned, flags=re.I)
+            value = _clamp(match.group(1)) if match else None
+        if value is not None:
+            scores[name] = value
     engagement = _clamp((data or {}).get("engagement")) if isinstance(data, dict) else None
     if engagement is None:
         match = re.search(r'"?engagement"?\s*[:=]\s*(\d+(?:\.\d+)?)', cleaned, flags=re.I)
@@ -404,8 +423,9 @@ def combine_orders(first, second):
 class GameJudge:
     """Gemma 4 as the judge of a playthrough (llm_judge settings; the vllm runtime)."""
 
-    def __init__(self, runtime=None, samples=None, temperature=None, max_new_tokens=None):
+    def __init__(self, runtime=None, samples=None, temperature=None, max_new_tokens=None, extra_criteria=None):
         cfg = _settings()
+        self.extra_criteria = dict(extra_criteria or {})  # asked besides CRITERIA (PLAYTEST_CRITERIA)
         self.samples = max(1, int(samples or cfg["samples"]))
         self.temperature = float(cfg["temperature"] if temperature is None else temperature)
         self.max_new_tokens = int(max_new_tokens or cfg["max_new_tokens"])
@@ -418,19 +438,19 @@ class GameJudge:
     def judge_digest(self, digest):
         """{engagement, scores, spread, samples, verdict, best_moment, weakest_moment, parsed}:
         the mean of the samples that could be read (parsed: how many)."""
-        prompt = build_prompt(digest)
+        prompt = build_prompt(digest, self.extra_criteria)
         judgements, raw = [], []
         for _ in range(self.samples):
             text = self.runtime.generate(prompt, max_new_tokens=self.max_new_tokens, temperature=self.temperature)
             raw.append(text)
-            parsed = parse_judgement(text)
+            parsed = parse_judgement(text, self.extra_criteria)
             if parsed is not None:
                 judgements.append(parsed)
         if not judgements:
             return {"engagement": None, "scores": {}, "spread": None, "samples": self.samples, "parsed": 0,
                     "optional_content": None, "verdict": "The judge's reply could not be read.", "raw": raw}
         scores = {name: statistics.mean(j["scores"][name] for j in judgements if name in j["scores"])
-                  for name in CRITERIA if any(name in j["scores"] for j in judgements)}
+                  for name in (*CRITERIA, *self.extra_criteria) if any(name in j["scores"] for j in judgements)}
         engagements = [j["engagement"] for j in judgements]
         return {
             "engagement": statistics.mean(engagements),

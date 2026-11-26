@@ -1,0 +1,40 @@
+# Playtest scenarios (evaluator/playtest.py): the example worlds' main quests, side quests and attacks,
+# played by every player strategy. Small and fast: no training, random storytellers drawn from the seed.
+#
+#   python -m evaluator.playtest evaluator/scenarios/side_content.yaml --out playtest-out
+#
+# A scenario: name, world (city | a world-only YAML file) or engine (an engine model file), player
+# (a strategy or a list of them), seed (one or a list), start, quest, max_turns, overrides (settings
+# changed for it, dotted paths), genome (storyteller traits) or storyteller_seed.
+
+checks:            # thresholds of the issue checks (evaluator/playtest.DEFAULT_CHECKS)
+  stall_turns: 12
+  filler_segment: 4
+  repeat_action: 4
+  encounter_same_max: 2
+  encounters_per_10_turns: 3.0
+  encounter_min_gap: 2
+
+defaults:
+  max_turns: 40
+
+scenarios:
+  - name: monastery-relic
+    world: examples/frozen_monastery.yaml
+    quest: return_the_relic
+    start: Mountain Gate
+    player: [main_quest, explorer, side_quest, combat, conflict_avoiding, random]
+    seed: [3, 11]
+
+  - name: monastery-glacier
+    world: examples/frozen_monastery.yaml
+    start: Glacier Path
+    player: [side_quest, combat]
+    seed: [5]
+
+  - name: station-reactor
+    world: examples/orbital_station.yaml
+    quest: reboot_reactor
+    start: Docking Bay
+    player: [main_quest, explorer, combat, conflict_avoiding, random]
+    seed: [3, 11]
