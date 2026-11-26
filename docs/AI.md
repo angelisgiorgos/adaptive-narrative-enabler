@@ -236,6 +236,9 @@ help with it, the places and people already met, health), never the storyteller'
 | `cautious` | avoids likely failures, the more so when hurt; likes choices without a check |
 | `random` | any choice shown |
 
+Playtests add `side_quester`, `fighter` and `conflict_avoider` ([Playtests](#playtests-whole-games-side-content-and-narrative-checks)),
+which training never uses.
+
 `evolution.player_mix` sets how often each plays. A story seed always has the same player making
 the same choices, so every storyteller meets the same players on the same stories and runs stay
 reproducible. `evolution.player: storyteller` brings back the older evaluation, to compare with;
@@ -273,6 +276,74 @@ Narrative quality is assessed apart from it:
 
 The studio reports fitness as "fitness on the benchmark (the training objective)", never as a
 quality score.
+
+## Playtests: whole games, side content and narrative checks
+
+[`evaluator/playtest.py`](../evaluator/playtest.py) plays **reproducible scenarios** and reports what
+happened, apart from training. A scenario fixes the world (the repository's, a world-only YAML file) or
+a saved engine (an engine model file: its world, tuning and storyteller), the storyteller (the
+engine's, explicit `genome` traits, or a random one drawn from `storyteller_seed`), the player
+strategy, the story seed, the start, the quest, `max_turns` and setting `overrides`. The same scenario
+plays the same story, choice for choice. Scenario files list them, with lists of players and seeds
+expanded into one scenario each ([`evaluator/scenarios/side_content.yaml`](../evaluator/scenarios/side_content.yaml)):
+
+```bash
+python -m evaluator.playtest evaluator/scenarios/side_content.yaml --out playtest-out
+python -m evaluator.playtest SCENARIOS --compare-genome modified.json   # or --compare-engine / --compare-overrides
+python -m evaluator.playtest SCENARIOS --judge                          # also the judge (its server: LLM.md)
+```
+
+It writes `report.md` (tables, failure examples, author notes, recommendations), `playtest.json`
+(every playthrough turn by turn) and `replay.html` (the visual replay, [FRONTEND.md](FRONTEND.md#playtest-replay-page)).
+24 scenarios of 40 turns take about 10 s; no training is run.
+
+**Player strategies.** The training players above, plus three that only playtests use (they are not
+in `evolution.player_mix`, so training and its seeds are unchanged): `side_quester` (takes on the
+side quests offered, follows their steps, meets new people), `fighter` (takes the fights offered:
+outcomes tagged as combat, the combat check, names such as "Fight"), `conflict_avoider` (`cautious`,
+and fights last; giving way, hiding or talking first). Scenario files may also use the names
+`main_quest` (`quester`), `side_quest`, `combat`, `conflict_avoiding`. A strategy only chooses among
+the choices the engine shows (`players.take_turn`), as in training.
+
+**Automated measures** (`metrics`, `fitness`): main quest (completed, steps done, the turn), side
+quests (offered, accepted, completed, failed, declined, completion rate), attacks (count, per 10
+turns, the most repeated, the shortest gap), choices (shown, meaningful: a turn with two or more
+choices that brought something new; forced: one choice shown), movement (backtracks, A→B→A), people
+(met, talked to, allies, hostile, gone, faction standing), repeated actions, filler (turns that brought
+nothing new, by the director's own definition: `GameState._update_rhythm`) and coherence
+(contradictions found, the fitness's transition loss), with the fitness total and terms.
+
+**Checks** (`issues`, thresholds in the file's `checks`):
+
+| Code | What it finds |
+| --- | --- |
+| `softlock` | the story stopped without an ending (no choice offered), 50 choices without a turn, or the engine's own `stalled` ending |
+| `objective_unreachable` | for `unreachable_turns` (5) turns in a row no known or discoverable route led to where the quest advances (the engine's `_goal_sites` / `_route_distances`) |
+| `stall` | `stall_turns` (12) turns in a row with nothing new while the quest was not done |
+| `impossible_objective`, `missing_required_action` | (world checks, before the first turn) a quest or side-quest step naming an item, person, event, action or outcome tag the world does not have, or a side-quest place no route leads to (the world's validation already refuses unknown places) |
+| `quest_not_viable_from_start` | (world check) a quest the engine would never choose at the start (`_mission_viable_from`) |
+| `gone_npc_speaks`, `side_quest_reopened`, `quest_step_after_completion`, `ally_attacks` | contradictions: someone who left the story speaks again, a side quest told again after it ended, quest steps after the quest was complete, an ally leading an attack |
+| `encounter_repetition`, `encounter_frequency`, `encounters_back_to_back` | the same attack more than `encounter_same_max` (2) times, more than `encounters_per_10_turns` (3), two closer than `encounter_min_gap` (2) turns |
+| `action_loop` | the same action at the same place `repeat_action` (4) times or more |
+
+**Author notes** (`weak_segments`): filler stretches, loops and failures that led nowhere (the
+world's `failure_lint`), each with why, a suggestion and the entries to edit: the studio's World
+section and the API path (`/v1/entities/{kind}/{name}`, `/v1/documents/missions|side_quests`).
+
+**Baseline against modified** (`compare`, `--compare-*`): each scenario is played by the baseline and
+by the modified storyteller (other traits, another engine, other settings) with the same seed, start,
+quest and player. Pairs whose worlds differ (places, people, items, events, quests) are refused as
+incompatible. The report gives the mean of each measure for both and whether the change is better;
+with `--judge`, the judge also compares each pair (both orders).
+
+**The judge's view stays apart.** With `--judge`, the judge ([LLM.md](LLM.md)) scores each
+playthrough's engagement, coherence, choice consequences (its `agency`), exploration and
+replayability, and, for playtests only, `character_development` (`PLAYTEST_CRITERIA`; other
+judgements keep their prompt). It is reported under `subjective`, never mixed into the measures or
+the fitness. Measured on 6 scenarios: about 50 s per judgement on the shared GPU.
+
+`tests/test_playtest.py` holds the regression scenarios: every strategy on the example worlds, which
+must play without an error-severity issue or contradiction.
 
 ## Genome-driven decisions and learning
 

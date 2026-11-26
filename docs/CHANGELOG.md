@@ -7,6 +7,33 @@ that introduces them.
 
 ## [Unreleased]
 
+### Gameplay playtests: scenarios, checks, author notes and a replay
+
+#### Added
+- `evaluator/playtest.py`: reproducible gameplay scenarios (world or saved engine, storyteller, player
+  strategy, seed, start, quest, turns, setting overrides) played by simulated players, with automated
+  measures (main and side quests, attacks, meaningful and forced choices, backtracking, people met
+  and talked to, repeated actions, filler, contradictions, fitness), checks (softlocks, quests out of
+  reach, stalls, impossible objectives, missing required actions, contradictions, excessive attacks,
+  action loops), author notes for weak segments linked to the entries to edit, a matched-seed
+  comparison of a baseline and a modified storyteller (incompatible worlds refused), and the judge's
+  view kept apart (`--judge`). `python -m evaluator.playtest SCENARIOS` writes `report.md`,
+  `playtest.json` and `replay.html`. Scenarios: `evaluator/scenarios/side_content.yaml`.
+- `evaluator/replay.py`: the visual replay, a self-contained page (each turn's choices, the one
+  taken, the story text, state changes, moves, quest and side-quest progress, people, issues and
+  author notes).
+- Player strategies for playtests (`core_engine/players.STRATEGIES`): `side_quester`, `fighter`,
+  `conflict_avoider`, with the names `main_quest`, `side_quest`, `combat`, `conflict_avoiding`.
+  Training's players and `evolution.player_mix` are unchanged.
+- The judge can be asked for criteria besides its eight (`GameJudge(extra_criteria=...)`); playtests ask
+  for `character_development` (`PLAYTEST_CRITERIA`). Other judgements keep their prompt.
+- `evaluator/live_playtest.py`: a Playwright driver that plays games in a deployed studio's ▶ Play.
+- The first evaluation with them: [docs/evaluations/2026-11-25-playtest](evaluations/2026-11-25-playtest/README.md)
+  (24 offline scenarios on the example worlds, 6 judged, 8 live games on the deployed studio).
+- Tests: `tests/test_playtest.py` (scenarios, measures, checks, world checks, comparison, judge,
+  report, command line, and regression scenarios on the example worlds) and `tests/test_replay_ui.py`
+  (the replay page in headless Chromium; skipped without Playwright).
+
 ### The API on port 8005
 
 #### Changed

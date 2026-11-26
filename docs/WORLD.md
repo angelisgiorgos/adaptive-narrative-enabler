@@ -1685,3 +1685,24 @@ location has an explicit tag list, characters must share at least one of those
 associated tags unless the location is explicitly listed in their
 `known_locations`. Matching tags also receive the configurable
 `scene.location_tag_match_bonus` during NPC ranking.
+
+### Playtest checks: what they tell an author
+
+`python -m evaluator.playtest SCENARIOS` ([AI.md](AI.md#playtests-whole-games-side-content-and-narrative-checks))
+plays a world with simulated players and lists what to fix, each with the entry to edit (the studio's
+World section and its API path):
+
+- **World checks** (before any turn): a quest or side-quest step that names an item, person, event,
+  action (`goal.action`) or outcome tag (`goal.outcome_tag`) the world does not have; a side-quest
+  place no route leads to; a quest the story would never choose from the start
+  (`quest_not_viable_from_start`: give it a route a player can discover, or a start of its own).
+  Unknown places are refused when the world is loaded, before a playtest starts.
+- **Softlocks and stalls**: where no choice, or no route toward the quest, was left for several turns.
+- **Loops** (`action_loop`): an action taken over and over at the same place. Give it a `repeat`
+  limit, outcomes that change, or a clearer way on.
+- **Filler** stretches: turns that brought nothing new at a place. Give the place more outcomes, an
+  event, or a person with a lead.
+- **Failures that lead nowhere** (the same list as `GET /v1/lint/failures`): give the failure an
+  outcome that moves, reveals or sets something up, or a `complication` event sharing a tag.
+- **Attacks** that repeat or cluster: `encounters.cooldown`, `min_separation`, `rate`, or more
+  templates for the same danger tags.

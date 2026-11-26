@@ -2479,6 +2479,30 @@ Related actions living in ▶ Play (documented there; listed because the Integra
 
 <!-- Endpoints used by these views (verified in api.py): GET /v1/world/catalogue, GET /v1/exports/engines, GET /v1/records, GET /v1/config, POST /v1/config/upload, POST /v1/config/reset, GET/PUT /v1/settings, GET/PUT /v1/hyperparameters, GET/PUT /v1/weights, GET /v1/logic, GET/PUT /v1/logic/{section}, GET/PUT /v1/app-settings, GET /v1/jobs, GET /v1/jobs/{job_id}, GET /v1/records/import, POST /v1/jobs/records-import, GET /v1/records/engines, GET /v1/records/engines/{engine_id}, GET /v1/records/engines/{engine_id}/model, GET /v1/records/stories, GET /v1/records/stories/{story_id}, GET /v1/records/runs, GET /v1/records/runs/{run_id}, GET /v1/records/worlds, GET /v1/records/worlds/{world_id}, GET /v1/variables/profiles, GET /v1/sessions/{session_id}/state, PATCH /v1/sessions/{session_id}/player, POST /v1/sessions/{session_id}/sync, GET /v1/sessions/{session_id}/journal, GET /v1/sessions/{session_id}/transcript, GET /v1/sessions/{session_id}/savegame, POST /v1/sessions/load, GET /v1/progression, POST /v1/progression/reports/{report_id}/send, GET /v1/exports/platforms, GET /v1/reference -->
 
+## Playtest replay page
+
+Not a studio view: a standalone page that `python -m evaluator.playtest` writes beside its report
+(`replay.html`, [`evaluator/replay.py`](../evaluator/replay.py)). It reads the playtest's own data,
+embedded in the page (`<script type="application/json" id="playtest-data">`, the content of
+`playtest.json`), and calls no endpoint. It only displays what the engine recorded; it plays and
+decides nothing.
+
+| Component | Shows |
+| --- | --- |
+| Playthrough select (`run-select`) | each scenario: name, player, seed |
+| Turn bar | first / previous (`prev`) / position (`position`) / next (`next`) / last; ← → Home End |
+| Summary (`summary`) | quest, start, why the playthrough stopped, whether the quest was completed |
+| Timeline (`timeline-turn`) | every turn's choice; a green dot for a turn that brought something new, red for a turn with an issue or an author note |
+| Choices shown (`choices`) | the choices the engine showed, the one taken marked (`chosen-choice`), with each one's kind and owner; choices that took no turn before it (approach, leave, side-quest answers: `free-choices`) |
+| What happened (`story-text`) | the turn's story text, as text |
+| State changes (`changes`) | the check (roll, needed, passed), health and coins, items gained and lost, people met, an attack, the end |
+| Quest progress (`quest`) | quest steps done, the step now, quest complete, side-quest moments |
+| People (`people`) | people met so far, times talked with, first met, and by the end ally / hostile / gone |
+| Issues (`issues`) | the issues (`issue`) and author notes (`weak-segment`) at this turn, with the entries to edit and their API paths |
+
+`tests/test_replay_ui.py` drives it in headless Chromium with Playwright (`pip install playwright &&
+playwright install chromium`; skipped without them).
+
 # Known gaps in today's studio
 
 These came up while writing this guide, from reading `app.py` against `api.py`. A new frontend should
