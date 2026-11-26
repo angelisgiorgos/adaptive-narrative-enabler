@@ -245,6 +245,9 @@ def make_handler(server):
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
+            # Said, not implied by HTTP/1.0: the connection closes after this answer, so no client keeps it
+            # for its next request (sent on a socket the server is closing, that request would fail).
+            self.send_header("Connection", "close")
             origin = self.headers.get("Origin")
             if server.allow_origin and origin == server.allow_origin:
                 self.send_header("Access-Control-Allow-Origin", origin)
@@ -347,6 +350,7 @@ def make_handler(server):
                 self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
                 self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
                 self.send_header("Content-Length", "0")
+                self.send_header("Connection", "close")
                 self.end_headers()
             else:
                 self._send(403, {"error": "Cross-origin requests are not served (see --allow-origin)."})

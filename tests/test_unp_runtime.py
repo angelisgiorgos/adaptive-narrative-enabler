@@ -470,7 +470,14 @@ class CommandLineTests(unittest.TestCase):
             self.assertEqual(json.loads(ready_file.read_text()), server.ready)
             if os.name == "posix":
                 self.assertEqual(ready_file.stat().st_mode & 0o777, 0o600)  # only the user reads it
-            self.assertEqual(server.send("GET", "/health")[0], 200)  # no token needed
+            status, headers, _ = server.send("GET", "/health")
+            self.assertEqual(status, 200)  # no token needed
+            # One request per connection, said in every answer (errors too), so no client reuses it.
+            self.assertEqual(headers.get("Connection"), "close")
+            status, headers, _ = server.send("GET", "/nowhere")
+            self.assertEqual((status, headers.get("Connection")), (404, "close"))
+            status, headers, _ = server.send("POST", "/games/nobody/choose", {"action_id": "x", "state_version": 1})
+            self.assertEqual(headers.get("Connection"), "close")
         finally:
             code, rest = server.stop()
         self.assertEqual(code, 0)

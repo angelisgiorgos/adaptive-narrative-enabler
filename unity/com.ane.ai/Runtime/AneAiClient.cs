@@ -152,6 +152,10 @@ namespace Ane.AI
         {
             Url = url.TrimEnd('/');
             http = new HttpClient { BaseAddress = new Uri(Url + "/"), Timeout = timeout ?? TimeSpan.FromMinutes(5) };
+            // The ANE AI answers one request per connection (HTTP/1.0, Connection: close). Asking for that too
+            // keeps HttpClient from pooling a connection the ANE AI is closing: a request sent on it right after
+            // the last answer would fail ("An error occurred while sending the request").
+            http.DefaultRequestHeaders.ConnectionClose = true;
             if (!string.IsNullOrEmpty(token))
                 http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         }
