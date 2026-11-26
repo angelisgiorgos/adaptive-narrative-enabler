@@ -7,6 +7,26 @@ that introduces them.
 
 ## [Unreleased]
 
+### Upload and export result contract
+
+#### Fixed
+- `POST /v1/config/upload` on Windows: a valid upload became active and was then reported as failed. The
+  temporary file was reopened and removed while the descriptor `mkstemp` returned was still open, and the
+  `PermissionError` from removing it was raised after the commit. The same error could also replace a
+  rejected upload's validation message. The upload is now staged through that descriptor, then validated
+  and committed, and cleanup is best effort (`api._discard`). A cleanup problem never fails a committed
+  upload and never hides a validation error. `POST /v1/engines/load` and the download links
+  (`_register_artifact`) clean up the same way.
+- `backend/export.py`: the `.zip` and `.unitypackage` archives no longer leave the `mkstemp` descriptor
+  open (`_temporary_archive`), and a write that fails removes the half-written archive
+  (`_removed_on_failure`).
+
+#### Changed
+- `POST /v1/config/upload` answers `revision` (the accepted world revision, as `GET /v1/world/revision`
+  returns it) and `accepted: true`, plus `cleanup_warning` when a temporary file could not be removed
+  after the commit. The existing `message` and `settings` fields are unchanged. An identical retry
+  returns the same revision. Tests: `tests/test_upload_export_contract.py`.
+
 ### People and factions that remember: relationships, factions and NPC reactions
 
 #### Added

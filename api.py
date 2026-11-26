@@ -6,8 +6,10 @@ configuration overrides and play sessions are intentionally held in process.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
+import shutil
 import tempfile
 import uuid
 from pathlib import Path
@@ -28,6 +30,8 @@ from backend.errors import ActionUnavailableError, ConflictError, SessionUnrecov
 from core_engine import Mission
 from core_engine.actions import REPEAT_RULES
 from utils.config_loader import config
+
+LOG = logging.getLogger(__name__)
 
 
 class Entity(BaseModel):
@@ -533,28 +537,47 @@ def _register_artifact(path: str) -> str:
     source = Path(path)
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     destination = ARTIFACT_DIR / f"{artifact_id}{source.suffix}"
-    destination.write_bytes(source.read_bytes())
-    source.unlink(missing_ok=True)
+    shutil.copyfile(source, destination)
     ARTIFACTS[artifact_id] = destination
+    _discard(source)  # the artifact is registered: a temporary file left behind is not a failure
     return f"/v1/artifacts/{artifact_id}"
 
 
+def _discard(path: Path | str | None) -> str | None:
+    """Remove a temporary file, best effort. Never raises: a cleanup problem must not turn a
+    request that succeeded into a failure, nor hide the error of one that failed. Returns None
+    when the file is gone, else what went wrong (logged)."""
+    if path is None:
+        return None
+    try:
+        Path(path).unlink(missing_ok=True)
+        return None
+    except OSError as exc:
+        LOG.warning("Could not remove the temporary file %s: %s", path, exc)
+        return f"A temporary file could not be removed ({type(exc).__name__}); it is left for the system to clean up."
+
+
 def _save_upload(upload: UploadFile, suffixes: set[str], max_bytes: int) -> Path:
+    """Stage an upload in a temporary file and return its path (the caller removes it, with
+    ``_discard``). The file is written through the descriptor ``mkstemp`` opened, and that
+    descriptor is closed before the path is returned: on Windows an open handle would keep the
+    file from being removed or reopened."""
     suffix = Path(upload.filename or "").suffix.lower()
     if suffix not in suffixes:
         raise HTTPException(status_code=400, detail=f"Allowed file types: {', '.join(sorted(suffixes))}.")
-    target = Path(tempfile.mkstemp(prefix="ane-upload-", suffix=suffix)[1])
+    handle, name = tempfile.mkstemp(prefix="ane-upload-", suffix=suffix)
+    target = Path(name)
     size = 0
     try:
-        with target.open("wb") as stream:
+        with os.fdopen(handle, "wb") as stream:  # owns the descriptor: closed on leaving, even on error
             while chunk := upload.file.read(1024 * 1024):
                 size += len(chunk)
                 if size > max_bytes:
                     raise HTTPException(status_code=413, detail="Uploaded file is too large.")
                 stream.write(chunk)
         return target
-    except Exception:
-        target.unlink(missing_ok=True)
+    except BaseException:
+        _discard(target)
         raise
 
 
@@ -575,14 +598,25 @@ def get_config():
 
 @api.post("/v1/config/upload", tags=["Configuration"])
 def upload_config(file: UploadFile = File(...)):
-    path = _save_upload(file, {".yaml", ".yml"}, store.MAX_CONFIG_UPLOAD_BYTES)
+    """Validate a configuration YAML and make it the active one. In three steps: the file is staged
+    (400/413 for a wrong type or size), validated and committed (400 with the problems found, and the
+    active configuration and its revision unchanged), then the staged file is removed. The answer
+    carries the accepted ``revision`` (as GET /v1/world/revision gives it). A cleanup problem after
+    the commit does not fail the upload: it is reported as ``cleanup_warning``. The same file
+    uploaded again is accepted again with the same revision."""
+    staged = _save_upload(file, {".yaml", ".yml"}, store.MAX_CONFIG_UPLOAD_BYTES)
     try:
-        message = store.upload_config(str(path))[-1]
-        return {"message": message.lstrip("✅ ").strip(), "settings": _settings()}
+        message = store.upload_config(str(staged))[-1]  # validates, then commits (nothing changes before)
     except Exception as exc:
+        _discard(staged)  # never hides the validation error
         _fail(exc)
-    finally:
-        path.unlink(missing_ok=True)
+    # Committed: from here the upload has succeeded, whatever the cleanup does.
+    response = {"message": message.lstrip("✅ ").strip(), "settings": _settings(),
+                "revision": content.world_revision()["revision"], "accepted": True}
+    problem = _discard(staged)
+    if problem:
+        response["cleanup_warning"] = problem
+    return response
 
 
 @api.post("/v1/config/reset", tags=["Configuration"])
@@ -1263,9 +1297,8 @@ def load_engine(file: UploadFile = File(...), parameters: UploadFile | None = Fi
     except Exception as exc:
         _fail(exc)
     finally:
-        path.unlink(missing_ok=True)
-        if parameters_path is not None:
-            parameters_path.unlink(missing_ok=True)
+        _discard(path)
+        _discard(parameters_path)
 
 
 def _json_object(text, name):

@@ -554,7 +554,19 @@ one); `tests/test_studio_coverage.py` checks it.
   (every section, plus every condition and effect list of its world; a
   rejected upload leaves the active configuration unchanged). A file may hold
   only a world: the sections it lacks come from the built-in configuration,
-  and the message names them (see `examples/`);
+  and the message names them (see `examples/`). The upload is staged in a
+  temporary file, validated, committed, then the staged file is removed. A
+  `200` answer is `{message, settings, revision, accepted: true}`, where
+  `revision` is the accepted world revision (the value `GET /v1/world/revision`
+  now returns). Uploading the same file again is accepted again with the same
+  `revision`, so a retry is safe. A rejected upload (`400` with the problems
+  found, for example a `start_selection.default_location` that is not one of
+  the world's places; `400` for a wrong file type; `413` for a file that is too
+  large) leaves the active configuration and its revision unchanged. A
+  temporary file that cannot be removed after the commit (for example while
+  another process holds it open on Windows) does not fail the upload. The
+  answer adds `cleanup_warning`, and the API logs it. A cleanup problem never
+  replaces a rejected upload's error;
   `POST /v1/config/reset` restores the built-in file configuration.
 - `GET|PUT /v1/settings`: basic simulation settings. `max_health` caps
   healing; omit it on `PUT` to keep the stored value.
