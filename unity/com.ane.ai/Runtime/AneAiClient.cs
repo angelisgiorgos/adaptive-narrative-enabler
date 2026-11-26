@@ -16,12 +16,26 @@ namespace Ane.AI
     {
         public int Status { get; }
         public IReadOnlyList<string> Errors { get; }
+        /// <summary>Why a choice was refused (409): "stale_state" or "action_unavailable"; else null.</summary>
+        public string Code { get; }
+        /// <summary>A refused choice: the game's state version now (null otherwise).</summary>
+        public long? StateVersion { get; }
+        /// <summary>A refused choice: the ids of the choices offered now.</summary>
+        public IReadOnlyList<string> Offered { get; }
+        /// <summary>The choice came from a view the game has moved past: nothing was done; show the current view.</summary>
+        public bool IsStale => Code == "stale_state";
+        /// <summary>The choice's id is not among those offered now: nothing was done.</summary>
+        public bool IsUnavailable => Code == "action_unavailable";
 
-        public AneAiException(string message, int status = 0, IReadOnlyList<string> errors = null, Exception inner = null)
+        public AneAiException(string message, int status = 0, IReadOnlyList<string> errors = null, Exception inner = null,
+                              string code = null, long? stateVersion = null, IReadOnlyList<string> offered = null)
             : base(message, inner)
         {
             Status = status;
             Errors = errors ?? Array.Empty<string>();
+            Code = code;
+            StateVersion = stateVersion;
+            Offered = offered ?? Array.Empty<string>();
         }
     }
 
@@ -52,6 +66,39 @@ namespace Ane.AI
         }
     }
 
+    /// <summary>One choice the player sees (the view's "choices"): take it with
+    /// <see cref="AneAiClient.ChooseAsync(AneView, AneChoice)"/>. Its <see cref="Id"/> is stable: it names what
+    /// offers the choice ("npc:merchant:haggle", "go:harbor", "approach:merchant"), not its text or position.</summary>
+    public sealed class AneChoice
+    {
+        public readonly Dictionary<string, object> Raw;
+        public AneChoice(Dictionary<string, object> raw) { Raw = raw ?? new Dictionary<string, object>(); }
+
+        /// <summary>The stable id (null from an ANE AI older than action ids: choose by <see cref="Name"/> there).</summary>
+        public string Id => Raw.GetString("id");
+        /// <summary>The text to show (the same as the view's "actions" entry).</summary>
+        public string Name => Raw.GetString("name");
+        public string Label => Raw.GetString("label") ?? Name;
+        /// <summary>place, person, item, event, talk, approach, leave, look, travel, fast_travel.</summary>
+        public string Category => Raw.GetString("category");
+        public string Owner => Raw.GetString("owner");
+        /// <summary>What offers it: npc, location, item or event, and its name.</summary>
+        public string SourceKind => Raw.GetObject("source").GetString("kind");
+        public string SourceName => Raw.GetObject("source").GetString("name");
+        public string Location => Raw.GetString("location");
+        /// <summary>Approaching someone and leaving a conversation take no turn.</summary>
+        public bool TakesTurn => Raw.GetBool("takes_turn", true);
+        /// <summary>once, per_visit or always.</summary>
+        public string Repeat => Raw.GetString("repeat");
+        public bool OneTime => Raw.GetBool("one_time");
+        /// <summary>{item, item_tag, coins, consumes_item, collects_item, triggers_event}: only what applies.</summary>
+        public Dictionary<string, object> Requirements => Raw.GetObject("requirements");
+        /// <summary>{stat, chance (0-100), bonus}, or null without a skill check.</summary>
+        public Dictionary<string, object> SkillCheck => Raw.GetObject("skill_check");
+        /// <summary>What failing costs: {health, coins, sent_to}, or null.</summary>
+        public Dictionary<string, object> FailureRisk => Raw.GetObject("failure_risk");
+    }
+
     /// <summary>The scene as the player sees it (GET /games/{id}); <see cref="Raw"/> holds every field.</summary>
     public sealed class AneView
     {
@@ -63,6 +110,20 @@ namespace Ane.AI
         public string Scene => Raw.GetString("scene");
         public string Description => Raw.GetString("description");
         public List<string> Actions => Raw.GetStrings("actions");
+        /// <summary>The same choices as <see cref="Actions"/>, each with its stable id and what it involves.</summary>
+        public List<AneChoice> Choices
+        {
+            get
+            {
+                var choices = new List<AneChoice>();
+                foreach (var item in Raw.GetList("choices")) choices.Add(new AneChoice(item as Dictionary<string, object>));
+                return choices;
+            }
+        }
+        /// <summary>Changes with every turn, player update and sync; sent back with a choice so that a choice from
+        /// an older view is refused (null from an ANE AI older than action ids).</summary>
+        public long? StateVersion => Raw.TryGetValue("state_version", out var value) && value != null
+            ? Raw.GetLong("state_version") : (long?)null;
         public List<string> Npcs => Raw.GetStrings("npcs");
         public List<string> Items => Raw.GetStrings("items");
         public List<string> Inventory => Raw.GetStrings("inventory");
@@ -91,6 +152,10 @@ namespace Ane.AI
         {
             Url = url.TrimEnd('/');
             http = new HttpClient { BaseAddress = new Uri(Url + "/"), Timeout = timeout ?? TimeSpan.FromMinutes(5) };
+            // The ANE AI answers one request per connection (HTTP/1.0, Connection: close). Asking for that too
+            // keeps HttpClient from pooling a connection the ANE AI is closing: a request sent on it right after
+            // the last answer would fail ("An error occurred while sending the request").
+            http.DefaultRequestHeaders.ConnectionClose = true;
             if (!string.IsNullOrEmpty(token))
                 http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         }
@@ -126,8 +191,13 @@ namespace Ane.AI
             try { json = AneJson.ParseObject(text); }
             catch (FormatException) { json = new Dictionary<string, object> { ["error"] = text }; }
             if (!response.IsSuccessStatusCode)
+            {
+                long? version = json.TryGetValue("state_version", out var sent) && sent != null
+                    ? json.GetLong("state_version") : (long?)null;
                 throw new AneAiException(json.GetString("error", response.ReasonPhrase), (int)response.StatusCode,
-                                         json.GetStrings("errors"));
+                                         json.GetStrings("errors"), null, json.GetString("code"), version,
+                                         json.GetStrings("offered"));
+            }
             return json;
         }
 
@@ -143,7 +213,7 @@ namespace Ane.AI
                       cancellation);
 
         // ---- the world as parameters, and content from the UNP --------------------------------
-        /// <summary>Locations, npcs, items, events, missions, stats, variables, routes (ane.world/1).</summary>
+        /// <summary>Locations, npcs, items, events, missions, side_quests, factions, stats, variables, routes (ane.world/1).</summary>
         public Task<Dictionary<string, object>> WorldAsync() => SendAsync("GET", "world");
         public Task<Dictionary<string, object>> EntityAsync(string kind, string name) =>
             SendAsync("GET", $"world/{Part(kind)}/{Part(name)}");
@@ -172,10 +242,29 @@ namespace Ane.AI
         /// <summary>The session's parameters (ane.session_state/1).</summary>
         public Task<Dictionary<string, object>> StateAsync(string gameId) => SendAsync("GET", $"games/{Part(gameId)}/state");
 
+        /// <summary>Take a choice of a view: by its id, with the view's state version (refused, and nothing done, if
+        /// the game has moved past that view: <see cref="AneAiException.IsStale"/>). From an ANE AI older than
+        /// action ids: by its name.</summary>
+        public Task<AneView> ChooseAsync(AneView view, AneChoice choice) =>
+            string.IsNullOrEmpty(choice.Id) ? ChooseAsync(view.GameId, choice.Name)
+                                            : ChooseIdAsync(view.GameId, choice.Id, view.StateVersion);
+
+        /// <summary>Take the choice with this stable id (a view's Choices[i].Id). With stateVersion (that view's
+        /// StateVersion), a choice from a view the game has moved past is refused: 409, IsStale. An id not offered
+        /// now: 409, IsUnavailable. Nothing is done then; the exception's Offered lists the current ids.</summary>
+        public async Task<AneView> ChooseIdAsync(string gameId, string actionId, long? stateVersion = null)
+        {
+            var body = new Dictionary<string, object> { ["action_id"] = actionId };
+            if (stateVersion.HasValue) body["state_version"] = stateVersion.Value;
+            return new AneView(await SendAsync("POST", $"games/{Part(gameId)}/choose", body).ConfigureAwait(false));
+        }
+
+        /// <summary>Take a choice by its name (two with the same name: the first; prefer ids).</summary>
         public async Task<AneView> ChooseAsync(string gameId, string action) =>
             new AneView(await SendAsync("POST", $"games/{Part(gameId)}/choose",
                 new Dictionary<string, object> { ["action"] = action }).ConfigureAwait(false));
 
+        /// <summary>Take a choice by its index in the view's Actions.</summary>
         public async Task<AneView> ChooseAsync(string gameId, int index) =>
             new AneView(await SendAsync("POST", $"games/{Part(gameId)}/choose",
                 new Dictionary<string, object> { ["action"] = index }).ConfigureAwait(false));

@@ -27,6 +27,8 @@ import uuid
 
 from utils.config_loader import config
 
+from . import side_quests
+
 FORMAT = "ane.session_report/1"
 LOGGER = logging.getLogger(__name__)
 
@@ -42,7 +44,7 @@ def outcome(state):
     return "achieved" if state.won else "failed"
 
 
-def build_report(state, completed_goals=None):
+def build_report(state, completed_goals=None, side_quests_completed=None):
     """The report of a session: who played, where it started, its goal and how it ended, the
     player's stats, inventory, health and coins, and the save game's progression."""
     mission = state.mission
@@ -80,8 +82,11 @@ def build_report(state, completed_goals=None):
             "unique_actions": unique,
             "cast": state.scope() if hasattr(state, "scope") else None,
         },
+        # The side quests of this session (core_engine/side_quests.py): {completed, failed, unfinished}.
+        "side_quests": side_quests.summary(state),
         "progression": {
             "goals_achieved": list(completed_goals or []),
+            "side_quests_completed": list(side_quests_completed or []),
             "playthroughs": playthroughs(state),
             "variables": {k: v for k, v in state.variables.items() if k in state.variable_specs},
         },
@@ -149,12 +154,14 @@ def finish_session(state):
     real play ends). Returns the report."""
     store = state.__dict__.get("_store")
     cfg = config.get("progression") or {}
-    completed = []
+    completed, side_done = [], []
     if store is not None:
         if state.won and state.mission is not None and cfg.get("goals_once", True):
             store.complete_goal(state.profile, state.mission.name)
         completed = store.completed_goals(state.profile)
-    report = build_report(state, completed)
+        store.complete_side_quests(state.profile, side_quests.summary(state)["completed"])
+        side_done = store.completed_side_quests(state.profile)
+    report = build_report(state, completed, side_done)
     if store is not None:
         store.record_session(state.profile, report, limit=int(cfg.get("history", 50)))
         deliver(report, store, state.profile)

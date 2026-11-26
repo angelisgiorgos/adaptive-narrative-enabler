@@ -1,0 +1,127 @@
+# Side quests: optional quests besides the story's mission (core_engine/side_quests.py).
+# Any number can be under way at once (side_quest_settings.max_active in hyperparameters); none of
+# them ends the story. Each is offered once per story, and once per player profile unless it is
+# `repeatable`.
+#
+# Written like a mission (config/missions.yaml): title, description, goal or stages, rewards,
+# enabled_if. And:
+#   giver:      the NPC who offers it: it starts once the player has dealt with them
+#   start:      a condition that must hold for it to start (with neither giver nor start: at once)
+#   fail_if:    a condition that fails it while it is under way
+#   on_fail:    effects when it fails
+#   repeatable: true: offered again in the profile's later stories after it was completed
+#   accept:     choice: the player takes it on or turns it down (side_quest_settings.accept); auto: at once
+#   aids_mission: what completing it does for the mission: lead (the way toward its next step opens),
+#               ally (the giver becomes an ally), none (side_quest_settings.aids_mission)
+#   turn_in:    true: done, it is taken back to the giver ("Hand over" where they are) to be completed
+#   within_turns: it fails when it is not completed this many turns after it started
+#   on_decline: effects when it is turned down, or the offer is let go
+#   follows:    offered only once that side quest is completed (in this story or the profile's before)
+#   texts:      the story's own words for its moments: offer, accept, decline, ready, turn_in,
+#               complete, fail, remind ({title}, {giver}, {reward}, {todo}, {turns})
+#   tags:       what it is about: when several could come, the story offers first the one that fits
+#               where it is and what just happened (and the mission's thread)
+#   reactions:  what the story does to it: [{when: <condition>, then: complete | fail | advance |
+#               withdraw | none, effects: [...], text: "...", while: active | offered | any}], each once
+# When the story lets new ones in, and how continuity is kept: side_quest_settings in hyperparameters.
+# Conditions can ask about side quests: side_quest_active: <key>, side_quest_done: <key>.
+world_definition:
+  side_quests:
+    a_gift_for_the_chapel:
+      title: A gift for the chapel
+      description: The Priest's cellar is empty before the feast. A bottle of good wine would be welcome.
+      giver: Priest
+      goal: {item: Vintage Wine}
+      turn_in: true                # the bottle goes back to the Priest
+      tags: [social, church, feast]
+      fail_if: {npc_removed: Priest}
+      aids_mission: ally           # the Priest helps with the quest afterwards
+      rewards:
+      - change_coins: 6
+      texts:
+        offer: '{giver} wrings their hands: "Not a drop left for the feast. Bring me a good bottle, and the chapel will remember you."'
+        ready: The wine is yours to give. {giver} is waiting at the chapel.
+        complete: '{giver} lifts the bottle to the light. "The feast is saved, and so, perhaps, are you."'
+    rumours_from_the_archive:
+      title: Rumours from the Archive
+      description: The Merchant pays well for news, and the talk of the docks is all of the Drowned Archive.
+      giver: Merchant
+      goal: {location: Drowned Archive}
+      turn_in: true                # the news is worth nothing until the Merchant hears it
+      within_turns: 20             # news goes stale
+      aids_mission: lead
+      tags: [trade, information, maritime, mystery]
+      reactions:                   # the story has its say
+      - when: {event_done: memory_theft}
+        then: none
+        text: '"A thief of memories, here?" {giver} goes pale. "Then the Archive matters more than I thought. Hurry."'
+        effects: [{change_coins: 2}]
+      - when: {event_succeeded: fence_showdown}
+        then: complete
+        while: active
+        text: With the fence's ledger in the open, everyone knows what lies in the Archive; {giver} pays for your trouble all the same.
+      rewards:
+      - change_coins: 8
+      texts:
+        offer: '{giver} lowers their voice: "Bring me word of the Drowned Archive before the tide turns, and I will make it worth your while."'
+        complete: '{giver} counts out the coins, eyes bright. "The Archive! I knew it was more than a story."'
+        fail: The news of the Archive is all over the docks already; nobody will pay for it now.
+    a_night_with_the_watch:          # offered by the Captain once he counts the player a friend (his reaction)
+      title: A night with the Watch
+      description: The Captain wants a trusted pair of eyes on the Alley after dark.
+      giver: Captain of the Watch
+      start: {npc_disposition: Captain of the Watch, op: in, value: [friendly, ally]}
+      goal: {location: Alley}
+      aids_mission: lead
+      tags: [urban, guard, law]
+      rewards:
+      - change_coins: 5
+      - change_standing: {City Watch: 1}
+      texts:
+        offer: '{giver} lowers his voice: "I need someone I trust in the Alley tonight. Interested?"'
+        complete: '{giver} claps your shoulder. "The Watch looks after its friends."'
+    a_blessing_for_the_road:
+      title: A blessing for the road
+      description: The Priest asks you to carry a blessing to the sailors at the Harbor.
+      giver: Priest
+      follows: a_gift_for_the_chapel   # offered once the chapel has its wine
+      goal: {location: Harbor}
+      tags: [maritime, port, church]
+      aids_mission: lead
+      on_decline:
+      - change_variable: {reputation: -1}
+      rewards:
+      - change_variable: {reputation: 1}
+      - change_health: 2
+    charting_the_storm:
+      title: Charting the storm
+      description: The Storm Cartographer needs a chart older than the storm to finish their map.
+      giver: Storm Cartographer
+      tags: [storm, science, map, maritime]
+      stages:
+      - title: Find an old map
+        description: Any chart drawn before the storm will do.
+        goal: {item: Ancient Map}
+      - title: Bring it to the Storm Observatory
+        description: The Cartographer waits among the instruments.
+        goal:
+          condition: {at_location: Storm Observatory}
+      rewards:
+      - change_coins: 10
+    a_full_purse:
+      title: A full purse
+      description: The talk in the Tavern is all of fortunes made overnight. Put 30 coins together.
+      start: {visited: Tavern}
+      goal: {coins: 30}
+      repeatable: true
+      tags: [social, information, trade, coins]
+      reactions:
+      - when: {event_succeeded: tavern_brawl}
+        then: none                 # the coins count toward the purse; the goal decides when it is full
+        text: Word of the brawl travels fast; a stranger stands you a purse "for the show". Fortune favours you.
+        effects: [{change_coins: 6}]
+      - when: {event_failed: bandit_ambush}
+        then: none
+        text: The bandit's knife took more than coins; a full purse feels further away than ever.
+      rewards:
+      - change_variable: {reputation: 1}

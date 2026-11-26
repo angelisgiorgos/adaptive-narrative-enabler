@@ -3,7 +3,7 @@ evolution:
   generations: 25
   episodes_per_genome: 2
   max_steps: 100             # steps per evaluated story (narrative_end.max_actions: whole stories)
-  evaluation_threads: auto
+  evaluation_threads: auto   # processes playing stories at once: auto (physical cores), cpus (every CPU), or a number
   max_evaluation_processes: 16
   parallel_backend: processes
   mutation_rate: 0.22
@@ -62,6 +62,7 @@ story_rules:
   max_open_clues: 2           # while this many clues are open, no new clue is pursued
   clue_matching: any          # any: a payoff closes the oldest open clue; numbered: payoff_N closes setup_N
   gate_payoffs: true          # a payoff is told only when there is a planted clue for it to pay off
+  failure_counts: true        # an unchecked action that tells a failure outcome (a surrender) counts as failed
 simulation:
   verbose: true
   interactive: true
@@ -108,6 +109,9 @@ genome_bounds:
   novelty_bias:
   - 0.2
   - 0.9
+  side_quest_bias:             # how strongly a storyteller pursues side quests (its own trait, apart from goal_bias)
+  - 0.2
+  - 1.0
 game_state:
   initial_health: 8
   max_health: 10      # healing never raises health above this
@@ -197,6 +201,81 @@ persistence:
   profile: default
   save_on: change          # change: save after every change; end: only when a story ends
   simulate_with: defaults  # evolution uses defaults (reproducible) or the stored values
+side_quest_settings:           # optional quests besides the mission (world_definition.side_quests)
+  enabled: true
+  max_active: 3                # the most side quests under way at once (new ones wait for a free place)
+  guide: true                  # one choice that works toward a side quest (or meets someone who offers one) is kept
+  accept: choice               # choice: the player takes an offered side quest on or turns it down; auto: it starts at once
+  offer_turns: 3               # an offer not answered within this many turns lapses
+  aids_mission: lead           # what a completed side quest does for the mission: lead (the way on opens), ally, none
+  rank_weight: 2.0             # the storyteller's pull toward a side quest's next step (x its learned side_quest_bias)
+  remind_after: 6              # a side quest quiet this many turns is recalled to the player (0: never)
+  # When the story lets a new side quest in (they come at calm moments, one at a time):
+  offer_after: 1               # not before this turn
+  offer_cooldown: 1            # turns between two new ones (0: several may come at once)
+  offer_max_tension: 0.75      # not in a tenser moment (GameState.tension, 0..1; 1: any moment)
+  finale_offers: false         # none new once the finale has begun
+  fit: true                    # several could come: the one that fits the story now first (tags, the mission)
+  # Continuity:
+  impossible: fail             # fail | keep: a side quest that can no longer be done (its giver gone, a unique item gone)
+  pause_when_held: true        # a deadline does not run while the player is held (a cell)
+  epilogue: true               # the ending recalls the side quests: seen through, failed, left unfinished
+side_story:                    # how the director weaves side quests and attacks into the main story (core_engine/side_story.py)
+  # docs/AI.md#side-story-orchestration. No new side content while the main story needs the room:
+  enabled: true
+  agency: true                 # what the story sets up (an encounter's side_quest) is always an offer the player may turn down
+  hold_in_event: true          # ...while an event (a major encounter) is under way
+  hold_in_climax: true         # ...while the climax waits
+  hold_in_finale: true         # ...in the finale
+  deadline_turns: 3            # ...while a side quest has this many turns left or fewer (a clock runs)
+  main_idle_turns: 12          # ...when the main quest has not moved for this many turns (after mission_settings.pursuit_start_step)
+  max_open_threads: 4          # ...when this many threads are open (side quests under way or on offer, open clues)
+  share_window: 10             # ...when optional content took more than max_side_share of the last share_window turns
+  max_side_share: 0.5
+  intro_gap: 2                 # ...sooner than this many turns after the last side quest offered or attack begun
+  decline_backoff: 2           # after this many offers turned down in a row, only those bearing on the quest are offered...
+  backoff_relevance: 0.5       # ...(relevance at least this, 0..1)
+  relevance_weight: 2.0        # which comes first: fit + relevance to the main story x this
+  encounter_appetite: true     # an attack's chance x (0.5 + the storyteller's threat_prob)
+  idle_pull: 0.5               # the storyteller's pull toward side quests under way x this while the main quest stands still
+  finale_pull: 0.25            # ...and x this in the climax and the finale
+  callbacks: all               # near the climax: authored (texts.callback, an encounter's callback) | all (+ side quests that helped) | none
+  max_callbacks: 2
+  meaningful_relevance: 0.5    # a resolved optional thread this relevant to the main story is meaningful even without consequences
+encounters:                    # the encounter director: dynamic hostile encounters (core_engine/encounters.py)
+  # Templates are authored events with an `encounter` block (category, where, when, what follows);
+  # the director starts one, rarely, when the story makes it plausible. docs/WORLD.md#dynamic-encounters.
+  enabled: true
+  rate: 0.06                   # chance per eligible turn, before the context below multiplies it
+  max_chance: 0.3              # the chance never goes above this
+  opening_turns: 3             # none in the first turns of a story
+  min_separation: 6            # turns between two attacks (a hostile NPC's encounter counts too)
+  after_loss_separation: 10    # ...after an attack the player lost
+  max_per_session: 3           # at most this many attacks in a story
+  template_cooldown: 20        # turns before the same encounter can come again (its own `cooldown` wins)
+  no_repeat_last: true         # never the same encounter twice in a row
+  safe_tags: [safe, sanctuary, home, medical, quiet, cloister, garden]   # no attack where the place has one
+  danger_tags: {threat: 0.6, dark: 0.3, wild: 0.4, guarded: 0.2, abandoned: 0.3}   # chance x (1 + the sum here)
+  tension_weight: 0.5          # chance x (1 + the story's tension (0..1) x this)
+  alert_weight: 0.15           # chance x (1 + the watch's alert level x this)
+  hostility_weight: 0.5        # a hostile faction's encounter: chance x (1 + this)
+  min_health: 0.4              # no attack while the player is below this share of their maximum health
+  difficulty: 1.0              # every encounter's checks: x this (with the template's own difficulty)
+  difficulty_points: 10        # check penalty per 1.0 of difficulty above 1 (a bonus below)
+  lethal: false                # false: a lost encounter leaves the player at 1 health, the story goes on
+  in_finale: false             # attacks in the finale
+  in_climax: false             # ...while a climax waits
+  in_conversation: false       # ...while the player talks with someone
+  captive_release: 5           # a player an encounter left locked in (sent to a cell) is let out after this many turns there (0: off)
+  categories:                  # each: enabled, weight (x its templates' weights)
+    ambush: {enabled: true, weight: 1.0}
+    hostile_patrol: {enabled: true, weight: 1.0}
+    faction_attack: {enabled: true, weight: 1.0}
+    npc_assault: {enabled: true, weight: 1.0}
+    location_raid: {enabled: true, weight: 0.8}
+    environmental_threat: {enabled: true, weight: 1.0}
+    defensive_encounter: {enabled: true, weight: 0.8}
+  factions: {}                 # name: {standing: 0, hostile_below: 0, variable: <a persistent variable for the standing>}
 mission_settings:
   enabled: true
   end_on_goal: true
@@ -476,8 +555,74 @@ npc_goals:
   reward: lead            # an ally shows the way to a place they know (lead), an item (item), or nothing (none)
   ally_check_bonus: 15    # an ally's own checks are easier by this
   action_weight: 0.5      # the storyteller's pull toward helping someone (x 0.5 + bias_social)
+relationships:            # people and factions that remember (core_engine/relationships.py; docs/WORLD.md)
+  enabled: true
+  friendly_at: 2          # attitude (trust - hostility + faction_weight x the faction's standing) from which an NPC is friendly
+  hostile_at: 3           # hostility (or -attitude) from which an NPC is hostile
+  faction_weight: 0.5     # x a faction's standing in its members' attitude
+  faction_hostile_below: -2   # a world faction is hostile below this standing unless it sets hostile_below
+  limits: {trust: [-10, 10], hostility: [0, 10], standing: [-10, 10]}
+  max_memories: 8         # deeds each NPC remembers (the oldest are forgotten)
+  kin: 0.5                # a generic NPC (a merchant, a guard): how far word of the player travels between its copies (1: one person)
+  haunt_weight: 2.0       # x a generic NPC's presence here (haunts): regulars are shown before occasional visitors
+  reaction_pull: 1.0      # the storyteller's pull toward a place where someone waits with a reaction (x 0.5 + bias_social)
+  reaction_expiry: 8      # turns a reaction waits to be delivered (the NPC absent, the story in an event...)
+  max_reactions_per_turn: 1
+  announce: true          # tell the transitions the player can know of ([RELATIONSHIP], [FACTION])
+  witnesses: true         # the NPCs in the scene see what the player does
+  persist: configured     # none | configured (relationship.persist, a faction's persist) | all: kept in the profile
+  goal_trust: 2           # trust when one of an NPC's goals is fulfilled
+  goal_setback: {trust: -1, hostility: 1}   # an outcome one of their goals opposes
+  hostile_refuses_tags: [social, trade, information, help, blessing]   # a hostile NPC withholds such actions...
+  aggressive_tags: [combat, threat, confrontation, brawl, stealth, escape, deception]   # ...unless they are also these
+  appearance: {ally: 1.0, friendly: 0.5, neutral: 0.0, wary: -0.25, hostile: 0.0}   # + a generic NPC's visibility
+  deed_tags:              # outcome tags that make a deed against the NPC acted with (or the scene's)
+    theft: [theft, steal, stolen, pickpocket]
+    crime: [crime, murder, vandalism]
+    attacked: [attack, assault]
+    betrayed: [betrayal, betray, betrayed]
+    helped: [help, helped, rescue, aid]
+  deeds:                  # what each deed does: the target's trust and hostility, x related for the people close
+    # to them, the witnesses' (witness_trust, witness_hostility), and the target's faction standing (faction)
+    helped: {trust: 1, hostility: -1, faction: 0.5, related: 0.5}
+    betrayed: {trust: -3, hostility: 2, faction: -1, related: 0.5, witness_trust: -1}
+    theft: {trust: -1, hostility: 1, faction: -0.5, related: 0.5, witness_hostility: 1}
+    crime: {hostility: 1, faction: -1, related: 0.5, witness_hostility: 1}
+    attacked: {trust: -2, hostility: 3, faction: -1, related: 0.5, witness_hostility: 1}
+    quest_completed: {trust: 2, faction: 1, related: 0.5}
+    quest_failed: {trust: -1, faction: -0.5}
+    quest_declined: {}
 fitness:
+  version: 3              # the scoring (core_engine/fitness.VERSIONS); scores of different versions are not comparable
   npc_interaction_cap: 3  # interactions per NPC that still add to the score (no reward for chat farming)
+  side_quests:            # the training objective's share for side quests (core_engine/side_quests.fitness_term)
+    complete_bonus: 10           # each side quest completed (version 2: the first; each one more x diminishing)
+    step_bonus: 3                # each step of a side quest done (version 2: x diminishing for each one more)
+    mission_aid_bonus: 6         # each completed side quest that helped the mission (a way on, an ally)
+    fail_penalty: 4              # each side quest failed
+    unfinished_penalty: 2        # version 1: each side quest still under way when the story ends (version 2: side_story)
+    diminishing: 0.6             # version 2: each side quest, step or aid more is worth this x the one before (bounded)
+    repeat_factor: 0.25          # version 2: ...and x this again when it is like one done already (same giver and goal)
+  relationships:          # version 3: people and factions that changed (core_engine/relationships.fitness_term)
+    change_bonus: 3              # each distinct change of someone's feelings about the player (x diminishing each one more)
+    reaction_bonus: 2            # each reaction delivered (someone acting on what happened)
+    faction_bonus: 3             # each change of a faction's status (hostile, neutral, friendly)
+    diminishing: 0.6             # each one more is worth this x the one before (bounded: no farming)
+  side_story:             # version 2: side content as part of the story (core_engine/side_story.objective_terms), all shares or means
+    relevance_weight: 8          # x the mean relevance (0..1) to the main story of the side content taken on or fought
+    payoff_weight: 12            # x the share of resolved optional threads that led somewhere (meaningful)
+    completion_weight: 6         # x the share of side quests taken on that were completed
+    filler_penalty: 6            # x the share of resolved optional threads that led nowhere (filler)
+    unresolved_penalty: 6        # x the share of optional threads still open when the story ends
+    repeat_penalty: 10           # x the share of attacks that repeated an earlier one
+    density_target: 0.15         # attacks per turn above this...
+    density_penalty: 40          # ...cost this x the excess
+    interruption_penalty: 8      # x the share of side content that broke into the main story (a climax, the finale, a clock, a stalled quest)
+    drift_allowed: 20            # turns without main-quest progress that cost nothing...
+    drift_penalty: 20            # ...beyond them, this x the excess turns / story turns
+    diversity_weight: 6          # x how varied the player's meaningful decisions were (normalised entropy of their approaches)
+    diversity_kinds: 12          # as varied as it gets: this many approaches, evenly (the shipped world: about 9)
+    diversity_min_decisions: 4   # fewer decisions than this count for less
   variety:
     distinct_choice_weight: 30   # x share of choices that were distinct
     repeated_outcome_penalty: 2  # per outcome text shown again
@@ -681,6 +826,7 @@ llm_sharing:                   # the judge (vllm) and the augmenter (augmentatio
   idle_seconds: 5              # a model that has stopped running goes to sleep after this
   level: 1                     # vLLM sleep level 1: weights to CPU memory, GPU memory freed
   wait_seconds: 900            # the longest a model waits for the other to finish
+  watch_seconds: 30            # the API puts an idle, awake model to sleep this often (0: never; frees its GPU memory)
 llm_judge:
   # Gemma 4 as a game critic (evaluator/game_judge.py): it reads a playthrough's turns and
   # scores agency, pacing, surprise, payoff, exploration, stakes, coherence, replayability

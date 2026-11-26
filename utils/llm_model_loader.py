@@ -9,8 +9,11 @@ engine and an OpenAI-compatible vLLM server.
 Taking turns on one GPU (llm_sharing, ``Turns``): the roles' models take turns, so both fit on one
 GPU in one session. Before a model generates, the other is put to sleep (vLLM sleep level 1: its
 weights to CPU memory, its GPU memory freed) once it has nothing running, and its own is woken; a
-model that has stopped running for ``idle_seconds`` is put to sleep too. Off (ANE_LLM_SHARING=off, or
-llm_sharing.enabled: false) when the models are on GPUs of their own (several sessions).
+model that has stopped running for ``idle_seconds`` is put to sleep too. A background watcher
+(``Turns.start_watcher``, every ``watch_seconds``; started with the API) also puts to sleep a model
+that is awake while nothing of it runs: one that loaded awake, or that something else woke, does not
+hold its GPU memory while no evaluation runs. Off (ANE_LLM_SHARING=off, or llm_sharing.enabled: false)
+when the models are on GPUs of their own (several sessions).
 """
 
 import contextlib
@@ -95,13 +98,14 @@ def settings(role="judge"):
     }
 
 
-SHARING_DEFAULTS = {"enabled": True, "idle_seconds": 5.0, "level": 1, "wait_seconds": 900.0}
+SHARING_DEFAULTS = {"enabled": True, "idle_seconds": 5.0, "level": 1, "wait_seconds": 900.0, "watch_seconds": 30.0}
 
 
 def sharing():
     """llm_sharing.* (the roles' models taking turns on one GPU): {enabled, idle_seconds (how long a
     model that has stopped running stays awake), level (vLLM's sleep level: 1, weights to CPU memory),
-    wait_seconds (the longest a model waits for the other to finish)}. ANE_LLM_SHARING=on|off
+    wait_seconds (the longest a model waits for the other to finish), watch_seconds (how often the
+    background watcher puts an idle, awake model to sleep; 0: no watcher)}. ANE_LLM_SHARING=on|off
     overrides ``enabled``."""
     own = {**SHARING_DEFAULTS, **(config.get("llm_sharing") or {})}
     env = os.environ.get("ANE_LLM_SHARING", "").strip().lower()
@@ -134,10 +138,13 @@ class Turns:
         self._timers = {}
         self._absent_until = {}  # a role whose server did not answer: not asked again before this time
         self.log = []  # (role, "sleep" | "wake", ok): what was done, the latest last (status, tests)
+        self._watcher = None
+        self._stop = threading.Event()
 
     def close(self):
-        """Cancel the pending idle timers (a model then stays as it is): before this coordinator is
-        replaced or the process stops, so that no timer acts on servers configured afterwards."""
+        """Cancel the pending idle timers and stop the watcher (a model then stays as it is): before this
+        coordinator is replaced or the process stops, so that nothing acts on servers configured afterwards."""
+        self.stop_watcher()
         with self._cond:
             for timer in self._timers.values():
                 timer.cancel()
@@ -196,6 +203,73 @@ class Turns:
             if self._active[role] == 0 and self.state[role] in ("awake", None) and sharing()["enabled"]:
                 self._switch(role, wake=False)
                 self._cond.notify_all()
+
+    def _server_sleeping(self, role, timeout=5.0):
+        """Whether a role's server reports its model asleep (True / False); None when it does not say
+        (not a server, not running, no sleep mode)."""
+        active = settings(role)
+        if active["mode"] != "server":
+            return None
+        request = urllib.request.Request(f"{_root(active['base_url'])}/is_sleeping",
+                                         headers={"Authorization": f"Bearer {active['api_key']}"})
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return bool(json.loads(response.read().decode("utf-8")).get("is_sleeping"))
+        except Exception:  # noqa: BLE001 - not running, or no sleep mode: nothing to do
+            return None
+
+    def sleep_idle_servers(self):
+        """Put to sleep every role's server whose model is awake while nothing of it runs here (no turn in
+        progress, no idle timer pending): one that loaded awake, or that something else woke. The next
+        turn wakes it again. Returns the roles put to sleep."""
+        if not sharing()["enabled"]:
+            return []
+        slept = []
+        for role in ROLES:
+            with self._cond:
+                busy = self._active[role] or role in self._timers or self._absent_until.get(role, 0) > time.monotonic()
+            if busy or self._server_sleeping(role) is not False:
+                continue
+            with self._cond:  # checked again: a turn may have started meanwhile
+                if self._active[role] or role in self._timers:
+                    continue
+                self._switch(role, wake=False)
+                if self.state[role] == "asleep":
+                    slept.append(role)
+                self._cond.notify_all()
+        return slept
+
+    def start_watcher(self, every=None):
+        """Run ``sleep_idle_servers`` in the background every ``every`` seconds (llm_sharing.watch_seconds;
+        0: none), first right away. Started once (the API at its start, the studio's in-process API too);
+        ANE_LLM_WATCHER=off switches it off for the process."""
+        every = float(sharing()["watch_seconds"] if every is None else every)
+        if os.environ.get("ANE_LLM_WATCHER", "").strip().lower() in {"0", "false", "no", "off"}:
+            return False  # switched off for this process (tests, a machine without the model servers)
+        if every <= 0 or (self._watcher is not None and self._watcher.is_alive()):
+            return False
+        self._stop = threading.Event()
+
+        def watch(stop=self._stop):
+            while True:
+                try:
+                    slept = self.sleep_idle_servers()
+                    if slept:
+                        print(f"[vLLM] Idle, put to sleep (GPU memory freed): {', '.join(slept)}", flush=True)
+                except Exception as exc:  # noqa: BLE001 - the watcher must not stop: it tries again
+                    print(f"[vLLM] The idle watcher could not check the models: {exc}", flush=True)
+                if stop.wait(every):
+                    return
+
+        self._watcher = threading.Thread(target=watch, name="ane-llm-idle-watcher", daemon=True)
+        self._watcher.start()
+        return True
+
+    def stop_watcher(self):
+        self._stop.set()
+        watcher, self._watcher = self._watcher, None
+        if watcher is not None and watcher.is_alive() and watcher is not threading.current_thread():
+            watcher.join(timeout=5)
 
     @contextlib.contextmanager
     def turn(self, role):

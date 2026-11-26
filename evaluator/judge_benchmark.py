@@ -74,9 +74,14 @@ def play_stories(count, first_seed=0, genome=None):
 
 
 def benchmark(states, judge=None, workers=4, repeats=2):
-    """[{seed, fitness, engagement, scores, judgements}] for each story; the judge reads
-    each story ``repeats`` times (their agreement measures its reliability)."""
-    from core_engine.fitness import fitness
+    """[{seed, fitness, fitness_version, engagement, scores, judgements, optional_content,
+    engine_filler_share}] for each story; the judge reads each story ``repeats`` times (their
+    agreement measures its reliability). ``engine_filler_share``: the share of the story's resolved
+    optional threads the engine counts as filler (core_engine/side_story.classify), to compare with
+    the judge's own split; None without optional content."""
+    from core_engine.fitness import fitness, version
+    from core_engine.side_story import classify
+    from evaluator.game_judge import combine_optional
 
     judge = judge or GameJudge()
     digests = [digest_state(state) for state in states]
@@ -85,8 +90,12 @@ def benchmark(states, judge=None, workers=4, repeats=2):
     rows = []
     for index, state in enumerate(states):
         mine = [r for r in results[index * repeats:(index + 1) * repeats] if r["engagement"] is not None]
+        resolved = [item for item in classify(state) if item["label"] in ("meaningful", "filler")]
         rows.append({
-            "seed": index, "fitness": fitness(state), "turns": state.actions_taken,
+            "seed": index, "fitness": fitness(state), "fitness_version": version(), "turns": state.actions_taken,
+            "optional_content": combine_optional([r for r in mine if r.get("optional_content")]),
+            "engine_filler_share": (sum(1 for item in resolved if item["label"] == "filler") / len(resolved)
+                                    if resolved else None),
             "engagement": statistics.mean(r["engagement"] for r in mine) if mine else None,
             "scores": {c: statistics.mean(r["scores"][c] for r in mine if c in r["scores"])
                        for c in CRITERIA if any(c in r["scores"] for r in mine)},
@@ -163,9 +172,20 @@ def summary(rows):
     if not judged:
         return {"stories": len(rows), "judged": 0}
     twice = [r["judgements"] for r in judged if len(r["judgements"]) >= 2]
+    optional = [r for r in judged if r.get("optional_content") and r["optional_content"].get("score") is not None]
+    paired = [r for r in optional if r.get("engine_filler_share") is not None
+              and r["optional_content"].get("filler_share") is not None]
     return {
         "stories": len(rows), "judged": len(judged),
+        "fitness_version": rows[0].get("fitness_version") if rows else None,
         "engagement": statistics.mean(r["engagement"] for r in judged),
+        # Optional content, where the stories had some: the judge's score, and how its meaningful /
+        # filler split agrees with the engine's (Spearman of the filler shares; None below 3 stories).
+        "optional_content": statistics.mean(r["optional_content"]["score"] for r in optional) if optional else None,
+        "optional_stories": len(optional),
+        "filler_engine_vs_judge": spearman([r["engine_filler_share"] for r in paired],
+                                           [r["optional_content"]["filler_share"] for r in paired])
+        if len(paired) >= 3 else None,
         "criteria": {c: statistics.mean(r["scores"][c] for r in judged if c in r["scores"]) for c in CRITERIA},
         "fitness_vs_judge": spearman([r["fitness"] for r in judged], [r["engagement"] for r in judged]),
         "retest_difference": statistics.mean(abs(j[0] - j[1]) for j in twice) if twice else None,

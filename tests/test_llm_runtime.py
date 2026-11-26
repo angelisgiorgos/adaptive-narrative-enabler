@@ -298,7 +298,7 @@ class SharingTests(unittest.TestCase):
         self.judge, self.augmenter = self._server("judge"), self._server("augmenter")
         env = {"ANE_JUDGE_URL": self.judge + "/v1", "ANE_JUDGE_MODEL": "google/gemma-4-E4B-it",
                "ANE_AUGMENT_URL": self.augmenter + "/v1", "ANE_AUGMENT_MODEL": "Qwen/Qwen3.5-4B",
-               "ANE_LLM_SHARING": ""}
+               "ANE_LLM_SHARING": "", "ANE_LLM_WATCHER": ""}   # the watcher as configured (tests switch it off)
         patcher = patch.dict("os.environ", env)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -394,6 +394,75 @@ class SharingTests(unittest.TestCase):
             self.assertEqual(get_llm_runtime().generate("Again."), "ok")
         self.assertEqual(llm_model_loader.TURNS.state["judge"], "always")        # never asked to sleep again
         self.assertEqual(self.events.count(("plain", "generate")), 2)
+
+    def test_models_that_loaded_awake_are_put_to_sleep_in_the_background(self):
+        import threading
+        import time as clock
+
+        turns = llm_model_loader.TURNS
+        self.assertEqual(sorted(turns.sleep_idle_servers()), ["augmentation", "judge"])  # both loaded awake
+        self.assertEqual(sorted(self.events), [("augmenter", "sleep"), ("judge", "sleep")])
+        self.assertEqual(turns.sleep_idle_servers(), [])                                # asleep already
+        self.assertEqual(get_llm_runtime().generate("Judge."), "ok")                    # woken on demand
+        self.assertIn(("judge", "wake_up"), self.events)
+        # Never a model while it runs, nor before its idle time is over (its idle timer pending).
+        with turns._cond:
+            turns._active["judge"] = 1
+        self.events.clear()
+        with patch.object(turns, "_server_sleeping", return_value=False):
+            self.assertEqual(turns.sleep_idle_servers(), ["augmentation"])
+            with turns._cond:
+                turns._active["judge"] = 0
+                turns._timers["judge"] = threading.Timer(60, lambda: None)
+            self.assertNotIn("judge", turns.sleep_idle_servers())
+            turns._timers.pop("judge")
+            self.assertIn("judge", turns.sleep_idle_servers())                          # idle now: asleep
+        self.assertEqual([e for e in self.events if e[0] == "judge"], [("judge", "sleep")])
+        # In the background: started once, it puts them to sleep by itself, and stops.
+        get_llm_runtime().generate("Judge.")
+        turns.close()
+        with patch.dict(config._config, {"llm_sharing": {**config.get("llm_sharing"), "idle_seconds": 60}}):
+            get_llm_runtime().generate("Judge again.")                                  # awake, timer pending
+        turns._timers.pop("judge").cancel()                                              # as if the timer were lost
+        self.events.clear()
+        self.assertTrue(turns.start_watcher(every=0.05))
+        self.assertFalse(turns.start_watcher(every=0.05))                               # one watcher
+        clock.sleep(0.3)
+        turns.stop_watcher()
+        self.assertIn(("judge", "sleep"), self.events)
+
+    def test_no_watcher_when_sharing_is_off_or_it_is_not_wanted(self):
+        turns = llm_model_loader.TURNS
+        with patch.dict("os.environ", {"ANE_LLM_SHARING": "off"}):
+            self.assertEqual(turns.sleep_idle_servers(), [])                            # nothing would wake them
+        self.assertFalse(turns.start_watcher(every=0))
+        with patch.dict("os.environ", {"ANE_LLM_WATCHER": "off"}):
+            self.assertFalse(turns.start_watcher(every=0.05))                         # switched off for the process
+        self.assertEqual(self.events, [])
+
+    def test_the_studio_starts_no_watcher(self):
+        """The studio is an HTTP client of the API (studio_client.py): the API it talks to runs the
+        watcher at its own startup (test_the_api_starts_and_stops_the_watcher), the studio none."""
+        import app
+
+        turns = llm_model_loader.TURNS
+        with patch.dict(config._config, {"llm_sharing": {**config.get("llm_sharing"), "watch_seconds": 30}}):
+            client = app.StudioAPI(base_url="http://127.0.0.1:9")
+            self.assertEqual(client.mode, "http")
+            self.assertIsNone(turns._watcher)
+            client.close()
+        self.assertIsNone(turns._watcher)
+
+    def test_the_api_starts_and_stops_the_watcher(self):
+        from fastapi.testclient import TestClient
+
+        import api
+
+        turns = llm_model_loader.TURNS
+        with patch.dict(config._config, {"llm_sharing": {**config.get("llm_sharing"), "watch_seconds": 30}}):
+            with TestClient(api.api):
+                self.assertTrue(turns._watcher is not None and turns._watcher.is_alive())
+            self.assertIsNone(turns._watcher)
 
     def test_the_container_start_puts_its_peer_to_sleep_first(self):
         sys.path.insert(0, "packaging")

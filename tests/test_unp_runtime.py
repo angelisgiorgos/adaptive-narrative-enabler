@@ -470,7 +470,14 @@ class CommandLineTests(unittest.TestCase):
             self.assertEqual(json.loads(ready_file.read_text()), server.ready)
             if os.name == "posix":
                 self.assertEqual(ready_file.stat().st_mode & 0o777, 0o600)  # only the user reads it
-            self.assertEqual(server.send("GET", "/health")[0], 200)  # no token needed
+            status, headers, _ = server.send("GET", "/health")
+            self.assertEqual(status, 200)  # no token needed
+            # One request per connection, said in every answer (errors too), so no client reuses it.
+            self.assertEqual(headers.get("Connection"), "close")
+            status, headers, _ = server.send("GET", "/nowhere")
+            self.assertEqual((status, headers.get("Connection")), (404, "close"))
+            status, headers, _ = server.send("POST", "/games/nobody/choose", {"action_id": "x", "state_version": 1})
+            self.assertEqual(headers.get("Connection"), "close")
         finally:
             code, rest = server.stop()
         self.assertEqual(code, 0)
@@ -551,6 +558,16 @@ class UnityLibraryTests(unittest.TestCase):
                 self.assertTrue(any(m == method and re.fullmatch(p, path) for m, p in routes), "no such route")
         unused = [f"{m} {p}" for m, p in routes if not any(c == m and re.fullmatch(p, path) for c, path in calls)]
         self.assertEqual(unused, ["POST /evolve"])  # offline training: off unless --allow-evolve
+
+    def test_every_kind_of_entity_has_its_route(self):
+        from narrative_runtime.server import _routes
+
+        routes = [pattern for method, pattern, _ in _routes(types.SimpleNamespace(engine=None)) if method == "GET"]
+        for kind in ("locations", "npcs", "items", "events", "missions", "side_quests"):  # side_quests: an underscore
+            with self.subTest(kind=kind):
+                matched = [p for p in routes if re.fullmatch(p, f"/world/{kind}/charting_the_storm")]
+                self.assertEqual(len(matched), 1)
+                self.assertEqual(re.fullmatch(matched[0], f"/world/{kind}/charting_the_storm")["kind"], kind)
 
     def test_the_client_sends_what_the_ane_ai_takes(self):
         source = (self.LIBRARY / "Runtime" / "AneAiClient.cs").read_text(encoding="utf-8")

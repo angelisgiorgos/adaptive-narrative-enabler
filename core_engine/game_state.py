@@ -16,8 +16,13 @@ from .narration import Narrator
 from .story_beats import StoryBeats
 from .scope import SessionScope
 from . import progression
+from . import side_quests as side_quest_rules
+from . import side_story
+from . import encounters as encounter_rules
+from . import relationships
 from . import conditions, effects, rules, starts, variables as persistent
 from utils.tag_similarity import semantic_tag_similarity
+from .context import EngineContext, binds_own_context
 
 _action_keys = conditions.action_keys  # "(Priest) Seek a blessing" or "Seek a blessing"
 _READS = {}
@@ -54,9 +59,46 @@ def story_length():
     return max(MIN_STORY_LENGTH, int(config.get("narrative_end.max_actions", MIN_STORY_LENGTH)))
 
 
+def _context_of(state):
+    return state.__dict__.get("_context") or state.context
+
+
 class GameState(StoryBeats, SessionScope):
     def __init__(self, world, genome, start=None, verbose=False, interactive=False, rng=None, mission=None,
-                 variables=None, store=None, profile=None, stats=None, stats_mode=None, recent_starts=None):
+                 variables=None, store=None, profile=None, stats=None, stats_mode=None, recent_starts=None,
+                 context=None):
+        """A story told by ``genome`` in ``world``. ``context`` (an EngineContext): the frozen
+        configuration the story runs with, from start to end; default: the one bound now (e.g. an
+        engine's: EngineModel.new_game), else the process-wide configuration as it is now. Every
+        rule the story runs reads it, whatever changes in the process afterwards."""
+        self._context = EngineContext.current(genome) if context is None else context.with_genome(genome)
+        with self._context.bind():
+            self._setup(world, genome, start=start, verbose=verbose, interactive=interactive, rng=rng,
+                        mission=mission, variables=variables, store=store, profile=profile, stats=stats,
+                        stats_mode=stats_mode, recent_starts=recent_starts)
+
+    @property
+    def context(self):
+        """The EngineContext this story runs with (one is captured now for a story without, e.g.
+        one unpickled from an older version)."""
+        context = self.__dict__.get("_context")
+        if context is None:
+            context = self.__dict__["_context"] = EngineContext.current(self.__dict__.get("genome"))
+        return context
+
+    @property
+    def state_version(self):
+        """A number that changes whenever the story moves (a turn, approaching or leaving someone,
+        the player's state set from outside, the session ended): a client that chose from the
+        options of version ``n`` can be refused when the story has moved since (optimistic
+        concurrency). Reading the story never changes it."""
+        return self.__dict__.get("_state_version", 0)
+
+    def _changed(self):
+        self.__dict__["_state_version"] = self.state_version + 1
+
+    def _setup(self, world, genome, start=None, verbose=False, interactive=False, rng=None, mission=None,
+               variables=None, store=None, profile=None, stats=None, stats_mode=None, recent_starts=None):
         """``store`` (a persistent.VariableStore) marks real play: variable changes
         are saved to it, the start is added to the profile's start history and a
         finished story counts as a playthrough. Without it (simulations,
@@ -217,6 +259,26 @@ class GameState(StoryBeats, SessionScope):
             self.completed_goals = persistent.VariableStore().completed_goals(self.profile)  # read only
         else:
             self.completed_goals = []
+        # The side quests this profile completed before: not offered again unless repeatable.
+        if store is not None:
+            self.side_quests_done_before = store.completed_side_quests(self.profile)
+        elif config.get("persistence.simulate_with", "defaults") == "stored":
+            self.side_quests_done_before = persistent.VariableStore().completed_side_quests(self.profile)
+        else:
+            self.side_quests_done_before = []
+        self.side_quests = {}       # side quest -> {status, stage, started, ended} (core_engine/side_quests.py)
+        self.side_quest_events = []  # what happened to them, turn by turn
+        self.dynamic_encounters = []  # the encounter director's attacks (core_engine/encounters.py)
+        self.faction_shift = {}       # faction -> standing changed by this story's encounters
+        self.encounter_rewards = []   # templates whose on_win was paid (rewards_once)
+        # People and factions (core_engine/relationships.py): each NPC's trust, hostility, disposition and
+        # memories, their goals fulfilled, the reactions due and delivered, deeds, moves and transitions.
+        self.npc_relations = {}
+        self.npc_goals_done = {}
+        self.npc_reactions_due = []
+        self.npc_reactions_fired = {}
+        self.npc_deeds = []
+        self.relationship_log = []
         mission, start = self._choose_mission_and_start(mission, start)
         # Route planning caches filled by the choice are rebuilt on first use in play.
         for cache in ("_viability_cache", "_item_sites_cache", "_site_index", "_goal_sites_cache", "_route_cache"):
@@ -251,6 +313,7 @@ class GameState(StoryBeats, SessionScope):
         self.revealed_secrets = {}
         self.consequences_due = []
         self._recall_last_time()
+        relationships.start(self)  # what the profile's earlier stories left between the player and people
 
     # ---- persistent variables -------------------------------------------------
 
@@ -280,6 +343,7 @@ class GameState(StoryBeats, SessionScope):
             frozenset(self.succeeded_outcome_tags), self.coins, self.health, self.actions_taken,
             tuple(sorted(self.stats.changes.items())), self.mission.name if self.mission else None,
             frozenset(self.__dict__.get("revealed_secrets", ())),
+            self.__dict__.get("relationship_version", 0),
         )
 
     # ---- effects ----------------------------------------------------------------
@@ -363,6 +427,20 @@ class GameState(StoryBeats, SessionScope):
                     self._mission_completed = True
             elif kind == "end_story":
                 self._story_end = argument
+            elif kind in ("change_trust", "change_hostility"):
+                for name, value in argument:
+                    target = npc if name is True else name
+                    if isinstance(target, str):
+                        relationships.change(self, target, value if kind == "change_trust" else 0,
+                                             value if kind == "change_hostility" else 0, cause="effect")
+            elif kind == "change_standing":
+                for name, value in argument:
+                    relationships.change_standing(self, name, value, cause="effect")
+            elif kind == "deed":
+                relationships.deed(self, argument[0], target=argument[1] or npc)
+            elif kind == "move_npc":
+                for name, place in argument:
+                    relationships.move_npc(self, name, to=place)
         if variables_changed and self._store is not None and config.get("persistence.save_on", "change") == "change":
             self._store.save(self.profile, self.variables)
 
@@ -388,6 +466,7 @@ class GameState(StoryBeats, SessionScope):
         message = self.narrate("variable_changed", name=name, old=old, new=new)
         if message:
             self.history.append(message)
+        relationships.signal(self, "variable", variable=name, old=old, new=new)  # people may react to it
         return True
 
     def _change_stat(self, name, delta):
@@ -478,6 +557,8 @@ class GameState(StoryBeats, SessionScope):
         if first:
             self._recognised(char_name)
         self._note_met(char_name)
+        if first:
+            relationships.signal(self, "met", npc=char_name)  # previous encounters: what they remember
 
     def _note_met(self, name):
         """Remember where the player met someone (people_met)."""
@@ -570,6 +651,9 @@ class GameState(StoryBeats, SessionScope):
             if char.name not in self.visible_inhabitants:
                 continue
             char_desc = self._pick_text(char.descriptions, offset=len(char.name)) if char.descriptions else f"{char.name} is here."
+            doing = relationships.activity(self, char)  # what they are doing here (activities)
+            if doing:
+                char_desc = f"{char_desc} {doing}"
             npc_lines.append((char.name, char_desc))
 
         object_lines = []
@@ -659,7 +743,8 @@ class GameState(StoryBeats, SessionScope):
 
     def people_here(self):
         """The people the player sees here: [{name, called, description, wants, hostile,
-        talks (times spoken with in this story), quest (they can help with the mission now)}]."""
+        talks (times spoken with in this story), quest (they can help with the mission now), side_quests
+        (the titles of the side quests they offer now), ...}]."""
         if "location_objects" not in self.__dict__:
             return []  # the scene is set with the first options
         _, npc_lines, _ = self._describe_visible_scene()
@@ -679,9 +764,14 @@ class GameState(StoryBeats, SessionScope):
                 # they are an ally now (npc_goals).
                 "helped": sum(self.__dict__.get("npc_goal_progress", {}).get(name, {}).values()),
                 "ally": name in self.__dict__.get("allies", set()),
+                # The side quests they offer now (dealing with them starts them).
+                "side_quests": side_quest_rules.offered_by(self, name),
                 # How much they matter in this story (npc_roles): a role and its importance 0-3.
                 "role": self.role_of(name)[0],
                 "importance": self.importance(name),
+                # How they feel about the player, and who they stand with (relationships: no numbers,
+                # no memories; those are for authors, in the decision trace).
+                **relationships.player_view(self, name),
             })
         return people
 
@@ -699,6 +789,8 @@ class GameState(StoryBeats, SessionScope):
                 "ally": name in self.__dict__.get("allies", set()),
                 "role": self.role_of(name)[0],
                 "importance": self.importance(name),
+                # (a merchant, a guard: the one met last)
+                **relationships.player_view(self, name, place=(entry["where"] or [None])[-1]),
             })
         return people
 
@@ -1122,8 +1214,10 @@ class GameState(StoryBeats, SessionScope):
             done = stages[self.mission_stage]
             self.mission_stage += 1
             self.last_quest_progress = self.actions_taken
+            side_story.note_main_progress(self)
             following = stages[self.mission_stage]
             self._run_effects(done["rewards"])
+            relationships.signal(self, "mission_stage", stage=self.mission_stage, title=done["title"])
             message = self.narrate("stage_complete", done=done["title"], next=following["title"],
                                    description=following["description"])
             self.history.append(message)
@@ -1627,6 +1721,7 @@ class GameState(StoryBeats, SessionScope):
             self.tags_seen.append(["finale"])
             if self.interactive or self.verbose:
                 print(f"  >>> {message}")
+            side_story.callbacks(self, "finale")  # resolved side stories come back (once a story)
 
     def _recap(self):
         """The journey in a few words, for the epilogue of a won story: the quest's steps, the
@@ -1660,6 +1755,13 @@ class GameState(StoryBeats, SessionScope):
         if self.health_player.is_dead:
             return self._end("death", self.narrate("end_death"))
 
+        side_quest_rules.update(self)  # optional quests: started, advanced, completed or failed (never the end)
+        if self.health_player.is_dead:  # a failed side quest's cost
+            return self._end("death", self.narrate("end_death"))
+        relationships.update(self)  # people's goals, dispositions and reactions (core_engine/relationships.py)
+        if self.health_player.is_dead:  # a reaction's cost
+            return self._end("death", self.narrate("end_death"))
+
         if self.mission and not self.won:
             self._advance_stages()
         if self.mission and not self.won and (self._mission_completed or self._goal_met(self.mission)) and (
@@ -1669,6 +1771,8 @@ class GameState(StoryBeats, SessionScope):
         elif self.mission and not self.won and (self._mission_completed or self._goal_met(self.mission)) and (
                 getattr(self, "mission_stage", 0) >= len(getattr(self.mission, "stages", None) or [None]) - 1):
             self.won = True
+            side_story.note_main_progress(self)
+            relationships.signal(self, "mission_complete", mission=self.mission.name)
             complete = self.narrate("mission_complete", title=self.mission.title)
             self.history.append(complete)
             if self.interactive or self.verbose:
@@ -1707,7 +1811,9 @@ class GameState(StoryBeats, SessionScope):
         self.ended = True
         self.end_kind = kind
         self.end_reason = reason
+        side_quest_rules.close(self)  # the ending recalls the side quests: seen through, failed, left open
         self._remember_story()  # for the profile's next story (memory)
+        relationships.remember_story(self)  # the relationships kept in the profile (relationships.persist)
         if self._store is not None:
             self._store.save(self.profile, self.variables, finished=True)
             # The player's progression is saved and the session reported (core_engine/progression.py).
@@ -1719,11 +1825,16 @@ class GameState(StoryBeats, SessionScope):
         not reached unless it was, and the progression is saved and reported like any end."""
         if self.ended:
             return False
+        self._changed()
         if "location_objects" not in self.__dict__:
             self._refresh_scene()  # a session stopped before its first scene was shown still has one
         self._end("abandoned", reason or self.narrate("end_abandoned"))
         self.history.append(self.narrate("end_line", reason=self.end_reason))
         return True
+
+    def side_quest_log(self):
+        """The side quests of this story as the player follows them (core_engine/side_quests.log)."""
+        return side_quest_rules.log(self)
 
     def unique_actions(self):
         """Every attempt at a one-time action in this session: [{turn, action, owner, where,
@@ -1748,7 +1859,8 @@ class GameState(StoryBeats, SessionScope):
             score += self.genome.bias_threat * weights.get("npc_threat_bias_weight", 0.5)
         if "urban" in char.associated_tags:
             score += self.genome.bias_urban * weights.get("npc_urban_bias_weight", 0.25)
-        return score
+        # Friends come by more often; a regular of this place is shown before an occasional visitor.
+        return score + relationships.visibility_bonus(self, char) + relationships.haunt_bonus(self, char)
 
     def _npc_location_affinity(self, char, location=None):
         """Score an NPC against a location (default: current) using contextual tags."""
@@ -1783,6 +1895,15 @@ class GameState(StoryBeats, SessionScope):
         return score
 
     def _npc_fits_location(self, char, location=None):
+        """Whether ``char`` can be found at ``location``: a generic NPC with ``haunts`` where one of them
+        gives a presence above 0 (core_engine/relationships.presence), else by their known places and tags."""
+        location = location or self.current
+        found = relationships.presence(self, char, location)
+        if found is not None:
+            return found > 0
+        return self._npc_fits_by_tags(char, location)
+
+    def _npc_fits_by_tags(self, char, location=None):
         location = location or self.current
         if location.name in char.known_locations:
             return True
@@ -1940,12 +2061,17 @@ class GameState(StoryBeats, SessionScope):
         """
         if self._is_removed(char.name) or not self.is_enabled(char):
             return False
+        if relationships.seeking(self, char):
+            return True  # they came to the player (a reaction that seeks them out)
         if not explicit and not self._role_revealed(char):
             return False  # someone who matters, not found yet (npc_roles)
         if self._appearances_used(char):
             return False  # seen in as many visits as they appear in (npc_behaviour.appearances)
         if char.unique:
             return self.npc_homes.get(char.name) == self.current.name
+        here = relationships.here_this_visit(self, char)  # haunts: regular here, or now and then (this visit)
+        if here is not None:
+            return explicit or here
         return explicit or self._npc_fits_location(char)
 
     def _appearances_used(self, char):
@@ -2244,6 +2370,10 @@ class GameState(StoryBeats, SessionScope):
                 stat=result.stat, roll=result.roll, target=result.target,
             ))
             succeeded = result.passed
+        elif rules.settings()["failure_counts"] and rules.is_failure(attempt, failure_tags):
+            # No check, and what happens is the failure branch (a surrender, a capture written
+            # with failure outcomes only): it is told, and it counts as a failure.
+            return attempt, attempt, None, False
         else:
             succeeded = attempt.success_probability(
                 genome=self.genome, state=self, action=action,
@@ -2324,6 +2454,11 @@ class GameState(StoryBeats, SessionScope):
         heading_step = self._heading_step()
         boredom = self._boredom()
         due = self._due_clues()
+        # Side quests under way (or offered by someone not met yet) pull too: their weight x the
+        # storyteller's learned side_quest_bias (core_engine/side_quests.ranking_weight).
+        side_pull = side_quest_rules.ranking_weight(self)
+        if side_pull:  # less while the main quest stands still, in the climax and the finale (side_story)
+            side_pull *= side_story.pull_factor(self)
         ranked = []
         for a in actions:
             all_o_tags = []
@@ -2393,9 +2528,14 @@ class GameState(StoryBeats, SessionScope):
             if a.character_name and a.source not in ("conversation", "navigation"):
                 char = next((c for c in self.world.characters if c.name == a.character_name), None)
                 if char is not None and not char.encounter_event and any(
-                        self._helps_goal(char, o, a) is not None for o in a.outcomes):
+                        self._helps_goal(char, o, a) is not None or relationships.would_help(self, char, o)
+                        for o in a.outcomes):
                     weight += float((config.get("npc_goals") or {}).get("action_weight", 0.5)) * (
                         0.5 + self.genome.bias_social)
+            # Someone waits there to have their say (a reaction that needs them in the scene).
+            pull = relationships.reaction_pull(self, a)
+            if pull:
+                weight += pull * (0.5 + self.genome.bias_social)
             # A failed attempt is not retried at once (director.retry_cooldown turns): something
             # else happens first, and the next try is easier (retry_bonus).
             # Only when there is something else to do here: leaving and coming straight back
@@ -2431,6 +2571,8 @@ class GameState(StoryBeats, SessionScope):
             # An open clue also pulls toward the place where it can be paid off.
             if a.source == "navigation" and open_clues and a.owner in self._payoff_sites():
                 weight += self.genome.setup_prob * story_rules["payoff_route_weight"]
+            if side_pull:
+                weight += side_quest_rules.affinity(self, a) * side_pull
             # The mission pulls once the story arc reaches it, and holds back before.
             if goal_pull:
                 weight += (
@@ -2742,13 +2884,20 @@ class GameState(StoryBeats, SessionScope):
     def _available_event_actions(self):
         """Only the active event's actions are offered; no travel, NPC, or item actions."""
         actions = []
+        trace = self.__dict__.get("_decision_trace")
         for template in self.active_event.actions:
             if not self._is_offered(template) or not self._action_enabled(template):
+                if trace is not None:
+                    trace.blocked(template, "filter")
                 continue
             if self._only_arrives_here(template):
+                if trace is not None:
+                    trace.blocked(template, "filter")
                 continue  # "slip away into the Sewers" while in the Sewers
             a = self._prepare_action(copy.deepcopy(template))
             if a is None:
+                if trace is not None:
+                    trace.blocked(template, "requirements")
                 continue
             # Event actions act on behalf of the NPC who triggered the event, so
             # remove_npc: true, lead_to_known and NPC tags refer to that NPC.
@@ -2757,6 +2906,8 @@ class GameState(StoryBeats, SessionScope):
 
         if not actions:
             # Never trap the player when every event action has unmet requirements.
+            if trace is not None:
+                trace.note("event_fallback", event=self.active_event.name)
             event_cfg = config.get("authored_events", {})
             actions.append(Action(
                 name=event_cfg.get("fallback_action", "Step away from the situation"),
@@ -2767,6 +2918,8 @@ class GameState(StoryBeats, SessionScope):
                     tags=["neutral"],
                 )],
             ))
+        if trace is not None:
+            trace.available(actions)
         return actions
 
     def _visit_id(self):
@@ -2849,15 +3002,26 @@ class GameState(StoryBeats, SessionScope):
         self._announce_arrival()
 
     def get_available_actions(self):
-        """Returns a list of valid actions for the current state with narrative visibility."""
+        """Returns a list of valid actions for the current state with narrative visibility.
+
+        An author's decision trace (core_engine/diagnostics.py, on a copy of the story) is told why
+        each candidate is or is not offered; it changes nothing that is decided."""
+        trace = self.__dict__.get("_decision_trace")
+        if trace is not None:
+            trace.begin()  # a player left with nothing is carried on (_actions_now): the last pass counts
         if self.active_event:
+            if trace is not None:
+                trace.event_mode(self.active_event, started=False)
             return self._available_event_actions()
 
         self._refresh_scene()
 
         # A hostile NPC in the scene confronts the player before anything else; then
-        # an authored random event may start by itself.
-        if self._start_encounter() or self._schedule_random_event():
+        # an authored random event may start by itself; then, rarely and only when the story
+        # makes it plausible, the encounter director's attack (core_engine/encounters.py).
+        if self._start_encounter() or self._schedule_random_event() or encounter_rules.maybe_start(self):
+            if trace is not None:
+                trace.event_mode(self.active_event, started=True)
             return self._available_event_actions()
 
         # 2. Gather actions for VISIBLE entities only
@@ -2866,16 +3030,27 @@ class GameState(StoryBeats, SessionScope):
         
         # Filter inhabitants
         for char in self.current_inhabitants:
+            if char.name not in self.visible_inhabitants and trace is not None:
+                trace.entity_hidden(char, "npc_not_visible")
             if char.name in self.visible_inhabitants:
-                raw_actions.extend(char.actions)
+                for a in char.actions:
+                    if relationships.refuses(self, char, a):  # a hostile NPC withholds friendly dealings
+                        if trace is not None:
+                            trace.blocked(a, "filter")
+                        continue
+                    raw_actions.append(a)
                 offset = len(char.name) + self.character_interactions.get(char.name, 0)
                 line = self._dialogue_line(char)
                 if line is None and char.encounter_event:
+                    if trace is not None:
+                        trace.no_small_talk(char)
                     continue  # a hostile NPC (an ambusher) does not chat, unless dialogue is written for it
                 if line is not None:
                     # Authored dialogue chosen by condition; its effects apply when said.
                     texts = line.text if isinstance(line.text, list) else [line.text]
                     conversation_detail, line_effects = self._pick_text(texts, offset=offset), line.effects
+                elif relationships.hostile_talk(self, char):
+                    conversation_detail, line_effects = relationships.hostile_talk(self, char), None
                 else:
                     conversation_detail = self._pick_text(char.descriptions, offset=offset) or self.narrate(
                         "talk_default", stable=char.name, npc=char.name)
@@ -2901,15 +3076,25 @@ class GameState(StoryBeats, SessionScope):
         for obj in self.location_objects:
             if obj.name in self.visible_objects:
                 raw_actions.extend(obj.actions)
+            elif trace is not None:
+                trace.entity_hidden(obj, "item_not_visible")
 
         # 3. Process & Template Actions (not a way here while already here)
-        filtered_actions = [copy.deepcopy(a) for a in raw_actions
-                            if self._is_offered(a) and self._action_enabled(a) and not self._only_arrives_here(a)
-                            and not self._out_of_reach(a)]
+        filtered_actions = []
+        for a in raw_actions:
+            if self._is_offered(a) and self._action_enabled(a) and not self._only_arrives_here(a) \
+                    and not self._out_of_reach(a):
+                filtered_actions.append(copy.deepcopy(a))
+            elif trace is not None:
+                trace.blocked(a, "filter")
 
-        final_actions = [
-            a for a in (self._prepare_action(a) for a in filtered_actions) if a is not None
-        ]
+        final_actions = []
+        for a in filtered_actions:
+            prepared = self._prepare_action(a)
+            if prepared is not None:
+                final_actions.append(prepared)
+            elif trace is not None:
+                trace.blocked(a, "requirements")
 
         # 4. Navigation
         navigation_targets = [] if self._location_is_locked() else sorted(
@@ -2945,6 +3130,8 @@ class GameState(StoryBeats, SessionScope):
                 owner=loc_name,
             )
             final_actions.append(navigation_action)
+        if trace is not None:
+            trace.navigation(navigation_targets)
         final_actions.extend(self._fast_travel_options(navigation_targets))  # known ways, in one turn (travel)
 
         # The director does not offer what can only repeat itself (events and travel stay).
@@ -2957,7 +3144,13 @@ class GameState(StoryBeats, SessionScope):
             way_on = any(a.source == "navigation" or self._escape_action(a) for a in fresh)
             minimum = 1 if way_on else int(director.get("min_options", 2))
             if len(fresh) >= minimum:
+                if trace is not None:
+                    trace.loop_filtered([a for a in final_actions if all(a is not f for f in fresh)], window)
                 final_actions = fresh
+            elif trace is not None and len(fresh) < len(final_actions):
+                trace.note("loop_filter_skipped", fresh=len(fresh), minimum=minimum)
+        if trace is not None:
+            trace.available(final_actions)
         return final_actions
 
     def ranked_available_actions(self, limit=None, order="ranked"):
@@ -2994,21 +3187,39 @@ class GameState(StoryBeats, SessionScope):
         else:
             actions = self._actions_now()
             pairs = self._rank_actions(actions)
+        trace = self.__dict__.get("_decision_trace")
+        if trace is not None:
+            trace.ranked(pairs, limit=limit, order=order)
         pairs, talking = self._conversation_pairs(pairs)
         if talking:  # a conversation's choices are shown as they are; leaving is always one
             chosen = [action for _, action in pairs[:-1]][:limit - 1] + [pairs[-1][1]]
+            if trace is not None:
+                trace.over_limit([action for _, action in pairs[:-1]][limit - 1:], limit, "conversation")
         elif self.active_event or not cfg.get("relevance_filter", True):
             chosen = [action for _, action in pairs[:limit]]
+            if trace is not None:
+                trace.over_limit([action for _, action in pairs[limit:]], limit,
+                                 "event" if self.active_event else "no_relevance_filter")
         else:
             chosen = self._relevant_options(pairs, limit, cfg)
-        if order == "world":
+        # A side quest on offer: taking it on or turning it down comes first (no turn passes).
+        offered = side_quest_rules.offer_options(self)
+        if offered:
+            chosen = (offered + chosen)[:max(limit, len(offered))]
+            if trace is not None:
+                for action in offered:
+                    trace.chosen(action, "side_quest_offer")
             position = {id(action): index for index, action in enumerate(actions)}
 
             def place(action):  # approaching someone: where their choices are; leaving: last
+                if action.source == "side_quest":  # an offer's answers first
+                    return -1
                 if action.source == "approach":
                     return min((position.get(id(m), len(position)) for m in action.members), default=len(position))
                 return position.get(id(action), len(position) + (action.source == "leave"))
             chosen = sorted(chosen, key=place)
+        if trace is not None:
+            trace.shown(chosen)
         return chosen
 
     # ---- conversations: the people present, approached one at a time ----------------------------
@@ -3043,7 +3254,10 @@ class GameState(StoryBeats, SessionScope):
         cfg = self._conversations()
         if cfg is None or self.active_event or self.ended:
             return pairs, False
+        trace = self.__dict__.get("_decision_trace")
         if self.__dict__.get("_free_steps", 0) >= int(cfg.get("max_free_steps", 6)):
+            if trace is not None:
+                trace.note("conversations_paused", free_steps=self.__dict__.get("_free_steps", 0))
             return pairs, False
         groups, rest = {}, []
         for score, a in pairs:
@@ -3057,19 +3271,28 @@ class GameState(StoryBeats, SessionScope):
         if talking is not None:
             members = groups[talking]
             instead = rest[0][0] if rest else members[-1][0] - 1.0
+            if trace is not None:
+                trace.conversation(talking, [a for _, a in pairs if all(a is not m for _, m in members)])
             return members + [(instead, self._conversation_option("leave", talking))], True
         drawn = self._drawn_in(rest)
         if drawn is not None:
             members = [(score, a) for score, a in rest if a.source == "location" and a.owner == drawn]
             others = [(score, a) for score, a in pairs if not (a.source == "location" and a.owner == drawn)]
             instead = others[0][0] if others else members[-1][0] - 1.0
+            if trace is not None:
+                trace.focus_place(drawn, [a for _, a in others])
             return members + [(instead, self._conversation_option("look", drawn))], True
         left = self.__dict__.get("_left")
         offered = list(rest)
         for person, members in groups.items():
             if rest and left is not None and tuple(left) == (person, self.actions_taken):
+                if trace is not None:
+                    trace.just_left(person, [a for _, a in members])
                 continue  # just left: not again before something happens
-            offered.append((members[0][0], self._conversation_option("approach", person, [a for _, a in members])))
+            option = self._conversation_option("approach", person, [a for _, a in members])
+            if trace is not None:
+                trace.behind_approach(option, [a for _, a in members])
+            offered.append((members[0][0], option))
         offered.sort(key=lambda pair: pair[0], reverse=True)
         return offered, False
 
@@ -3132,7 +3355,12 @@ class GameState(StoryBeats, SessionScope):
         """Take one of player_options(): approaching someone or leaving a conversation changes what
         is offered and takes no turn; any other choice is a turn (step). ``ranked``: the
         storyteller's ranked actions of this turn, when already at hand. Returns step()'s result."""
+        if option.source == "side_quest":  # taking a side quest on or turning it down: no turn
+            self._changed()
+            side_quest_rules.answer(self, option.owner, getattr(option, "key", None))  # accept | decline | turn_in
+            return True
         if option.source in self._CONVERSATION:
+            self._changed()
             self._free_steps = self.__dict__.get("_free_steps", 0) + 1
             if option.source == "leave" and option.character_name is None:  # a place: look around
                 self.focus_place = None
@@ -3149,6 +3377,12 @@ class GameState(StoryBeats, SessionScope):
             return True
         ranked = list(ranked) if ranked is not None else self.ranked_available_actions()
         index = next((i for i, a in enumerate(ranked) if a is option), None)
+        if index is None:
+            # The same choice in the ranking made again: by what offers it (core_engine/choices.py), so
+            # a place's action named like a way on, or two people's same-named actions, are never mixed up.
+            from .choices import same_choice
+
+            index = next((i for i, a in enumerate(ranked) if same_choice(a, option)), None)
         if index is None:
             names = [a.name for a in ranked]
             if option.name not in names:
@@ -3211,29 +3445,36 @@ class GameState(StoryBeats, SessionScope):
         kind_caps = {"navigation": int(cfg.get("travel_limit", 3)), "conversation": int(cfg.get("talk_limit", 2)),
                      "approach": int((config.get("conversations") or {}).get("approach_limit", 3))}
         chosen = []
+        trace = self.__dict__.get("_decision_trace")
 
-        def take(a):
+        def take(a, why):
             if a is not None and all(a is not other for other in chosen):
                 chosen.append(a)
+                if trace is not None:
+                    trace.chosen(a, why)
 
         # What the moment is about comes first.
         if self._location_is_locked():
             for _, a in pairs:
                 if self._escape_action(a):
-                    take(a)
+                    take(a, "priority_escape")
         if self.mission and not self.won:
             affinity = [(self._mission_affinity(a), -index, a) for index, (_, a) in enumerate(pairs)]
             best = max(affinity, key=lambda item: (item[0], item[1]), default=(0.0, 0, None))
             if best[0] > 0:
-                take(best[2])
+                take(best[2], "priority_quest")
+        # A side quest under way (or someone who offers one) keeps one option (side_quest_settings.guide).
+        take(side_quest_rules.best_option(self, pairs), "priority_side_quest")
         if self._open_clues():
             take(next((a for _, a in pairs if any(
-                str(tag).lower().startswith("payoff_") for o in self._option_outcomes(a) for tag in o.tags)), None))
-        take(next((a for _, a in pairs if a.source == "navigation"), None))
+                str(tag).lower().startswith("payoff_") for o in self._option_outcomes(a) for tag in o.tags)), None),
+                 "priority_payoff")
+        take(next((a for _, a in pairs if a.source == "navigation"), None), "priority_way_on")
         # Backtracking: the way back where one came from stays a choice.
         previous = self.path[-2] if len(self.path) > 1 else None
         if previous and previous != self.current.name and cfg.get("way_back", True):
-            take(next((a for _, a in pairs if a.source == "navigation" and a.owner == previous), None))
+            take(next((a for _, a in pairs if a.source == "navigation" and a.owner == previous), None),
+                 "priority_way_back")
         # Then the rest by rank while relevant enough (beyond `min`: not in the lowest
         # `relevance` share of the options now, `focus_relevance` in a tense moment),
         # within the kind limits.
@@ -3243,16 +3484,29 @@ class GameState(StoryBeats, SessionScope):
         share = calm + tension * (tense - calm)
         cutoff = scores[min(len(scores) - 1, int(share * len(scores)))] if share > 0 else float("-inf")
         counts = Counter(self._option_kind(a) for a in chosen)
-        for score, a in pairs:
+        if trace is not None:
+            trace.relevance(limit=limit, floor=floor, focus_limit=focus, cap=cap, tension=tension, share=share,
+                            cutoff=cutoff, kind_caps=kind_caps)
+        for index, (score, a) in enumerate(pairs):
             if len(chosen) >= cap:
+                if trace is not None:
+                    trace.over_limit([b for _, b in pairs[index:] if all(b is not c for c in chosen)], cap, "cap")
                 break
             kind = self._option_kind(a)
-            if any(a is other for other in chosen) or counts[kind] >= kind_caps.get(kind, limit):
+            if any(a is other for other in chosen):
+                continue
+            if counts[kind] >= kind_caps.get(kind, limit):
+                if trace is not None:
+                    trace.hidden(a, "kind_limit", kind=kind, limit=kind_caps.get(kind, limit))
                 continue
             if len(chosen) >= floor and score < cutoff:
+                if trace is not None:
+                    trace.hidden(a, "below_relevance", score=score, cutoff=cutoff)
                 continue
             chosen.append(a)
             counts[kind] += 1
+            if trace is not None:
+                trace.chosen(a, "rank")
         return chosen
 
     def _actions_now(self):
@@ -3319,12 +3573,19 @@ class GameState(StoryBeats, SessionScope):
 
     def _release_if_held_too_long(self):
         """The director does not let a prison end the story: a player still locked in
-        after director.release_after turns there is let out (and the story goes on)."""
+        after director.release_after turns there is let out (and the story goes on). A player a
+        dynamic encounter put there is let out after encounters.captive_release turns at most,
+        with or without the director."""
         director = self._director()
-        if director is None or self.ended or self.active_event or not self._location_is_locked():
+        if self.ended or self.active_event or not self._location_is_locked():
             return False
-        if self.consecutive_steps_in_location < int(director.get("release_after", 5)):
+        limits = [int(director.get("release_after", 5))] if director is not None else []
+        held = encounter_rules.captive_release(self)
+        if held is not None:
+            limits.append(held)
+        if not limits or self.consecutive_steps_in_location < min(limits):
             return False
+        encounter_rules.freed(self)
         prison = self.current.name
         self.confined_in = None
         self.unlocked_locations.add(prison)
@@ -3616,7 +3877,7 @@ class GameState(StoryBeats, SessionScope):
             print(f"  >>> {message}")
         return True
 
-    def _finish_event(self, action, succeeded):
+    def _finish_event(self, action, succeeded, outcome=None):
         """End the active event after one of its actions, or chain into the next event."""
         event = self.active_event
         return_location = self.event_return_location
@@ -3631,6 +3892,7 @@ class GameState(StoryBeats, SessionScope):
         # How it was resolved, for goals and conditions (event_succeeded / event_failed).
         entry["result"] = "abandoned" if action.source == "event_fallback" else ("success" if succeeded else "failure")
         entry["ended_step"] = self.actions_taken
+        encounter_rules.resolved(self, event, entry, outcome)  # a dynamic encounter: spared, its follow-up
         if self.health_player.is_dead:
             return
 
@@ -3730,6 +3992,7 @@ class GameState(StoryBeats, SessionScope):
             ranked = list(ranked) if ranked is not None else self.ranked_available_actions()
         chosen = ranked[action_index] if ranked is not None and action_index is not None \
             and 0 <= action_index < len(ranked) else None
+        self._changed()
         result = self._step(action_index, ranked)
         if talking is not None or focus is not None or self.__dict__.get("_free_steps"):
             self._after_conversation_turn(talking, place, chosen, focus)
@@ -3779,6 +4042,8 @@ class GameState(StoryBeats, SessionScope):
             new = True
         if turn.get("check") or (previous is not None and (
                 turn["health"] != previous["health"] or turn["coins"] != previous["coins"])):
+            new = True
+        if side_quest_rules.moments_at(self, turn["turn"]):  # a side quest offered, advanced, done, failed
             new = True
         self.calm_streak = 0 if new else self.__dict__.get("calm_streak", 0) + 1
 
@@ -3936,6 +4201,9 @@ class GameState(StoryBeats, SessionScope):
                 "quest_done": [title for title in done if title],
                 "quest_now": stages[after_stage] if stages and after_stage < len(stages) and not entry.get("won") else None,
                 "quest_complete": bool(entry.get("won")) and not won,
+                "side_quests": side_quest_rules.events_at(self, turn),  # started, a step done, completed, failed
+                # a dynamic encounter this turn met (it started as the turn's choices were set out)
+                "encounter": encounter_rules.at_turn(self, turn - 1) if turn else None,
                 "ended": bool(entry.get("ended")), "end_reason": self.end_reason if entry.get("ended") else None,
             })
             health, coins, stage, won = entry.get("health"), entry.get("coins"), after_stage, won or bool(entry.get("won"))
@@ -4137,7 +4405,7 @@ class GameState(StoryBeats, SessionScope):
 
         # Any choice inside an event ends it; a successful trigger action starts one.
         if in_event:
-            self._finish_event(action, calculated_success)
+            self._finish_event(action, calculated_success, outcome=told)
             if climax_turn:
                 self._resolve_climax(action, calculated_success)
         elif (
@@ -4161,6 +4429,8 @@ class GameState(StoryBeats, SessionScope):
             self._tell_consequences()  # what the player did earlier shows now
             self._refresh_scene()
             self._start_encounter()
+        if not self.active_event:
+            relationships.deliver(self)  # someone met in the new scene reacts at once (core_engine/relationships.py)
         return True
 
     def resolve_destination(self, move_to=None, move_to_tags=None):
@@ -4590,6 +4860,7 @@ class GameState(StoryBeats, SessionScope):
             if action.consumes_object and action.active_item:
                 self._take_item(action.active_item, how="used")
         self._advance_npc_goals(outcome, action)
+        relationships.after_outcome(self, outcome, action)  # deeds, and the goals it sets back
         if action is not None and action.character_name:
             self._check_secret(action.character_name)  # spoken with often enough, they let something slip
 
@@ -4618,6 +4889,8 @@ class GameState(StoryBeats, SessionScope):
             return None
         words = self._npc_goal_words(outcome, action)
         for index, goal in enumerate(self._goal_specs(char)):
+            if goal.get("explicit"):
+                continue  # its own conditions and tags decide (relationships.explicit_progress)
             if {self._stem(keyword) for keyword in goal["keywords"]} & words:
                 return index
         return None
@@ -4633,15 +4906,15 @@ class GameState(StoryBeats, SessionScope):
         char = next((c for c in self.world.characters if c.name == action.character_name), None)
         if char is None or char.encounter_event:
             return
-        index = self._helps_goal(char, outcome, action)
-        if index is None:
-            return
-        progress = self.__dict__.setdefault("npc_goal_progress", {}).setdefault(char.name, {})
-        progress[index] = progress.get(index, 0) + 1
-        goal = self._goal_specs(char)[index]
         cfg = config.get("npc_goals") or {}
-        if progress[index] >= int(goal.get("needed") or cfg.get("progress_needed", 2)):
-            self._fulfil_npc_goal(char, goal)
+        # Explicit goals (supports, progress_when: core_engine/relationships.py), then the keyword fallback.
+        index = self._helps_goal(char, outcome, action)
+        for hit in relationships.explicit_progress(self, char, outcome, action) + ([] if index is None else [index]):
+            progress = self.__dict__.setdefault("npc_goal_progress", {}).setdefault(char.name, {})
+            progress[hit] = progress.get(hit, 0) + 1
+            goal = self._goal_specs(char)[hit]
+            if progress[hit] >= int(goal.get("needed") or cfg.get("progress_needed", 2)):
+                self._fulfil_npc_goal(char, goal, index=hit)
 
     def _quest_pull(self, name):
         """How much a place helps the quest: npc_leads.quest_weight / (1 + the steps from it to
@@ -4652,8 +4925,10 @@ class GameState(StoryBeats, SessionScope):
         distance = self._goal_distances().get(name)
         return weight / (1.0 + distance) if distance is not None else 0.0
 
-    def _fulfil_npc_goal(self, char, goal):
+    def _fulfil_npc_goal(self, char, goal, index=None):
         cfg = config.get("npc_goals") or {}
+        if index is not None and index in relationships.goals_done(self, char.name):
+            return  # fulfilled already
         self.__dict__.setdefault("allies", set()).add(char.name)
         self._say("npc_goal_done", npc=self._called(char.name), goal=goal["text"][:1].lower() + goal["text"][1:])
         self.tags_seen.append(["social", "success"])
@@ -4670,6 +4945,7 @@ class GameState(StoryBeats, SessionScope):
                     if o.name in char.known_objects and o.name not in self.visible_objects]
             if here:
                 self._reveal_item(here[0])
+        relationships.goal_fulfilled(self, char, goal, index)  # trust, a memory, on_complete, reactions
 
     def _check_bonus(self, action, stat=None, tags=()):
         """What helps a check besides the stat: Power in a fight (power_model.check_weight per
@@ -4690,6 +4966,7 @@ class GameState(StoryBeats, SessionScope):
             bonus += int(self.role_of(opponent)[1].get("check_modifier", 0))
         # What worked before is harder now (variation), and a watch on edge is harder to get past (stakes).
         bonus -= self._repeat_penalty(action) + self._alert_check_penalty(action, tags)
+        bonus -= encounter_rules.check_penalty(self, action)  # a dynamic encounter's difficulty
         return bonus
 
     def _opponent(self, action):
@@ -4722,3 +4999,17 @@ class GameState(StoryBeats, SessionScope):
     def get_full_story(self):
         """Returns a string representation of the full story transcript."""
         return "\n".join(self.history)
+
+
+# Every rule the story runs reads its own frozen configuration (its EngineContext), never the
+# process-wide one: each method binds it (cheaply: nothing to do when it is bound already).
+# Private methods other modules call (resume, players, preview, the runtime, ...) bind it too.
+CONTEXT_ENTRY_POINTS = (
+    "_actions_now", "_advances", "_choose_mission_and_start", "_clear_planning_caches",
+    "_describe_visible_scene", "_event_blocked", "_finalize_if_ended", "_goal_route_pull", "_log_item",
+    "_max_actions", "_mission_viable_from", "_open_clues", "_rank_actions", "_remove_npc",
+    "_settle_scope", "_start_candidates", "_storyteller_pick", "_write_variable", "_setup",
+)
+# Not listed, though resume._mark_done calls them: they run on every turn, and _mark_done binds the
+# story's context itself (with_state_context): _action_scope, _repeat_rule.
+binds_own_context(_context_of, private=CONTEXT_ENTRY_POINTS, slot="_context")(GameState)

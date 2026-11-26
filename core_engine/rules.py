@@ -27,6 +27,9 @@ Each rule answers a failure measured in simulated stories:
   gate_payoffs          A payoff (payoff_* tag) is told only when a planted clue waits for
                         it (with ``numbered``: its own setup_N); named threads (an outcome's
                         ``requires_setup``) always wait for their ``setup_id``.
+  failure_counts        An action with no skill check whose told outcome is a failure-branch
+                        outcome (a surrender, a capture) counts as failed: the event it ends
+                        is ``event_failed``. ``false``: the old behaviour (counted as succeeded).
 """
 import math
 import re
@@ -47,6 +50,7 @@ DEFAULTS = {
     "max_open_clues": 2,
     "clue_matching": "any",
     "gate_payoffs": True,
+    "failure_counts": True,
 }
 NUMBERS = ("early_goal_avoidance", "repetition_power", "backtrack_penalty", "tie_epsilon", "collect_weight",
            "payoff_weight", "payoff_route_weight")
@@ -73,6 +77,8 @@ def validate_settings(values):
         errors.append("`story_rules.clue_matching` must be any or numbered.")
     if not isinstance(values.get("gate_payoffs", True), bool):
         errors.append("`story_rules.gate_payoffs` must be true or false.")
+    if not isinstance(values.get("failure_counts", True), bool):
+        errors.append("`story_rules.failure_counts` must be true or false.")
     if not isinstance(values.get("follow_outcome_text"), bool):
         errors.append("`story_rules.follow_outcome_text` must be true or false.")
     tags = values.get("failure_tags")

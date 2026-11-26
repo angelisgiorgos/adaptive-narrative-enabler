@@ -320,8 +320,19 @@ world_definition:
     - Crypt
     descriptions:
     - A tall old man whose smile never reaches his eyes.
+    # People and factions (core_engine/relationships.py; docs/WORLD.md, "People, factions and reactions")
+    faction: Brotherhood
+    never: [offer_quest, request_help]   # he asks the stranger for nothing
     goals:
-    - Keep the secret
+    - goal: Keep the secret
+      id: keep_the_secret
+      opposes: [confrontation]           # being pressed about it costs his trust
+    reactions:
+    - when: {item_collected: Sealed Letter}   # no signal: whenever this holds (once)
+      behaviour: warn
+      where: anywhere
+      hostility: 1
+      text: A novice catches your sleeve. "The Abbot knows his letter is gone. He has been asking where you are."
     actions:
     - name: Confront the Abbot
       outcomes:
@@ -341,8 +352,19 @@ world_definition:
     - Bell Tower
     descriptions:
     - The librarian, ink-stained and suspicious.
+    faction: Brotherhood
+    relationship: {trust: -1, persist: true}   # suspicious at first; remembered in the next stories
+    related: {Abbot: 0.5}
     goals:
-    - Guard the books
+    - goal: Guard the books
+      id: guard_the_books
+      progress_when: {action_done: Ask about the chronicle}   # explicit: helping him is asking the right thing
+      needed: 1
+      reward: none
+      opposes: [theft]
+    dialogue:
+    - enabled_if: {npc_disposition: Brother Anselm, op: in, value: [friendly, ally]}
+      text: '"You again. Good. The chronicle''s last pages are in the bell tower; I never told the Abbot that."'
     actions:
     - name: Ask about the chronicle
       outcomes:
@@ -364,8 +386,9 @@ world_definition:
     - Cloister
     descriptions:
     - A young novice with chapped hands.
+    faction: Brotherhood
     goals:
-    - Finish the chores
+    - Finish the chores                  # a sentence: the keyword fallback ("Help with the chores")
     actions:
     - name: Help with the chores
       outcomes:
@@ -388,7 +411,16 @@ world_definition:
     descriptions:
     - A wild-bearded hermit who speaks to the fire.
     goals:
-    - Be left alone
+    - goal: Be left alone
+      id: be_left_alone
+      opposes: [combat]                  # blood spilled near his fire
+    activities:
+    - {tags_any: [cave], text: He feeds the fire one twig at a time.}
+    reactions:
+    - when: {npc_hostility: Hermit, op: gte, value: 2}
+      behaviour: move                    # he leaves for the place that suits him best among these
+      move_to_tags: [mountain, secret]
+      text: The hermit gathers his furs without a word and leaves, deeper into the mountains.
   - name: Snow Wolf
     unique: false
     encounter_event: wolf_attack
@@ -416,8 +448,11 @@ world_definition:
     - Crypt
     descriptions:
     - A lay brother with a heavy staff and heavier keys.
+    faction: Brotherhood
     goals:
-    - Keep order
+    - goal: Keep order
+      id: keep_order
+      opposes: [escape]
     actions:
     - name: Slip past the warden
       outcomes:
@@ -532,6 +567,70 @@ world_definition:
           - stealth
           - success
           remove_npc: true
+    glacier_thieves:                 # a dynamic encounter (encounters: the director starts it, rarely)
+      title: Thieves on the glacier route
+      tags: [threat, ambush, thieves]
+      descriptions:
+      - Shapes rise from the drifts, hoods frosted white, blades out. "The pass has a toll, pilgrim."
+      encounter:
+        category: ambush
+        faction: Glacier Thieves
+        tags_any: [glacier]          # the glacier route only
+        min_turn: 3
+        on_win:
+          text: One of them drops a scrap of hide as they flee, a hideout scratched on it near the Hermit Cave.
+          standing: {Glacier Thieves: -1}
+          side_quest: the_thieves_hideout   # an investigation the attack sets up (offered: the player may decline)
+          callback: The thieves you drove off the glacier route watch from the ridge, and keep their distance.
+        on_loss:
+          text: They melt into the white with your coin. Their tracks wind toward the Hermit Cave.
+          side_quest: the_thieves_hideout
+        on_escape:
+          text: You slip back along the ice; their jeers fade behind you.
+      actions:
+      - name: Fight them off
+        skill_check: {stat: attack}
+        outcomes:
+        - desc: Steel rings on ice; they break and scatter into the snow.
+          tags: [combat, success]
+        - desc: A blade catches your side before they scatter.
+          tags: [combat, failure]
+          health_change: -2
+          on_check: fail
+      - name: Hold the narrow ledge
+        skill_check: {stat: defence}
+        outcomes:
+        - desc: On the ledge they can only come one at a time, and soon they stop coming.
+          tags: [combat, success]
+        - desc: The ledge crumbles under you; you tumble down the slope, bruised.
+          tags: [failure]
+          health_change: -1
+          on_check: fail
+      - name: Talk them down
+        skill_check: {stat: persuasion}
+        outcomes:
+        - desc: You speak of the Abbot's patrols and the monks' long memories; they decide you are not worth it.
+          tags: [social, success]
+        - desc: They laugh at your threats and take what you carry.
+          tags: [social, failure]
+          effects: [{change_coins: -4}]
+          on_check: fail
+      - name: Pay the toll
+        required_coins: 4
+        outcomes:
+        - desc: Coins change hands; they wave you on with mock bows.
+          tags: [trade, success]
+          effects: [{change_coins: -4}]
+      - name: Call for the monks
+        enabled_if: {trust: {gte: 1}}  # only once the monastery trusts you
+        outcomes:
+        - desc: Your shout echoes down to the Mountain Gate; torches answer, and the thieves flee.
+          tags: [social, success]
+      - name: Surrender your pack
+        outcomes:                    # no check: the encounter can always end, at a price
+        - desc: You drop your pack in the snow; they rifle it and vanish into the white.
+          tags: [failure]
+          effects: [{change_coins: -3}]
     confession:
       title: Confronting the Abbot
       tags:
@@ -563,6 +662,31 @@ world_definition:
           - social
           - success
         required_object: Sealed Letter
+  factions:                        # who stands with whom (core_engine/relationships.py)
+    Brotherhood:
+      description: The monks of the monastery.
+      relations: {Glacier Thieves: -1}   # beating the thieves pleases the brothers (and back)
+      reacts_to: {theft: -1, crime: -1, quest_completed: 0.5}
+      reactions:
+      - signal: faction
+        to: friendly
+        behaviour: praise
+        where: anywhere
+        text: The brothers have begun to nod to you in the cloister.
+  side_quests:                     # set up by the glacier thieves (their encounter's on_win / on_loss)
+    the_thieves_hideout:
+      title: The thieves' hideout
+      description: The glacier thieves have a hideout near the Hermit Cave. Find it, and what they took.
+      goal: {location: Hermit Cave}
+      start: {event_done: glacier_thieves}   # only once the thieves have struck (their encounter sets it up)
+      aids_mission: lead
+      tags: [mountain, secret, thieves]
+      rewards:
+      - change_coins: 5
+      - change_variable: {trust: 1}
+      texts:   # how it ties into the main quest (docs/AI.md, "Side-story orchestration")
+        reveal: Among the stolen things lies a monk's satchel, and in it a page torn from the chronicle.
+        callback: The page torn from the chronicle, the one the thieves stole, tells you where to look.
   missions:
     return_the_relic:
       title: Find the lost relic
@@ -610,6 +734,10 @@ world_definition:
         variables:
           trust:
             gte: 2
+encounters:                        # this world's encounter policy (the rest from the built-in one)
+  danger_tags: {glacier: 0.8}      # the glacier route is where thieves wait
+  factions:
+    Glacier Thieves: {standing: -1, hostile_below: 0}   # hostile from the start; beaten back, more so
 game_state:
   arrest_location: Ice Cell
 location_constraints:

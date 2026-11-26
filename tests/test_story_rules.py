@@ -10,6 +10,8 @@ import unittest
 from collections import Counter
 from unittest.mock import patch
 
+from core_engine.context import follow_process_config
+
 import main as engine
 from core_engine import Action, Character, GameState, Genome, Location, Mission, Outcome, WorldGraph, rules
 from core_engine.combat import CheckResult
@@ -195,7 +197,7 @@ class PacingTests(_Rules):
     def test_the_storyteller_holds_back_from_the_mission_in_the_opening(self):
         state = GameState(self._world(), _genome(goal_bias=1.0), start="Gate", rng=random.Random(0), mission="crown")
         held_back = self._weight(state, "Take the crown")
-        with patch.dict(config._config["story_rules"], {"early_goal_avoidance": 0.0}):
+        with patch.dict(config._config["story_rules"], {"early_goal_avoidance": 0.0}), follow_process_config(state):
             plain = self._weight(state, "Take the crown")
         self.assertLess(held_back, plain)
         state.actions_taken = config.get("mission_settings.pursuit_start_step")
@@ -232,7 +234,7 @@ class ClueTests(_Rules):
         self.assertEqual(state._open_clues(), ["setup_1"])
         open_score = _fitness_breakdown(state)["setup_payoff"]
         weights = dict((a.name, w) for w, a in state._rank_actions(state.get_available_actions()))
-        with patch.dict(config._config["story_rules"], {"payoff_weight": 0.0}):
+        with patch.dict(config._config["story_rules"], {"payoff_weight": 0.0}), follow_process_config(state):
             plain = dict((a.name, w) for w, a in state._rank_actions(state.get_available_actions()))
         self.assertGreater(weights["Solve it"], plain["Solve it"])   # an open clue pulls toward its payoff
         _choose(state, "Solve it")
@@ -246,7 +248,7 @@ class RepetitionAndTieTests(_Rules):
         _choose(state, "Move to Yard")
         back = next(a for a in state.get_available_actions() if a.owner == "Gate")
         with_penalty = dict((a.name, w) for w, a in state._rank_actions([back]))[back.name]
-        with patch.dict(config._config["story_rules"], {"backtrack_penalty": 0.0}):
+        with patch.dict(config._config["story_rules"], {"backtrack_penalty": 0.0}), follow_process_config(state):
             without = dict((a.name, w) for w, a in state._rank_actions([back]))[back.name]
         self.assertAlmostEqual(without - with_penalty, 1.5 * 0.8)
 
@@ -344,7 +346,7 @@ class DirectorTests(_Rules):
         self.assertAlmostEqual(state.escalation(), (0.85 - 0.3) / 0.7)
         self.assertEqual(state._scaled_damage(2), 4)              # ... x (1 + 0.6 x escalation)
         self.assertTrue(state.in_finale())
-        with patch.dict(config._config["director"], {"enabled": False}):
+        with patch.dict(config._config["director"], {"enabled": False}), follow_process_config(state):
             self.assertEqual((state.escalation(), state._scaled_damage(2), state.in_finale()), (0.0, 2, False))
 
     def test_the_finale_is_announced_and_the_story_ends_with_an_epilogue(self):
@@ -372,9 +374,9 @@ class DirectorTests(_Rules):
         state.actions_taken += 6                                   # outside director.loop_window
         self.assertIn("Pray", _names(state))
         state.actions_taken -= 6
-        with patch.dict(config._config["director"], {"min_options": 10}):
+        with patch.dict(config._config["director"], {"min_options": 10}), follow_process_config(state):
             self.assertNotIn("Pray", _names(state))                # a way to move on (travel) is enough
-        with patch.dict(config._config["director"], {"enabled": False}):
+        with patch.dict(config._config["director"], {"enabled": False}), follow_process_config(state):
             self.assertIn("Pray", _names(state))
 
     def test_players_see_the_best_options_in_the_scene_order(self):
@@ -589,7 +591,7 @@ class CoherenceTests(_Rules):
         self.assertIn(talk, _names(state))
         _choose(state, talk)
         first = state.consecutive_steps_in_location
-        with patch.dict(config._config["director"], {"enabled": False}):  # the loop filter would hide it
+        with patch.dict(config._config["director"], {"enabled": False}), follow_process_config(state):  # the loop filter would hide it
             _choose(state, talk)
         self.assertEqual(state.consecutive_steps_in_location, first + 1)  # nothing new was said
 

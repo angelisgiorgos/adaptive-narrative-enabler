@@ -15,6 +15,7 @@ messages and the tuning. This guide covers every authoring feature; the studio's
 - [`config/variables.yaml`](../config/variables.yaml): persistent variables. See [Persistent variables](#persistent-variables).
 - [`config/messages.yaml`](../config/messages.yaml): every sentence the engine writes into a story. See [Story messages](#story-messages).
 - [`config/missions.yaml`](../config/missions.yaml): missions and their goals, which are the story's win conditions. See [Missions and winning](#missions-and-winning).
+- [`config/side_quests.yaml`](../config/side_quests.yaml): side quests, optional quests besides the mission. See [Side quests](#side-quests).
 - [`config/hyperparameters.yaml`](../config/hyperparameters.yaml): evolution, simulation, fitness, LLM, editor, and augmentation settings.
 
 The web studio also accepts a single combined `.yaml`/`.yml` file in the
@@ -24,6 +25,11 @@ and value type before activating the upload; an invalid or incomplete file does
 not change the active configuration. The upload is a runtime alternative and
 does not overwrite the files under `config/`. Saving an editor entry or the
 built-in settings restores the file-based configuration.
+
+**When an edit takes effect.** A save (or an upload) is used at once by what starts afterwards:
+new games, training runs and evaluations. A game already being played keeps the world and tuning
+it started with until it ends, and a running training job keeps its own too (each runs with a
+frozen copy: [docs/AI.md](AI.md#engine-contexts-which-configuration-a-game-reads-and-when-settings-take-effect)).
 
 **A file may hold only a world.** Every tuning section it does not set is taken
 from the built-in configuration (its own values win), tuning keyed by places
@@ -383,6 +389,205 @@ unknown goal key raises a `ValueError` when the world is built. A combined
 configuration upload rejects it with a clear message. Configurations uploaded
 before missions existed stay valid and simply have no mission.
 
+### Side quests
+
+A side quest is an optional quest besides the story's mission
+([`config/side_quests.yaml`](../config/side_quests.yaml),
+[`core_engine/side_quests.py`](../core_engine/side_quests.py)). The mission is the story's
+goal, and the story ends when it is complete. Side quests are things to do along the way:
+- the player chooses whether to take one on;
+- several can be under way at once, each with its own steps and rewards;
+- none of them ends the story;
+- completing one helps the mission;
+- training rewards stories that see them through.
+
+```yaml
+world_definition:
+  side_quests:
+    charting_the_storm:
+      title: Charting the storm
+      description: The Storm Cartographer needs a chart older than the storm.
+      giver: Storm Cartographer        # offered once the player has dealt with them
+      start: {visited: Harbor}         # and/or a condition that must hold for it to be offered
+      enabled_if: {reputation: {gte: 0}}   # offered only while this holds
+      accept: choice                   # the player takes it on or turns it down; auto: it starts at once
+      stages:                          # or a single `goal`, as for missions
+      - title: Find an old map
+        goal: {item: Ancient Map}
+        rewards: [{change_coins: 2}]   # a step's own rewards
+      - title: Bring it to the Storm Observatory
+        goal:
+          condition: {at_location: Storm Observatory}
+      rewards: [{change_coins: 10}]    # when it is completed
+      aids_mission: lead               # completing it opens the way toward the mission's next step
+      turn_in: true                    # done, it is taken back to the giver to be completed
+      within_turns: 20                 # it fails when not completed this many turns after it started
+      follows: a_gift_for_the_chapel   # offered only once that side quest is completed
+      fail_if: {npc_removed: Storm Cartographer}   # fails while under way when this holds
+      on_fail: [{change_variable: {reputation: -1}}]
+      on_decline: [{change_variable: {reputation: -1}}]   # turned down, or the offer let go
+      repeatable: false                # true: offered again in the profile's later stories
+      texts:                           # the story's own words for its moments
+        offer: '{giver} unrolls a ragged chart: "Bring me one older than the storm."'
+        complete: '{giver} spreads the old chart beside the new: "There. The island."'
+        reveal: The old chart marks a reef the new ones forgot.   # what it turned up about the main quest
+        callback: The reef on the old chart keeps your keel off the rocks.   # told near the climax
+```
+
+| Field | Meaning |
+| --- | --- |
+| `title`, `description`, `goal` or `stages`, `rewards`, `enabled_if` | As for [missions](#missions-and-winning): the goal keys are the same, every step's goal must hold in order, each step's `rewards` apply when it is done and the quest's `rewards` when it is completed |
+| `giver` | The NPC who offers it: it is offered once the player has dealt with them in this story (any action with them, talking too). A hostile NPC (an encounter) cannot be a giver |
+| `start` | A condition that must hold for it to be offered. With neither `giver` nor `start` it is offered as soon as `enabled_if` holds |
+| `accept` | `choice` (default, `side_quest_settings.accept`): the player takes it on or turns it down; `auto`: it starts at once |
+| `aids_mission` | What completing it does for the story's mission (default `side_quest_settings.aids_mission`, `lead`): `lead` opens the way toward where the mission advances next (the route toward its next step); `ally` makes its giver an ally, who leads and helps like anyone whose goal the player fulfilled; `none` |
+| `turn_in` | `true` (needs a `giver`): once its goal holds it is not complete yet. It is taken back to the giver: "Hand over: <title>" comes first among the choices wherever the giver is in the scene, and dealing with the giver in any other way hands it over too. It fails if the giver leaves the story; it is no longer done if what was brought is gone |
+| `within_turns` | It fails when it is not completed this many turns after it started (once it is done, the way back to the giver does not count against it). The story says how long it has, and warns when two turns are left |
+| `follows` | Another side quest: this one is offered only once that one is completed, in this story or one of the profile's before: a chain |
+| `fail_if` | A condition that fails it while it is under way; then `on_fail` (an effect list) applies |
+| `on_decline` | Effects when it is turned down, or the offer is let go (a disappointed giver) |
+| `texts` | The story's own words for its moments, instead of the messages: `offer`, `accept`, `decline`, `ready`, `turn_in`, `complete`, `fail`, `remind`; and two that tie it to the main story ([docs/AI.md](AI.md#side-story-orchestration)): `reveal` (told when it is completed, `[SIDE STORY]`: what it turned up about the main quest) and `callback` (told near the climax, `[CALLBACK]`, once it is completed). They may use `{title}`, `{giver}`, `{reward}` (its rewards in words), `{todo}`, `{turns}` (turns left) |
+| `tags` | What it is about. When several side quests could come, the story offers first the one that fits it now: tags shared with the place (1 each) and with what the last turns brought (0.5 each); a side quest on the mission's thread (it wants what the mission wants: 2; a place it names is where the mission advances next: 1) |
+| `reactions` | What the story does to it: `[{when, then, effects, text, while}]`. When the condition `when` comes to hold while the quest is `active` (default), `offered` or `any`, the reaction happens once: its `text` is told (placeholders as in `texts`), its `effects` apply, and `then` does to the quest: `complete`, `fail` (reason `story`), `advance` (its next step, or done), `withdraw` (the offer, or the quest, is taken back) or `none` |
+| `repeatable` | `false` (default): once a profile has completed it, it is not offered in that profile's later stories |
+
+**Taking it on.** A side quest that can start is offered: its giver asks (`side_quest_given`), or
+the story tells it (`side_quest_start`). Then the story tells what is in it for the player (its
+rewards in words: "In it for you: 6 coins, reputation +1."), whether it could help the mission, and
+how long it may take. The choices "Take on: <title>" and "Turn down: <title>" then
+come first among the player's choices; their ids are `side-quest:<quest>:accept` and
+`side-quest:<quest>:decline`. Answering takes no turn. An offer that stays unanswered for
+`side_quest_settings.offer_turns` (3) turns lapses, like a turned-down one; turns in which an event
+hides the offer do not count. A side quest turned down or let go is not offered again in that story.
+With `accept: auto` it starts at once, without a choice.
+
+**How a story runs them.** Side quests are checked at the end of every turn, and after a UNP sets
+the player or reports what happened. They are never checked in the middle of a turn, and they are
+taken in the order they are written:
+1. Those under way fail (`fail_if`), complete a step, or are completed; unanswered offers age.
+2. Then new ones are offered (or start), as long as fewer than `side_quest_settings.max_active` (3)
+   are under way or on offer.
+
+A side quest whose goal already holds when it starts is completed at once (the item already in
+hand). When it starts, or moves on to its next step, the places its goal names that no known way
+leads to are pointed out: the way opens from where the player stands, along the map ("[LEAD] the
+Merchant points you the way to the Drowned Archive."); a hand-over points the way back to the
+giver. A side quest that has not moved for `side_quest_settings.remind_after` (6) turns is recalled
+to the player, with what it still needs ("[SIDE QUEST] Still open: Charting the storm - Have the
+Ancient Map."), once per quiet spell.
+
+Every moment is told in the story, in the quest's own words (`texts`) or by the
+[Story messages](#story-messages):
+- the offer (`side_quest_given`, `side_quest_start`, `side_quest_stakes`, `side_quest_helps`,
+  `side_quest_deadline`) and the answer (`side_quest_accepted`, `side_quest_declined`);
+- its course: the way pointed out (`side_quest_way`), a step done (`side_quest_stage`), a reminder
+  (`side_quest_reminder`, `side_quest_remind_ready`), time running short (`side_quest_hurry`);
+- its end: done and waiting (`side_quest_ready`), handed over (`side_quest_turned_in`), completed
+  (`side_quest_complete`, then `side_quest_aid` or `side_quest_ally`), or failed
+  (`side_quest_failed`, `side_quest_expired`, `side_quest_giver_gone`, `side_quest_item_gone`);
+- the story's ending: `side_quest_epilogue`. None of this draws from the dice, so a seeded story stays
+reproducible.
+
+**The story's say.** Side quests live in the story, not beside it:
+- **When a new one comes.** The story lets a new side quest in only at fitting moments
+  (`side_quest_settings`): not before turn `offer_after` (1), at most one every `offer_cooldown` (1)
+  turns, never during an event, never in a tense moment (the story's tension above
+  `offer_max_tension`, 0.75: danger a moment ago, a prisoner, the watch hunting the player), and not
+  once the finale has begun (`finale_offers: false`). When several could come, the one that fits
+  the story now comes first (`fit`, `tags`).
+- **What happens to it.** The quest's `reactions` let the world's events change it: a brawl won
+  fills the purse, the fence exposed makes the Merchant's news worthless, a theft makes it urgent.
+- **Continuity.** A side quest that can no longer be done ends with its reason (`impossible: fail`,
+  or `keep` to leave it): its giver gone from the story (a quest under way fails, an offer is
+  withdrawn), or a unique item its step needs gone for good ("[SIDE QUEST FAILED] Wine: a Vintage
+  Wine is gone for good."). A deadline does not run while the player is held in a cell
+  (`pause_when_held`). A quest written without a description is put to the player by what it
+  needs, in words.
+- **The ending.** The epilogue recalls them (`epilogue`): "[SIDE QUESTS] Along the way you saw A
+  full purse through; failed at Rumours from the Archive; left Charting the storm unfinished."
+  Conditions remember them too: `side_quest_failed: <key>`, `side_quest_declined: <key>`.
+
+**The mission.** Completing a side quest helps the story's mission (`aids_mission`). With `lead`,
+the way toward the place where the mission advances next opens from where the player stands. The
+route follows the map, toward the place that pulls hardest for the quest. The story tells it:
+"[LEAD] Charting the storm pays off for your quest: the way to the Sewers is open." With `ally`, its
+giver becomes an ally, who then leads the player on and helps in checks (`npc_goals`). Nothing
+happens when the story has no mission, the mission is won, or the way is known already.
+
+**Training.** A story's fitness, the training objective, has a `side_quests` term
+(`fitness.side_quests`; see [docs/AI.md](AI.md)):
+
+```
+version 1:  completed x complete_bonus (10) + steps done x step_bonus (3)
+              + those that helped the mission x mission_aid_bonus (6) - failed x fail_penalty (4)
+              - (once the story has ended) those left under way x unfinished_penalty (2)
+version 2:  the same, but the k-th completed, step or aid is worth diminishing (0.6) ^ (k - 1),
+            and one like a side quest done already (same giver and goal) repeat_factor (0.25)
+            times that again: at most 47.5 however many; threads left open count in
+            fitness.side_story (side_unresolved) instead
+```
+
+The built-in configuration scores with version 2 (`fitness.version`), which adds the side-story
+terms: how much side content bears on the main story, whether it led somewhere or was filler, open
+threads, repeated attacks, interruptions, long stretches without main-quest progress and the
+variety of the player's decisions ([docs/AI.md](AI.md#side-story-objective-terms)).
+
+**When they are offered.** The side-story policy (`side_story`,
+[docs/AI.md](AI.md#side-story-orchestration)) lets a new side quest in only when the main story
+has room: not in an event, a waiting climax or the finale, not while a side quest's clock is nearly
+out or the main quest has stood still for long, not with too many threads open or right after
+another. Of those that could be offered, the one that fits the story and bears most on the main
+quest comes first. A side quest an encounter sets up is always offered, never started for the
+player.
+
+The storyteller's ranking also pulls toward the next step of a side quest under way: a step on the
+way to a place it names counts too, a giver waiting for a hand-over pulls hardest, and the pull
+grows as a deadline nears. It also pulls toward someone who offers one. The pull is
+`side_quest_settings.rank_weight` (2.0) × the storyteller's own learned trait `side_quest_bias`
+(a genome trait apart from the mission's `goal_bias`, bounds `genome_bounds.side_quest_bias`), so
+training can tune the mission and the side quests apart. Every side-quest moment is also something
+new for the director's sense of rhythm, and a development of its own (`side_quest`) for the
+fitness's rhythm terms. Training therefore favours storytellers whose stories see side quests through;
+like every fitness term it is tuned on the Weights page and can be calibrated to the judge
+(`fitness.term_weights.side_quests`). In training the simulated players answer offers as players
+would: most often by taking them on; the *quester* always prefers to, since a side quest helps the
+quest. A storyteller playing a story itself (`evolution.player: storyteller`) answers no offers,
+so its offers lapse; set `accept: auto` for such training.
+
+**The player's choices.** With `side_quest_settings.guide` (on), one of the choices shown works
+toward a side quest under way, or leads to someone who offers one, as one works toward the mission
+(`priority_side_quest` in the author's decision trace; offers: `side_quest_offer`). The people in a
+scene list the side quests they offer (`people[].side_quests`), and the studio marks them ❗.
+
+**What follows from them.** Conditions can ask about side quests (`side_quest_active: <key>`,
+`side_quest_done: <key>`, `talked_to: <NPC>`; see [Conditions and effects](#conditions-and-effects)).
+A mission, an event, a dialogue line or another side quest can therefore follow from one.
+
+**Where they show.**
+- The play state lists the story's side quests (`side_quests`: key, title, description, giver,
+  status (`offered`, `active`, `completed`, `failed`, `declined`), steps, what the current step
+  still needs, the turns it was offered, started and ended, and `aided_mission`: `lead` or `ally`
+  when it helped).
+- Each turn of the journal says what happened to them (`side_quests`: offered, started, declined,
+  lapsed, stage, completed, failed).
+- The session report has `side_quests: {completed, failed, declined, unfinished, aided_mission}`,
+  and the profile keeps the side quests it completed (`progression.side_quests_completed`).
+- Save games, snapshots and the UNP's session parameters (`side_quests: {key: {status, stage}}`)
+  carry them. A session rebuilt from its parameters stands where its side quests stood, and
+  nothing is told or paid again.
+
+**Checks and editing.** The side quests are checked like missions: goal keys, the names they refer
+to, rewards and conditions. In addition:
+- the giver must be an NPC of the world who is not hostile;
+- `start` and `fail_if` must be valid conditions, and `on_fail` a valid effect list;
+- `repeatable` must be true or false;
+- `accept` must be `choice` or `auto`;
+- `aids_mission` must be `lead`, `ally` or `none`, and `ally` needs a giver.
+
+They are edited in 🌍 World → 🎯 Missions → *🧭 Side quests*, through
+`PUT /v1/documents/side_quests`, or by a UNP with `POST /world/patch` (kind `side_quests`; see
+[docs/UNP.md](UNP.md)). A change that breaks one of these rules is refused, and nothing is written.
+
 ### Starting locations
 
 A writer decides where stories may begin. In
@@ -623,6 +828,330 @@ the event's actions:
 An unknown event name is rejected when saving from the studio or the API. At
 run time it is ignored with a note in the transcript.
 
+### Dynamic encounters
+
+Besides a hostile NPC's own encounter (above), which always comes first, an **encounter director**
+([`core_engine/encounters.py`](../core_engine/encounters.py)) can start an attack by itself when
+the story makes one plausible: an ambush on a lonely road, a patrol answering the alarm, a faction
+striking back. By default it is rare and always has a reason.
+
+**An encounter is an authored event** (`events.yaml`) with an `encounter` block. Its title,
+descriptions and tags are the scene, and its actions are the player's choices: fight, defend,
+evade, escape, negotiate, pay, surrender or seek help. Each action works as any event action
+does, with its conditions (`enabled_if`, `required_coins`, `required_object`), skill checks,
+outcomes and effects. Every encounter must offer at least two choices, one of them without a
+check (giving in, paying, fleeing), so that it can never only be lost.
+
+```yaml
+events:
+  glacier_thieves:
+    title: Thieves on the glacier route
+    tags: [threat, ambush]
+    encounter:
+      category: ambush          # ambush | hostile_patrol | faction_attack | npc_assault |
+                                # location_raid | environmental_threat | defensive_encounter
+      faction: Glacier Thieves  # who attacks (world `factions`, or encounters.factions)
+      tags_any: [glacier]       # only where the place has one of these tags
+      min_turn: 3
+      on_win:  {text: "...", standing: {Glacier Thieves: -1}, side_quest: the_thieves_hideout}
+      on_loss: {text: "...", side_quest: the_thieves_hideout}
+    actions:
+    - {name: Fight them off, skill_check: {stat: attack}, outcomes: [...]}
+    - {name: Pay the toll, required_coins: 4, outcomes: [...]}
+    - {name: Call for the monks, enabled_if: {trust: {gte: 1}}, outcomes: [...]}
+    - {name: Surrender your pack, outcomes: [...]}      # no check: always a way out
+```
+
+| `encounter` field | Meaning |
+| --- | --- |
+| `category` | What kind of encounter it is (its intro line, `encounter_<category>` in the messages; its weight in `encounters.categories`) |
+| `tags_any` / `tags_none` | Only where the place has one of `tags_any` (empty: anywhere not safe); never where it has one of `tags_none` |
+| `weight`, `danger` | Its weight among those that could start; × its chance |
+| `difficulty` | × the checks of its actions (with `encounters.difficulty`): `encounters.difficulty_points` (10) harder per 1.0 above 1, easier below |
+| `faction`, `hostile_only` | Who attacks; with `hostile_only` (the default for `faction_attack`) only while that faction is hostile |
+| `npc` | The NPC behind it (an `npc_assault` needs them in the scene); it is gone when they are removed |
+| `min_turn`, `stages` | Not before this turn; only in these stages of the story: `early`, `middle`, `late` (thirds of the action limit) |
+| `min_tension`, `max_tension` | The story's tension (0-1: danger a moment ago, a prisoner, the finale, the watch hunting the player) |
+| `min_alert`, `max_alert` | The watch's alert level (`stakes.alert`): a patrol only once the player is wanted |
+| `min_power` | The player's Power: no encounter they cannot hope to face |
+| `max_per_story`, `cooldown` | At most this many times in a story (1); turns before it can come again (`encounters.template_cooldown`) |
+| `on_win`, `on_loss`, `on_escape` | What follows a win, a loss (a failed check, or an outcome told as a failure: giving in, being caught) or stepping away: `text`, `effects`, `standing` (`{faction: change}`), `side_quest` (a rescue or an investigation the encounter sets up: offered to the player, who may turn it down, with `side_story.agency`), `consequence` (a later consequence, `consequences.kinds`), `callback` (a line told near the climax, [docs/AI.md](AI.md#side-story-orchestration)) |
+| `rewards_once` | `on_win`'s effects are given once per story, however often it is won (true) |
+
+The event's own rules still apply (`enabled_if`, `repeat`, `max_occurrences`, `cooldown`), so a
+template can ask about completed missions and side quests, what the player did
+(`action_done`, `event_done`), variables or the time.
+
+**The policy** (`encounters` in `hyperparameters.yaml`; a world file can set its own, like the
+examples) decides how often and when:
+
+| Setting | Effect |
+| --- | --- |
+| `enabled` | The director on or off (authored encounters of hostile NPCs are not affected) |
+| `rate`, `max_chance` | The chance per eligible turn (6%), never above 30% |
+| `danger_tags` | The place's tags make it likelier: × (1 + the sum of their values) |
+| `tension_weight`, `alert_weight`, `hostility_weight` | × (1 + tension × 0.5), × (1 + alert × 0.15), × 1.5 for a hostile faction |
+| `opening_turns` | None in the first 3 turns |
+| `min_separation`, `after_loss_separation` | Turns between two attacks (6; a hostile NPC's encounter counts too), counted from when the last ended; 10 after a lost one |
+| `max_per_session`, `template_cooldown`, `no_repeat_last` | At most 3 attacks in a story; 20 turns before the same one again; never the same one twice in a row |
+| `safe_tags` | No attack where the place has one of these tags (safe, sanctuary, home, medical, quiet, cloister, garden) |
+| `min_health` | No attack while the player is below 40% of their maximum health |
+| `difficulty`, `difficulty_points` | How hard every encounter's checks are |
+| `lethal` | `false`: a lost encounter leaves the player at 1 health (`encounter_spared`), and the story goes on through its consequences |
+| `captive_release` | A player an encounter left locked in (an outcome that sends them to a cell, `send_to`) is let out after this many turns there (5), whether or not the director's own `release_after` is on; 0 leaves it to the director and the cell's own way out |
+| `in_finale`, `in_climax`, `in_conversation` | Whether an attack may interrupt the finale, a climax that waits, or a conversation (no, no, no) |
+| `categories` | Each category on or off, and its weight |
+| `factions` | `{name: {standing, hostile_below, variable}}`: a faction's standing (or a persistent variable's value), changed by the story's encounters (`standing` in their outcomes) and by the player's deeds; below `hostile_below` it is hostile (`faction_hostile: <name>` in conditions). A world can write its factions itself, with members, relations and reactions ([People, factions and reactions](#people-factions-and-reactions)): one faction model for encounters and people |
+
+An attack never comes while an event is in progress or another choice waits for an answer (a
+side quest on offer or ready to hand over, a bargain), while the player is held in a cell, or
+before the mandatory encounter of a hostile NPC in the scene, nor while the side-story policy holds
+side content back (`side_story`: a clock running, the main quest standing still, too many threads
+open, too much side content lately; [docs/AI.md](AI.md#side-story-orchestration)). With that policy
+on, an attack's chance is also x (0.5 + the storyteller's `threat_prob`) and attacks that bear on
+the main story are picked more often. When one may come, a single roll
+decides. The roll and the choice between candidates use a random stream derived from the story's
+dice and the moment (their state, the turn and the place), not the dice themselves. A fixed story
+state and seed therefore always give the same encounters, and a story where no attack comes is
+the same as without the director.
+
+**What it leaves.**
+- The journal entry of the turn that met it has `encounter: {event, category, faction, npc,
+  result}`, and the transcript has its lines.
+- Save games keep `dynamic_encounters` (every attack with its turn, place, faction and result),
+  `faction_shift` and `encounter_rewards`.
+- The author's decision trace (`GET /v1/sessions/{id}/decisions`) has `encounters`: why no attack
+  can come now (`gate`), each template's status (eligible, or why not) with its chance, the
+  factions' standing and what each code means (`codes`).
+- The UNP's session parameters (`ane.session_state/1`) carry `encounters` (`attacks`, `factions`,
+  `rewards_paid`), so a session rebuilt from them keeps the attacks met and the standings.
+
+**Examples.** [`examples/frozen_monastery.yaml`](../examples/frozen_monastery.yaml): thieves on the
+glacier route.
+- They strike only on the glacier, from turn 3.
+- The player can fight, hold the ledge, talk them down, pay, call for the monks (once the
+  monastery trusts them) or surrender.
+- Either way, the thieves' trail sets up the side quest *The thieves' hideout*, and beating them
+  makes the faction more hostile.
+
+[`examples/orbital_station.yaml`](../examples/orbital_station.yaml): a security-drone sweep.
+- It comes only once the alert is 2 or more, and more often the higher it rises.
+- The player can short out the drone, slip into the shafts, show a data shard as clearance (if
+  carried) or raise their hands, which means the brig, not the end: the brig's own way out
+  ("Search for an exit"), the director's release (`director.release_after`) and, whatever the
+  director's settings, the encounter's own (`encounters.captive_release`, 5 turns) let them out.
+
+**Giving in is a loss** (`story_rules.failure_counts`, true): an action with no skill check whose
+told outcome is a failure-branch outcome (tagged with a `story_rules.failure_tags` tag, or
+`on_check: fail`), such as surrendering, counts as failed in every event, not only in encounters:
+the event ends `event_failed`, and goals and conditions read it so. `false` restores the earlier
+behaviour (counted as succeeded). No shipped story changes with it.
+
+### People, factions and reactions
+
+NPCs remember what the player does, belong to factions, pursue goals of their own and react on their
+own: they offer work, ask for help, warn, confront the player or move elsewhere. It all runs on the
+world's [conditions and effects](#conditions-and-effects) and on what NPCs already have (goals,
+tags, homes, dialogue and actions), in one module
+([`core_engine/relationships.py`](../core_engine/relationships.py)). It never rolls the story's dice,
+so a fixed seed gives the same story. Every field is optional; a world without them plays as before.
+The shipped world (`config/npcs.yaml`, `config/side_quests.yaml`) and both example worlds
+(`examples/frozen_monastery.yaml`, `examples/orbital_station.yaml`) have examples.
+
+**What an NPC thinks of the player.** Every NPC has *trust* and *hostility* (numbers, from their
+`relationship` at first), *memories* of the player's deeds, and a *disposition*:
+
+| Disposition | When |
+| --- | --- |
+| `hostile` | hostility reaches `relationships.hostile_at` (3), or the attitude falls to minus that, or their faction is hostile and their trust is below `friendly_at` |
+| `ally` | one of their goals was fulfilled |
+| `friendly` | attitude at `relationships.friendly_at` (2) or above |
+| `wary` | attitude below 0 |
+| `neutral` | otherwise |
+
+The *attitude* is trust - hostility + `relationships.faction_weight` (0.5) x their faction's standing.
+A change of disposition is a *transition*. It is logged, told when the player knows them
+(`[RELATIONSHIP] The Watchman now counts you an enemy.`; the `npc_now_*` messages) and is a
+signal that reactions can answer.
+
+```yaml
+# config/npcs.yaml
+- name: Gate Guard
+  faction: City Watch               # or listed in the faction's `members`
+  relationship: {trust: 0, hostility: 0, persist: true}   # where the player starts; persist: see below
+  related: {Captain of the Watch: 0.5}   # what is done to him reaches these people (x this)
+  never: [offer_quest]              # behaviours the director may never make him perform
+  hostile_event: guards_alerted     # once hostile, he seeks the player out and starts this event
+  activities:                       # what he is doing: the first that fits is added to his description
+  - {tags_any: [market], disposition: [wary, hostile], text: He keeps a hand on his cudgel while you are near.}
+  - {tags_any: [palace], when: {variable: palace_access, value: true}, text: He waves the carts through.}
+```
+
+**Deeds.** What the player does to people is a deed: `helped`, `betrayed`, `theft`, `crime` or
+`attacked`. An outcome tagged as `relationships.deed_tags` says (`theft`, `steal`, `pickpocket`,
+`attack`, `assault`, `betrayal`, `help`, `rescue`, ...) is a deed against the NPC acted with (an
+event's actions: the NPC behind the event), and the `deed` effect is one too. A side quest's end
+is a deed toward its giver: `quest_completed`, `quest_failed` or `quest_declined`. A deed changes:
+
+- its **target**'s trust and hostility (`relationships.deeds.<kind>`: `trust`, `hostility`);
+- the people **related** to the target (their `related`), by that change x `related`;
+- the **witnesses**, the other NPCs in the scene (`witness_trust`, `witness_hostility`). Attacking
+  someone already hostile is self-defence and troubles no one. Witnesses whose faction is set against
+  the target's (a negative `relations` either way) do not mind;
+- the **factions**: the target's (its `reacts_to` for the deed, else `deeds.<kind>.faction`), and
+  any faction whose `reacts_to` names it and whose member saw it (or every one with `everywhere: true`).
+
+Each NPC concerned remembers it (`how`: target, witness or heard), up to `relationships.max_memories`.
+
+**Factions** are written in the world. The factions of the tuning's `encounters.factions` still
+work, so dynamic encounters (`faction`, `hostile_only`) read the same standing:
+
+```yaml
+world_definition:
+  factions:
+    City Watch:
+      description: The guards and the captain who keep the city's peace.
+      standing: 0               # where the player starts (or `variable`: a persistent variable)
+      hostile_below: -2         # hostile below this (relationships.faction_hostile_below; 0 for a tuning faction)
+      friendly_at: 2
+      relations: {Thieves' Guild: -0.5}   # a change spills over to these factions, x this
+      reacts_to: {theft: -1, crime: -1, attacked: -2, helped: 0.5}
+      everywhere: false         # true: it hears of every such deed, witnessed or not
+      persist: false            # true with `variable`: the standing is kept in that persistent variable
+      public: true              # false: the player is not told who belongs to it
+      reactions: [...]          # like an NPC's, performed by a member (one in the scene first)
+```
+
+A faction's change of status (hostile, neutral, friendly) is told (`faction_now_*` messages). Its
+members' dispositions follow, and the change is a `faction` signal.
+
+**Goals.** A goal written as a sentence ("Collect bribes") still advances as before. An action with
+the NPC whose name, text or tags share a word with it helps; after `npc_goals.progress_needed` times
+they become an ally. This is the compatibility fallback. A goal can instead say exactly what helps:
+
+```yaml
+goals:
+- Save souls                        # a sentence: the keyword fallback
+- goal: Fill the chapel's cellar for the feast
+  id: chapel_feast                  # how conditions name it (default: its text, lower case, with _)
+  complete_if: {side_quest_done: a_gift_for_the_chapel}   # fulfilled as soon as this holds (any turn)
+  supports: [charity]               # an action with them whose outcome has one of these tags helps
+  progress_when: {action_done: Light a candle}            # or: an action with them helps when this holds after it
+  needed: 2                         # helps before it is fulfilled (npc_goals.progress_needed)
+  opposes: [theft]                  # an outcome with one of these, suffered or seen by them, sets it back
+  trust: 2                          # trust when fulfilled (relationships.goal_trust)
+  on_complete: [{change_coins: 3}]  # effects when fulfilled
+  reward: none                      # what an ally gives back: lead, item or none (npc_goals.reward)
+```
+
+A goal with `supports`, `progress_when` or `complete_if` is *explicit*, and its words no longer count.
+A fulfilled goal makes the NPC an ally (as before), adds trust, and is a `goal_completed` signal. A
+setback costs one step and `relationships.goal_setback` (trust -1, hostility +1), and is a
+`goal_opposed` signal.
+
+**Reactions** are what NPCs (and factions) do about what happens:
+
+```yaml
+reactions:
+- signal: theft                     # what it answers; without one, whenever `when` holds
+  about: me                         # me (done to them, or seen) | faction | related | anyone
+  when: {npc_trust: Priest, op: lt, value: 2}   # must hold when it is delivered
+  behaviour: warn                   # offer_quest | request_help | warn | confront | move | praise | threaten
+  where: scene                      # scene: they must be here | seek: they come to the player | anywhere
+  text: '{npc} looks at you sadly. "Put it back, child."'   # also {location} {faction}
+  side_quest: a_blessing_for_the_road   # offered (offer_quest, request_help)
+  event: guards_alerted             # started with them behind it (confront)
+  move_to: Palace                   # or move_to_tags: [religion]: the place that fits them best (move)
+  trust: 1                          # also hostility, standing {faction: n}, effects [...]
+  once: true                        # false: again after `cooldown` turns
+  expires: 8                        # turns it waits to be delivered (relationships.reaction_expiry)
+```
+
+Signals: `helped`, `betrayed`, `theft`, `crime`, `attacked`, `quest_completed` / `quest_failed` /
+`quest_declined` (`quest:` narrows it to one side quest), `goal_completed`, `goal_opposed`,
+`mission_stage` (`stage:` its number or title), `mission_complete`, `disposition` (`to:` the new
+one), `faction` (`faction:`, `to:`), `variable` (`variable:` a persistent variable that changed) and
+`met` (the player meets them in this story: with `npc_remembers`, an earlier story's encounter).
+Write `signal:`. A bare `on:` is read as `true` by YAML, though the engine still takes it.
+
+A reaction waits, at most `expires` turns, until it can be delivered. It is never delivered inside an
+event, it needs its `when` to hold, the NPC must be in the scene for `where: scene`, and at most
+`relationships.max_reactions_per_turn` are delivered each turn. Delivery happens at the end of a turn
+and again once the next scene is set, so someone the player meets reacts at once. Unless `where`
+says otherwise, `confront` seeks the player out, `warn` and `move` happen anywhere, and every other
+behaviour needs the NPC in the scene.
+
+**The director's guard.** The engine never makes an NPC act against their explicit state. An NPC who
+is gone or switched off performs nothing. They never perform a behaviour in their `never` list. A
+hostile NPC offers no quest, asks for no help and praises no one. A friendly NPC or an ally neither
+confronts nor threatens. Nothing tagged with what one of their goals `opposes` happens through them.
+This holds for reactions (one held back waits, and authors see why), for side quests their giver
+offers (a hostile giver offers none), for encounters behind an NPC (`npc_assault`: never a friend),
+and for a hostile NPC's own actions. Their friendly dealings (outcomes tagged
+`relationships.hostile_refuses_tags`, nothing in `aggressive_tags`) are withheld, and they refuse to
+talk (`npc_hostile_talk`), unless the action's own `enabled_if` asks about the relationship, because
+then the author decided.
+
+**What it unlocks.** Dialogue lines, actions, events, side quests (`start`) and missions take the
+conditions above: a line `enabled_if: {npc_disposition: Priest, op: in, value: [friendly, ally]}`, a
+quest offered once the Captain counts the player a friend, an encounter only while a faction is
+hostile.
+
+**Where people are.** A unique NPC lives in one place (their home). A generic NPC (a merchant, a
+guard) has a copy wherever they are found. By default that is wherever their tags fit. `haunts`
+says it exactly, with how often:
+
+```yaml
+- name: Merchant
+  unique: false
+  haunts:                                              # the first that matches a place decides
+  - {tags_any: [trade, commercial], presence: 1.0}     # the markets: at their stall every visit
+  - {places: [Festival of Masks], presence: 0.5}       # one visit in two
+  - {places: [Tavern], presence: 0.3}                  # now and then, over a drink
+  - {places: [Harbor], presence: 0.15}                 # seldom
+  # an entry with neither places nor tags_any matches anywhere their tags fit; no match: never there
+```
+
+`presence` is how often they are there: 1 every visit, 0 never, 0.3 about one visit in three. Each
+visit is decided once, by a draw fixed for the story, the NPC, the place and the visit. It uses the
+story's own randomness, never its dice, so the same visit gives the same answer and a fixed seed
+gives the same story. Every place with a presence above 0 counts as one of their places, for
+quests and leads too. A place's regulars are shown before occasional visitors when the scene has
+few places for people (`relationships.haunt_weight` x their presence). Haunts are for generic NPCs
+only; a unique NPC moves with a `move` reaction.
+
+A friendly NPC (or ally) comes by more often (`relationships.appearance`: a bonus to a generic NPC's
+visibility). A reaction with `move` gives a unique NPC a new home: the place named, or among the
+places with one of `move_to_tags` the one their tags and known places fit best (the same affinity
+that chooses their home). A generic NPC moved that way is found there every visit from then on,
+besides their haunts. One that seeks the player out joins the scene for that visit.
+
+**One of many.** Each copy of a generic NPC is their own person, with their own trust, hostility,
+disposition and memories (the merchant of the Market, `Merchant@Market`, is not the merchant of the
+Tavern). Word travels between them: what the player does to one reaches the others x their `kin`
+(`relationship.kin`, else `relationships.kin`: 0.5). With `kin: 0` they never hear of it; with
+`kin: 1` they are one person with one record (as a unique NPC is). A plain name in a condition,
+effect or reaction (`npc_trust: Merchant`) means the copy where the player is. `Merchant@Market`
+names one copy (`npc_remembers: Merchant@Market/theft`). Goals, allies and reactions belong to the
+NPC as a whole.
+
+**What is kept.** A save game keeps everything (snapshots), and the session's parameters carry it
+(`relationships`: each NPC's or copy's trust, hostility and memories, what kin heard, goals, moves
+and new haunts, reactions due and done). The world catalogue a UNP reads (`ane.world/1`) lists the
+`factions` beside the NPCs (whose own fields carry their faction, relationship, haunts, goals and
+reactions), and a UNP can patch them like side quests. Across stories,
+`relationships.persist` decides: `configured` (default) keeps the NPCs whose `relationship.persist`
+is true (their trust, hostility, memories and goals fulfilled) in the player's profile, `all` keeps
+everyone, `none` keeps no one. A faction's standing is kept through its persistent `variable` when it
+sets `persist: true`.
+
+**What the player sees.** The people here and met (`people`, `people_met`) carry their
+`disposition` and their `faction` (none for a faction that is not `public`), never the numbers,
+memories or goal progress. Authors see everything in the decision trace's `relationships` section
+(GET `/v1/sessions/{id}/decisions`): every NPC's trust, hostility, attitude, disposition, goals and
+how they advance, memories, the factions and their standing, the reactions waiting (and why), and the
+latest deeds and transitions.
+
 ### Conversations
 
 The people present are approached one at a time (`conversations` in `hyperparameters.yaml`,
@@ -838,12 +1367,40 @@ be always available, and "Move to" was how travel was recognised. Actions
 now carry their `source` (location, npc, item, event, navigation,
 conversation), so renaming anything, including travel options, is safe.
 
+### Action identities
+
+Every action has a stable **id** in play, independent of the text it is shown with: the player's
+choices carry it (PlayState `choices[].id`) and a client chooses with it (`action_id`), so
+rewriting an action's name, an item named in place of `{...}`, or two people offering an action of
+the same name never mixes choices up. The exported ANE AI gives the same ids (its view's `choices[].id`,
+`POST /games/<id>/choose {"action_id", "state_version"}`; [docs/UNP.md](UNP.md#the-view)).
+
+```yaml
+- id: ask_crown            # optional: the action's identity (its name is used when it has none)
+  name: Ask about the crown
+```
+
+| Offered by | Id | Example |
+| --- | --- | --- |
+| a place, person, item, event | `<kind>:<owner>:<id or name>` (as slugs) | `npc:gate-guard:ask-crown` |
+| talking with someone, approaching them, leaving them | `talk:` / `approach:` / `leave:<person>` | `approach:oracle` |
+| travel, fast travel along a known way | `go:<place>` / `travel:<place>` | `go:market` |
+| looking around after a place drew the player in; stepping away from an event | `look:<place>` / `fallback:<event>` | `look:harbor` |
+| taking an offered [side quest](#side-quests) on, or turning it down | `side-quest:<quest>:accept` / `:decline` | `side-quest:charting-the-storm:accept` |
+
+Give an action an `id` when its name may change and saves or clients should keep recognising it;
+the ids of one entry's actions must differ (the editors refuse a duplicate). Without one, the
+authored name is its identity, so renaming it gives it a new one. Two actions of one entry with the
+same name and no `id` are told apart by where they are written (a short digest is added). An
+author's decision trace (`GET /v1/sessions/{id}/decisions`) also gives each action's
+`content_ref`, e.g. `world_definition.characters[Guard].actions[2]`.
+
 ### Story messages
 
 Every sentence the engine adds to a story lives in
-[`config/messages.yaml`](../config/messages.yaml), 53 messages in all: travel,
-arrivals, discoveries, leads, events, encounters, failures, missions, and
-endings. Rewrite any of them:
+[`config/messages.yaml`](../config/messages.yaml), 142 messages in all: travel,
+arrivals, discoveries, leads, events, encounters, failures, missions, side quests,
+and endings. Rewrite any of them:
 
 ```yaml
 messages:
@@ -1077,6 +1634,7 @@ can change is written as **one effect list**
 | Action (location, NPC, item, event) | It is not offered (`required_object`, `required_tag`, and `required_coins` still work) |
 | NPC dialogue line | The next line is tried |
 | Mission | It is not drawn |
+| Side quest (`enabled_if`, `start`, `fail_if`) | It is not offered / does not start / does not fail |
 | Mission goal (`goal.condition`) | The mission is not complete |
 
 **A condition** is a tree. `all`, `any`, and `not` combine conditions; the
@@ -1108,6 +1666,16 @@ enabled_if:
 | `action_done: A` | A was taken successfully (with or without its `(NPC) ` prefix) |
 | `outcome_tag: t` | an outcome tagged t succeeded |
 | `mission: m` | m is the story's mission |
+| `talked_to: N` | the player dealt with N in this story (any action with them, talking too) |
+| `side_quest_active: q` / `side_quest_done: q` | the side quest q is under way / was completed in this story |
+| `side_quest_failed: q` / `side_quest_declined: q` | the side quest q failed / was turned down, let go or withdrawn in this story |
+| `npc_trust: N, op, value` / `npc_hostility: N, op, value` | N's trust in / hostility toward the player compares as stated ([People, factions and reactions](#people-factions-and-reactions)) |
+| `npc_disposition: N, op, value` | N is `hostile`, `wary`, `neutral`, `friendly` or `ally` (eq, ne, in, not_in) |
+| `faction_standing: F, op, value` | the faction F's standing with the player compares as stated |
+| `faction_hostile: F` / `faction_friendly: F` | F is hostile (standing below its `hostile_below`) / friendly (at its `friendly_at` or above) |
+| `npc_ally: N` | one of N's goals was fulfilled (they count the player a friend) |
+| `npc_goal_done: N/g` | N's goal g (its `id` or its text) was fulfilled |
+| `npc_remembers: N/d` | N remembers a deed d of the player's (`theft`, `helped`, `quest_completed`, ...) |
 
 **Shorthand.** Everything written before trees existed still works: a mapping
 of variable names is `all` of its comparisons, and a list is `all` of its
@@ -1139,6 +1707,11 @@ effects:
   - start_event: bandit_ambush             # once the current action is resolved
   - complete_mission: true                 # or the mission's id
   - end_story: You sail into the sunrise.  # the story ends with this text
+  - change_trust: {Priest: 1}              # people and factions; a number alone: the NPC who acts
+  - change_hostility: 2
+  - change_standing: {City Watch: -1}      # also moves the factions related to it
+  - deed: theft                            # the player did this to the NPC who acts (or {kind, npc})
+  - move_npc: {Priest: Palace}             # a unique NPC lives elsewhere from now on
 ```
 
 They go on outcomes (`effects:`, run before the outcome's other fields), on
@@ -1329,3 +1902,24 @@ location has an explicit tag list, characters must share at least one of those
 associated tags unless the location is explicitly listed in their
 `known_locations`. Matching tags also receive the configurable
 `scene.location_tag_match_bonus` during NPC ranking.
+
+### Playtest checks: what they tell an author
+
+`python -m evaluator.playtest SCENARIOS` ([AI.md](AI.md#playtests-whole-games-side-content-and-narrative-checks))
+plays a world with simulated players and lists what to fix, each with the entry to edit (the studio's
+World section and its API path):
+
+- **World checks** (before any turn): a quest or side-quest step that names an item, person, event,
+  action (`goal.action`) or outcome tag (`goal.outcome_tag`) the world does not have; a side-quest
+  place no route leads to; a quest the story would never choose from the start
+  (`quest_not_viable_from_start`: give it a route a player can discover, or a start of its own).
+  Unknown places are refused when the world is loaded, before a playtest starts.
+- **Softlocks and stalls**: where no choice, or no route toward the quest, was left for several turns.
+- **Loops** (`action_loop`): an action taken over and over at the same place. Give it a `repeat`
+  limit, outcomes that change, or a clearer way on.
+- **Filler** stretches: turns that brought nothing new at a place. Give the place more outcomes, an
+  event, or a person with a lead.
+- **Failures that lead nowhere** (the same list as `GET /v1/lint/failures`): give the failure an
+  outcome that moves, reveals or sets something up, or a `complication` event sharing a tag.
+- **Attacks** that repeat or cluster: `encounters.cooldown`, `min_separation`, `rate`, or more
+  templates for the same danger tags.

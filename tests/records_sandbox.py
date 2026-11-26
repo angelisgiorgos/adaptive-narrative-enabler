@@ -10,6 +10,10 @@ import tempfile
 
 os.environ.setdefault("ANE_RECORDS_DIR", tempfile.mkdtemp(prefix="ane-records-tests-"))
 os.environ.setdefault("ANE_ARTIFACT_DIR", tempfile.mkdtemp(prefix="ane-artifacts-tests-"))
+# Saved play sessions (backend/persistence.py): a temporary folder too, never the real saves.
+os.environ.setdefault("ANE_SESSIONS_DIR", tempfile.mkdtemp(prefix="ane-sessions-tests-"))
+# No background watcher of the language-model servers in tests (utils/llm_model_loader.Turns.start_watcher).
+os.environ.setdefault("ANE_LLM_WATCHER", "off")
 
 # The studio (app.py) only talks HTTP to an API (studio_client.py). In tests it talks to the API
 # served in this process instead (the same app, through FastAPI's TestClient), unless a test sets

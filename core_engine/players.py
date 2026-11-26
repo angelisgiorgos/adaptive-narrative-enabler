@@ -21,10 +21,16 @@ with, and for training states saved before.
 Players (PLAYERS): follower (mostly one of the first choices shown), explorer (new places and new
 people first), quester (the quest's next step first), cautious (avoids likely failures, the more so
 when hurt), random. ``evolution.player_mix`` weighs how often each plays.
+
+Playtest strategies (STRATEGIES, evaluator/playtest.py) add side_quester (side quests first), fighter
+(combat first) and conflict_avoider (cautious, and avoids fights). They are not in training's player
+mix, so training and its seeds are unchanged.
 """
 from __future__ import annotations
 
 import random
+
+from .context import with_state_context
 
 MODES = ("simulated", "storyteller")
 DEFAULT_MIX = {"follower": 2, "explorer": 1, "quester": 2, "cautious": 1, "random": 1}
@@ -119,6 +125,8 @@ class Quester(Player):
             said = action.name.split(") ", 1)[-1].lower()  # the choice, as the quest log may name it
             if len(said) > 3 and said in todo:
                 weight += 6.0
+            if action.source == "side_quest":  # a side quest helps the quest (side_quest_settings.aids_mission)
+                weight += 2.0 if getattr(action, "key", None) == "accept" else 0.0
             weights.append(weight)
         return weights
 
@@ -146,6 +154,116 @@ class Cautious(Player):
 PLAYERS = {cls.name: cls for cls in (Follower, Explorer, Quester, Cautious, RandomPlayer)}
 
 
+# ---- playtest strategies (evaluator/playtest.py): not part of training's player mix -------------
+
+COMBAT_TAGS = frozenset({"combat", "fight", "attack", "ambush", "assault", "raid", "violence", "duel", "battle"})
+COMBAT_WORDS = ("fight", "attack", "strike", "ambush", "duel", "charge", "battle", "hold the", "defend")
+YIELD_WORDS = ("surrender", "flee", "hide", "retreat", "run", "sneak", "give in", "talk", "negotiate", "bribe",
+               "avoid", "leave", "slip away")
+
+
+def is_combat(state, action):
+    """Whether a choice looks like a fight to a player: its outcomes are tagged as combat, its check is
+    the combat stat (character_stats.tag_checks: combat), or its name says so."""
+    tags = {str(tag).lower() for outcome in getattr(action, "outcomes", None) or () for tag in outcome.tags}
+    if tags & COMBAT_TAGS:
+        return True
+    hint = state.check_hint(action) if getattr(action, "outcomes", None) else None
+    if hint and str(hint.get("stat", "")).lower() in ("attack", "combat"):
+        return True
+    said = action.name.split(") ", 1)[-1].lower()
+    return any(word in said for word in COMBAT_WORDS)
+
+
+def is_side_quest_step(state, action):
+    """Whether a choice works toward a side quest: an offer's answer, or what an active side quest's
+    current step names (its place or person)."""
+    if action.source == "side_quest":
+        return True
+    from . import side_quests  # (imported here: side_quests depends on the story, the story on players)
+
+    wanted = set()
+    for key, record in side_quests.records(state).items():
+        quest = side_quests.quests(state).get(key)
+        if quest is None or record.get("status") != "active":
+            continue
+        if record.get("ready") and quest.giver:  # done: back to who asked
+            wanted.add(quest.giver.lower())
+            continue
+        goal = side_quests._stage_goal(quest, int(record.get("stage", 0)))[0]
+        wanted |= {place.lower() for place in side_quests._goal_places(goal)}
+        wanted |= {str(value).lower() for value in (goal or {}).values() if isinstance(value, str)}
+    target = _target(action).lower()
+    if target and target in wanted:
+        return True
+    places = [name for name in state.world.locations if name.lower() in wanted]
+    return any(side_quests._on_the_way(state, action, place) for place in places)  # the next step there
+
+
+class SideQuester(Player):
+    """Side quests first: takes on every side quest offered, then follows its steps; meets new people
+    (who may offer one); otherwise mostly one of the first choices."""
+
+    name = "side_quester"
+
+    def weights(self, state, options):
+        talked = {name for name, count in state.character_interactions.items() if count}
+        weights = []
+        for index, action in enumerate(options):
+            weight = 0.5 ** index
+            if action.source == "side_quest":
+                weight += 8.0 if getattr(action, "key", None) == "accept" else 0.0
+            elif is_side_quest_step(state, action):
+                weight += 6.0
+            elif action.source in ("approach", "conversation", "npc") and _target(action) not in talked:
+                weight += 2.0
+            weights.append(weight)
+        return weights
+
+
+class Fighter(Player):
+    """Combat first: takes the fights it is offered (attacks, ambushes, duels) whatever its health."""
+
+    name = "fighter"
+
+    def weights(self, state, options):
+        return [6.0 if is_combat(state, action) else 0.5 ** index + 0.2 for index, action in enumerate(options)]
+
+
+class ConflictAvoider(Cautious):
+    """Cautious, and avoids conflict: fights are its last choice; giving way, hiding or talking first."""
+
+    name = "conflict_avoider"
+
+    def weights(self, state, options):
+        weights = []
+        for action, weight in zip(options, super().weights(state, options)):
+            said = action.name.split(") ", 1)[-1].lower()
+            if is_combat(state, action):
+                weight *= 0.05
+            elif any(word in said for word in YIELD_WORDS):
+                weight *= 3.0
+            weights.append(weight)
+        return weights
+
+
+# Every strategy a playtest can name (core_engine/players.py's players and the playtest ones), with the
+# names the playtest documents use for the training players.
+STRATEGIES = {**PLAYERS, **{cls.name: cls for cls in (SideQuester, Fighter, ConflictAvoider)}}
+STRATEGY_ALIASES = {"main_quest": "quester", "explorer": "explorer", "side_quest": "side_quester",
+                    "combat": "fighter", "cautious": "cautious", "conflict_avoiding": "conflict_avoider",
+                    "random": "random", "follower": "follower"}
+
+
+def strategy(name, seed):
+    """The playtest strategy ``name`` (a STRATEGIES name or a STRATEGY_ALIASES one) with its own dice for
+    the story seed ``seed`` (the same seed and name: the same choices, in every process)."""
+    key = STRATEGY_ALIASES.get(name, name)
+    if key not in STRATEGIES:
+        raise ValueError(f"Unknown player strategy `{name}`; use {', '.join(sorted(set(STRATEGIES) | set(STRATEGY_ALIASES)))}.")
+    return STRATEGIES[key](random.Random(f"ane-playtest:{key}:{seed}"))
+
+
 def mix_errors(mix):
     """Problems of an ``evolution.player_mix`` (empty when it can be used)."""
     if not isinstance(mix, dict) or not mix:
@@ -167,6 +285,7 @@ def player_for(seed, mix=None):
     return PLAYERS[names[_weighted(rng, [mix[name] for name in names])]](rng)
 
 
+@with_state_context
 def take_turn(state, player):
     """One choice: ``player`` chooses among the choices shown; False when the story cannot go on.
     The options are ranked once and shared by the choices shown and the step. Approaching
@@ -186,11 +305,12 @@ def take_turn(state, player):
         return False
     chosen = options[player.choose(state, options)]
     went_on = state.take_option(chosen, ranked=ranked)
-    if chosen.source in ("approach", "leave"):
+    if chosen.source in ("approach", "leave"):  # (a side quest taken on changes the ranking: not kept)
         state._ranking_after_free_step = ((state.actions_taken, len(state.history)), actions, pairs)
     return went_on
 
 
+@with_state_context
 def play(state, max_steps, player=None):
     """Play ``state`` for up to ``max_steps`` turns: ``player`` chooses, or, with None, the
     storyteller takes its own favourite choice (the older evaluation, ``evolution.player:

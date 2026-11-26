@@ -5,7 +5,8 @@
     engine = NarrativeEngine()                 # the export this package belongs to
     game = engine.new_game(profile="player-1", stats_mode="random")   # start="Harbor" to choose the start
     view = game.view()                         # scene, choices, health, mission, ...
-    turn = game.choose(view["actions"][0])     # by name or index
+    choice = view["choices"][0]                # {"id": "npc:merchant:haggle", "label", "category", ...}
+    turn = game.choose(action_id=choice["id"], state_version=view["state_version"])  # or by name or index
     game.save("slot1.json"); game = engine.load_game("slot1.json")   # an ane.savegame/1 document
 
 Everything runs offline: the export carries the world and tuning (config/), the evolved
@@ -75,18 +76,41 @@ class Game:
         self.id = game_id or uuid.uuid4().hex
         state.session_id = self.id  # the session's id in its report and save game
 
+    def _offered(self):
+        """(the options the player sees now, their stable ids: core_engine/choices.py)."""
+        from core_engine import choices
+
+        if self.state.ended:
+            return [], []
+        if hasattr(self.state, "player_options"):
+            options = self.state.player_options()
+        else:
+            options = self.state.ranked_available_actions()
+        return options, choices.assign_ids(options, self.state)
+
     def actions(self) -> list[str]:
         """The choices the player sees now: the most relevant ones (player_options in the tuning)."""
-        if self.state.ended:
-            return []
-        if hasattr(self.state, "player_options"):
-            return [action.name for action in self.state.player_options()]
-        return [action.name for action in self.state.ranked_available_actions()]
+        return [action.name for action in self._offered()[0]]
+
+    def choices(self) -> list[dict]:
+        """The choices the player sees now as structured objects (core_engine/choices.describe): {id,
+        name, label, category, owner, source, location, requirements, check, skill_check,
+        failure_risk, available, availability, repeat, one_time, takes_turn, members}."""
+        return self._choices(*self._offered())
+
+    def _choices(self, options, ids):
+        from core_engine import choices
+
+        if not hasattr(self.state, "check_hint"):
+            return [{"id": action_id, "name": action.name, "label": action.name}
+                    for action, action_id in zip(options, ids)]
+        return [choices.describe(action, self.state, action_id) for action, action_id in zip(options, ids)]
 
     def view(self) -> dict:
         """What the player sees now."""
         state = self.state
-        actions = self.actions()  # also sets up the scene and starts encounters
+        options, ids = self._offered()  # also sets up the scene and starts encounters
+        actions = [action.name for action in options]
         description, npcs, items = state._describe_visible_scene()
         bonuses = state.combat.item_bonuses(state.inventory)
         last = state.combat.history[-1] if state.combat.history else None
@@ -110,6 +134,7 @@ class Game:
             "mission_description": state.mission.description if state.mission else None,
             "mission_status": state.mission_status,
             "quest": state.quest_log() if hasattr(state, "quest_log") else None,
+            "side_quests": state.side_quest_log() if hasattr(state, "side_quest_log") else [],
             "people": state.people_here() if hasattr(state, "people_here") and not state.ended else [],
             "people_met": state.people_met() if hasattr(state, "people_met") else [],
             "ways_on": state.ways_on() if hasattr(state, "ways_on") and not state.ended else [],
@@ -118,8 +143,11 @@ class Game:
             "unique_actions": state.unique_actions() if hasattr(state, "unique_actions") else [],
             "session_report": state.__dict__.get("session_report"),
             "map": state.map_view() if hasattr(state, "map_view") else None,
-            "choices": [{"name": name, "check": state.check_hint(a)} for name, a in
-                        zip(actions, state.player_options())] if hasattr(state, "check_hint") and actions else [],
+            # the same choices as `actions`, each with its stable id (choose by it), where it comes
+            # from, what it needs, its skill check and what failing costs
+            "choices": self._choices(options, ids),
+            # changes with every turn, update and sync: send it back with a choice (stale: 409)
+            "state_version": state.state_version,
             "event": state.active_event.title if state.active_event else None,
             # the person the player is talking with (their choices, and leaving), or None
             "talking_to": state.conversation() if hasattr(state, "conversation") else None,
@@ -132,20 +160,45 @@ class Game:
             "turn_number": state.actions_taken,
         }
 
-    def choose(self, action) -> dict:
-        """Take an action (its name or its index in ``actions()``)."""
-        names = self.actions()
-        if not names:
+    def choose(self, action=None, action_id=None, state_version=None) -> dict:
+        """Take an action: ``action_id`` (its stable id, ``view()["choices"][i]["id"]``), else
+        ``action`` (its name or its index in ``actions()``; two choices with the same name: the
+        first). With ``state_version`` (the view's), a choice made from a view the game has moved
+        past raises ``core_engine.choices.StaleChoice``; an id not offered now raises
+        ``UnavailableChoice``. Then nothing is done."""
+        from core_engine import choices
+
+        offered = []
+
+        def current():
+            if not offered:
+                offered.append(self._offered())
+            return offered[0]
+
+        choices.select(self.state, current, None, state_version)  # a stale view: refused
+        options, ids = current()
+        if not options:
             raise ValueError("The story has ended.")
-        index = action if isinstance(action, int) else names.index(action) if action in names else -1
-        if not 0 <= index < len(names):
-            raise ValueError(f"Unknown action {action!r}. Available: {names}")
+        if action_id is not None:
+            chosen = choices.select(self.state, current, action_id)
+        else:
+            names = [option.name for option in options]
+            if isinstance(action, int) and not isinstance(action, bool):
+                index = action
+            else:
+                index = names.index(action) if action in names else -1
+            if not 0 <= index < len(names):
+                raise ValueError(f"Unknown action {action!r}. Available: {names} (or send `action_id`: {ids})")
+            chosen = options[index]
         before = len(self.state.history)
         if hasattr(self.state, "take_option"):  # approaching someone or leaving a conversation: no turn
-            self.state.take_option(next(option for option in self.state.player_options() if option.name == names[index]))
-        else:
-            ranked = [option.name for option in self.state.ranked_available_actions()]  # step() indexes the ranked order
-            self.state.step(ranked.index(names[index]))
+            self.state.take_option(chosen)
+        else:  # step() indexes the ranked order
+            ranked = self.state.ranked_available_actions()
+            index = next((i for i, option in enumerate(ranked) if option is chosen), None)
+            if index is None:
+                index = next(i for i, option in enumerate(ranked) if option.name == chosen.name)
+            self.state.step(index)
         turn = "\n".join(line.strip("\n") for line in self.state.history[before:]).strip()
         return {**self.view(), "turn": turn}  # "turn": the story text of this turn
 
@@ -228,6 +281,19 @@ class Game:
         return str(path)
 
 
+def _bind_game_methods():
+    """Every Game method runs in its story's own engine context (core_engine/context.py): the world
+    and tuning the session started with, whatever the UNP patches afterwards (new sessions use the
+    patched world). Applied once, when the first engine is loaded (the engine's modules are imported
+    only after its configuration folder is set)."""
+    if getattr(Game, "_binds_context", False):
+        return
+    from core_engine.context import binds_own_context
+
+    binds_own_context(lambda game: getattr(game.state, "context", None))(Game)
+    Game._binds_context = True
+
+
 class NarrativeEngine:
     """An exported engine (an ANE AI): world, tuning, and the evolved storyteller."""
 
@@ -259,6 +325,7 @@ class NarrativeEngine:
             load_tag_vectors(data)
             self.vector_tags = set(data)
         os.environ.setdefault("ANE_SAVE_DIR", str(self.data_dir))
+        _bind_game_methods()
 
         from core_engine import Genome
         from core_engine.evolution import LearningMemory
@@ -469,13 +536,47 @@ class NarrativeEngine:
         """Continue a session from a save game (ane.savegame/1): exactly when its snapshot fits
         this engine, else rebuilt from its parameters. Returns (game, how, note)."""
         from core_engine import savegame
+        from core_engine.context import bound
 
-        state, how, note = savegame.load(doc, self.genome, store=self.store if persist else None,
-                                         profile=profile, seed=seed)
+        # A session keeps the world it started with (its engine context): one started before a UNP
+        # patch was saved with that revision of the world, and is restored exactly with it.
+        with bound(self._revision_context((doc.get("snapshot") or {}).get("config_hash"))):
+            state, how, note = savegame.load(doc, self.genome, store=self.store if persist else None,
+                                             profile=profile, seed=seed)
         game = Game(self, state, doc.get("session_id") or None)
         self.games[game.id] = game
         self.notify("session.started", {"game_id": game.id, "profile": state.profile, "restored": how}, game.id)
         return game, how, note
+
+    def _revisions(self):
+        """Every configuration this engine has served since its package's own (or its last persisted
+        patch): the package's, then each kept UNP patch applied in turn (the current one last)."""
+        from .world import apply_patch
+
+        active = copy.deepcopy(self.base_config)
+        revisions = [active]
+        for record in self.patches:
+            active = apply_patch(active, record["patch"])
+            revisions.append(active)
+        return revisions
+
+    def _revision_context(self, config_hash):
+        """The EngineContext of the configuration revision a save game was made with (None: the
+        current one, or a revision this engine no longer knows: then it is rebuilt from its parameters)."""
+        from core_engine.context import EngineContext
+        from core_engine.snapshot import config_hash as hash_of
+
+        if not config_hash:
+            return None
+        with self.lock:
+            revisions = self._revisions()
+        if hash_of(revisions[-1]) == config_hash:
+            return None
+        space = EngineContext.capture().tag_space  # the package's trained tag vectors
+        for revision in reversed(revisions[:-1]):
+            if hash_of(revision) == config_hash:
+                return EngineContext(revision, genome=self.genome, tag_space=space, source="earlier world revision")
+        return None
 
     def load_game(self, path) -> Game:
         """A game saved with Game.save (an ane.savegame/1 JSON document). Games saved by older

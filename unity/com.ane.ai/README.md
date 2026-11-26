@@ -35,18 +35,27 @@ var ane = FindObjectOfType<AneAiBehaviour>();
 await ane.StartEngineAsync();
 var client = ane.Client;
 
-var world = await client.WorldAsync();                     // locations, npcs, items, events, missions, stats
+var world = await client.WorldAsync();                     // locations, npcs, items, events, missions, factions, stats
 var view = await client.NewGameAsync(new NewGameOptions {
     Profile = "player-1",
     Player = new Dictionary<string, object> { ["coins"] = 20, ["add_items"] = new[] { "Rusty Sword" } },
 });
-view = await client.ChooseAsync(view.GameId, 0);           // or by name; view.TurnText is the story
+view = await client.ChooseAsync(view, view.Choices[0]);    // by its stable id; view.TurnText is the story
 await client.SyncAsync(view.GameId, new Dictionary<string, object> {
     ["type"] = "item_gained", ["item"] = "Ancient Map" });   // what happened in your game
 var save = await client.SaveAsync(view.GameId);            // ane.savegame/1, keep it as JSON
 var cancelled = await client.CancelAsync(view.GameId);     // save + release the session
 view = await client.LoadGameAsync(save);                   // continues exactly (view.Restored)
 ```
+
+`view.Choices` are the choices to show (`AneChoice`: `Id`, `Label`, `Category`, `SourceKind`,
+`SourceName`, `TakesTurn`, `SkillCheck`, `FailureRisk`, `Requirements`). `ChooseAsync(view, choice)`
+sends the choice's stable `Id` with the view's `StateVersion`: if the game has moved past that view
+(another update, a sync), nothing is done and an `AneAiException` with `IsStale` (409) is thrown, and
+`IsUnavailable` for an id not offered now; `Offered` lists the current ids. Show `GameAsync(gameId)`
+then. `ChooseIdAsync(gameId, id, stateVersion)` chooses by id alone; `ChooseAsync(gameId, index)` and
+`ChooseAsync(gameId, name)` work as before. With an ANE AI exported before action ids, choices have
+no `Id` and `ChooseAsync(view, choice)` chooses by name.
 
 `AneJson.Serialize` / `AneJson.ParseObject` turn save games into text and back (e.g. a file in
 `Application.persistentDataPath`). The sample *Text adventure* (Package Manager > Samples, or

@@ -32,9 +32,10 @@ class EvaluationError(ValueError):
 
 # ---- playing stories in a process of their own -----------------------------------------------
 
-def _play(config_data, tag_vectors, count, first_seed, traits, budget):
-    """Run in a spawned process: ``count`` finished stories with this configuration, each as
-    {seed, digest, breakdown, fitness, turns, won, end_kind}."""
+def _play_one(seed, traits, budget):
+    """Run in an evaluation process (its configuration set up by main._init_spawned_worker): one
+    finished story, as {seed, digest, breakdown, fitness, turns, won, end_kind}. Every story has its
+    own dice (its seed), so stories played at once in several processes are the ones played in turn."""
     import random
 
     import main as engine
@@ -45,23 +46,27 @@ def _play(config_data, tag_vectors, count, first_seed, traits, budget):
     from core_engine.genome import Genome
     from evaluator.game_judge import digest_state
 
+    teller = Genome(rng=random.Random(seed))
+    if traits:
+        for name, value in traits.items():
+            setattr(teller, name, value)
+    state = GameState(engine.build_world(teller), teller, rng=random.Random(seed))
+    # Played as in training: a simulated player takes the player's turns (evolution.player).
+    players.play(state, 10 ** 6, players.for_settings(seed, evolution_settings()))
+    breakdown = _fitness_breakdown(state)
+    return {
+        "seed": seed, "digest": digest_state(state, max_chars=budget), "breakdown": breakdown,
+        "fitness": sum(breakdown.values()), "turns": state.actions_taken, "won": bool(state.won),
+        "end_kind": state.end_kind,
+    }
+
+
+def _play(config_data, tag_vectors, count, first_seed, traits, budget):
+    """Run in a spawned process: ``count`` finished stories with this configuration, in turn."""
+    import main as engine
+
     engine._init_spawned_worker(config_data, tag_vectors)
-    stories = []
-    for seed in range(first_seed, first_seed + count):
-        teller = Genome(rng=random.Random(seed))
-        if traits:
-            for name, value in traits.items():
-                setattr(teller, name, value)
-        state = GameState(engine.build_world(teller), teller, rng=random.Random(seed))
-        # Played as in training: a simulated player takes the player's turns (evolution.player).
-        players.play(state, 10 ** 6, players.for_settings(seed, evolution_settings()))
-        breakdown = _fitness_breakdown(state)
-        stories.append({
-            "seed": seed, "digest": digest_state(state, max_chars=budget), "breakdown": breakdown,
-            "fitness": sum(breakdown.values()), "turns": state.actions_taken, "won": bool(state.won),
-            "end_kind": state.end_kind,
-        })
-    return stories
+    return [_play_one(seed, traits, budget) for seed in range(first_seed, first_seed + count)]
 
 
 def _with_variants(config_data, variants):
@@ -135,10 +140,18 @@ def play_stories(count, first_seed=0, engine_id=None, variants=None, budget=None
     count = int(count)
     if not 1 <= count <= MAX_STORIES:
         raise EvaluationError(f"Between 1 and {MAX_STORIES} stories.")
+    import main as engine
+
     config_data, vectors, traits = _source(engine_id)
     config_data = _with_variants(config_data, variants)
-    with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn")) as pool:
-        return pool.submit(_play, config_data, vectors, count, int(first_seed), traits, budget).result()
+    seeds = list(range(int(first_seed), int(first_seed) + count))
+    # The stories are played at once by fresh processes (one per physical core, as training's:
+    # evolution.evaluation_threads), each set up with this configuration; the results come back
+    # in seed order, the same as played in turn.
+    workers = engine._evaluation_worker_count(count)
+    with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
+                             initializer=engine._init_spawned_worker, initargs=(config_data, vectors)) as pool:
+        return list(pool.map(_play_one, seeds, [traits] * count, [budget] * count))
 
 
 # ---- the judge -----------------------------------------------------------------------------
@@ -163,7 +176,7 @@ def story_digest(spec, budget=None):
     spec = spec or {}
     if spec.get("session_id"):
         with sessions.SESSION_LOCK:
-            state = sessions.SESSIONS.get(spec["session_id"])
+            state = sessions.find_session(spec["session_id"])  # restored when saved; not someone else's
             if state is None:
                 raise EvaluationError(f"Play session `{spec['session_id']}` not found.")
             return digest_state(state, max_chars=budget)

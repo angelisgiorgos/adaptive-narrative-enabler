@@ -12,6 +12,13 @@ with an overall ``engagement`` (1-10), the best and the weakest moment and a one
 verdict. Several samples (``llm_judge.samples``) are averaged, and their spread is kept
 as a measure of how sure the judge is.
 
+When the playthrough has optional content (side quests, dynamic encounters: lines marked
+OPTIONAL_MARKERS), the judge is also asked to tell meaningful optional content (it connects
+to the main quest, changes what happens later, reveals something, pays off near the end)
+from filler (it could be cut without changing anything): ``optional_content`` {score (1-10:
+what it added), meaningful, filler (threads of each kind), filler_share, note}. A playthrough
+without optional content gets the same prompt as before, so its judgements stay comparable.
+
     judge = GameJudge()
     result = judge.judge_state(state)          # a GameState that was played
     result = judge.judge_turns(turns, meta)     # a recorded story (records.get_story)
@@ -30,6 +37,7 @@ import re
 import statistics
 
 from utils.config_loader import config
+from core_engine.context import with_state_context
 
 CRITERIA = {
     "agency": "the player's choices matter: real options with consequences, not one obvious path",
@@ -55,7 +63,18 @@ BEATS = ("[QUEST]", "[MISSION COMPLETE]", "[UNEXPECTED EVENT]", "[TWIST]", "[CAL
          "[NPC REMOVED]", "[RELEASED]", "[UNLOCKED]", "[BACK]", "[ROUTE]", "[EVENT DISCOVERY]", "You collected",
          # The engine's own beats (core_engine/story_beats.py).
          "[REVEAL]", "[TRIUMPH]", "[CLIMAX]", "[SETBACK]", "[REVELATION]", "[ANOTHER WAY]", "[REFUND]",
-         "[ON THE WAY]", "[ALERT]", "[MANHUNT]", "[SECRET]", "[CONSEQUENCE]", "[LAST TIME]")
+         "[ON THE WAY]", "[ALERT]", "[MANHUNT]", "[SECRET]", "[CONSEQUENCE]", "[LAST TIME]",
+         # Optional content: side quests and dynamic encounters (core_engine/side_quests.py, encounters.py).
+         "[SIDE QUEST", "[SIDE STORY]", "[AMBUSH]", "[PATROL]", "[ATTACK]", "[ASSAULT]", "[RAID]", "[DANGER]",
+         "[DEFEND]", "[SPARED]")
+# The beats that mark optional content: a digest with one of them asks the judge about it.
+OPTIONAL_MARKERS = ("[SIDE QUEST", "[SIDE STORY]", "[AMBUSH]", "[PATROL]", "[ATTACK]", "[ASSAULT]", "[RAID]",
+                    "[DANGER]", "[DEFEND]")
+
+
+def has_optional_content(digest):
+    """Whether a story digest shows optional content (a side quest, a dynamic encounter)."""
+    return any(marker in (digest or "") for marker in OPTIONAL_MARKERS)
 
 
 def _beats(text, limit=4, chars=150):
@@ -144,6 +163,7 @@ def digest_turns(turns, meta=None, max_turns=None, outcome_chars=None, max_chars
     return "\n".join(lines)
 
 
+@with_state_context
 def digest_state(state, **kwargs):
     """The digest of a played GameState (each turn with its story text, for the beats)."""
     meta = {
@@ -155,9 +175,32 @@ def digest_state(state, **kwargs):
     return digest_turns(turns, meta, **kwargs)
 
 
-def build_prompt(digest):
-    criteria = "\n".join(f"- {name}: {meaning}" for name, meaning in CRITERIA.items())
-    keys = ", ".join(f'"{name}": <1-10>' for name in CRITERIA)
+OPTIONAL_INSTRUCTIONS = """
+The playthrough also has OPTIONAL content: side quests (lines marked [SIDE QUEST] or [SIDE STORY])
+and attacks that are not part of the main quest ([AMBUSH], [PATROL], [ATTACK], [ASSAULT], [RAID],
+[DANGER], [DEFEND]). Count each optional thread as MEANINGFUL when it connects to the main quest,
+changes what happens later, reveals something or pays off near the end, and as FILLER when it could
+be cut without changing anything. Then score "optional_content" from 1 (filler that gets in the way)
+to 10 (optional content that makes the game richer).
+"""
+
+
+# Criteria a playtest asks for besides CRITERIA (evaluator/playtest.py): asked only when a caller
+# names them (GameJudge(extra_criteria=...)), so every other judgement keeps the same prompt.
+PLAYTEST_CRITERIA = {
+    "character_development": "the people met change, reveal themselves or change how they treat the player "
+                             "over the playthrough; relationships have weight",
+}
+
+
+def build_prompt(digest, extra_criteria=None):
+    asked = {**CRITERIA, **(extra_criteria or {})}
+    criteria = "\n".join(f"- {name}: {meaning}" for name, meaning in asked.items())
+    keys = ", ".join(f'"{name}": <1-10>' for name in asked)
+    optional = has_optional_content(digest)
+    extra = OPTIONAL_INSTRUCTIONS if optional else ""
+    extra_key = (', "optional_content": {"score": <1-10>, "meaningful": <threads>, "filler": <threads>, '
+                 '"note": "<one sentence>"}') if optional else ""
     return f"""You are a demanding video game critic. Below is the log of one playthrough of a narrative
 game: each line is a turn (the place, the player's choice, what happened, and what changed).
 
@@ -166,10 +209,10 @@ Judge it as a GAME a player experiences, not as prose. Score each criterion from
 {criteria}
 
 Then give "engagement": how engaging the playthrough is overall for a player, from 1 to 10.
-
+{extra}
 Reply with ONE JSON object and nothing else:
 {{"scores": {{{keys}}}, "engagement": <1-10>, "best_moment": "Turn <n>: <why it works>",
-"weakest_moment": "Turn <n>: <why it falls flat>", "verdict": "<one sentence>"}}
+"weakest_moment": "Turn <n>: <why it falls flat>", "verdict": "<one sentence>"{extra_key}}}
 
 PLAYTHROUGH:
 {digest}
@@ -186,12 +229,14 @@ def _clamp(value):
     return max(1.0, min(10.0, number))
 
 
-def parse_judgement(text):
+def parse_judgement(text, extra_criteria=None):
     """The judgement in a model's reply: {scores, engagement, best_moment, weakest_moment,
     verdict}, or None. Tolerates code fences, prose around the JSON, trailing commas and
-    scores given as "criterion: 7" lines."""
+    scores given as "criterion: 7" lines. ``extra_criteria``: criteria asked besides CRITERIA
+    (their scores are read too, never required)."""
     if not text:
         return None
+    extra = [name for name in (extra_criteria or {}) if name not in CRITERIA]
     cleaned = re.sub(r"```(?:json)?", "", text)
     data = None
     start, end = cleaned.find("{"), cleaned.rfind("}")
@@ -218,16 +263,65 @@ def parse_judgement(text):
                     scores[name] = _clamp(match.group(1))
     if not scores:
         return None
+    for name in extra:
+        value = _clamp(((data.get("scores") if isinstance(data.get("scores"), dict) else data) or {}).get(name)) \
+            if isinstance(data, dict) else None
+        if value is None:
+            match = re.search(rf'"?{name}"?\s*[:=]\s*(\d+(?:\.\d+)?)', cleaned, flags=re.I)
+            value = _clamp(match.group(1)) if match else None
+        if value is not None:
+            scores[name] = value
     engagement = _clamp((data or {}).get("engagement")) if isinstance(data, dict) else None
     if engagement is None:
         match = re.search(r'"?engagement"?\s*[:=]\s*(\d+(?:\.\d+)?)', cleaned, flags=re.I)
         engagement = _clamp(match.group(1)) if match else statistics.mean(scores.values())
     return {
-        "scores": scores, "engagement": engagement,
+        "scores": scores, "engagement": engagement, "optional_content": _optional(data, cleaned),
         "best_moment": str((data or {}).get("best_moment", "")) if isinstance(data, dict) else "",
         "weakest_moment": str((data or {}).get("weakest_moment", "")) if isinstance(data, dict) else "",
         "verdict": str((data or {}).get("verdict", "")) if isinstance(data, dict) else "",
     }
+
+
+def _count(value):
+    try:
+        number = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return max(0, number)
+
+
+def _optional(data, cleaned):
+    """The judge's word on optional content: {score, meaningful, filler, filler_share, note}, or None
+    when it gave none (a playthrough without optional content is not asked)."""
+    raw = data.get("optional_content") if isinstance(data, dict) else None
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        raw = {"score": raw}
+    if not isinstance(raw, dict):
+        match = re.search(r'"?optional_content"?\s*[:=]\s*(\d+(?:\.\d+)?)', cleaned or "", flags=re.I)
+        if not match:
+            return None
+        raw = {"score": match.group(1)}
+    score, meaningful, filler = _clamp(raw.get("score")), _count(raw.get("meaningful")), _count(raw.get("filler"))
+    if score is None and meaningful is None and filler is None:
+        return None
+    threads = (meaningful or 0) + (filler or 0)
+    return {"score": score, "meaningful": meaningful, "filler": filler,
+            "filler_share": (filler or 0) / threads if threads else None, "note": str(raw.get("note", ""))}
+
+
+def combine_optional(judgements):
+    """The mean of the samples' optional_content (those that gave one), or None."""
+    given = [j.get("optional_content") for j in judgements if j.get("optional_content")]
+    if not given:
+        return None
+
+    def mean(key):
+        values = [g[key] for g in given if g.get(key) is not None]
+        return statistics.mean(values) if values else None
+
+    return {"score": mean("score"), "meaningful": mean("meaningful"), "filler": mean("filler"),
+            "filler_share": mean("filler_share"), "note": given[0].get("note", ""), "samples": len(given)}
 
 
 # ---- pairwise: which of two playthroughs is the better game --------------------------------
@@ -329,8 +423,9 @@ def combine_orders(first, second):
 class GameJudge:
     """Gemma 4 as the judge of a playthrough (llm_judge settings; the vllm runtime)."""
 
-    def __init__(self, runtime=None, samples=None, temperature=None, max_new_tokens=None):
+    def __init__(self, runtime=None, samples=None, temperature=None, max_new_tokens=None, extra_criteria=None):
         cfg = _settings()
+        self.extra_criteria = dict(extra_criteria or {})  # asked besides CRITERIA (PLAYTEST_CRITERIA)
         self.samples = max(1, int(samples or cfg["samples"]))
         self.temperature = float(cfg["temperature"] if temperature is None else temperature)
         self.max_new_tokens = int(max_new_tokens or cfg["max_new_tokens"])
@@ -343,25 +438,26 @@ class GameJudge:
     def judge_digest(self, digest):
         """{engagement, scores, spread, samples, verdict, best_moment, weakest_moment, parsed}:
         the mean of the samples that could be read (parsed: how many)."""
-        prompt = build_prompt(digest)
+        prompt = build_prompt(digest, self.extra_criteria)
         judgements, raw = [], []
         for _ in range(self.samples):
             text = self.runtime.generate(prompt, max_new_tokens=self.max_new_tokens, temperature=self.temperature)
             raw.append(text)
-            parsed = parse_judgement(text)
+            parsed = parse_judgement(text, self.extra_criteria)
             if parsed is not None:
                 judgements.append(parsed)
         if not judgements:
             return {"engagement": None, "scores": {}, "spread": None, "samples": self.samples, "parsed": 0,
-                    "verdict": "The judge's reply could not be read.", "raw": raw}
+                    "optional_content": None, "verdict": "The judge's reply could not be read.", "raw": raw}
         scores = {name: statistics.mean(j["scores"][name] for j in judgements if name in j["scores"])
-                  for name in CRITERIA if any(name in j["scores"] for j in judgements)}
+                  for name in (*CRITERIA, *self.extra_criteria) if any(name in j["scores"] for j in judgements)}
         engagements = [j["engagement"] for j in judgements]
         return {
             "engagement": statistics.mean(engagements),
             "scores": scores,
             "spread": statistics.pstdev(engagements) if len(engagements) > 1 else 0.0,
             "samples": self.samples, "parsed": len(judgements),
+            "optional_content": combine_optional(judgements),
             "verdict": judgements[0]["verdict"], "best_moment": judgements[0]["best_moment"],
             "weakest_moment": judgements[0]["weakest_moment"], "raw": raw,
         }

@@ -13,6 +13,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from core_engine.context import follow_process_config
+
 from fastapi.testclient import TestClient
 
 import api
@@ -428,7 +430,7 @@ class FitnessTests(_Beats):
         breakdown = _fitness_breakdown(state)
         self.assertEqual(breakdown["npc_triumphs"], 8)
         self.assertEqual(breakdown["reveals"], 3)
-        with patch.dict(config._config["fitness"], {"term_weights": {"npc_triumphs": 2.0}}):
+        with patch.dict(config._config["fitness"], {"term_weights": {"npc_triumphs": 2.0}}), follow_process_config(state):
             self.assertEqual(_fitness_breakdown(state)["npc_triumphs"], 16)
 
 

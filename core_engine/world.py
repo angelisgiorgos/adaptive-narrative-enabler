@@ -30,13 +30,30 @@ class Character(Conditional):
     DialogueLines chosen by condition when the player talks with the NPC."""
     role = None     # class defaults: games saved before these fields load unchanged
     secret = None
+    faction = None          # people and factions (core_engine/relationships.py)
+    relationship = {}       # {trust, hostility, persist}: where the player starts with them
+    related = {}            # NPC -> factor: what is done to them reaches these people
+    never = frozenset()     # behaviours the director may never make them perform
+    hostile_event = None    # the event they confront the player with once hostile
+    activities = ()         # what they are doing, by place, disposition and condition
+    reactions = ()          # what they do about what happens (relationships.reaction_spec)
+    haunts = ()             # a generic NPC's places: [{places, tags_any, presence}] (relationships.presence)
 
     def __init__(self, name, associated_tags, goals=None, 
                  descriptions=None, actions=None, 
                  known_locations=None, known_objects=None, unique=False,
                  encounter_event=None, encounter_repeat=False, enabled_if=None, dialogue=None, article=None,
-                 role=None, secret=None):
+                 role=None, secret=None, faction=None, relationship=None, related=None, never=None,
+                 hostile_event=None, activities=None, reactions=None, haunts=None):
         self.name = name
+        self.haunts = list(haunts or ())
+        self.faction = faction or None
+        self.relationship = dict(relationship or {})
+        self.related = {str(k): float(v) for k, v in (related or {}).items()}
+        self.never = frozenset(never or ())
+        self.hostile_event = hostile_event or None
+        self.activities = list(activities or ())
+        self.reactions = list(reactions or ())
         # The NPC's part in the story (npc_roles.roles), None: inferred from tags; and a
         # secret the story can reveal ({text, talks, clues, tags, effects}).
         self.role = role
@@ -163,12 +180,15 @@ class Event(Conditional):
     ``trigger: random``, which may also start it by itself: each turn it can
     start, it does with probability ``chance``; ``weight`` picks between random
     events that hit in the same turn.
+    An ``encounter`` block makes it a dynamic encounter the encounter director may start
+    when the story makes it plausible (core_engine/encounters.py).
     """
     REPEAT = ("once", "per_location", "per_visit", "always")
     TRIGGERS = ("action", "random")
 
     def __init__(self, name, title=None, tags=None, descriptions=None, actions=None, enabled_if=None,
-                 trigger="action", chance=None, weight=1.0, cooldown=0, max_occurrences=None, repeat="always"):
+                 trigger="action", chance=None, weight=1.0, cooldown=0, max_occurrences=None, repeat="always",
+                 encounter=None):
         self.name = name
         self.enabled_if = enabled_if
         self.trigger = trigger or "action"
@@ -184,6 +204,12 @@ class Event(Conditional):
         self.tags = set(tags or [])
         self.descriptions = descriptions or []
         self.actions = actions or []
+        if encounter is not None:
+            from .encounters import EncounterSpec
+
+            self.encounter = EncounterSpec(encounter, name)
+        else:
+            self.encounter = None
 
 
 class Mission(Conditional):
@@ -234,13 +260,77 @@ class Mission(Conditional):
         self.rewards = EffectList.of(rewards)
 
 
+class SideQuest(Mission):
+    """An optional quest besides the story's mission (core_engine/side_quests.py). Written like a
+    mission (title, description, goal or stages, rewards, enabled_if), plus how it starts and how it
+    can fail: ``giver`` (the NPC who offers it: it starts once the player has dealt with them),
+    ``start`` (any condition that must hold for it to start), ``fail_if`` (a condition that fails it
+    while it is under way), ``on_fail`` (effects when it fails) and ``repeatable`` (offered again in
+    the profile's later stories after it was completed), ``accept`` (``choice``: the player takes it on
+    or turns it down; ``auto``: it starts at once; default side_quest_settings.accept) and
+    ``aids_mission`` (what completing it does for the mission: ``lead``, ``ally`` or ``none``; default
+    side_quest_settings.aids_mission), ``turn_in`` (done, it is taken back to the giver), ``within_turns``
+    (it fails when not completed this many turns after it started), ``on_decline`` (effects when it is
+    turned down or the offer is let go), ``follows`` (offered only once that side quest is completed)
+    ``texts`` (the story's own words for its moments), ``tags`` (what it is about: the story offers
+    first the side quests that fit where it is and what just happened) and ``reactions`` (what the story
+    does to it: [{when (a condition), then: complete | fail | advance | withdraw | none, effects, text,
+    while: active | offered | any}]). Any number run at once; none ends the story."""
+
+    FIELDS = ("title", "description", "goal", "stages", "rewards", "enabled_if", "giver", "start", "fail_if",
+              "on_fail", "repeatable", "accept", "aids_mission", "turn_in", "within_turns", "on_decline", "follows",
+              "texts", "tags", "reactions")
+    REACTIONS = ("complete", "fail", "advance", "withdraw", "none")
+    REACTION_STATES = ("active", "offered", "any")
+
+    def __init__(self, name, goal, title=None, description="", enabled_if=None, rewards=None, stages=None, giver=None,
+                 start=None, fail_if=None, on_fail=None, repeatable=False, accept=None, aids_mission=None,
+                 turn_in=False, within_turns=None, on_decline=None, follows=None, texts=None, tags=None,
+                 reactions=None):
+        super().__init__(name, goal, title=title, description=description, enabled_if=enabled_if, rewards=rewards,
+                         stages=stages)
+        self.giver = giver or None
+        try:
+            self.start = Condition(start) if start else None
+            self.fail_if = Condition(fail_if) if fail_if else None
+        except ConditionError as exc:
+            raise ValueError(f"Side quest '{name}': {exc}") from exc
+        self.on_fail = EffectList.of(on_fail)
+        self.repeatable = bool(repeatable)
+        self.accept = accept or None
+        self.aids_mission = aids_mission or None
+        self.turn_in = bool(turn_in)
+        self.within_turns = int(within_turns) if within_turns else None
+        self.on_decline = EffectList.of(on_decline)
+        self.follows = follows or None
+        self.texts = dict(texts or {})
+        self.tags = [str(tag).lower() for tag in tags or []]
+        self.reactions = []
+        for number, reaction in enumerate(reactions or [], start=1):
+            reaction = dict(reaction or {})
+            try:
+                when = Condition(reaction.get("when")) if reaction.get("when") else None
+            except ConditionError as exc:
+                raise ValueError(f"Side quest '{name}' reaction {number}: {exc}") from exc
+            if when is None:
+                raise ValueError(f"Side quest '{name}' reaction {number} needs a `when` condition.")
+            self.reactions.append({"when": when, "then": reaction.get("then") or "none",
+                                   "effects": EffectList.of(reaction.get("effects")), "text": reaction.get("text"),
+                                   "while": reaction.get("while") or "active"})
+
+
 class WorldGraph:
+    side_quests = {}  # worlds built before side quests have none
+    factions = {}     # world_definition.factions (core_engine/relationships.py); worlds built before have none
+
     def __init__(self):
         self.locations = {}
         self.characters = []
         self.objects = []
         self.events = {}
         self.missions = {}
+        self.side_quests = {}
+        self.factions = {}
         self.spawn_rules = defaultdict(list)
         self.routes = None  # authored map (world_definition.routes): place -> set of neighbours
 
@@ -293,6 +383,9 @@ class WorldGraph:
 
     def add_mission(self, mission):
         self.missions[mission.name] = mission
+
+    def add_side_quest(self, quest):
+        self.side_quests[quest.name] = quest
 
     def allow_spawn(self, parent, child):
         self.spawn_rules[parent].append(child)

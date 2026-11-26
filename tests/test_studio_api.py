@@ -51,7 +51,7 @@ class _Sandbox(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.dir = Path(directory.name)
         for name in ("npcs.yaml", "items.yaml", "events.yaml", "missions.yaml", "hyperparameters.yaml", "locations.yaml",
-                     "variables.yaml"):
+                     "variables.yaml", "side_quests.yaml"):
             shutil.copy(store.CONFIG_DIR / name, self.dir / name)
         entity_files = {
             "Locations": (self.dir / "locations.yaml", "locations", "mapping"),
@@ -62,6 +62,7 @@ class _Sandbox(unittest.TestCase):
         for patcher in (
             patch.dict(content.ENTITY_FILES, entity_files),
             patch.object(content, "MISSIONS_PATH", self.dir / "missions.yaml"),
+            patch.object(content, "SIDE_QUESTS_PATH", self.dir / "side_quests.yaml"),
             patch.object(content, "VARIABLES_PATH", self.dir / "variables.yaml"),
             patch.object(content, "MAP_PATH", self.dir / "locations.yaml"),
             patch.object(store, "HYPERPARAMETERS_PATH", self.dir / "hyperparameters.yaml"),
@@ -134,6 +135,7 @@ class WorldFormsTests(_Sandbox):
         self.assertEqual(first, actions[0])
         added = dict(first, name="Ask him the way", exclusive_group=None)
         added.pop("exclusive_group")
+        added.pop("id", None)  # an action's id is its identity: a new action does not take another's
         self.assertEqual(self.client.put(f"{base}/{len(actions)}", json={"action": added}).status_code, 200)
         self.assertEqual(self.client.get(base).json()["actions"][-1]["name"], "Ask him the way")
         bad = dict(first, triggers_event="no_such_event")
@@ -390,9 +392,9 @@ class ProfileAndPlayTests(_Sandbox):
 class UnpSessionTests(_Sandbox):
     """A play session as a UNP sees it: the exported ANE AI's protocol in the API, and the studio's views."""
 
-    def _game(self):
+    def _game(self, headers=None):
         body = {"candidate_count": 1, "generations": 1, "simulation_steps": 2, "deterministic": False, "profile": "unp"}
-        game = self.client.post("/v1/simulations", json=body)
+        game = self.client.post("/v1/simulations", json=body, headers=headers)
         self.assertEqual(game.status_code, 200, game.text)
         return game.json()
 
@@ -452,12 +454,16 @@ class UnpSessionTests(_Sandbox):
 
         import app
 
-        token = self._game()["session_id"]
+        theirs = self._game()["session_id"]  # the backend's user's game: not the studio's (the user `test`)
+        with self.assertRaises(gr.Error):
+            app.session_parameters_ui(theirs)
+        token = self._game(headers=STUDIO)["session_id"]
+        self.assertEqual(self.client.get(f"/v1/sessions/{token}").status_code, 404)  # and the other way round
         self.assertEqual(json.loads(app.session_parameters_ui(token))["format"], "ane.session_state/1")
         shown = app.update_player_ui(token, '{"coins": 9}')                # the game screen, then the story
         self.assertIn("🪙 9", app.play_part(shown, "hud").value)
         app.sync_session_ui(token, "coins_changed", "-4")
-        self.assertEqual(self.client.get(f"/v1/sessions/{token}/state").json()["coins"], 5)
+        self.assertEqual(self.client.get(f"/v1/sessions/{token}/state", headers=STUDIO).json()["coins"], 5)
         for bad in (lambda: app.sync_session_ui(token, "coins_changed", "a lot"),
                     lambda: app.update_player_ui(token, "[1]"), lambda: app.session_parameters_ui("")):
             with self.assertRaises(gr.Error):
@@ -504,10 +510,13 @@ class PlayTabTests(_Sandbox):
             token, story = started[0], started[-2]
             hud, place = app.play_part(started, "hud", 1), app.play_part(started, "place", 1)
             buttons = [app.play_part(started, f"choice {i + 1}", 1) for i in range(app.CHOICE_BUTTONS)]
-            actions = app.play_part(started, "actions", 1)
+            requests = app.play_part(started, "actions", 1)   # what each button sends
+            actions = [request["action"] for request in requests]
+            self.assertTrue(all(request.get("action_id") and request.get("state_version") is not None
+                                for request in requests))
             self.assertIn("📍", hud.value)  # the status bar: where, health, coins, the quest
             self.assertIn("❤", hud.value)
-            state = self.client.get(f"/v1/sessions/{token}").json()
+            state = self.client.get(f"/v1/sessions/{token}", headers=STUDIO).json()  # the studio's game
             self.assertTrue(place.startswith(f"### 📍 {state['scene_name']}"))  # where you are, compactly
             self.assertIn(state["description"], place)
             self.assertNotIn("**Inventory:**", place)                          # the player has a card of their own
@@ -516,7 +525,7 @@ class PlayTabTests(_Sandbox):
             self.assertEqual(len(shown), len(actions))
             self.assertTrue(all(name in label for label, name in zip(shown, actions)))
             took = next(i for i, name in enumerate(actions) if not name.startswith("Approach "))  # a turn
-            out = app.play_choose_ui(token, actions, took)
+            out = app.play_choose_ui(token, requests, took)
             turn = app.play_part(out, "turn")
             self.assertIn("What happened", turn.value)
             self.assertIn("you chose", turn.value)                              # the choice, what came of it
@@ -524,10 +533,18 @@ class PlayTabTests(_Sandbox):
             journey = app.play_part(out, "journey")
             self.assertIn("| # | Where | You chose |", journey)                  # every choice so far
             self.assertIn("🎯", app.play_part(out, "quest"))                     # the quest card
-            state = self.client.get(f"/v1/sessions/{token}").json()
-            journal = self.client.get(f"/v1/sessions/{token}/journal").json()["journal"]
+            state = self.client.get(f"/v1/sessions/{token}", headers=STUDIO).json()
+            journal = self.client.get(f"/v1/sessions/{token}/journal", headers=STUDIO).json()["journal"]
             self.assertEqual(state["turn_summary"], journal[-1])
             self.assertEqual(journal[-1]["action"].split(") ", 1)[-1], actions[took].split(") ", 1)[-1])
+            # The same, older buttons again (another tab): refused, nothing done, the current choices shown.
+            stale = app.play_choose_ui(token, requests, took)
+            self.assertEqual(len(self.client.get(f"/v1/sessions/{token}/journal", headers=STUDIO).json()["journal"]),
+                             len(journal))
+            current = self.client.get(f"/v1/sessions/{token}", headers=STUDIO).json()
+            self.assertEqual([r["action_id"] for r in app.play_part(stale, "actions")],
+                             [c["id"] for c in current["choices"]])
+            self.assertIn("| ✅ shown |", app.decisions_ui(token))   # the author's view of the same choices
             path, _ = app.download_savegame_ui(token)
             continued = app.play_continue_ui(path, token)
             self.assertEqual(continued[-1], "Continued exactly where it was saved.")
@@ -1128,6 +1145,7 @@ class TrainResultTests(_Sandbox):
         body = answer.json()
         self.assertEqual((body["session_id"], body["game_started"], body["scene"], body["actions"]), (None, False, "", []))
         self.assertTrue(body["engine_id"] and body["run_id"] and body["engine_download_url"] and body["learning"])
+        self.assertEqual(body["learning"]["fitness_version"], 3)                          # fitness.version
         self.assertNotIn("Player profile", body["report"])
         self.assertEqual(set(sessions.SESSIONS), before)                                 # no session
         self.assertEqual(persistent.VariableStore().recent_starts("train-only"), [])     # the profile untouched
@@ -2285,6 +2303,7 @@ class EngineNamesTests(_Sandbox):
         self.assertEqual(card["world"]["summary"]["locations"], len(store.config.get("world_definition.locations")))
         self.assertEqual(card["settings"]["main"]["pop_size"], 1)    # what its training ran with
         self.assertEqual(card["fitness"]["training"], listed["score"])
+        self.assertEqual(card["fitness"]["version"], 3)                # the scoring it was trained with
         self.assertEqual(card["evaluations"], [])
         self.assertEqual(set(card["scaling_traits"]), {"voyage_bias", "goal_bias", "novelty_bias", "event_prob",
                                                        "chaos_bias"})
@@ -2948,7 +2967,7 @@ class ActivationTests(_Sandbox):
         said = saved.json()["message"]
         self.assertIn("to `hyperparameters.yaml`. In use now for what starts from here: new games, training runs and "
                       "evaluations, and jobs still queued (they read it when they start).", said)
-        self.assertIn("A game in progress or a job already running is not restarted", said)
+        self.assertIn("A game in progress or a job already running keeps the configuration it started with", said)
         self.assertNotIn("set aside", said)                                     # nothing else was in use
         # An uploaded (or a trained engine's) configuration in use: the save sets it aside, and says so.
         store.config.use_override(store.config.as_dict())
@@ -3140,8 +3159,9 @@ class EntrySaveChangesTests(_Sandbox):
         # tuning parameters that name it; the other files are edited in place (their comments kept).
         renamed = self.client.put("/v1/entities/Locations/Harbor/draft", json={"fields": {**fields, "name": "Old Harbor"}})
         self.assertEqual(renamed.status_code, 200, renamed.text)
-        self.assertEqual(renamed.json()["references"], {"locations.yaml": 6, "npcs.yaml": 2, "hyperparameters.yaml": 2})
-        self.assertIn("Updated 10 reference(s) to `Harbor` → `Old Harbor`", renamed.json()["message"])
+        self.assertEqual(renamed.json()["references"], {"locations.yaml": 6, "npcs.yaml": 3, "side_quests.yaml": 1,
+                                                        "hyperparameters.yaml": 2})  # a side quest's goal, a haunt too
+        self.assertIn("Updated 12 reference(s) to `Harbor` → `Old Harbor`", renamed.json()["message"])
         for name in ("locations.yaml", "npcs.yaml", "hyperparameters.yaml", "missions.yaml", "variables.yaml"):
             self.assertEqual(content._renamed(self._yaml(name), "Harbor", "x")[1], 0, name)  # nothing names Harbor
         self.assertIn("Old Harbor", self._yaml("locations.yaml")["world_definition"]["routes"])
@@ -4171,8 +4191,11 @@ class DraftEverywhereTests(_Sandbox):
         import app
 
         missions = app.form_load_all_ui("missions", {})
-        self.assertEqual(set(missions["base"]["missions"]), {"mission", "missions_yaml"})
+        self.assertEqual(set(missions["base"]["missions"]), {"mission", "missions_yaml", "side_quests_yaml"})
         base, dirty = missions["base"], missions["dirty"]
+        side, said = app.form_part_status_ui("missions", "side_quests_yaml", base, dirty, "world_definition: {}\n")
+        self.assertEqual(side["missions"], ["side_quests_yaml"])                 # the side quests: a part of their own
+        self.assertIn("Side quests as YAML", said)
         # Pick a mission, edit its title: unsaved; another mission is asked about, the picker goes back.
         opened = app.form_pick_ui("missions", "shield_bearer", {}, base, dirty)
         base, context = opened["base"], opened["context"]
@@ -4191,7 +4214,7 @@ class DraftEverywhereTests(_Sandbox):
         self.assertEqual(app.section_choice_ui("map", "missions", None, dirty)["prompts"]["missions"][2]["id"], "map")
         self.assertEqual(app.section_choice_ui("map", "entries", None, dirty), {"section_now": "map"})
         # Save from the question: saved, then the other mission opens, clean.
-        values = [*form, opened.get("missions_yaml_value", app.load_missions_yaml())]
+        values = [*form, opened.get("missions_yaml_value", app.load_missions_yaml()), app.load_side_quests_yaml()]
         done = app.form_resolve_ui("missions", "save", asked["pending"], context, base, dirty, *values)
         self.assertEqual(done["dirty"]["missions"], [])
         self.assertEqual(done["values"]["mission"][0], "royal_audience")
@@ -4381,7 +4404,7 @@ class StudioServiceTests(_Sandbox):
 
     def test_documents(self):
         names = [d["name"] for d in self.client.get("/v1/documents").json()["documents"]]
-        self.assertEqual(names, ["missions", "messages", "variables", "map", "stats", "stored_values"])
+        self.assertEqual(names, ["missions", "side_quests", "messages", "variables", "map", "stats", "stored_values"])
         for name in names:
             with self.subTest(document=name):
                 response = self.client.get(f"/v1/documents/{name}", params={"profile": "erin"})

@@ -267,7 +267,7 @@ def scaling_traits(genome) -> dict:
 def card(engine_id, model_path, info=None, current_world=None) -> dict:
     """The result card of a completed engine: {engine_id, run_id, name, label, created_at, kind,
     source, parent_id, world: {id, digest, summary, current}, generations, settings: {main, other},
-    fitness: {training, improvement, early_stopped, history: [best per generation]}, evaluations,
+    fitness: {training, improvement, early_stopped, history: [best per generation], version}, evaluations,
     resumable}. ``info``: what the listing knows (run id, ...); ``current_world``: the digest of the
     active world (whether this engine was trained on it)."""
     info = dict(info or {})
@@ -298,7 +298,9 @@ def card(engine_id, model_path, info=None, current_world=None) -> dict:
         "generations": listing["generations"], "trained_generations": manifest.get("trained_generations"),
         "settings": {"main": main, "other": other},
         "fitness": {"training": manifest.get("score"), "improvement": learning.get("improvement"),
-                    "early_stopped": learning.get("early_stopped"), "history": history},
+                    "early_stopped": learning.get("early_stopped"), "history": history,
+                    # The scoring it was trained with (fitness.version; engines from before versions: 1).
+                    "version": int(learning.get("fitness_version") or 1)},
         # The judge in the loop of evolution (evolution.judge_weight > 0): engagement while training.
         "judge_in_training": round(float(in_loop[-1]), 2) if in_loop else None,
         "evaluations": list(known.get("evaluations") or []),

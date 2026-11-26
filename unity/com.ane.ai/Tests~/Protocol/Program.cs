@@ -52,8 +52,34 @@ static class Program
             Check("player update", view.Health == 4);
             view = await client.SyncAsync(view.GameId, new Dictionary<string, object> { ["type"] = "coins_changed", ["amount"] = -3 });
             Check("sync", view.Coins == 30);
-            view = await client.ChooseAsync(view.GameId, 0);
+            view = await client.ChooseAsync(view, view.Choices.Find(c => c.TakesTurn));   // a turn (an offer's answer is none)
             Check("a turn", view.Turn == 1 && !string.IsNullOrEmpty(view.TurnText));
+            var shown = view;
+            var first = shown.Choices.Find(c => c.TakesTurn);
+            Check("choices with ids", shown.Choices.Count == shown.Actions.Count && !string.IsNullOrEmpty(first.Id)
+                  && shown.Actions.Contains(first.Name) && shown.StateVersion.HasValue, AneJson.Serialize(shown.Raw.GetList("choices")));
+            view = await client.ChooseAsync(shown, first);
+            Check("a turn by id", view.Turn == shown.Turn + (first.TakesTurn ? 1 : 0) && view.StateVersion > shown.StateVersion);
+            try
+            {
+                await client.ChooseIdAsync(shown.GameId, first.Id, shown.StateVersion);
+                Check("stale choice refused", false, "accepted");
+            }
+            catch (AneAiException refused)
+            {
+                Check("stale choice refused", refused.Status == 409 && refused.IsStale && refused.StateVersion == view.StateVersion
+                      && refused.Offered.Count == view.Choices.Count, refused.Message);
+            }
+            try
+            {
+                await client.ChooseIdAsync(view.GameId, "npc:nobody:nothing");
+                Check("unknown choice refused", false, "accepted");
+            }
+            catch (AneAiException refused)
+            {
+                Check("unknown choice refused", refused.Status == 409 && refused.IsUnavailable, refused.Message);
+            }
+            Check("nothing done", (await client.GameAsync(view.GameId)).StateVersion == view.StateVersion);
             var state = await client.StateAsync(view.GameId);
             Check("state", state.GetString("format") == "ane.session_state/1");
             try
@@ -73,12 +99,13 @@ static class Program
             {
                 Check("refused patch", refused.Status == 422 && refused.Errors.Count > 0, refused.Message);
             }
+            var turns = view.Turn;
             var cancelled = await client.CancelAsync(view.GameId);
             var savegame = cancelled.GetObject("savegame");
             Check("cancel (save game)", cancelled.GetObject("status").GetString("outcome") == "suspended"
                   && savegame.GetString("format") == "ane.savegame/1");
             var loaded = await client.LoadGameAsync(savegame);
-            Check("load (exact)", loaded.Restored == "exact" && loaded.Turn == 1,
+            Check("load (exact)", loaded.Restored == "exact" && loaded.Turn == turns,
                   $"restored {loaded.Restored}, turn {loaded.Turn}: {loaded.Raw.GetString("note")}");
             try { await client.GameAsync("nope"); Check("unknown game", false); }
             catch (AneAiException missing) { Check("unknown game", missing.Status == 404); }

@@ -47,6 +47,7 @@ from typing import Optional
 from utils.config_loader import config
 
 from . import players
+from .context import EngineContext, propagate
 from .game_state import GameState, story_length
 from .genome import TRAIT_BOUNDS, Genome, trait_bounds
 
@@ -179,6 +180,16 @@ def story_tasks(task):
             for seed, situation in zip(seeds, situations)]
 
 
+def _story_key(task):
+    """What a story_tasks story's score depends on: its storyteller, seed, situation, length and
+    simulated player (the same key: the same story, so the same score)."""
+    _, _, traits, (seed,), max_steps = task[:5]
+    options = task[5] if len(task) > 5 else {}
+    situation = (options.get("situations") or [None])[0]
+    return (tuple(sorted(traits.items())), seed, tuple(situation) if situation else None, max_steps,
+            options.get("player"), json.dumps(options.get("player_mix"), sort_keys=True, default=str))
+
+
 def evaluate_story(task):
     """One story (a story_tasks task) -> (score, signature): its fitness and, when the
     storyteller is also scored for telling different stories, what it was made of
@@ -272,8 +283,12 @@ class EvolutionResult:
 
     def summary(self):
         first = self.history[0] if self.history else None
+        from .fitness import version
+
         return {
             "best_score": round(self.best_score, 3),
+            # The scoring the scores were made with (fitness.version): not comparable across versions.
+            "fitness_version": version(),
             "generations_run": self.generations_run,
             "early_stopped": self.early_stopped,
             "warm_started_from_memory": self.warm_started,
@@ -378,7 +393,16 @@ class NarrativeEvolution:
         ``map_fn(function, tasks)`` can evaluate in parallel (default: in turn);
         ``memory`` (a LearningMemory) enables learning across runs; ``judge`` (with
         ``judge_digest(digest)``, default: evaluator.game_judge.GameJudge when
-        judge_weight > 0) is the judge in the loop."""
+        judge_weight > 0) is the judge in the loop.
+
+        The run's configuration (world, tuning, tag vectors) is frozen here: the engine context
+        bound now (e.g. a saved engine's), else the process-wide configuration as it is now. ``run``
+        reads it from start to end, whatever changes in the process meanwhile."""
+        self.context = EngineContext.current(seed=seed)
+        with self.context.bind():
+            self._setup(build_world, fitness, settings, seed, memory, map_fn, judge)
+
+    def _setup(self, build_world, fitness, settings, seed, memory, map_fn, judge):
         self.build_world = build_world
         self.fitness = fitness
         self.settings = evolution_settings(settings)
@@ -447,9 +471,33 @@ class NarrativeEvolution:
                 stories.append(story)
                 owners.append(index)
         results = [[] for _ in tasks]
-        for owner, result in zip(owners, self.map_fn(evaluate_story, stories)):
+        scores = self.__dict__.setdefault("_story_scores", {})
+        # A pool of threads reads the run's engine context too (one of processes: the world it was given).
+        for owner, story, result in zip(owners, stories, self.map_fn(propagate(evaluate_story), stories)):
             results[owner].append(result)
+            # The champion's preview story is chosen from these (a plain number is a story's score).
+            scores[_story_key(story)] = result[0] if isinstance(result, tuple) else result
         return [combine_stories(task, told) for task, told in zip(tasks, results)]
+
+    def _best_story(self, genome, seeds, max_steps):
+        """The champion's best benchmark story (the run's preview): the one ``max`` over all its
+        benchmark stories by fitness would give (the first of the best), played once here for its
+        state. The benchmark has scored them already (``_evaluate``); any it has not (a run resumed
+        from a checkpoint) are scored by ``map_fn`` (a pool plays them at once), not one by one here."""
+        traits = genome.traits()
+        situations = self.benchmark_task(traits)[5]["situations"] or [None] * len(seeds)
+        tasks = [(self.build_world, self.fitness, traits, [seed], max_steps,
+                  {**self._options([situation]), "alternatives_weight": 0.0})
+                 for seed, situation in zip(seeds, situations)]
+        scores = self.__dict__.setdefault("_story_scores", {})
+        missing = [task for task in tasks if _story_key(task) not in scores]
+        if missing:
+            for task, result in zip(missing, self.map_fn(propagate(evaluate_story), missing)):
+                scores[_story_key(task)] = result[0] if isinstance(result, tuple) else result
+        told = [scores[_story_key(task)] for task in tasks]
+        best = max(range(len(tasks)), key=told.__getitem__)  # max keeps the first of equal scores
+        return play_episode(self.build_world, genome, seeds[best], max_steps, situations[best],
+                            self._player(seeds[best]))
 
     def _benchmark(self, genomes):
         """The benchmark scores of ``genomes``. The benchmark's stories are the same in every
@@ -561,7 +609,7 @@ class NarrativeEvolution:
                    for _, genome in scored[:top_k]]
         try:
             with ThreadPoolExecutor(max_workers=max(1, min(int(self.settings.get("judge_workers") or 1), top_k))) as pool:
-                judgements = list(pool.map(judge.judge_digest, digests))
+                judgements = list(pool.map(propagate(judge.judge_digest), digests))
         except Exception as error:  # the model went away mid-run
             self._judge_unavailable(error)
             return scored, None
@@ -624,7 +672,15 @@ class NarrativeEvolution:
         ``checkpoint(state)`` receives the complete training state after every
         generation (also kept as ``last_checkpoint``). ``resume`` continues such
         a state from its next generation, exactly as an uninterrupted run would.
+        The run reads its own engine context (``self.context``) throughout.
         """
+        context = self.__dict__.get("context")
+        if context is None:
+            return self._run(progress, stop_event, resume, checkpoint)
+        with context.bind():
+            return self._run(progress, stop_event, resume, checkpoint)
+
+    def _run(self, progress=None, stop_event=None, resume=None, checkpoint=None):
         if self.settings["score_aggregate"] not in AGGREGATES:
             raise ValueError(f"evolution.score_aggregate must be one of {', '.join(AGGREGATES)}.")
         if self.settings["player"] not in players.MODES:
@@ -721,12 +777,7 @@ class NarrativeEvolution:
                 break
 
         best_score, best_genome, best_seeds = best
-        situations = self.benchmark_task(best_genome.traits())[5]["situations"] or [None] * len(best_seeds)
-        best_state = max(
-            (play_episode(self.build_world, best_genome, seed, max_steps, situation, self._player(seed))
-             for seed, situation in zip(best_seeds, situations)),
-            key=self.fitness,
-        )
+        best_state = self._best_story(best_genome, best_seeds, max_steps)
         if self.memory is not None:
             # Only benchmark scores are remembered, so remembered storytellers are comparable.
             self.memory.remember(champions, int(self.settings["hall_of_fame_size"]))

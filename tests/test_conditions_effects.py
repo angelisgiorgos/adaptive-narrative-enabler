@@ -322,11 +322,12 @@ class AuthoringTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.dir = Path(directory.name)
-        for name in ("npcs.yaml", "missions.yaml"):
+        for name in ("npcs.yaml", "missions.yaml", "side_quests.yaml"):
             shutil.copy(store.CONFIG_DIR / name, self.dir / name)
         for patcher in (
             patch.dict(content.ENTITY_FILES, {"NPCs": (self.dir / "npcs.yaml", "characters", "list")}),
             patch.object(content, "MISSIONS_PATH", self.dir / "missions.yaml"),
+            patch.object(content, "SIDE_QUESTS_PATH", self.dir / "side_quests.yaml"),
             patch.object(store.config, "reload"),
         ):
             patcher.start()

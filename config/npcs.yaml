@@ -5,9 +5,27 @@ world_definition:
     associated_tags: [religion, abandoned, social, discovery]
     known_locations: [Abandoned Church, Palace]
     known_objects: [Vintage Wine]
+    # People and factions (core_engine/relationships.py; docs/WORLD.md, "People, factions and reactions")
+    faction: Chapel
+    never: [confront, threaten]     # whatever happens, the director never makes him turn on the player
     goals:
-    - Save souls
+    - Save souls                     # a sentence: helped by actions whose words match it (the keyword fallback)
     - Heal the sick
+    - goal: Fill the chapel's cellar for the feast
+      id: chapel_feast
+      complete_if: {side_quest_done: a_gift_for_the_chapel}   # explicit: fulfilled when this holds
+      opposes: [theft]               # a theft he suffers or sees sets it back (and costs his trust)
+      reward: none
+    reactions:
+    - signal: quest_completed
+      quest: a_gift_for_the_chapel
+      behaviour: praise
+      where: anywhere
+      text: Word reaches you that {npc} spoke of your gift from the pulpit; the faithful nod to you in the street.
+    - signal: theft                      # he saw it (or suffered it): a warning, never a confrontation
+      behaviour: warn
+      where: scene
+      text: '{npc} looks at you sadly. "Put it back, child. The Watch will hear of this whether I tell them or not."'
     descriptions:
     - He's always helping lost souls.
     - He's always worrying about saving others.
@@ -16,6 +34,8 @@ world_definition:
     # What he says when you talk with him: the first line whose enabled_if
     # holds (any condition), otherwise his usual words.
     dialogue:
+    - enabled_if: {npc_disposition: Priest, op: in, value: [friendly, ally]}
+      text: You have been a friend to this chapel, and it will not forget you. Ask, and I will help where I can.
     - enabled_if: {reputation: {gte: 2}}
       text: The whole city speaks well of you, child. Walk in peace.
     - enabled_if:
@@ -38,6 +58,8 @@ world_definition:
         - social
   - name: Gate Guard
     unique: false
+    faction: City Watch
+    relationship: {persist: true}    # what he thinks of you is kept in the profile's later stories
     associated_tags: [guarded, urban, palace, vault, dungeon]
     known_locations: [Vault, Dungeon, Palace]
     known_objects: [Heavy Shield, Gold Coins]
@@ -235,6 +257,11 @@ world_definition:
     - hidden
     - secret_garden
     goals: [Keep the garden alive, Keep Aurora's secrets]
+    faction: Chapel
+    related: {Priest: 0.5}           # what is done to him reaches the Priest
+    activities:                      # what he is doing, by the place and how he feels about you
+    - {tags_any: [secret_garden, nature], disposition: [friendly, ally], text: He waves you over to see the first roses.}
+    - {tags_any: [secret_garden, nature], text: He is on his knees among the roses.}
     known_locations: [Secret Garden, Palace]
     descriptions:
     - An old gardener with soil under his nails and a pruning knife in his belt.
@@ -255,6 +282,7 @@ world_definition:
         reveal_location: Palace
   - name: Guard
     unique: false
+    faction: City Watch
     associated_tags:
     - prison
     - palace
@@ -298,6 +326,23 @@ world_definition:
     - hawker
     known_locations: [Market, Market of the Ancients, Festival of Masks]
     known_objects: [Ancient Map, Vintage Wine, Gold Coins]
+    # Where a merchant is found (a generic NPC: one in each place; the first haunt that matches decides).
+    haunts:
+    - {tags_any: [trade, commercial], presence: 1.0}   # the markets: at their stall every visit
+    - {places: [Festival of Masks], presence: 0.5}     # the festival stalls: one visit in two
+    - {places: [Tavern], presence: 0.3}                # the Tavern: now and then, over a drink
+    - {places: [Harbor], presence: 0.15}               # the docks: seldom, meeting a ship
+    # Each merchant is their own person (rob the one at the Market and she remembers it); word of you
+    # reaches the others at half strength (kin; 1: they are one person, 0: they never hear of it).
+    relationship: {kin: 0.5}
+    goals:
+    - goal: Trade in peace, without thieves at the stalls
+      id: trade_in_peace
+      complete_if: {npc_removed: Thief}
+      reward: none
+    activities:
+    - {tags_any: [market], disposition: [wary, hostile], text: He keeps one hand on his strongbox while you are near.}
+    - {tags_any: [market], text: He calls out his prices over the crowd.}
     descriptions:
     - A many-ringed dealer who prices every object in coins, favors, and secrets.
     secret:                    # comes out after two dealings with them ([SECRET]; enabled_if: {secret_known: Merchant})
@@ -331,6 +376,17 @@ world_definition:
       - desc: The merchant shouts for the guards before you can finish.
         on_check: fail
         tags: [guards, threat, failure]
+    - name: Lift a few coins from the merchant's strongbox
+      repeat: once
+      skill_check: {stat: stealth}
+      outcomes:                      # `theft`: a deed (relationships.deed_tags) against him, seen by the scene
+      - desc: While the merchant haggles, your fingers find the strongbox. Nobody seems to notice.
+        on_check: pass
+        tags: [stealth, theft, success]
+        coin_change: 4
+      - desc: The merchant catches your wrist. "Thief! Thief!" Heads turn all over the market.
+        on_check: fail
+        tags: [stealth, theft, failure]
     - name: Ask about forbidden merchandise
       outcomes:
       - desc: The merchant produces a map whose coastline changes whenever you blink.
@@ -456,6 +512,9 @@ world_definition:
   - name: Thief
     unique: true
     enabled_if: {thief_caught: false}   # beaten once, gone in later playthroughs
+    faction: Thieves' Guild
+    relationship: {hostility: 1}     # wary of strangers from the start
+    related: {Thief's Lookout: 1.0, Fence: 0.5}
     associated_tags: [market, trade, urban, stealth, threat]
     known_locations: [Market]
     known_objects: [Gold Coins]
@@ -479,12 +538,26 @@ world_definition:
     article: the
     associated_tags: [market, trade, guard, law, protect, quest_giver]   # quest_giver: comes up to you (npc_behaviour)
     known_locations: [Market, Palace]
+    faction: City Watch
+    hostile_event: guards_alerted    # once he counts you an enemy, the Watch comes for you
     goals:
     - goal: Rid the market of its thief
-      tags: [thief_gone]
+      tags: [thief_gone]             # keyword goal (the fallback), with what it is against
       needed: 1
       reward: lead
+      opposes: [theft, crime]
     - Keep the peace
+    reactions:
+    - signal: theft                      # a theft his people saw, or done to one of them
+      about: faction
+      behaviour: warn
+      where: anywhere
+      text: '[WARNING] A runner brings word from {npc}: the Watch is asking about a cutpurse with your face.'
+    - signal: disposition                # he warms to you: a job for someone he trusts
+      to: friendly
+      behaviour: offer_quest
+      side_quest: a_night_with_the_watch
+      where: scene
     descriptions:
     - A broad-shouldered captain with a scarred lip and a ledger of every crime in the city.
     - The captain counts the market's losses on scarred fingers and runs out of fingers.
@@ -522,6 +595,8 @@ world_definition:
         - {action_done: Ask about the market thief}
         - {action_done: Report the market thief}
     encounter_event: lookout_ambush
+    faction: Thieves' Guild
+    related: {Thief: 1.0}
     associated_tags: [market, alley, stealth, threat]
     known_locations: [Market, Alley]
     goals: [Warn the thief, Earn a cut]
@@ -590,6 +665,7 @@ world_definition:
     associated_tags: [underground, smuggling, foul, labyrinthine, threat]
     known_locations: [Sewers]
     known_objects: [Fence's Ledger]
+    faction: Thieves' Guild
     goals: [Keep the ledger hidden, Buy cheap and sell dear]
     descriptions:
     - A soft-voiced dealer on a throne of stolen crates, guarded by a man the size of a door.
@@ -633,3 +709,29 @@ world_definition:
       outcomes:
       - desc: The crowd clears a ring and starts taking bets.
         tags: [combat, confrontation]
+
+  # ---- factions: who stands with whom (core_engine/relationships.py; docs/WORLD.md) ----------------
+  # A deed (theft, crime, an attack, help, a betrayal, a side quest done or failed) moves the standing
+  # of the factions it concerns: the target's, and those whose members saw it (reacts_to). A standing
+  # change spills over to related factions (relations). A hostile faction turns its members hostile.
+  factions:
+    City Watch:
+      description: The guards and the captain who keep the city's peace.
+      hostile_below: -2
+      friendly_at: 2
+      relations: {Thieves' Guild: -0.5}   # what is good for the Watch is bad for the thieves (and back)
+      reacts_to: {theft: -1, crime: -1, attacked: -2, helped: 0.5}
+      reactions:
+      - signal: faction
+        to: hostile
+        behaviour: warn
+        where: anywhere
+        text: '[WARNING] Word runs ahead of you through the streets: the City Watch has your description now.'
+    Thieves' Guild:
+      description: The market thief, their lookouts and the fence who buys what they steal.
+      public: false                    # the player is not told who belongs to it
+      relations: {City Watch: -0.5}
+      reacts_to: {betrayed: -2, attacked: -1}
+    Chapel:
+      description: The Priest and those who keep the chapel and its garden.
+      reacts_to: {theft: -1, quest_completed: 1}

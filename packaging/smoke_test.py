@@ -4,10 +4,11 @@
 
 Without --command it starts the standalone program in the folder (ane-ai / ane-ai.exe). Every
 request goes to 127.0.0.1 only. Checks: ready line and file; token required; health; the world
-catalogue; a new session with the UNP's player state; player update; sync; turns; a refused
-and an accepted world patch; save; session state; shutdown (exit code 0, the session saved);
-relaunch; load (exact) and continue; load from parameters only; cancel; stop when stdin closes;
-stop when the parent process ends.
+catalogue; a new session with the UNP's player state; player update; sync; turns (by index and
+by a choice's stable id); a stale and an unknown choice refused (409, nothing done); a refused and
+an accepted world patch; save; session state; shutdown (exit code 0, the session saved);
+relaunch; load (exact: the same choice ids and state version) and continue; load from parameters
+only; cancel; stop when stdin closes; stop when the parent process ends.
 """
 from __future__ import annotations
 
@@ -99,14 +100,34 @@ def main(argv=None):
     gid = game["game_id"]
     check("player update", runtime.call(f"/games/{gid}/player", {"health": 3}, method="PATCH")[1].get("health") == 3)
     check("sync", runtime.call(f"/games/{gid}/sync", {"type": "coins_changed", "amount": -4})[1].get("coins") == 36)
-    for _ in range(3):
-        status, view = runtime.call(f"/games/{gid}/choose", {"action": 0})
+    def a_turn(view):
+        """The first choice that is a turn (a side quest's offer is answered without one)."""
+        return next(c["id"] for c in view["choices"] if c.get("takes_turn", True))
+
+    status, view = runtime.call(f"/games/{gid}/choose", {"action_id": a_turn(game)})
+    check("choices with ids", status == 200 and [c["name"] for c in view["choices"]] == view["actions"]
+          and all(c.get("id") for c in view["choices"]) and isinstance(view.get("state_version"), int), view)
+    shown = view
+    status, view = runtime.call(f"/games/{gid}/choose", {"action_id": a_turn(shown),
+                                                         "state_version": shown["state_version"]})
+    check("a turn by id", status == 200 and view["turn_number"] == 2 and view["state_version"] > shown["state_version"],
+          view)
+    status, stale = runtime.call(f"/games/{gid}/choose", {"action_id": a_turn(shown),
+                                                          "state_version": shown["state_version"]})
+    check("stale choice refused", status == 409 and stale.get("code") == "stale_state"
+          and stale.get("state_version") == view["state_version"]
+          and stale.get("offered") == [c["id"] for c in view["choices"]], (status, stale))
+    status, unknown = runtime.call(f"/games/{gid}/choose", {"action_id": "npc:nobody:nothing"})
+    check("unknown choice refused", status == 409 and unknown.get("code") == "action_unavailable", (status, unknown))
+    check("nothing done", runtime.call(f"/games/{gid}")[1].get("state_version") == view["state_version"])
+    status, view = runtime.call(f"/games/{gid}/choose", {"action_id": a_turn(view)})
     check("turns", status == 200 and view["turn_number"] == 3, view)
     bad = runtime.call("/world/patch", {"upsert": {"items": [{"name": "Lamp", "actions": [
         {"name": "Go", "outcomes": [{"desc": "Off.", "move_to": "Nowhere-at-all"}]}]}]}})
     check("refused world patch", bad[0] == 422 and bad[1].get("errors"), bad)
     good = runtime.call("/world/patch", {"upsert": {"items": [{"name": "Lamp", "associated_tags": ["light"]}]}})
     check("accepted world patch", good[0] == 200 and good[1]["revision"] == 1, good)
+    before_stop = runtime.call(f"/games/{gid}")[1]
     status, saved = runtime.call(f"/games/{gid}/save", {})
     check("save game", status == 200 and saved["format"] == "ane.savegame/1" and saved["snapshot"], status)
     check("session state", runtime.call(f"/games/{gid}/state")[1].get("format") == "ane.session_state/1")
@@ -121,7 +142,11 @@ def main(argv=None):
     doc = json.loads(suspended.read_text(encoding="utf-8"))
     status, loaded = runtime.call("/games", {"savegame": doc})
     check("load game (exact)", status == 201 and loaded["restored"] == "exact" and loaded["turn_number"] == 3, loaded)
-    check("continue", runtime.call(f"/games/{loaded['game_id']}/choose", {"action": 0})[1].get("turn_number") == 4)
+    check("the same choices and state version", [c["id"] for c in loaded["choices"]] ==
+          [c["id"] for c in before_stop["choices"]] and loaded["state_version"] == before_stop["state_version"],
+          (loaded["choices"], before_stop["choices"]))
+    check("continue", runtime.call(f"/games/{loaded['game_id']}/choose",
+                                   {"action_id": a_turn(loaded)})[1].get("turn_number") == 4)
     params_only = {k: v for k, v in doc.items() if k not in ("snapshot", "checksum")}
     params_only["parameters"] = {**doc["parameters"], "coins": 77}
     status, rebuilt = runtime.call("/games", {"savegame": params_only})

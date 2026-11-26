@@ -61,11 +61,14 @@ Without `ANE_API_URL` the studio looks for the API at `http://127.0.0.1:8005`;
 
 The API keeps games and recent work in its memory, so it runs as **one
 process with one worker** (Compose does this). A second worker would not see
-the first one's games, and a restart forgets everything that lives in memory:
+the first one's games in memory. Play sessions are also saved as they are
+played ([Saved games](#saved-games)), so a restart does not lose them; the
+rest of what lives in memory is lost:
 
 | In memory (lost on restart) | On disk (kept) |
 | --- | --- |
-| Play sessions: the newest `max_web_sessions` (100); beyond that the oldest is dropped | Configuration: `config/*.yaml` and the app parameters `config/ui_settings.yml` |
+| The play sessions being played: the newest `max_web_sessions` (100); beyond that the oldest is let go (it comes back from its save when it is used) | Play sessions, saved after every change, and save slots (`ANE_SESSIONS_DIR`, default `ANE_SAVE_DIR/sessions`) |
+| | Configuration: `config/*.yaml` and the app parameters `config/ui_settings.yml` |
 | Recent runs that can be exported (the latest 20) | Player profiles' persistent variables and the learning memory (`ANE_SAVE_DIR`) |
 | Background jobs (the latest 100), including queued and running ones: a restart loses them, and no job is resumed | The records database and engine model files (`ANE_RECORDS_DIR`) |
 | Download links `/v1/artifacts/{id}` (the files stay in `ANE_ARTIFACT_DIR`, the links do not) | Generated configurations, engine models and exports (`ANE_ARTIFACT_DIR`) |
@@ -89,8 +92,10 @@ API's, and it holds none of this state itself.
 - **Immediate, for what starts afterwards.** After a save the configuration is reloaded (an uploaded
   configuration, or a trained engine's, in use until then is set aside, and the message says so). New
   games, training runs and evaluations, and jobs still queued (a job reads the configuration when it
-  starts), use it. Nothing running is restarted: a game in progress or a running job keeps going, and
-  values it reads as it goes may change mid-way. Every save's `message` says this
+  starts), use it. Nothing running changes: a game in progress or a running job keeps the configuration
+  it started with (its own frozen engine context, [docs/AI.md](AI.md#engine-contexts-which-configuration-a-game-reads-and-when-settings-take-effect))
+  until it ends; a game with a trained engine runs with that engine's world, tuning and tag vectors,
+  and starting one never changes another session. Every save's `message` says this
   (`backend/activation.py`; the forms' note is `GET /v1/reference`'s `activation.configuration`). App
   parameters (`PUT /v1/app-settings`) apply only when the API, or the studio, restarts.
 
@@ -102,9 +107,11 @@ API's, and it holds none of this state itself.
 | `202` | A job was queued (`POST /v1/jobs/...`); poll `GET /v1/jobs/{id}` |
 | `400` | Refused content (see above), a file of the wrong type, an engine file that cannot be loaded, a choice that is not on offer, a deterministic run without a seed |
 | `404` | Unknown entry, document, action index, play session, job, artifact, or recorded run, world, engine or story (also when playing, continuing or retraining it, before any work starts). While no records database exists, the records endpoints answer `404` ("No records yet") |
-| `409` | An export for a platform this API has no runtime for, or whose runtime was built from other engine code (`GET /v1/exports/platforms` says why); an ANE AI export without a complete engine (`GET /v1/exports/engines`) |
+| `403` | Author diagnostics switched off (`ANE_AUTHOR_DIAGNOSTICS=off`: `GET /v1/sessions/{id}/decisions`) |
+| `409` | An export for a platform this API has no runtime for, or whose runtime was built from other engine code (`GET /v1/exports/platforms` says why); an ANE AI export without a complete engine (`GET /v1/exports/engines`); a choice from options the game has moved past (`stale_state`) or not offered now (`action_unavailable`); a saved session that cannot be restored here (`session_unrecoverable`); a `PUT /v1/weights` whose `expected` values are out of date; a restore or a report that conflicts with the game's state; augmentation switched off; cancelling a job of another kind |
 | `413` | An upload above its limit: configuration 2 MB (`max_config_upload_bytes`), engine 20 MB (`max_engine_upload_bytes`), model parameters 100 KB |
 | `422` | The request's shape, types or ranges |
+| `503` | No language model available (the judge, world suggestions and augmentation) |
 
 Errors are JSON: `{"detail": "..."}` (or the list of `422`). They never show the server's file
 paths (where the records, saves and models are): only a file's name, when it matters.
@@ -173,11 +180,55 @@ paths (where the records, saves and models are): only a file's name, when it mat
 ### Play
 
 - A game is a session (`session_id`). `POST /v1/sessions/{id}/actions` takes
-  one of the `actions` the last response offered; any other choice is refused
-  with `400`, and an unknown session is `404`.
+  one of the choices the last response offered: by its stable id,
+  `{"action_id": "<choices[].id>", "state_version": <state_version>}`, or as before by
+  its name, `{"action": "<one of actions>"}` (when two choices share a name the last
+  listed is taken). With `state_version`, a choice made from options the game has moved
+  past (another tab, a UNP update) is refused with `409` and `detail: {code: "stale_state",
+  message, state_version, offered}`; an `action_id` not offered now is `409`
+  `action_unavailable`; nothing is done either way. A name not offered is refused with
+  `400`, and an unknown session is `404`.
+- `choices` describes each offered choice: `id`, `label` (and `name`, as before), `category`
+  (place, person, item, event, talk, approach, leave, look, travel, fast_travel, side_quest: taking
+  an offered side quest on, turning it down or handing a finished one over to its giver, ids
+  `side-quest:<quest>:accept`, `:decline`, `:turn-in`, no turn), `owner`,
+  `source` `{kind, name}`, `location`, `requirements` (item, item_tag, item_used, coins,
+  consumes_item, collects_item, triggers_event: what applies), `check` (as before),
+  `skill_check` `{stat, chance, bonus}`, `failure_risk` `{health, coins, sent_to}`,
+  `available`, `availability`, `repeat`, `one_time`, `takes_turn` and, for approaching
+  someone, `members` (their choices' ids). `state_version` changes whenever the game moves.
+  Ids: [docs/WORLD.md](WORLD.md#action-identities).
+- **Author diagnostics:** `GET /v1/sessions/{id}/decisions` explains every action now: `status`
+  (shown, hidden, blocked), `stage` and `reasons` (`code`, `message`, `detail`) for the source
+  entity (absent, not visible, gone, out of the cast), conditions (`enabled_if`, `until`, with the
+  failing parts and their values), missing items and coins, one-time and per-visit use and
+  exclusive choices, events, encounters and conversations, the storyteller's `rank` and `score`,
+  the relevance filter and the choice-count `limits`; `entities` says where every NPC, item and
+  event stands, `encounters` says why a dynamic encounter could or could not come now (the
+  director's `gate`, each template's status and chance, the factions' standing, and `codes`: what
+  each gate and status code means; docs/WORLD.md "Dynamic encounters"), `side_story` says what the
+  director weighs before letting side content in (`hold`: why none may come now, or null; the main
+  quest's stage, idle turns, climax and finale; open threads; the player's taken and turned-down
+  offers; danger and recent attacks; the storyteller's side-quest `pull`; every side quest and
+  encounter template as a `candidate` with its `relevance` to the main story, `fit`, `appetite` and
+  `score`; the last introductions and what optional threads led to; `codes`; docs/AI.md
+  "Side-story orchestration"), `relationships` shows people and factions as only authors see
+  them (every NPC's, or for a generic NPC every copy's (`place`), `trust`, `hostility`, `attitude`,
+  `disposition`, `faction`, `goals` with how they advance and their progress, `memories`, `related`,
+  `never`, `home`, `kin` and `haunts` (place: presence); every faction's
+  `standing`, `status`, `members`, `relations` and `reacts_to`; the reactions `due` with why each
+  is held back (`blocked`), those `fired`, and the latest `deeds` and transitions `log`; docs/WORLD.md
+  "People, factions and reactions"; the code `npc_refuses` marks a hostile NPC's withheld action),
+  and `codes` lists every reason code of the actions. The trace also
+  has `turn`, `location`, `mode`, `event`, `talking_to`, `tension`, `limits`, `shown`, `counts`
+  and `notes`, and each action its `id`, `label`, `category`, `key` and `content_ref` (the OpenAPI
+  model `DecisionTrace` lists them all). It is made on a copy of the game: no turn,
+  no dice drawn, no encounter started, nothing saved. Players never see it (it is not in
+  PlayState); a server that gives players the API sets `ANE_AUTHOR_DIAGNOSTICS=off` (`403`).
 - `actions` are the most relevant of the storyteller's options
   (`player_options`): what the moment is about first (a prisoner's way out,
-  the quest's next step, the payoff of an open clue, a way on), then the rest
+  the quest's next step, a side quest's next step, the payoff of an open clue,
+  a way on), then the rest
   unless they rank among the lowest, at most 3 ways on and 2 conversations.
   There are at most `limit` (6), and fewer in tense moments (`focus_limit`, 4),
   so their number varies from turn to turn. They are listed in the scene's
@@ -203,7 +254,11 @@ paths (where the records, saves and models are): only a file's name, when it mat
   (`{alert, max, warn_at}`; at `max` a manhunt starts), `null` with
   `stakes.alert` off. `people` and `people_met` carry each NPC's `role` and
   `importance` (0-3) in this story (`npc_roles`); someone who matters may stay
-  out of sight until a lead, the road or enough turns bring them in.
+  out of sight until a lead, the road or enough turns bring them in. They also
+  carry `disposition` (`hostile`, `wary`, `neutral`, `friendly`, `ally`) and
+  `faction` (`null` for a faction that is not public): what a player may know.
+  Trust, hostility, memories and goal progress are for authors (the decision
+  trace's `relationships`).
 - A quest's last step is a showdown (`climax`): an event whose choices are
   offered like any other; the story is won when it is won (or, after setbacks,
   at a price). Fast travel (`Travel by known ways to …`) reaches a visited place
@@ -220,8 +275,8 @@ paths (where the records, saves and models are): only a file's name, when it mat
   health and coins, the goals achieved in the save game) is sent to the UNP:
   `session_report.url` or `ANE_UNP_URL` (POST, JSON; `ANE_UNP_TOKEN` adds a bearer token).
   `GET /v1/sessions/{id}/report` returns it (`409` while the session goes on),
-  `GET /v1/progression?profile=` the save game (goals achieved, playthroughs, session
-  reports with their `delivery`), and `POST /v1/progression/reports/{id}/send?profile=`
+  `GET /v1/progression?profile=` the save game (goals achieved, playthroughs,
+  `side_quests_completed`, session reports with their `delivery`), and `POST /v1/progression/reports/{id}/send?profile=`
   sends a kept report again.
 - `POST /v1/engines/{id}/play` (`{"profile", "mission", "stats_mode", "stats"}`) starts a game in
   the world a finished run was trained on, with its storyteller (`latest`: the newest; the
@@ -232,7 +287,9 @@ paths (where the records, saves and models are): only a file's name, when it mat
   (`action`, `with` whom, `where`), its check (`stat`, `roll`, `needed`, `passed`), what came of it
   (`told`, `succeeded`), what it changed (`health_change`, `coin_change`, `items_gained`,
   `items_lost`, `moved_to`, `new_places`, `met`, `event`) and the quest (`quest_done`: the steps it
-  completed, `quest_now`, `quest_complete`). Every play state says the last one (`turn_summary`)
+  completed, `quest_now`, `quest_complete`), with its `turn`, `health`, `coins`, `ended` and
+  `end_reason`, the side quests' moments (`side_quests`) and the dynamic encounter that began that
+  turn (`encounter`: `{event, category, faction, npc, result}` or null). Every play state says the last one (`turn_summary`)
   and who the player is talking with (`talking_to`), and where the player is, for a client's own
   place card: `scene_name` (the place, or an event at it), `description` (as the player sees it
   now) and `items_here` (`[{name, text}]`, the items to be seen).
@@ -249,11 +306,76 @@ paths (where the records, saves and models are): only a file's name, when it mat
   with a `note`; a save game without a snapshot takes the storyteller of `session_id`). A save
   game of the ANE AI loads here, and one from here in the ANE AI. Fields that do not fit the
   world answer `400`. `GET /v1/world/catalogue` is the world as the ANE AI sends it
-  (`ane.world/1`).
+  (`ane.world/1`: locations, NPCs with their `npc_roles`, items, events, missions,
+  `side_quests` and `factions`). The parameters also carry `side_quests` (`{key: {status, stage, ready,
+  turns_left}}`) and `encounters` (`{attacks, factions, rewards_paid}`: the dynamic encounters
+  met, the factions' standing changes and the rewards already paid) and `relationships`
+  (`{npcs: {npc or npc@place: {trust, hostility, disposition, memories}}, kin: {npc: {trust,
+  hostility}}, goals: {npc: {progress, done}}, moved, haunts, fired, due}`: what people think of the
+  player (a generic NPC per copy, and what word reached the others), their goals, where they moved,
+  the reactions delivered and still due), so a session rebuilt from them keeps them.
 - A finished story has `ended: true` and offers no more actions.
 - Real play saves persistent variables to its `profile` (`save_on` in the
   story rules). Evaluated stories during evolution do not
   (`simulate_with`).
+
+### Saved games
+
+Every play session is saved after each change that matters (a turn, approaching or leaving
+someone, `PATCH .../player`, `POST .../sync`, the end), so it survives a restart of the API and
+can be continued, restored or restarted (`backend/persistence.py`).
+
+- **The format.** Each save is an ordinary `ane.savegame/1` document (its parameters and an exact
+  snapshot: the dice, the quest and its stage, NPC goals, allies and people met, the places and
+  ways discovered, the event, encounter or conversation in progress, and the whole story). The
+  configuration the session runs with (world, tuning and tag vectors) is kept once per engine
+  beside it, so a session is restored under its own configuration whatever the API has loaded
+  since. A save whose snapshot no longer fits (other engine code) is rebuilt from its parameters
+  (`restored: parameters`, with a `note`); one that cannot be read at all answers `409`
+  `{code: session_unrecoverable}` and is not played.
+- **Restoring.** Any `/v1/sessions/{id}/...` route restores a session that is saved but not in
+  memory (after a restart, or one let go beyond `max_web_sessions`).
+  `POST /v1/sessions/{id}/continue` also says how it came back: `restored: live` (it was in
+  memory), `exact` or `parameters`.
+- **Whose it is.** A session belongs to the user who started it: `X-ANE-User` (an opaque id), or
+  `test` for the studio (`X-ANE-Client: studio`). Only that user can use it; for anyone else it
+  does not exist (`404`), and so do their saves. A session started without `X-ANE-User` is
+  anonymous, as before: whoever has its id can use it, and it is never listed.
+- **Listing.** `GET /v1/sessions?profile=&status=active|ended|abandoned|all&limit=` lists your
+  sessions, the most recently played first: `{session_id, profile, status, location, turn,
+  state_version, mission, won, engine_id, world_version, origin, created_at, updated_at, ended_at,
+  in_memory, error}`. Listing needs `X-ANE-User` (or the studio): `400` without one.
+- **Save slots.** `POST /v1/sessions/{id}/saves` `{"slot": "Before the gate"}` saves into your
+  slot of that name (saving there again replaces it; 64 characters at most); without `slot`, a new
+  manual save. `GET /v1/saves?profile=` lists your saves; `POST /v1/saves/{save_id}/restore`
+  `{"profile"}` continues one as a new session (`LoadedState`; a save of a game that has ended
+  answers `400`); `DELETE /v1/saves/{save_id}` deletes one. Slots need a user.
+- **Restart.** `POST /v1/sessions/{id}/restart` starts the adventure again as a new session: the
+  same engine (world, tuning, storyteller), profile, quest and character settings as they were
+  asked (a quest that was drawn is drawn again). The old session becomes `abandoned` unless it has
+  ended.
+- **Writes.** Every save is written to a temporary file and renamed over the old one, so a reader
+  never sees half a file. Saves of one session are serialised (a lock per session, and the index's
+  write transaction across processes), and a newer state is never replaced by an older one
+  (`state_version`). A failed write never stops the game: it is logged and kept in the session's
+  `error`.
+- **Retention.** Finished sessions (ended or abandoned) are removed once they are older than
+  `ANE_SESSION_RETENTION_DAYS` (30), and beyond the `ANE_SESSION_KEEP_FINISHED` (20) most recent of
+  each user. The policy runs by itself at most once an hour when a session ends, and on
+  `POST /v1/sessions/cleanup` (`{"dry_run": true}` only says what it would remove). Active sessions
+  and save slots are never removed by it.
+- **What they return.** `GET /v1/sessions` answers `{user, sessions: [...]}` and `GET /v1/saves`
+  `{user, saves: [SaveSlot]}`; a `SaveSlot` is `{save_id, slot, kind (named | manual), session_id,
+  profile, engine_id, world_version, location, turn, state_version, mission, session_status,
+  created_at, updated_at}`. `POST /v1/sessions/{id}/saves` answers the `SaveSlot`,
+  `DELETE /v1/saves/{id}` `{deleted: SaveSlot}`, and `POST /v1/sessions/cleanup`
+  `{policy: {retention_days, keep_finished}, removed, contexts_removed, dry_run}`. The clean-up
+  applies the retention policy to every user's finished sessions (an operator's route: it needs no
+  user).
+- **Off.** `ANE_SESSION_PERSISTENCE=off` keeps sessions in memory only, as before; listing, save
+  slots and restoring saves (`GET /v1/sessions`, `/v1/saves`, `POST .../saves`,
+  `POST /v1/saves/{id}/restore`) then answer `400`. `POST /v1/sessions/{id}/continue` and
+  `/restart` still work on a session held in memory.
 
 ### Records: who asked
 
@@ -318,7 +440,7 @@ one); `tests/test_studio_coverage.py` checks it.
   values; only the studio sees them) and `pending` (the API runs another value than the saved one). A
   `PUT`'s `message` says that nothing running changes and what a restart of the API would use.
 - `GET /v1/documents` lists the configuration documents edited as YAML text
-  with their comments kept: `missions`, `messages`, `variables`, `map` (the world's
+  with their comments kept: `missions`, `side_quests`, `messages`, `variables`, `map` (the world's
   map, `world_definition.routes`: `{routes: {place: [neighbours]}}`, or `routes: null`
   for a map each story draws; every place must be a location), `stats`, and
   `stored_values` (a player profile's values, `?profile=`).
@@ -345,7 +467,8 @@ one); `tests/test_studio_coverage.py` checks it.
   written; an unknown index is `404`.
 - `GET /v1/entities/{kind}?fields=names` returns only the names.
 - `GET /v1/conditions/reference` is what a condition can say in the current world, for a condition
-  builder: `groups`, `operators`, and `facts` (`{fact: {refers_to, names}}`, with `refers_to` null for
+  builder: `groups`, `operators`, and `facts` (`{fact: {refers_to, names}}`: `refers_to` is items,
+  locations, npcs, events, missions or side_quests, with the world's `names` of that kind, or null for
   free text). It also gives `comparisons`: variables with their types, stats and resources.
 - `POST /v1/conditions/validate` (`{condition, where}`; the condition may be its YAML text) checks a
   condition as every save checks it (structure, operators, references, operand types):
@@ -471,7 +594,12 @@ one); `tests/test_studio_coverage.py` checks it.
   each controls. `GET|PUT /v1/logic/{section}` reads or changes one section as
   YAML text (`{"parameters": "evolution:\n  ..."}`). It must keep the same
   settings and value types, unknown settings are rejected, and comments are
-  kept. There is no code-editing endpoint.
+  kept. There is no code-editing endpoint. Among the sections: `side_quest_settings` (side quests),
+  `side_story` (how the director weaves side quests and attacks into the main story,
+  [docs/AI.md](AI.md#side-story-orchestration)), `encounters` (the encounter director,
+  [docs/WORLD.md](WORLD.md#dynamic-encounters)), `fitness` (with `version` and `side_story`, the
+  objective terms) and `llm_sharing` (the judge and the augmenter on one GPU, the idle watcher). Their
+  numbers that weigh, reward or penalise are on the Weights page too (`GET|PUT /v1/weights`).
 
 **World authoring**
 - `GET /v1/entities/{kind}` lists Locations, NPCs, Items, or Events.
@@ -495,9 +623,11 @@ one); `tests/test_studio_coverage.py` checks it.
     `enabled_if: {secret_known: <NPC>}`.
 - `GET|PUT /v1/entities/{Events|Items}/{name}/policy`: an event's start rules
   (`trigger`: action or random, `chance`, `weight`, `cooldown`,
-  `max_occurrences`, `repeat`: once, per_location, per_visit or always) or an
-  item's uniqueness (`unique`, `location`). A `PUT` replaces the whole policy,
-  fields left out use their defaults, and an invalid policy writes nothing.
+  `max_occurrences`, `repeat`: once, per_location, per_visit or always) and its `encounter`
+  block (a template of the encounter director: `category`, where and when, `on_win`, `on_loss`,
+  `on_escape`; [docs/WORLD.md](WORLD.md#dynamic-encounters)), or an item's uniqueness (`unique`,
+  `location`). A `PUT` replaces the whole policy: fields left out use their defaults, so an
+  `encounter` block left out of the body is removed. An invalid policy writes nothing.
 - `GET|PUT|DELETE /v1/entities/{kind}/{name}/actions/{index}`: one action (`index`: its place,
   from 0; a `PUT` with the number of actions adds one at the end), checked with the others as a
   whole save is. `GET|PUT /v1/entities/{kind}/{name}/details`: what the entry form does not
@@ -545,9 +675,8 @@ one); `tests/test_studio_coverage.py` checks it.
   `409` when its name is taken again (an entry, an action of its entry, a mission key) or its entry
   is gone (an action): nothing newer is overwritten; `400` when it would now be invalid (it is
   checked as a save checks it, only against problems the world did not already have when it was
-  deleted); `404` when it was undone already or the API restarted since (deletions are kept in
-  memory, the most recent 200) — now kept with the saves (`deletions.json` in `ANE_SAVE_DIR`, the most recent
-  200), so `404` means it was undone already or is older than that.
+  deleted); `404` when it was undone already or is older than the most recent 200 (deletions are
+  kept with the saves, `deletions.json` in `ANE_SAVE_DIR`, so they survive a restart of the API).
   `GET /v1/entities/{kind}/{name}/references` lists what refers to an entry and would no longer work
   without it (`{references: [...]}`, the engine's own check messages); deleting stays allowed. `GET /v1/map`: `{routes: {place: [borders]} or null,
   places}`; `PUT /v1/map/{place}` `{borders}` sets a place's borders, both ways; `PUT /v1/map`
@@ -572,8 +701,12 @@ one); `tests/test_studio_coverage.py` checks it.
   as a game critic (`evaluator/game_judge.py`) scores the playthrough from 1 to 10 on
   `agency`, `pacing`, `surprise`, `payoff`, `exploration`, `stakes`, `coherence` and
   `replayability`, with `engagement`, `spread` (between its `llm_judge.samples`
-  judgements), `verdict`, `best_moment` and `weakest_moment`. `404` for an unknown story
-  or session, `503` when no language model is available (`vllm`).
+  judgements), `verdict`, `best_moment` and `weakest_moment`. A playthrough with optional
+  content (side quests, dynamic encounters) also gets `optional_content` `{score (1-10: what it
+  added), meaningful, filler (threads of each kind), filler_share, note, samples}`: the judge tells
+  optional content that connects to the main quest, changes what happens later or pays off from
+  filler; `null` without optional content (the prompt is then the same as before). `404` for an
+  unknown story or session (or someone else's), `503` when no language model is available (`vllm`).
 - `GET /v1/missions/playable?profile=&engine_id=`: the quests a player may choose when
   starting a game (`key`, `title`, `description`, `stages` (their titles),
   `available` for that profile now, `achieved` in its save game).
@@ -599,7 +732,11 @@ one); `tests/test_studio_coverage.py` checks it.
   entry behaves as the first such tag it has; the rules are edited with `PUT /v1/logic/npc_behaviour`
   and `PUT /v1/logic/location_behaviour` (checked as rules: an unknown behaviour or value is `400`).
 - `GET /v1/judge/status`: whether the judge can be used here: `{available, mode (server |
-  embedded), model, server, reason, how}`. A server is asked which models it serves (3 s at
+  embedded), model, server, reason, how, sleeping (its server's model is asleep, its GPU memory
+  freed), sharing (llm_sharing: the judge and the augmenter take turns on one GPU)}`. While the API
+  runs, a background watcher puts an idle, awake model to sleep every `llm_sharing.watch_seconds`
+  (30; `ANE_LLM_WATCHER=off` switches it off;
+  [docs/LLM.md](LLM.md)). A server is asked which models it serves (3 s at
   most). `ANE_JUDGE_URL` points the API at a vLLM server ([`docs/LLM.md`](LLM.md)).
 - `POST /v1/judge/compare` with `{"a": {"session_id" | "story_id": ...}, "b": {...}}`:
   which of two stories (a game in progress or a recorded story each) is the better
@@ -655,10 +792,15 @@ one); `tests/test_studio_coverage.py` checks it.
   and `GET /v1/records/engines/{id}/model` (the engine model file).
 - `POST /v1/records/engines/{id}/play`, `/continue` (`generations`: continue the
   training exactly), and `/retrain` (`candidate_count`, `generations`,
-  `simulation_steps`, `episodes`, `deterministic`) start a game, like a
+  `simulation_steps`, `episodes`, `deterministic`, and the game to start as for a simulation:
+  `seed`, `start_game`, `profile`, `stats_mode`, `stats`, `mission`) start a game, like a
   simulation, and are recorded.
 - `GET /v1/records/stories` (`run_id`, `engine_id`, `kind`, `origin`,
-  `session_id`) and `GET /v1/records/stories/{id}` (with every turn).
+  `session_id`) and `GET /v1/records/stories/{id}` (with every turn). A story played in a session
+  belongs to that session's user: someone else's is not listed and answers `404`, as the session
+  itself does (a story whose session is gone is only the studio's to read; training and evaluation
+  stories are everyone's). A page can therefore hold fewer than `limit` stories.
+- The list routes take `limit` (200) and `offset` (0).
 - Simulation and load responses carry `engine_id`; `engine_download_url` is the
   engine model file, which `POST /v1/engines/load` accepts. `POST /v1/exports`
   takes `source: engine` with `engine_id`.
@@ -743,7 +885,9 @@ one); `tests/test_studio_coverage.py` checks it.
     `created_at`, `kind`, `run_id`, `parent_id`, `world` (`id`, `summary`, and `current`: trained
     on the active world), `generations`, `settings` (`main` and `other`: what its training ran
     with), `fitness` (`training`, the evolution's objective, plus `improvement`,
-    `early_stopped` and `history`), `judge_in_training`, `evaluations`, `resumable` and
+    `early_stopped`, `history` and `version`: the scoring it was trained with, `fitness.version`;
+    engines trained before versions are 1, and scores of different versions are not comparable),
+    `judge_in_training`, `evaluations`, `resumable` and
     `scaling_traits`.
   - `evaluations` lists, newest first, the judge benchmarks (`POST /v1/jobs/judge-benchmark`
     with an `engine_id`, neither pairwise nor with variants) and calibrations of this engine.
@@ -773,12 +917,29 @@ one); `tests/test_studio_coverage.py` checks it.
     failed), `stages` (each `title`, `description`, `state`: done, current or
     todo) and `todo` (what the current step still needs, in words, such as
     "Reach the Vault" or "Have 20 coins (you have 12)").
+  - `side_quests`: the story's side quests, optional quests besides the mission
+    ([docs/WORLD.md](WORLD.md#side-quests)), in the order they were offered or started: `key`,
+    `title`, `description`, `giver`, `status` (offered, active, completed, failed, declined),
+    `reason` (why it failed: condition, time, giver_gone, item_gone), `stages` (each `title`,
+    `description`, `state`), `todo`, `ready` (done, to hand over to the giver), `rewards` (in
+    words), `deadline` and `turns_left` (with `within_turns`), `turn_in`, `aids_mission` (lead,
+    ally, none), `aided_mission` (what it did for the mission once completed), `follows`, and the
+    turns it was `offered`, `started` and `ended`. The journal's turns (`turn_summary` too) say what
+    happened to them (`side_quests`, each `what`: offered, started, declined, lapsed, stage, ready,
+    reminded, hurry, completed, failed, reacted, withdrawn), and the session report has
+    `side_quests: {completed, failed, declined, unfinished, aided_mission}`. They are edited as the
+    document `side_quests` (`GET`/`PUT /v1/documents/side_quests`, checked before it is saved).
+    How the director weaves them into the main story (offers only when the main story has room,
+    what bears on the quest first, reveals and callbacks near the climax) is `side_story`
+    ([docs/AI.md](AI.md#side-story-orchestration)).
   - `people`: the people here (`name`, `called` with its article,
     `description`, `wants`, `hostile`, `talks` (times spoken with), `quest`
     (they can help with the mission now), `helped` (times helped with their
-    goal) and `ally` (their goal is fulfilled)).
+    goal), `ally` (their goal is fulfilled), `side_quests` (the titles of the side
+    quests they offer now), `disposition` (how they feel about the player) and
+    `faction` (who they stand with, `null` when it is not public)).
   - `people_met`: everyone met in the story (`name`, `called`, `where`,
-    `talks`, `hostile`, `gone`, `ally`).
+    `talks`, `hostile`, `gone`, `ally`, `disposition`, `faction`).
   - `ways_on`: every place one can travel to from here now (`name`,
     `visited`, `toward_quest`); `actions` offer the most relevant of them.
   - `map`: the map as the player knows it, kept with the game: `current`,
@@ -809,13 +970,15 @@ curl -X POST http://localhost:8005/v1/simulations \
   -d '{"candidate_count":8,"generations":5,"simulation_steps":16,"deterministic":true}'
 ```
 
-Use the returned `session_id` and one of its exact `actions` values:
+Use the returned `session_id`, one of its `choices[].id` and its `state_version`:
 
 ```bash
 curl -X POST http://localhost:8005/v1/sessions/SESSION_ID/actions \
   -H 'content-type: application/json' \
-  -d '{"action":"ACTION_FROM_THE_RESPONSE"}'
+  -d '{"action_id":"CHOICE_ID_FROM_THE_RESPONSE","state_version":STATE_VERSION}'
 ```
+
+(Older clients send `{"action":"ACTION_FROM_THE_RESPONSE"}`, one of its exact `actions` values.)
 
 Upload a complete configuration or saved engine:
 

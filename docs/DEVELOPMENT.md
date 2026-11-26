@@ -50,8 +50,9 @@ Each test module runs on its own, from the repository root:
 python -m unittest tests.test_<name>
 ```
 
-Tests never write to the real records database or saves: `tests/records_sandbox.py` sends them to
-a temporary folder, and `ANE_SAVE_DIR` can point saves elsewhere.
+Tests never write to the real records database, saved games or saves: `tests/records_sandbox.py`
+sends them to temporary folders (`ANE_RECORDS_DIR`, `ANE_SESSIONS_DIR`), and `ANE_SAVE_DIR` can
+point saves elsewhere.
 
 ## Continuous integration
 

@@ -221,6 +221,29 @@ class VariableStore:
             data["version"] = 1
             self._write(data)
 
+    def npc_relations(self, name="default"):
+        """What the profile's stories left between the player and people (core_engine/relationships.py):
+        {npcs: {npc or npc@place: {trust, hostility, memories}}, kin: {npc: {trust, hostility}},
+        goals_done: {npc: [goal ids]}}."""
+        saved = self._read().get("profiles", {}).get(name, {}).get("npc_relations")
+        return saved if isinstance(saved, dict) else {}
+
+    def record_npc_relations(self, name, relations):
+        """Keep the relationships a story ended with (only those configured to persist), merged over
+        what earlier stories left: an NPC this story did not touch keeps their earlier record."""
+        relations = relations or {}
+        if not any(relations.get(key) for key in ("npcs", "kin", "goals_done")):
+            return
+        with self._lock:
+            data = self._read()
+            record = data.setdefault("profiles", {}).setdefault(name, {"values": {}, "playthroughs": 0})
+            kept = record.get("npc_relations") if isinstance(record.get("npc_relations"), dict) else {}
+            record["npc_relations"] = {key: {**(kept.get(key) or {}), **{str(k): v for k, v in (relations.get(key) or {}).items()}}
+                                       for key in ("npcs", "kin", "goals_done")}
+            record["updated"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+            data["version"] = 1
+            self._write(data)
+
     # ---- progression: the goals a save game achieved, and its sessions (core_engine/progression.py)
 
     def completed_goals(self, name="default"):
@@ -235,6 +258,24 @@ class VariableStore:
             achieved = _start_names(record, "goals_achieved")
             if str(goal) not in achieved:
                 record["goals_achieved"] = achieved + [str(goal)]
+            record["updated"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+            data["version"] = 1
+            self._write(data)
+
+    def completed_side_quests(self, name="default"):
+        """The side quests (keys) this save game has completed, in order; each only once."""
+        return _start_names(self._read().get("profiles", {}).get(name, {}), "side_quests_completed")
+
+    def complete_side_quests(self, name, keys):
+        """Add side quests to the save game's completed ones (each once)."""
+        keys = [str(key) for key in keys or []]
+        if not keys:
+            return
+        with self._lock:
+            data = self._read()
+            record = data.setdefault("profiles", {}).setdefault(name, {"values": {}, "playthroughs": 0})
+            done = _start_names(record, "side_quests_completed")
+            record["side_quests_completed"] = done + [key for key in keys if key not in done]
             record["updated"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
             data["version"] = 1
             self._write(data)
@@ -268,9 +309,11 @@ class VariableStore:
         return [s for s in record.get("sessions") or [] if isinstance(s, dict)]
 
     def progression(self, name="default"):
-        """The save game: {profile, playthroughs, goals_achieved, sessions, values, updated}."""
+        """The save game: {profile, playthroughs, goals_achieved, side_quests_completed, sessions, values,
+        updated}."""
         stored = self.profile(name)
         return {"profile": name, "playthroughs": stored["playthroughs"], "goals_achieved": self.completed_goals(name),
+                "side_quests_completed": self.completed_side_quests(name),
                 "sessions": self.sessions(name), "values": stored["values"], "updated": stored["updated"]}
 
     def _remember(self, name, key, value, limit=None):
