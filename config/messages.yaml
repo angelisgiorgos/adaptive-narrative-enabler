@@ -168,3 +168,21 @@ messages:
   mission_pool_done: "[MISSION] Every goal of this world has been achieved in this save game: explore freely."  # no goal is left for this save game (progression.goals_once)
   end_abandoned: "The traveler sets the story aside for now."  # a session ended by the player
   resumed: "[RESUMED] The story goes on in the {location}."  # a session continued from the UNP's parameters (also {turns})
+  # People and factions (core_engine/relationships.py)
+  npc_now_hostile: "[RELATIONSHIP] {npc} now counts you an enemy."  # {npc}: a disposition transition the player can know of
+  npc_now_wary: "[RELATIONSHIP] {npc} grows wary of you."  # {npc}
+  npc_now_neutral: "[RELATIONSHIP] {npc} no longer feels strongly about you."  # {npc}
+  npc_now_friendly: "[RELATIONSHIP] {npc} warms to you."  # {npc}
+  faction_now_hostile: "[FACTION] The {faction} turn against you."  # {faction}
+  faction_now_neutral: "[FACTION] The {faction} no longer hold strong feelings about you."  # {faction}
+  faction_now_friendly: "[FACTION] The {faction} look on you with favour."  # {faction}
+  npc_offer_quest: "{npc} has something to ask of you."  # {npc} (also {location} {faction}): a reaction without its own text
+  npc_request_help: "{npc} asks for your help."  # {npc} (also {location} {faction})
+  npc_warn: "[WARNING] {npc} warns you: trouble is coming."  # {npc} (also {location} {faction})
+  npc_confront: "[CONFRONTATION] {npc} confronts you about what you did."  # {npc} (also {location} {faction})
+  npc_praise: "{npc} speaks well of you."  # {npc} (also {location} {faction})
+  npc_threaten: "{npc} makes it plain you are not welcome here."  # {npc} (also {location} {faction})
+  npc_moves: "[PEOPLE] {npc} leaves for the {location}."  # {npc} {location}
+  npc_seeks: "{npc} seeks you out."  # {npc}: a reaction brings them to the player
+  npc_hostile_talk: "{npc} refuses to speak with you."  # {npc}: talking with someone hostile
+  npc_reaction: "{text}"  # {text}: a reaction's own text (also {npc})

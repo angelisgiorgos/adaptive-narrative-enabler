@@ -279,8 +279,18 @@ world_definition:
     - Observatory Dome
     descriptions:
     - The captain, grey-haired and calm as vacuum.
+    # People and factions (core_engine/relationships.py; docs/WORLD.md, "People, factions and reactions")
+    faction: Station Security
+    related: {Medic: 0.5, Mechanic: 0.5}
     goals:
-    - Keep the station alive
+    - Keep the station alive             # a sentence: the keyword fallback
+    reactions:
+    - signal: faction
+      faction: Station Security
+      to: hostile
+      behaviour: confront
+      event: drone_alarm                 # the drones answer to her
+      text: '"That is enough," the captain says over every speaker at once. "Security, detain them."'
   - name: Smuggler
     unique: true
     associated_tags:
@@ -292,8 +302,17 @@ world_definition:
     - Cryo Vault
     descriptions:
     - A smiling trader with too many pockets.
+    faction: Free Traders
+    relationship: {trust: 1}
     goals:
-    - Get off the station rich
+    - goal: Get off the station rich
+      id: get_off_rich
+      opposes: [threat]                  # an accusation threatens his way out
+    reactions:
+    - signal: goal_opposed
+      behaviour: threaten
+      where: scene
+      text: The smuggler's smile stays, but his eyes go cold. "Careful. Accidents happen on stations."
     actions:
     - name: Accuse the smuggler
       outcomes:
@@ -314,7 +333,18 @@ world_definition:
     descriptions:
     - A mechanic with a wrench in every pocket.
     goals:
-    - Keep things running
+    - goal: Keep things running
+      id: keep_things_running
+      progress_when: {action_done: Lend a hand with repairs}
+      needed: 1
+      reward: none
+      opposes: [sabotage]
+    reactions:
+    - signal: goal_completed
+      behaviour: praise
+      where: anywhere
+      standing: {Station Security: 1}    # word gets around the crew
+      text: Word spreads through the shafts that you know one end of a wrench from the other.
     actions:
     - name: Lend a hand with repairs
       outcomes:
@@ -349,6 +379,7 @@ world_definition:
     - Command Deck
     descriptions:
     - A drone with a red sweeping eye.
+    faction: Station Security
     goals:
     - Detain intruders
   - name: Security Officer
@@ -362,8 +393,12 @@ world_definition:
     - Command Deck
     descriptions:
     - An officer in scuffed armour.
+    faction: Station Security
     goals:
     - Keep the peace
+    dialogue:
+    - enabled_if: {faction_friendly: Station Security}
+      text: The officer nods you through without looking up. "Captain says you're all right."
     actions:
     - name: Show your credentials
       outcomes:
@@ -382,6 +417,16 @@ world_definition:
       enabled_if:
         not:
           at_location: Brig
+  factions:                        # who stands with whom (core_engine/relationships.py)
+    Station Security:
+      description: The captain's officers and drones.
+      hostile_below: -2
+      relations: {Free Traders: -0.5}
+      reacts_to: {theft: -1, crime: -1, attacked: -2, helped: 0.5}
+    Free Traders:
+      description: Those who live off what passes through the Market Ring.
+      public: false
+      relations: {Station Security: -0.5}
   objects:
   - name: Data Shard
     unique: true
@@ -398,6 +443,7 @@ world_definition:
       - desc: You pocket the shard.
         tags:
         - stealth
+        - theft                          # a deed (relationships.deed_tags): Station Security hears of it
         - success
       collects_object: Data Shard
   - name: Med Kit

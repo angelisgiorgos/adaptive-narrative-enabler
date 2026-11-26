@@ -860,6 +860,7 @@
 "fitness": [
 "02818b2aab0a68b4",
 "2b42fbfadc762782",
+"3a68d881ab729838",
 "48b7b2314bdd9749",
 "5052033a4a3093e6",
 "abd62035010cd2d7",
@@ -1163,6 +1164,21 @@
 "fitness.payoff_match_score": [
 "4a44dc15364204a8"
 ],
+"fitness.relationships": [
+"0df3413f665308e9"
+],
+"fitness.relationships.change_bonus": [
+"4e07408562bedb8b"
+],
+"fitness.relationships.diminishing": [
+"b4af4e0d40391d3a"
+],
+"fitness.relationships.faction_bonus": [
+"4e07408562bedb8b"
+],
+"fitness.relationships.reaction_bonus": [
+"d4735e3a265e16ee"
+],
 "fitness.repetition": [
 "676f59eecaebfd5c"
 ],
@@ -1394,6 +1410,7 @@
 "d4735e3a265e16ee"
 ],
 "fitness.version": [
+"4e07408562bedb8b",
 "d4735e3a265e16ee"
 ],
 "fitness.visit_penalty": [
@@ -2071,6 +2088,229 @@
 ],
 "progression.history": [
 "1a6562590ef19d10"
+],
+"relationships": [
+"13438531e3054bc2",
+"a33662e957569f27"
+],
+"relationships.aggressive_tags": [
+"0a3b2279898c83f5"
+],
+"relationships.announce": [
+"b5bea41b6c623f7c"
+],
+"relationships.appearance": [
+"6a077fe8a2f675de"
+],
+"relationships.appearance.ally": [
+"d0ff5974b6aa52cf"
+],
+"relationships.appearance.friendly": [
+"d2cbad71ff333de6"
+],
+"relationships.appearance.hostile": [
+"8aed642bf5118b9d"
+],
+"relationships.appearance.neutral": [
+"8aed642bf5118b9d"
+],
+"relationships.appearance.wary": [
+"c39e10a12e907115"
+],
+"relationships.deed_tags": [
+"0c175acc73715158"
+],
+"relationships.deed_tags.attacked": [
+"6a132fb20fe23e25"
+],
+"relationships.deed_tags.betrayed": [
+"9171c4671dc9f058"
+],
+"relationships.deed_tags.crime": [
+"08dbe1868770af0f"
+],
+"relationships.deed_tags.helped": [
+"b6f474574237c6d1"
+],
+"relationships.deed_tags.theft": [
+"e7ed3610877c45ad"
+],
+"relationships.deeds": [
+"1cddf7fd400d1404"
+],
+"relationships.deeds.attacked": [
+"7e4978d4510c0a1f"
+],
+"relationships.deeds.attacked.faction": [
+"1bad6b8cf97131fc"
+],
+"relationships.deeds.attacked.hostility": [
+"4e07408562bedb8b"
+],
+"relationships.deeds.attacked.related": [
+"d2cbad71ff333de6"
+],
+"relationships.deeds.attacked.trust": [
+"cf3bae39dd692048"
+],
+"relationships.deeds.attacked.witness_hostility": [
+"6b86b273ff34fce1"
+],
+"relationships.deeds.betrayed": [
+"2afcf3d7d039c1ce"
+],
+"relationships.deeds.betrayed.faction": [
+"1bad6b8cf97131fc"
+],
+"relationships.deeds.betrayed.hostility": [
+"d4735e3a265e16ee"
+],
+"relationships.deeds.betrayed.related": [
+"d2cbad71ff333de6"
+],
+"relationships.deeds.betrayed.trust": [
+"615bdd17c2556f82"
+],
+"relationships.deeds.betrayed.witness_trust": [
+"1bad6b8cf97131fc"
+],
+"relationships.deeds.crime": [
+"fcd5f82c70f322bb"
+],
+"relationships.deeds.crime.faction": [
+"1bad6b8cf97131fc"
+],
+"relationships.deeds.crime.hostility": [
+"6b86b273ff34fce1"
+],
+"relationships.deeds.crime.related": [
+"d2cbad71ff333de6"
+],
+"relationships.deeds.crime.witness_hostility": [
+"6b86b273ff34fce1"
+],
+"relationships.deeds.helped": [
+"d1aa42e4965bea10"
+],
+"relationships.deeds.helped.faction": [
+"d2cbad71ff333de6"
+],
+"relationships.deeds.helped.hostility": [
+"1bad6b8cf97131fc"
+],
+"relationships.deeds.helped.related": [
+"d2cbad71ff333de6"
+],
+"relationships.deeds.helped.trust": [
+"6b86b273ff34fce1"
+],
+"relationships.deeds.quest_completed": [
+"44f4ae2b691792fe"
+],
+"relationships.deeds.quest_completed.faction": [
+"6b86b273ff34fce1"
+],
+"relationships.deeds.quest_completed.related": [
+"d2cbad71ff333de6"
+],
+"relationships.deeds.quest_completed.trust": [
+"d4735e3a265e16ee"
+],
+"relationships.deeds.quest_declined": [
+"44136fa355b3678a"
+],
+"relationships.deeds.quest_failed": [
+"d0a5a577685d92f7"
+],
+"relationships.deeds.quest_failed.faction": [
+"1b07b0cffa0b3f59"
+],
+"relationships.deeds.quest_failed.trust": [
+"1bad6b8cf97131fc"
+],
+"relationships.deeds.theft": [
+"26db7fea8dd18ebb"
+],
+"relationships.deeds.theft.faction": [
+"1b07b0cffa0b3f59"
+],
+"relationships.deeds.theft.hostility": [
+"6b86b273ff34fce1"
+],
+"relationships.deeds.theft.related": [
+"d2cbad71ff333de6"
+],
+"relationships.deeds.theft.trust": [
+"1bad6b8cf97131fc"
+],
+"relationships.deeds.theft.witness_hostility": [
+"6b86b273ff34fce1"
+],
+"relationships.enabled": [
+"b5bea41b6c623f7c"
+],
+"relationships.faction_hostile_below": [
+"cf3bae39dd692048"
+],
+"relationships.faction_weight": [
+"d2cbad71ff333de6"
+],
+"relationships.friendly_at": [
+"d4735e3a265e16ee"
+],
+"relationships.goal_setback": [
+"e1c746295de50e3a"
+],
+"relationships.goal_setback.hostility": [
+"6b86b273ff34fce1"
+],
+"relationships.goal_setback.trust": [
+"1bad6b8cf97131fc"
+],
+"relationships.goal_trust": [
+"d4735e3a265e16ee"
+],
+"relationships.haunt_weight": [
+"d84bdb34d4eeef40"
+],
+"relationships.hostile_at": [
+"4e07408562bedb8b"
+],
+"relationships.hostile_refuses_tags": [
+"c3114d931c96cd5d"
+],
+"relationships.kin": [
+"d2cbad71ff333de6"
+],
+"relationships.limits": [
+"4db47de571f04f94"
+],
+"relationships.limits.hostility": [
+"f0a5fc7603ec6f5b"
+],
+"relationships.limits.standing": [
+"bbb2cf3cfa93af02"
+],
+"relationships.limits.trust": [
+"bbb2cf3cfa93af02"
+],
+"relationships.max_memories": [
+"2c624232cdd22177"
+],
+"relationships.max_reactions_per_turn": [
+"6b86b273ff34fce1"
+],
+"relationships.persist": [
+"da199bc40cba9c14"
+],
+"relationships.reaction_expiry": [
+"2c624232cdd22177"
+],
+"relationships.reaction_pull": [
+"d0ff5974b6aa52cf"
+],
+"relationships.witnesses": [
+"b5bea41b6c623f7c"
 ],
 "reproducibility": [
 "0dc13b298519175b",
@@ -3050,6 +3290,7 @@
 "625c41ffd1ed8cbe",
 "8a1374e642c52bef",
 "a3b639e0ca371506",
+"bfea32d3da1d8cbc",
 "c3199c8e96a38cd1",
 "cce2eea57ceed348",
 "d381ec9df372f216",
@@ -3205,6 +3446,15 @@
 "messages.exit_unlocked": [
 "27020ac87e7721c7"
 ],
+"messages.faction_now_friendly": [
+"adf7e5e4fe2cef6c"
+],
+"messages.faction_now_hostile": [
+"c7fb52ffb361b695"
+],
+"messages.faction_now_neutral": [
+"806e50ec25b1db69"
+],
 "messages.failure": [
 "4af426f195a866ad"
 ],
@@ -3277,11 +3527,41 @@
 "messages.npc_approaches": [
 "3954a55348827b55"
 ],
+"messages.npc_confront": [
+"fccc011944e5599c"
+],
 "messages.npc_goal_done": [
 "734b607fb16acf2a"
 ],
+"messages.npc_hostile_talk": [
+"dabe3998f37b6906"
+],
+"messages.npc_moves": [
+"930c29b12c09647e"
+],
 "messages.npc_named": [
 "47ec73f8a9cb01c8"
+],
+"messages.npc_now_friendly": [
+"1093fd4d21c6a0bf"
+],
+"messages.npc_now_hostile": [
+"d784b8fe9a87868f"
+],
+"messages.npc_now_neutral": [
+"92e714b047429847"
+],
+"messages.npc_now_wary": [
+"ae4b256e78095add"
+],
+"messages.npc_offer_quest": [
+"4c413ae298c182b9"
+],
+"messages.npc_praise": [
+"ddff5bdd9c7f5620"
+],
+"messages.npc_reaction": [
+"b9266d223d1c87bb"
 ],
 "messages.npc_removed": [
 "74d61719a3718ece"
@@ -3289,11 +3569,23 @@
 "messages.npc_removed_scene": [
 "5a3772433a3873d8"
 ],
+"messages.npc_request_help": [
+"23974fb518e58afd"
+],
 "messages.npc_reveal": [
 "7d7bbdeacb303a8e"
 ],
+"messages.npc_seeks": [
+"9dc960bb13bf7685"
+],
+"messages.npc_threaten": [
+"c88a669a3e350b0e"
+],
 "messages.npc_triumph": [
 "257726dcc323f591"
+],
+"messages.npc_warn": [
+"d7315ab2cee2b7dc"
 ],
 "messages.on_the_way": [
 "2f9076548320f631"
@@ -3535,10 +3827,12 @@
 },
 "npcs.yaml": {
 "world_definition": [
+"006afbdf9e4a7210",
 "2725cde4d48c9b2b",
 "3497f983bee3aeae",
 "5613d5b7e6ddc81b",
 "6379c2402ec00049",
+"7710a95822dd7ffc",
 "86e13b3588608636",
 "89acdbbfbb73e41c",
 "c1890b9deff17fd4",
@@ -3557,6 +3851,7 @@
 ],
 "world_definition.characters[Captain of the Watch]": [
 "060a178ac0d85d24",
+"5cd17994d4eb2ac1",
 "8a0578a4110a51fb"
 ],
 "world_definition.characters[Dock Worker]": [
@@ -3568,14 +3863,17 @@
 "f63c23671684c7df"
 ],
 "world_definition.characters[Fence]": [
-"013a18d41f1d5605"
+"013a18d41f1d5605",
+"44665cb4b35c9c4d"
 ],
 "world_definition.characters[Gardener]": [
 "0deb670353f2a1e5",
 "58f805356faa8971",
-"d105654cd137be5f"
+"d105654cd137be5f",
+"f1d5c04928ae93a9"
 ],
 "world_definition.characters[Gate Guard]": [
+"0b9536e6a3953359",
 "152455cc667a4911",
 "2afa4ee416485a82",
 "3cbf275404d0ec0a",
@@ -3587,6 +3885,7 @@
 "world_definition.characters[Guard]": [
 "53ce504eb8ea1782",
 "89af019a4df26a87",
+"a0aea1ac2c241760",
 "a23a610f39f95ca7",
 "eab180acdb3fe722"
 ],
@@ -3600,9 +3899,11 @@
 ],
 "world_definition.characters[Merchant]": [
 "092afe0117f438ed",
+"4efa781ee9785c51",
 "6ba3af9f33ac6699",
 "b062f45eb2949b1f",
 "b6946d3526bbfa96",
+"eb5ad1d04f842559",
 "f01ff8090366ca38"
 ],
 "world_definition.characters[Pale Conductor]": [
@@ -3617,7 +3918,8 @@
 "00a9819f9f15222a",
 "2d3e7a3e32b93457",
 "57a0c6a0e9cc7f26",
-"b48240203175c863"
+"b48240203175c863",
+"c4060766358253ed"
 ],
 "world_definition.characters[Runaway Apprentice]": [
 "0c3411124ad42a37",
@@ -3633,12 +3935,92 @@
 "b213c9a0ee384bbd"
 ],
 "world_definition.characters[Thief's Lookout]": [
+"9b03de119bc78682",
 "e6c33713e42a9171"
 ],
 "world_definition.characters[Thief]": [
 "038d1ae4945d1306",
+"0a333873f828d551",
 "b19db795eaa555b6",
 "f248bd39dfb87980"
+],
+"world_definition.factions": [
+"c04f9075783107a6"
+],
+"world_definition.factions.Chapel": [
+"4f7b82b5ccffb81b"
+],
+"world_definition.factions.Chapel.description": [
+"0e495abd46614465"
+],
+"world_definition.factions.Chapel.reacts_to": [
+"9842958265cd7cce"
+],
+"world_definition.factions.Chapel.reacts_to.quest_completed": [
+"6b86b273ff34fce1"
+],
+"world_definition.factions.Chapel.reacts_to.theft": [
+"1bad6b8cf97131fc"
+],
+"world_definition.factions.City Watch": [
+"abcc80ed47815c15"
+],
+"world_definition.factions.City Watch.description": [
+"6f0f4dba6f1a3fda"
+],
+"world_definition.factions.City Watch.friendly_at": [
+"d4735e3a265e16ee"
+],
+"world_definition.factions.City Watch.hostile_below": [
+"cf3bae39dd692048"
+],
+"world_definition.factions.City Watch.reactions": [
+"7d054d0712a6c72d"
+],
+"world_definition.factions.City Watch.reacts_to": [
+"dae3a5bcf68ee380"
+],
+"world_definition.factions.City Watch.reacts_to.attacked": [
+"cf3bae39dd692048"
+],
+"world_definition.factions.City Watch.reacts_to.crime": [
+"1bad6b8cf97131fc"
+],
+"world_definition.factions.City Watch.reacts_to.helped": [
+"d2cbad71ff333de6"
+],
+"world_definition.factions.City Watch.reacts_to.theft": [
+"1bad6b8cf97131fc"
+],
+"world_definition.factions.City Watch.relations": [
+"31869c5b1ae68a12"
+],
+"world_definition.factions.City Watch.relations.Thieves' Guild": [
+"1b07b0cffa0b3f59"
+],
+"world_definition.factions.Thieves' Guild": [
+"c286574709fb1cdd"
+],
+"world_definition.factions.Thieves' Guild.description": [
+"844df361220eb2fb"
+],
+"world_definition.factions.Thieves' Guild.public": [
+"fcbcf165908dd18a"
+],
+"world_definition.factions.Thieves' Guild.reacts_to": [
+"94f7f54361e71cd5"
+],
+"world_definition.factions.Thieves' Guild.reacts_to.attacked": [
+"1bad6b8cf97131fc"
+],
+"world_definition.factions.Thieves' Guild.reacts_to.betrayed": [
+"cf3bae39dd692048"
+],
+"world_definition.factions.Thieves' Guild.relations": [
+"309c73d995fd62fe"
+],
+"world_definition.factions.Thieves' Guild.relations.City Watch": [
+"1b07b0cffa0b3f59"
 ]
 },
 "side_quests.yaml": {
@@ -3647,7 +4029,8 @@
 "8382be094fd5e336",
 "a5b6f195bba17b76",
 "b370a18f553d04ba",
-"c5fa1b3f69f8af53"
+"c5fa1b3f69f8af53",
+"d2f2a3755a53e016"
 ],
 "world_definition.side_quests[a_blessing_for_the_road]": [
 "afba3e26e581cd12",
@@ -3662,6 +4045,9 @@
 "395d7ee28ef9f6d2",
 "d34ba8ec2c2fb2e8",
 "fa558e09f320c3e5"
+],
+"world_definition.side_quests[a_night_with_the_watch]": [
+"347cca06a8553ea3"
 ],
 "world_definition.side_quests[charting_the_storm]": [
 "c083291702b4794f",
@@ -3983,6 +4369,10 @@
 "fitness.path_variety.revisit_penalty": 2,
 "fitness.path_variety.unique_location_bonus": 6,
 "fitness.payoff_match_score": 10,
+"fitness.relationships.change_bonus": 3,
+"fitness.relationships.diminishing": 0.6,
+"fitness.relationships.faction_bonus": 3,
+"fitness.relationships.reaction_bonus": 2,
 "fitness.repetition.action_repeat_penalty": 3,
 "fitness.repetition.backtrack_penalty": 2,
 "fitness.repetition.free_uses": 2,
@@ -4044,7 +4434,7 @@
 "fitness.unexpected_events.variety_bonus": 6,
 "fitness.variety.distinct_choice_weight": 30,
 "fitness.variety.repeated_outcome_penalty": 2,
-"fitness.version": 2,
+"fitness.version": 3,
 "fitness.visit_penalty": 5,
 "fitness.volatility.pair_weight": 5,
 "fitness.volatility_pair_weight": 10,
@@ -4150,6 +4540,52 @@
 "power_model.min_power": 0.0,
 "power_model.stat_weight": 1.5,
 "progression.history": 50,
+"relationships.appearance.ally": 1.0,
+"relationships.appearance.friendly": 0.5,
+"relationships.appearance.hostile": 0.0,
+"relationships.appearance.neutral": 0.0,
+"relationships.appearance.wary": -0.25,
+"relationships.deeds.attacked.faction": -1,
+"relationships.deeds.attacked.hostility": 3,
+"relationships.deeds.attacked.related": 0.5,
+"relationships.deeds.attacked.trust": -2,
+"relationships.deeds.attacked.witness_hostility": 1,
+"relationships.deeds.betrayed.faction": -1,
+"relationships.deeds.betrayed.hostility": 2,
+"relationships.deeds.betrayed.related": 0.5,
+"relationships.deeds.betrayed.trust": -3,
+"relationships.deeds.betrayed.witness_trust": -1,
+"relationships.deeds.crime.faction": -1,
+"relationships.deeds.crime.hostility": 1,
+"relationships.deeds.crime.related": 0.5,
+"relationships.deeds.crime.witness_hostility": 1,
+"relationships.deeds.helped.faction": 0.5,
+"relationships.deeds.helped.hostility": -1,
+"relationships.deeds.helped.related": 0.5,
+"relationships.deeds.helped.trust": 1,
+"relationships.deeds.quest_completed.faction": 1,
+"relationships.deeds.quest_completed.related": 0.5,
+"relationships.deeds.quest_completed.trust": 2,
+"relationships.deeds.quest_failed.faction": -0.5,
+"relationships.deeds.quest_failed.trust": -1,
+"relationships.deeds.theft.faction": -0.5,
+"relationships.deeds.theft.hostility": 1,
+"relationships.deeds.theft.related": 0.5,
+"relationships.deeds.theft.trust": -1,
+"relationships.deeds.theft.witness_hostility": 1,
+"relationships.faction_hostile_below": -2,
+"relationships.faction_weight": 0.5,
+"relationships.friendly_at": 2,
+"relationships.goal_setback.hostility": 1,
+"relationships.goal_setback.trust": -1,
+"relationships.goal_trust": 2,
+"relationships.haunt_weight": 2.0,
+"relationships.hostile_at": 3,
+"relationships.kin": 0.5,
+"relationships.max_memories": 8,
+"relationships.max_reactions_per_turn": 1,
+"relationships.reaction_expiry": 8,
+"relationships.reaction_pull": 1.0,
 "reproducibility.seed": 42,
 "scene.location_tag_match_bonus": 4.0,
 "scene.max_visible_npcs": 3,

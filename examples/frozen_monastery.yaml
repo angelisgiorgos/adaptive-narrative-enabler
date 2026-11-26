@@ -320,8 +320,19 @@ world_definition:
     - Crypt
     descriptions:
     - A tall old man whose smile never reaches his eyes.
+    # People and factions (core_engine/relationships.py; docs/WORLD.md, "People, factions and reactions")
+    faction: Brotherhood
+    never: [offer_quest, request_help]   # he asks the stranger for nothing
     goals:
-    - Keep the secret
+    - goal: Keep the secret
+      id: keep_the_secret
+      opposes: [confrontation]           # being pressed about it costs his trust
+    reactions:
+    - when: {item_collected: Sealed Letter}   # no signal: whenever this holds (once)
+      behaviour: warn
+      where: anywhere
+      hostility: 1
+      text: A novice catches your sleeve. "The Abbot knows his letter is gone. He has been asking where you are."
     actions:
     - name: Confront the Abbot
       outcomes:
@@ -341,8 +352,19 @@ world_definition:
     - Bell Tower
     descriptions:
     - The librarian, ink-stained and suspicious.
+    faction: Brotherhood
+    relationship: {trust: -1, persist: true}   # suspicious at first; remembered in the next stories
+    related: {Abbot: 0.5}
     goals:
-    - Guard the books
+    - goal: Guard the books
+      id: guard_the_books
+      progress_when: {action_done: Ask about the chronicle}   # explicit: helping him is asking the right thing
+      needed: 1
+      reward: none
+      opposes: [theft]
+    dialogue:
+    - enabled_if: {npc_disposition: Brother Anselm, op: in, value: [friendly, ally]}
+      text: '"You again. Good. The chronicle''s last pages are in the bell tower; I never told the Abbot that."'
     actions:
     - name: Ask about the chronicle
       outcomes:
@@ -364,8 +386,9 @@ world_definition:
     - Cloister
     descriptions:
     - A young novice with chapped hands.
+    faction: Brotherhood
     goals:
-    - Finish the chores
+    - Finish the chores                  # a sentence: the keyword fallback ("Help with the chores")
     actions:
     - name: Help with the chores
       outcomes:
@@ -388,7 +411,16 @@ world_definition:
     descriptions:
     - A wild-bearded hermit who speaks to the fire.
     goals:
-    - Be left alone
+    - goal: Be left alone
+      id: be_left_alone
+      opposes: [combat]                  # blood spilled near his fire
+    activities:
+    - {tags_any: [cave], text: He feeds the fire one twig at a time.}
+    reactions:
+    - when: {npc_hostility: Hermit, op: gte, value: 2}
+      behaviour: move                    # he leaves for the place that suits him best among these
+      move_to_tags: [mountain, secret]
+      text: The hermit gathers his furs without a word and leaves, deeper into the mountains.
   - name: Snow Wolf
     unique: false
     encounter_event: wolf_attack
@@ -416,8 +448,11 @@ world_definition:
     - Crypt
     descriptions:
     - A lay brother with a heavy staff and heavier keys.
+    faction: Brotherhood
     goals:
-    - Keep order
+    - goal: Keep order
+      id: keep_order
+      opposes: [escape]
     actions:
     - name: Slip past the warden
       outcomes:
@@ -627,6 +662,17 @@ world_definition:
           - social
           - success
         required_object: Sealed Letter
+  factions:                        # who stands with whom (core_engine/relationships.py)
+    Brotherhood:
+      description: The monks of the monastery.
+      relations: {Glacier Thieves: -1}   # beating the thieves pleases the brothers (and back)
+      reacts_to: {theft: -1, crime: -1, quest_completed: 0.5}
+      reactions:
+      - signal: faction
+        to: friendly
+        behaviour: praise
+        where: anywhere
+        text: The brothers have begun to nod to you in the cloister.
   side_quests:                     # set up by the glacier thieves (their encounter's on_win / on_loss)
     the_thieves_hideout:
       title: The thieves' hideout

@@ -20,6 +20,11 @@ lines and mission rewards (GameState.apply_effects runs them).
       - start_event: bandit_ambush             # once the current action is resolved
       - complete_mission: true                 # the story's mission (or `complete_mission: <id>`) is won
       - end_story: You sail into the sunrise.  # the story ends with this text
+      - change_trust: {Priest: 1}              # people and factions (core_engine/relationships.py);
+      - change_hostility: 2                    #   a number alone: the NPC who acts
+      - change_standing: {City Watch: -1}      # a faction's standing (and the factions related to it)
+      - deed: theft                            # the player did this to the NPC who acts (or {kind, npc})
+      - move_npc: {Priest: Palace}             # a unique NPC lives elsewhere from now on
 
 Effects run in order. A list is validated as a whole (references, value types,
 writable fields) before its first effect runs, so a bad effect changes nothing.
@@ -37,13 +42,18 @@ EFFECTS = {
     "remove_npc": "actor", "reveal_npc": "npc", "reveal_item": "item",
     "reveal_location": "location", "unlock_location": "location", "move_to": "location", "send_to": "location",
     "start_event": "event", "complete_mission": "mission", "end_story": "text",
+    "change_trust": "npc_amounts", "change_hostility": "npc_amounts", "change_standing": "faction_amounts",
+    "deed": "deed", "move_npc": "npc_places",
 }
+DEED_KINDS = ("helped", "betrayed", "theft", "crime", "attacked")  # relationships.DEEDS
 # what each effect writes, for route planning toward goals (GameState._advances)
 _WRITES = {
     "set_variable": "variable", "change_variable": "variable", "set_stat": "stat", "change_stat": "stat",
     "give_item": "item", "take_item": "item", "reveal_item": "item", "remove_npc": "npc", "reveal_npc": "npc_seen",
     "reveal_location": "location", "unlock_location": "location", "move_to": "location", "send_to": "location",
     "start_event": "event", "complete_mission": "mission", "end_story": "end",
+    "change_trust": "relationship", "change_hostility": "relationship", "change_standing": "relationship",
+    "deed": "relationship", "move_npc": "npc_home",
 }
 _REFERENCES = {"items": "items", "npc": "npcs", "item": "items", "location": "locations", "event": "events"}
 STAT_RANGE = (1, 100)
@@ -84,6 +94,17 @@ def normalize(raw):
             argument = tuple(argument.items())
         elif EFFECTS[kind] == "items":
             argument = tuple(argument) if isinstance(argument, list) else (argument,)
+        elif EFFECTS[kind] == "npc_amounts":
+            argument = tuple(argument.items()) if isinstance(argument, dict) else ((True, argument),)
+        elif EFFECTS[kind] in ("faction_amounts", "npc_places"):
+            if not isinstance(argument, dict) or not argument:
+                raise EffectError(f"effect {index}: `{kind}` needs a mapping of names to values")
+            argument = tuple(argument.items())
+        elif EFFECTS[kind] == "deed":
+            if isinstance(argument, dict):
+                argument = (argument.get("kind"), argument.get("npc"))
+            else:
+                argument = (argument, None)
         items.append((kind, argument))
     return tuple(items)
 
@@ -105,8 +126,10 @@ def writes(items):
     written = set()
     for kind, argument in items:
         target = _WRITES.get(kind)
-        if EFFECTS[kind] == "assignments":
+        if EFFECTS[kind] in ("assignments", "npc_amounts", "faction_amounts", "npc_places"):
             written |= {(target, name) for name, _ in argument}
+        elif EFFECTS[kind] == "deed":
+            written.add((target, argument[1]))
         elif EFFECTS[kind] == "items":
             written |= {(target, name) for name in argument}
         elif kind in ("change_coins", "change_health"):
@@ -193,6 +216,29 @@ def _check(kind, argument, refs, label):
                 errors.append(f"{label}: `{name}` needs a whole number.")
             elif kind == "set_stat" and not STAT_RANGE[0] <= value <= STAT_RANGE[1]:
                 errors.append(f"{label}: `{name}` must be set between {STAT_RANGE[0]} and {STAT_RANGE[1]}.")
+        return errors
+    if shape in ("npc_amounts", "faction_amounts"):
+        known = refs.npcs if shape == "npc_amounts" else refs.factions
+        what = "NPC" if shape == "npc_amounts" else "faction"
+        for name, value in argument:
+            if not _is_number(value):
+                errors.append(f"{label}: the change{'' if name is True else f' for `{name}`'} must be a number.")
+            elif name is not True and (not isinstance(name, str) or (known is not None and name not in known)):
+                errors.append(f"{label}: unknown {what} `{name}`.")
+        return errors
+    if shape == "npc_places":
+        for name, place in argument:
+            if refs.npcs is not None and name not in refs.npcs:
+                errors.append(f"{label}: unknown NPC `{name}`.")
+            elif not isinstance(place, str) or (refs.locations is not None and place not in refs.locations):
+                errors.append(f"{label}: unknown location `{place}` for `{name}`.")
+        return errors
+    if shape == "deed":
+        deed_kind, npc = argument
+        if deed_kind not in DEED_KINDS:
+            errors.append(f"{label} needs a deed: {', '.join(DEED_KINDS)} (or {{kind, npc}}).")
+        if npc is not None and (not isinstance(npc, str) or (refs.npcs is not None and npc not in refs.npcs)):
+            errors.append(f"{label}: unknown NPC `{npc}`.")
         return errors
     if shape == "number":
         return [] if _is_whole(argument) else [f"{label} needs a whole number."]

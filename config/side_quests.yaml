@@ -66,6 +66,20 @@ world_definition:
         offer: '{giver} lowers their voice: "Bring me word of the Drowned Archive before the tide turns, and I will make it worth your while."'
         complete: '{giver} counts out the coins, eyes bright. "The Archive! I knew it was more than a story."'
         fail: The news of the Archive is all over the docks already; nobody will pay for it now.
+    a_night_with_the_watch:          # offered by the Captain once he counts the player a friend (his reaction)
+      title: A night with the Watch
+      description: The Captain wants a trusted pair of eyes on the Alley after dark.
+      giver: Captain of the Watch
+      start: {npc_disposition: Captain of the Watch, op: in, value: [friendly, ally]}
+      goal: {location: Alley}
+      aids_mission: lead
+      tags: [urban, guard, law]
+      rewards:
+      - change_coins: 5
+      - change_standing: {City Watch: 1}
+      texts:
+        offer: '{giver} lowers his voice: "I need someone I trust in the Alley tonight. Interested?"'
+        complete: '{giver} claps your shoulder. "The Watch looks after its friends."'
     a_blessing_for_the_road:
       title: A blessing for the road
       description: The Priest asks you to carry a blessing to the sailors at the Harbor.

@@ -116,6 +116,7 @@ CODES = {
     "repeat_last": "It was the last attack (encounters.no_repeat_last).",
     "npc_absent": "Its NPC is not in the scene.",
     "npc_gone": "Its NPC is gone from the story.",
+    "npc_unwilling": "Its NPC would not do it: friendly with the player, or never does (core_engine/relationships.py).",
     "event_blocked": "Its event's own rules hold it back (enabled_if, repeat, max_occurrences, cooldown).",
 }
 
@@ -200,24 +201,21 @@ def stage(state):
 
 @with_state_context
 def standing(state, faction):
-    """A faction's standing with the player: encounters.factions.<faction>.standing (or the
-    persistent variable it names), changed by this story's encounters (faction_shift)."""
-    spec = settings()["factions"].get(faction) or {}
-    base = spec.get("standing", 0)
-    if spec.get("variable") and spec["variable"] in getattr(state, "variables", {}):
-        base = state.variables.get(spec["variable"], base)
-    try:
-        base = float(base)
-    except (TypeError, ValueError):
-        base = 0.0
-    return base + float((state.__dict__.get("faction_shift") or {}).get(faction, 0))
+    """A faction's standing with the player: its own (world ``factions``, or encounters.factions in the
+    tuning; or the persistent variable it names), changed by this story (faction_shift). One faction
+    model for the whole engine: core_engine/relationships.py."""
+    from . import relationships
+
+    return relationships.standing(state, faction)
 
 
 @with_state_context
 def hostile(state, faction):
-    """Whether a faction is hostile now: its standing below encounters.factions.<faction>.hostile_below (0)."""
-    spec = settings()["factions"].get(faction) or {}
-    return standing(state, faction) < float(spec.get("hostile_below", 0))
+    """Whether a faction is hostile now: its standing below its hostile_below (0 for a faction only
+    the tuning names; relationships.faction_hostile_below for a world faction)."""
+    from . import relationships
+
+    return relationships.faction_status(state, faction) == "hostile"
 
 
 def _place_tags(state):
@@ -321,6 +319,11 @@ def _template_block(state, event, spec, cfg):
         return "npc_absent"
     if spec.npc and state._is_removed(spec.npc):
         return "npc_gone"
+    if spec.npc and spec.category == "npc_assault":
+        from . import relationships
+
+        if relationships.permits(state, spec.npc, "attack") in ("friendly", "forbidden"):
+            return "npc_unwilling"  # the director cannot set a friend (or someone who never would) on them
     if state._event_blocked(event) is not None:
         return "event_blocked"
     return None
@@ -454,8 +457,9 @@ def resolved(state, event, entry, outcome=None):
         if side_story.effect_kind(block["effects"]):
             side_story.link(state, "encounter", thread, side_story.effect_kind(block["effects"]))
     for faction, delta in (block.get("standing") or {}).items():
-        shift = state.__dict__.setdefault("faction_shift", {})
-        shift[faction] = shift.get(faction, 0) + float(delta)
+        from . import relationships
+
+        relationships.change_standing(state, faction, float(delta), cause="encounter")
         side_story.link(state, "encounter", thread, "standing", faction)
     if block.get("side_quest"):
         from . import side_quests
