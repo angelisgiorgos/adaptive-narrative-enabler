@@ -7,6 +7,111 @@ that introduces them.
 
 ## [Unreleased]
 
+### API documentation: an endpoint reference, worked flows
+
+#### Added
+- `docs/ENDPOINTS.md`: every endpoint (148) by area, with what it does, its parameters, its body fields
+  (type, required or default, description), its response and a `curl` line. It is generated from
+  `api.py` by `python -m utils.api_reference` (`--check` reports whether it is current);
+  `tests/test_api_reference.py` fails when it is out of date or an endpoint has no description.
+- `docs/API.md`: a *Using the API* section (conventions, and worked flows: bring a world, train in the
+  background and play; save and continue; play a saved engine; export and download; edit the world),
+  checked against a running API. The section that listed the endpoints is now *Behaviour by area*.
+- Descriptions for the 30 endpoints that had none (`/healthz`, `/v1/config`, `/v1/settings`,
+  `/v1/simulations`, the entity and mission editors, `/v1/artifacts/{id}`, ...), shown in `/docs` too.
+
+#### Fixed
+- `docs/API.md`'s example training request had no `X-ANE-User` and was refused (`400`). The flows send it.
+- `docs/FRONTEND.md`'s title was written twice. It and the README link the new reference.
+
+### Engine re-check of the 6–9 November findings (LIMITATIONS.md section 1)
+
+#### Fixed
+- A prisoner's story could still end "stalled": a turn that ended in a plain failure finalized before
+  the director's release, and an event in the cell blocked the release while the stall ended the story.
+  A player the director (or an encounter's `captive_release`) would let out is now never ended as a
+  stall; they are let out then, or once the event is over (`GameState._held_for_release`). Without a
+  director, a stall still ends the story. Tests: `tests/test_one_way.py` (`PrisonReleaseTests`).
+- A held player could be told the same small talk turn after turn, word for word. Small talk (no
+  authored dialogue line) is now offered once per visit; authored dialogue and hostile talk stay on
+  offer. Tests: `tests/test_one_way.py` (`SmallTalkTests`), `tests/test_playtest.py`, and
+  `tests/test_story_rules.py` (the stall-counting test now uses authored dialogue).
+
+#### Added
+- Playtest metrics report `clues`: `planted`, `paid` (as `story_rules.clue_matching` matches),
+  `paid_strict` (each `payoff_N` closing only `setup_N`) and `mismatched`
+  (`evaluator/playtest.py::_clue_metrics`).
+
+#### Changed
+- `backend/tuning_parameters.yaml`: the source lines it cites in `core_engine/game_state.py` follow the
+  edits above.
+
+### A saved engine's game starts in its own context
+
+#### Changed
+- Starting a game with a saved engine (`POST /v1/engines/load`, `POST /v1/engines/{id}/play`,
+  `POST /v1/records/engines/{id}/play`) no longer makes the engine's world and tuning the
+  process-wide configuration (`EngineModel.activate()`). The game is built in the engine's own context,
+  with its world, tuning, tag vectors, default profile and stat rules (`backend/sessions.py::_engine_game`).
+  The editors' world, `GET /v1/config`, other sessions and the next default game or training no longer
+  change when someone plays an engine. An older bundle (a configuration YAML with
+  `generated_run.genome`) is also played in its own context and no longer installs an upload override.
+- The studio no longer warns that playing an engine makes its world active (engine card and quest
+  note). It says the game plays the world in its own context.
+
+#### Added
+- `POST /v1/engines/{id}/activate`: the explicit operation that makes an engine the studio's defaults
+  (`{engine_id, activated, revision}`).
+- `activate` (body field of the `/play` requests, query parameter of `/v1/engines/load`, default
+  false): the earlier behaviour, for callers that relied on it. **Migration:** pass it, or call the
+  activate endpoint, where an editor should show the played engine's world.
+- The start response carries `engine` (`{engine_id, name, source}`), `world` (its identity, and whether
+  it is the studio's world now), `world_revision` (the revision of the frozen configuration the game
+  runs with) and `activated`.
+
+#### Fixed
+- A player's own stat points for an engine game were checked against the stat rules active before
+  the game started, not the engine's. They are now checked in the engine's context.
+- `POST /v1/sessions/load` built the continued game in the studio's defaults, so an engine game's save
+  game continued exactly only while that engine happened to be active. Save games made here now
+  carry `engine.engine_id` and `engine.context_key` and continue in their session's own
+  configuration. Tests: `tests/test_engine_play_isolation.py`, over HTTP to a live server with
+  concurrent requests.
+
+### Story routes validated against the submitted world
+
+#### Fixed
+- A world with its own map (`world_definition.routes`) was refused on upload, and as an engine
+  (`POST /v1/engines/load`). The upload's map was compared key by key with the built-in city's, which
+  produced errors such as "Missing `world_definition.routes.Harbor`". Those errors also hid the real route
+  problems. `backend/store.py::_validate_complete_config` now treats the map as the author's and checks it
+  with `core_engine.builder.route_errors` against the submitted world's own places, as the runtime does.
+  Routes still hold both ways, and `send_to` stays the one-way jump. An omitted or null map and an explicit
+  `routes: {}` are kept as written and never filled from the city's map.
+- A route to an unknown place names both its source and the missing destination
+  (`routes.<source>: the route from '<source>' to '<destination>' leads to '<destination>', which is not a
+  location of this world.`). Tests: `tests/test_route_validation.py`, fixture `tests/fixtures/salt_press.yaml`.
+
+### Upload and export result contract
+
+#### Fixed
+- `POST /v1/config/upload` on Windows: a valid upload became active and was then reported as failed. The
+  temporary file was reopened and removed while the descriptor `mkstemp` returned was still open, and the
+  `PermissionError` from removing it was raised after the commit. The same error could also replace a
+  rejected upload's validation message. The upload is now staged through that descriptor, then validated
+  and committed, and cleanup is best effort (`api._discard`). A cleanup problem never fails a committed
+  upload and never hides a validation error. `POST /v1/engines/load` and the download links
+  (`_register_artifact`) clean up the same way.
+- `backend/export.py`: the `.zip` and `.unitypackage` archives no longer leave the `mkstemp` descriptor
+  open (`_temporary_archive`), and a write that fails removes the half-written archive
+  (`_removed_on_failure`).
+
+#### Changed
+- `POST /v1/config/upload` answers `revision` (the accepted world revision, as `GET /v1/world/revision`
+  returns it) and `accepted: true`, plus `cleanup_warning` when a temporary file could not be removed
+  after the commit. The existing `message` and `settings` fields are unchanged. An identical retry
+  returns the same revision. Tests: `tests/test_upload_export_contract.py`.
+
 ### People and factions that remember: relationships, factions and NPC reactions
 
 #### Added

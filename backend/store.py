@@ -531,6 +531,16 @@ def _validate_complete_config(candidate: object, reference: object, path: str = 
             else:
                 errors.extend(starts.location_errors(entry, f"Location `{name}`"))
         return errors
+    if path == "world_definition" and isinstance(candidate, dict) and candidate.get("routes") is not None:
+        # The map is the author's: checked against this world's own places (core_engine.builder.route_errors,
+        # as the runtime reads it), never against the built-in city's.
+        from core_engine.builder import route_errors
+
+        errors.extend(route_errors(candidate))
+    if path == "world_definition.routes":
+        # Checked whole at `world_definition` (above). Left out (or null): no authored map, every story draws its
+        # own; an explicit `{}` is kept as written and declares no routes either. Never filled from the city's.
+        return []
     if path == "start_selection" and isinstance(candidate, dict):
         errors.extend(starts.validate_settings(starts.settings({"start_selection": candidate})))
     if path == "story_rules" and isinstance(candidate, dict):

@@ -1,5 +1,4 @@
 # Building a frontend on the API
-# Building a frontend on the API
 
 This guide is for frontend developers who are building a new client for the Adaptive Narrative
 Studio, for example in React. It also works as input to a code generator. It describes every screen
@@ -9,15 +8,17 @@ OpenAPI schema you can rebuild the whole studio without reading `app.py`.
 - **What the studio does** is in [Views](#views): each screen's components, the requests it
   makes, what it shows from each response, and the logic the studio runs in the browser, which you
   have to reimplement.
-- **What the API accepts** is in the OpenAPI schema: `GET /openapi.json`, browsable at `/docs`.
-  It has every request body, every query and path parameter, and the constraints on each. Many
+- **What the API accepts** is in [ENDPOINTS.md](ENDPOINTS.md): every endpoint with its parameters,
+  body fields (type, required or default), response and a `curl` line, generated from `api.py`. The
+  same is in the OpenAPI schema (`GET /openapi.json`, browsable at `/docs`), with the constraints on each. Many
   responses are untyped (`object`) in the schema. Their fields are given here, in
   [Shared shapes](#shared-shapes) and in the view that uses them.
 - **Which view calls which endpoint** is in the [Endpoint index](#endpoint-index). It lists every
   route of `api.py`. `tests/test_studio_coverage.py` checks that the index matches the API
   exactly, so this guide fails the test suite when the two drift apart.
 
-[API.md](API.md) describes the endpoints one by one, [STUDIO.md](STUDIO.md) describes the studio
+[API.md](API.md) describes how the API behaves, with worked flows (upload, train, play, save, export),
+[ENDPOINTS.md](ENDPOINTS.md) every endpoint one by one, [STUDIO.md](STUDIO.md) describes the studio
 for its users, and [WORLD.md](WORLD.md) describes the world format (conditions, effects, actions).
 
 ## The contract
@@ -1305,7 +1306,7 @@ Job result = `SimulationResponse` fields used: `report` (markdown string), `run_
 - Executed check (`executed_markdown(training, shown)`), appended to the result card: compare keys `population, generations, stories_per_storyteller, requested_steps, story_turns, full_length_stories, deterministic, seed, warm_start, warm_start_mode` between `training.resolved` and `training.executed`, and between the plan shown before the run (`shown.effective`) and `executed`. None differ → "✅ **Ran exactly as summarised before it started:** {pop} storytellers × {gen} generations × {stories} stories × up to {story_turns} turns, seed S|random, warm start {mode} (started from {warm_started} remembered storyteller(s)[; the summary counted {remembered}])." Else "⚠ **The run differs from the summary shown before it started** (key: shown X, ran Y; …): the saved defaults changed in between. It ran with: …".
 - `done` object (kept in memory and localStorage `ane-train-result`): `{engine_id, run_id, kind: "run"|"continue"|"retrain", score, generations, check}`. Kind labels: run "New run", continue "Training continued", retrain "Retrained".
 - Result card (`completed_view_ui`): no `done.engine_id` → `NO_RESULT` ("No training has finished here yet. Configure a run above and press **🧠 Evolve storytellers** (or continue or retrain one in *From a recorded engine*): its completed engine appears here, ready to play, evaluate or export."), buttons disabled. Else with card: "### ✅ Completed engine: {name or default_label}\n{kind label}. {card body without heading}"; card unreadable: "### ✅ Completed engine `{id}`\n{kind label} · run `{run_id}` · training fitness **{score:.2f}|not benchmarked** … · **{generations}** generation(s)". Then `\n\n{check}` (if any) + "Play, evaluate or export **this** engine: each button opens its destination with this exact engine chosen. No game has been started."
-- Engine card markdown (`engine_card_markdown`, shared with Play and Finished engines): heading "### 🏷 {name or default_label or engine_id}" + " *(unnamed)*" if no name; line "{kind} made **{created_at[:16] with T→space}** · engine `{id}` · run `{run_id}`"; "- **World:** {n} places · {n} people · {n} items · {n} events · {n} quests · world `{id[:12]}` · ✓ the active world | ⚠ not the active world (playing it makes its world active)" (or "not recorded"); "- **Training:** champion of generation G | N generation(s) · its training can be continued · {main settings as 'population 40, generations 10, …'}" (or "no training state (a loaded or recorded storyteller)"); "- **Training fitness:** **{training:.2f}** (…) · {improvement:+.1f} over the run, stopped early" or "not benchmarked"; "- **Judge engagement:** **{evaluations[0].engagement:.2f} / 10** … over {judged or stories} stories, judge benchmark|stories judged to fit the fitness of {at}[ (mean story fitness X)][; N earlier evaluation(s)]" or "not evaluated yet (⚖ Evaluate → *Play and judge*…)"; "- **Judge in training:** X / 10" if present; `settings.other` in a collapsible "Every training setting". Setting display names: pop_size→population, generations, episodes_per_genome→stories per storyteller, max_steps→turns per story, validation_episodes→benchmark stories, warm_start→from the learning memory, crossover_rate→crossover, mutation_rate→mutation, elitism_rate→elitism, player→simulated player; others: underscores → spaces; bools yes/no.
+- Engine card markdown (`engine_card_markdown`, shared with Play and Finished engines): heading "### 🏷 {name or default_label or engine_id}" + " *(unnamed)*" if no name; line "{kind} made **{created_at[:16] with T→space}** · engine `{id}` · run `{run_id}`"; "- **World:** {n} places · {n} people · {n} items · {n} events · {n} quests · world `{id[:12]}` · ✓ the active world | not the active world (a game plays it in its own context)" (or "not recorded"); "- **Training:** champion of generation G | N generation(s) · its training can be continued · {main settings as 'population 40, generations 10, …'}" (or "no training state (a loaded or recorded storyteller)"); "- **Training fitness:** **{training:.2f}** (…) · {improvement:+.1f} over the run, stopped early" or "not benchmarked"; "- **Judge engagement:** **{evaluations[0].engagement:.2f} / 10** … over {judged or stories} stories, judge benchmark|stories judged to fit the fitness of {at}[ (mean story fitness X)][; N earlier evaluation(s)]" or "not evaluated yet (⚖ Evaluate → *Play and judge*…)"; "- **Judge in training:** X / 10" if present; `settings.other` in a collapsible "Every training setting". Setting display names: pop_size→population, generations, episodes_per_genome→stories per storyteller, max_steps→turns per story, validation_episodes→benchmark stories, warm_start→from the learning memory, crossover_rate→crossover, mutation_rate→mutation, elitism_rate→elitism, player→simulated player; others: underscores → spaces; bools yes/no.
 - Learning curve rows: per `history[]` entry three points: (generation, `validation`, "benchmark (champion)"), (generation, `best`, "best this generation"), (generation, `mean`, "population average").
 - Traits table: trait←`trait`, meaning←`meaning`, evolved←`value`, population←`population_mean`, tendency←`tendency`.
 - Engine picker labels everywhere: use the API's `label`; fallback (no label) `"{created_at[:16]} · loaded engine|run · N generation(s) · fitness X.X · {id[:8]}"`.
@@ -1849,7 +1850,7 @@ picker and Export's "Recorded engine" picker are re-fetched (labels change, valu
 2. `<kind || "Engine"> made **<date>** · engine \`<engine_id>\`[ · run \`<run_id>\`]`. date = `created_at[:16]` with `T`→space, or "unknown date".
 3. `- **World:** ` + parts joined " · ": counts from `world.summary` in the order locations "places", npcs "people", items "items",
    events "events", missions "quests" (only keys present, e.g. "12 places · 5 people"). Then `world \`<world.id[:12]>\``. Then
-   `world.current` true → "✓ the active world", false → "⚠ not the active world (playing it makes its world active)", null → nothing. Empty → "not recorded".
+   `world.current` true → "✓ the active world", false → "not the active world (a game plays it in its own context)", null → nothing. Empty → "not recorded".
 4. `- **Training:** ` parts joined " · ": if `generation` is set and `generations` null, "champion of generation N". Else if
    `generations`, "N generation(s)". Add "its training can be continued" if `resumable`. Add the `settings.main` items as
    "<name> <value>" joined ", ". Empty → "no training state (a loaded or recorded storyteller)". Setting display names:
@@ -2240,7 +2241,7 @@ Destination `id=advanced` (`#dest-advanced`). Lead text: "Technical settings: th
 **Actions.**
 | Trigger | Request | Body / params | On success | Errors & guards |
 |---|---|---|---|---|
-| Validate & use uploaded config (`upload_config`) | `POST /v1/config/upload` | multipart field **`file`** = the chosen file | `settings` (same shape as `GET /v1/settings`) → the 10 fields; `"✅ " + message` → config status | error "Choose a YAML configuration file first." when no file; 400 wrong extension ("Allowed file types: .yaml, .yml.") or invalid config; 413 "Uploaded file is too large." (limit = app parameter `max_config_upload_bytes`). Hyperparameters YAML, Weights, Engine logic are **not** refreshed. |
+| Validate & use uploaded config (`upload_config`) | `POST /v1/config/upload` | multipart field **`file`** = the chosen file | `settings` (same shape as `GET /v1/settings`) → the 10 fields; `"✅ " + message` → config status; `revision` is the accepted world revision (the same value as `GET /v1/world/revision`), and `cleanup_warning` (optional) is a server-side cleanup note: the upload was still accepted, so do not retry or report it as a failure | error "Choose a YAML configuration file first." when no file; 400 wrong extension ("Allowed file types: .yaml, .yml.") or invalid config; 413 "Uploaded file is too large." (limit = app parameter `max_config_upload_bytes`). Hyperparameters YAML, Weights, Engine logic are **not** refreshed. |
 | Use built-in config (`use_builtin_config`) | `POST /v1/config/reset` | — | `settings` → the 10 fields; `message` ("Built-in configuration restored.") → config status | — (no confirmation) |
 | Save settings (`save_settings`) | `PUT /v1/settings` | `{pop_size, generations, episodes_per_genome, max_steps, initial_health, initial_coins, max_actions, deterministic, seed, max_health}` from the fields; numbers sent as integers; `seed`, `max_health` may be `null` | `message` → config status (response `settings` ignored) | client guard: any field other than `seed`/`max_health` empty → error "Every simulation setting needs a numeric value."; 422 bounds (`ge` 1/0/100) → "field: msg"; 400 from the store |
 | Validate & save all hyperparameters (`save_all_hyperparameters`) | `PUT /v1/hyperparameters` | `{yaml: <editor text>}` | `settings` → the 10 fields; `yaml` → editor (normalised text); `message` → advanced status | 400 structure/type errors (message) |
@@ -2549,7 +2550,8 @@ too.
 Every `/v1` route of `api.py`, in the order the API declares them. **Views** are the views that
 call the route. "studio: …" names the endpoint the studio uses instead, and the route itself is
 for other clients. `tests/test_studio_coverage.py` (`FrontendGuideTests`) fails when this table and
-the API disagree, or when this guide names a request the API does not have.
+the API disagree, or when this guide names a request the API does not have. Each route's
+parameters, body and response are in [ENDPOINTS.md](ENDPOINTS.md) under the same `METHOD /path` heading.
 
 | Method | Path | Views | What it does |
 | --- | --- | --- | --- |
@@ -2633,6 +2635,7 @@ the API disagree, or when this guide names a request the API does not have.
 | `GET` | `/v1/records/engines` | [advanced-integration](#advanced-integration), [advanced-records](#advanced-records), [evaluate-benchmark](#evaluate-benchmark), [export-records](#export-records), [global-loads](#global-loads), [play-other-engine](#play-other-engine), [play-setup](#play-setup), [play-state-reference](#play-state-reference), [train-engines](#train-engines), [train-records](#train-records), [train-run](#train-run) | The recorded engines, newest first, each with its name (None: |
 | `GET` | `/v1/records/engines/{engine_id}` | [advanced-integration](#advanced-integration), [advanced-records](#advanced-records), [export-records](#export-records) |  |
 | `GET` | `/v1/records/engines/{engine_id}/model` | [advanced-integration](#advanced-integration), [advanced-records](#advanced-records), [export-records](#export-records) | The engine model file (for a generation's champion, assembled from its run). |
+| `POST` | `/v1/engines/{engine_id}/activate` | — (client only; the studio's defaults change by uploading a configuration) | Make a saved engine's world and tuning the studio's defaults (the explicit operation: starting a game never does it unless `activate`). |
 | `POST` | `/v1/engines/{engine_id}/play` | [play-setup](#play-setup), [play-state-reference](#play-state-reference), [train-run](#train-run) | Play the world a finished run was trained on, with its storyteller (``latest``: |
 | `GET` | `/v1/sessions/{session_id}/journal` | [advanced-integration](#advanced-integration), [play-game](#play-game), [play-journey](#play-journey), [play-setup](#play-setup), [train-run](#train-run) | A play session turn by turn, as a player follows it: |
 | `GET` | `/v1/sessions/{session_id}/transcript` | [advanced-integration](#advanced-integration), [play-game](#play-game), [play-setup](#play-setup), [play-story](#play-story), [train-run](#train-run) | The story of a play session so far, as text. |

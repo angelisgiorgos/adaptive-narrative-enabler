@@ -480,11 +480,11 @@ def open_session(token, user=None):
 
 
 def load_best_engine(uploaded_file, model_parameters_file=None, profile=None, stats_choice=None, stats_points=None,
-                     origin="studio", mission=None):
+                     origin="studio", mission=None, activate=False):
     """Start a game with a previously evolved storyteller (no evolution): an engine
-    model file, or an older bundle / configuration YAML."""
-    profile = _profile(profile)
-    points, mode = _player_stats(stats_choice, stats_points)
+    model file, or an older bundle / configuration YAML. The game runs in the engine's own
+    context (its world, tuning and tag vectors); the studio's defaults do not change unless
+    ``activate`` (then as ``activate_engine``)."""
     if uploaded_file and EngineModel.is_model(uploaded_file):
         if Path(uploaded_file).stat().st_size > MAX_ENGINE_UPLOAD_BYTES:
             raise AuthoringError(f"Engine artifacts must be {MAX_ENGINE_UPLOAD_BYTES:,} bytes or smaller.")
@@ -492,38 +492,82 @@ def load_best_engine(uploaded_file, model_parameters_file=None, profile=None, st
             model = EngineModel.load(uploaded_file)
         except ValueError as exc:
             raise AuthoringError(str(exc)) from exc
-        model.activate()
         note = "" if model.code_matches() else " It was trained with different engine code, so stories may differ."
     else:
-        from utils.tag_similarity import reset_tag_vectors
-
         config_data, genome = _read_engine_artifact(uploaded_file, model_parameters_file)
-        config.use_override(config_data)
-        reset_tag_vectors()  # it carries no tag vectors: never another engine's
         score = (config_data.get("generated_run") or {}).get("best_score")
-        model = EngineModel.capture(genome, score=score if isinstance(score, Number) else None,
-                                    learning=(config_data.get("generated_run") or {}).get("learning"),
-                                    source="loaded bundle")
+        # Its own context: it carries no tag vectors (never another engine's, nor the studio's).
+        with EngineContext(config_data, source="loaded bundle").bind():
+            model = EngineModel.capture(genome, score=score if isinstance(score, Number) else None,
+                                        learning=(config_data.get("generated_run") or {}).get("learning"),
+                                        source="loaded bundle")
         note = " (an older bundle: no training state, so it can be retrained but not continued)."
-    engine.refresh_runtime_settings()
     records.record_engine(model, origin=origin, source=model.source or "loaded")
-    result = _game_for(model, profile, points, mode, origin,
-                       f"Saved engine loaded. Best recorded score: **{model.score if model.score is not None else 'unknown'}**. "
-                       f"Evolution was skipped.{note}", mission=mission)
+    result = _engine_game(model, profile, stats_choice, stats_points, origin,
+                          f"Saved engine loaded. Best recorded score: **{model.score if model.score is not None else 'unknown'}**. "
+                          f"Evolution was skipped.{note}", mission=mission, activate=activate)
     _remember_engine(model, result["engine_path"])
     return result
 
 
+def activate_engine_defaults(model):
+    """The explicit operation that makes an engine's world and tuning (and only its tag vectors) the
+    studio's defaults: what the editors show and what starts next without an engine of its own (a
+    new training run, a default game). Games and jobs already going keep their own contexts."""
+    model.activate()
+    engine.refresh_runtime_settings()
+
+
+def activate_engine(engine_id):
+    """Make a recorded engine, or a finished run's (``latest``: the newest), the studio's defaults
+    (``activate_engine_defaults``). Returns {engine_id, activated: True}."""
+    from .export import EngineRequired, complete_engine
+
+    try:
+        model = complete_engine("engine", engine_id=None if engine_id in (None, "", "latest") else engine_id)
+    except EngineRequired:
+        if engine_id in (None, "", "latest"):
+            raise
+        model = _recorded_model(engine_id)  # a recorded engine without its model file: its recorded world
+    activate_engine_defaults(model)
+    return {"engine_id": model.id, "activated": True}
+
+
+def _engine_game(model, profile, stats_choice, stats_points, origin, report, mission=None, activate=False):
+    """A new game with a saved engine, in that engine's own context from the start: its profile
+    default and stat rules, its world, tuning and tag vectors. Nothing process-wide changes unless
+    ``activate`` (the studio's defaults then become the engine's, after the game is set up)."""
+    context = model.context()
+    with context.bind():
+        profile = _profile(profile)
+        points, mode = _player_stats(stats_choice, stats_points)
+    result = _game_for(model, profile, points, mode, origin, report, mission=mission, context=context)
+    if activate:
+        from .export import world_identity
+
+        activate_engine_defaults(model)
+        result["world"] = world_identity(model.config, model.id)  # `current` as it is now
+    return {**result, "activated": bool(activate)}
+
+
 def _game_for(model, profile, points, mode, origin, report, run_id=None, candidate_count=0, generations=0,
-              simulation_steps=0, mission=None):
+              simulation_steps=0, mission=None, context=None):
+    from . import engine_meta
+    from .export import world_identity
+
+    context = context or model.context()
     token, player = _start_game(model.genome, profile, points, mode, origin=origin, run_id=run_id, engine_id=model.id,
-                                mission=mission, context=model.context())
+                                mission=mission, context=context)
     scene, actions = _scene(player)
     config_path, bundle_path = _export_run_artifacts(model, candidate_count, generations, simulation_steps)
     return {
         "token": token, "report": report, "scene": scene, "actions": actions, "last_turn": "",
         "config_path": config_path, "engine_path": bundle_path, "learning": model.learning,
         "engine_id": model.id, "run_id": run_id,
+        # What the game runs with: the engine, its world, and the revision of the frozen configuration.
+        "engine": {"engine_id": model.id, "name": engine_meta.names().get(model.id), "source": model.source or None},
+        "world": world_identity(model.config, model.id),
+        "world_revision": player.context.world_version,
     }
 
 
@@ -536,26 +580,24 @@ def _recorded_model(engine_id):
         raise AuthoringError(f"Engine `{engine_id}` could not be loaded: {exc}") from exc
 
 
-def play_engine(engine_id, profile=None, stats_choice=None, stats_points=None, origin="studio", mission=None):
-    """Start a game with a recorded engine: its world, tuning and storyteller."""
-    profile = _profile(profile)
-    points, mode = _player_stats(stats_choice, stats_points)
+def play_engine(engine_id, profile=None, stats_choice=None, stats_points=None, origin="studio", mission=None,
+                activate=False):
+    """Start a game with a recorded engine: its world, tuning and storyteller, in its own context
+    (the studio's defaults change only with ``activate``)."""
     model = _recorded_model(engine_id)
-    model.activate()
-    engine.refresh_runtime_settings()
-    return _game_for(model, profile, points, mode, origin,
-                     f"Recorded engine `{engine_id}` loaded. Fitness on the benchmark (the training objective): **{model.score}**.", mission=mission)
+    return _engine_game(model, profile, stats_choice, stats_points, origin,
+                        f"Recorded engine `{engine_id}` loaded. Fitness on the benchmark (the training objective): **{model.score}**.",
+                        mission=mission, activate=activate)
 
 
 def play_finished_run(engine_id=None, profile=None, stats_choice=None, stats_points=None, origin="studio",
-                      mission=None):
+                      mission=None, activate=False):
     """Play the world a finished run was trained on, with its storyteller: a finished run (a
     complete engine, in the records or kept with the saves); ``engine_id`` None or "latest": the
-    newest. Its world and tuning become the active ones, as when an engine is loaded."""
+    newest. The game runs in the engine's own context; the studio's defaults change only with
+    ``activate``."""
     from .export import EngineRequired, complete_engine
 
-    profile = _profile(profile)
-    points, mode = _player_stats(stats_choice, stats_points)
     try:
         model = complete_engine("engine", engine_id=None if engine_id in (None, "", "latest") else engine_id)
     except EngineRequired as exc:
@@ -563,12 +605,10 @@ def play_finished_run(engine_id=None, profile=None, stats_choice=None, stats_poi
             raise EngineRequired("No finished run yet: train the AI first (🧠 Train → Evolve "
                                  "storytellers), then play its world here.") from exc
         raise
-    model.activate()
-    engine.refresh_runtime_settings()
     when = (model.created or "")[:16].replace("T", " ")
-    return _game_for(model, profile, points, mode, origin,
-                     f"Playing the finished run of {when} (engine `{model.id[:8]}`): its world, with its storyteller.",
-                     mission=mission)
+    return _engine_game(model, profile, stats_choice, stats_points, origin,
+                        f"Playing the finished run of {when} (engine `{model.id[:8]}`): its world, with its storyteller.",
+                        mission=mission, activate=activate)
 
 
 def session_journal(token):
@@ -1331,7 +1371,45 @@ def session_savegame(token):
     with SESSION_LOCK:
         state = _session(token)
         _scene(state)
-        return savegame.make(state, {"package": "studio", "created": None})
+        meta = SESSION_META.get(token) or {}
+        return savegame.make(state, {"package": "studio", "created": None, "engine_id": meta.get("engine_id"),
+                                     "context_key": _stored_context_key(state.context)})
+
+
+def _stored_context_key(context):
+    """The key the session's configuration is kept under (so a save game comes back in its own
+    context), or None when saved games are off or it cannot be kept."""
+    if not persistence.enabled():
+        return None
+    try:
+        return persistence.store_context(context)
+    except Exception as exc:  # noqa: BLE001 - the save game is still usable: rebuilt from parameters elsewhere
+        LOG.warning("The session's configuration could not be kept for its save game: %s", exc)
+        return None
+
+
+def _savegame_context(doc, source=None):
+    """The context a save game continues in: the configuration its session ran with (kept under
+    ``engine.context_key``), else its engine's own (``engine.engine_id``), else the play session it
+    continues from (``source``), else the studio's defaults now. Never a context another game left."""
+    engine_meta = doc.get("engine") if isinstance(doc.get("engine"), dict) else {}
+    key = engine_meta.get("context_key")
+    if isinstance(key, str) and key and persistence.enabled():
+        try:
+            return persistence.load_context(key)
+        except persistence.PersistenceError:
+            pass  # not kept here (another server, or removed): try its engine
+    engine_id = engine_meta.get("engine_id")
+    if isinstance(engine_id, str) and engine_id:
+        from .export import EngineRequired, complete_engine
+
+        try:
+            return complete_engine("engine", engine_id=engine_id).context()
+        except (EngineRequired, LookupError, ValueError, OSError):
+            pass
+    if source is not None:
+        return source.context
+    return EngineContext.capture(source="the studio's defaults")
 
 
 def load_savegame(doc, profile=None, session_id=None, origin="studio"):
@@ -1343,20 +1421,27 @@ def load_savegame(doc, profile=None, session_id=None, origin="studio"):
     if not isinstance(doc, dict) or doc.get("format") != savegame.FORMAT:
         raise AuthoringError(f"Not a save game: send an {savegame.FORMAT} document.")
     traits = (doc.get("snapshot") or {}).get("genome")
+    with SESSION_LOCK:
+        source = find_session(session_id) if session_id else None
     if traits:
         genome = Genome.from_traits(traits)
     else:
-        with SESSION_LOCK:
-            source = find_session(session_id) if session_id else None
-            if source is None:
-                raise AuthoringError("This save game has no snapshot, so no storyteller: give the `session_id` of a "
-                                     "play session whose storyteller continues it.")
-            genome = source.genome
+        if source is None:
+            raise AuthoringError("This save game has no snapshot, so no storyteller: give the `session_id` of a "
+                                 "play session whose storyteller continues it.")
+        genome = source.genome
     store = VariableStore()
-    state, how, note = _parameter_errors(lambda: savegame.load(doc, genome, store=store, profile=profile or None))
+    context = _savegame_context(doc, source).with_genome(genome)
+    with context.bind():  # built in the save game's own context, never the studio's defaults by accident
+        state, how, note = _parameter_errors(lambda: savegame.load(doc, genome, store=store, profile=profile or None))
     if state.ended:
         raise AuthoringError("The save game's session has ended: start a new one.")
-    token = _register_session(state, origin, parameters={"profile": state.profile, "savegame": how})
+    from .export import known_engine
+
+    engine_id = ((doc.get("engine") or {}).get("engine_id") if isinstance(doc.get("engine"), dict) else None)
+    if not (isinstance(engine_id, str) and engine_id and known_engine(engine_id)):
+        engine_id = None  # the document's say only: never an engine this server does not know
+    token = _register_session(state, origin, engine_id=engine_id, parameters={"profile": state.profile, "savegame": how})
     return token, how, note
 
 

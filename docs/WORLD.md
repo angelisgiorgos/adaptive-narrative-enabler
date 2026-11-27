@@ -1438,6 +1438,16 @@ straight to the Palace, say).
 - **`world_definition.routes`** (the city's, in `config/locations.yaml`):
   each place with the places it borders; a route holds both ways. With routes
   the spawn rules are the routes, so new paths only open between neighbours.
+  The map belongs to the world it is written in. An upload, an engine and the
+  map editor check it against that world's own places only, never against
+  the built-in city's. A route to a place the world does not have is refused
+  with both ends named: `routes.Rotary Room: the route from 'Rotary Room' to
+  'Composing Loft' leads to 'Composing Loft', which is not a location of this
+  world.` Leaving `routes` out (or `routes:` with nothing) and writing
+  `routes: {}` both mean no authored map, and every story draws its own. An
+  uploaded world never gets the city's map filled in. A one-way passage is not
+  a route: use `send_to` on an outcome (see
+  `tests/fixtures/salt_press.yaml` and `tests/test_route_validation.py`).
 - **A far place is reached through the places between**, one turn each. An
   outcome that moves the player somewhere that does not border their place
   takes them to the next place on the way, told as `[ROUTE] No road runs

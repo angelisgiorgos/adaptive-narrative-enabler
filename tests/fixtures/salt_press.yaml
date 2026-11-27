@@ -1,0 +1,64 @@
+# Salt Press: a small print works, used by tests/test_route_validation.py. A reconstruction for the tests
+# (the original map is not in this repository): Typesetters Hall and Rotary Room are declared neighbours,
+# the press floor is downstairs, and the map (`routes`) is the world's own: none of the built-in
+# city's places (Harbor, Market, ...) appear in it.
+world_definition:
+  routes:
+    Typesetters Hall: [Rotary Room]        # a route holds both ways: Rotary Room leads back up
+    Rotary Room: [Loading Dock]
+  locations:
+    Typesetters Hall:
+      start_eligible: true
+      start_weight: 1.0
+      tags: [workshop, quiet, discovery]
+      descriptions:
+      - Cases of lead type line the walls above the composing stones.
+      interact_prompts:
+      - Return to the typesetters' hall
+      actions:
+      - name: Take the stairs down to the press
+        outcomes:
+        - desc: The stairwell shakes with the rhythm of the rotary press below.
+          move_to: Rotary Room
+          tags: [exploration]
+      - name: Sort a case of type
+        outcomes:
+        - desc: You find a page of a pamphlet nobody admits to setting.
+          tags: [discovery]
+    Rotary Room:
+      tags: [industrial, loud, danger]
+      descriptions:
+      - The great rotary press turns, feeding a river of wet paper.
+      interact_prompts:
+      - Go down to the rotary room
+      actions:
+      - name: Check the night's print run
+        outcomes:
+        - desc: The run is twice the size the ledger says.
+          tags: [discovery]
+    Loading Dock:
+      tags: [trade, exposed]
+      descriptions:
+      - Bales of newsprint wait for the morning carts.
+      interact_prompts:
+      - Head out to the loading dock
+      actions:
+      - name: Count the bales
+        outcomes:
+        - desc: Three bales are addressed to no one.
+          tags: [discovery]
+  characters:
+  - name: Night Foreman
+    associated_tags: [industrial, loud]
+    descriptions: [A foreman with ink to the elbows.]
+  - name: Apprentice Typesetter
+    associated_tags: [workshop, quiet]
+    descriptions: [An apprentice who reads everything backwards.]
+  objects:
+  - name: Composing Stick
+    associated_tags: [workshop]
+    descriptions: [A worn steel composing stick.]
+game_state:
+  arrest_location: Loading Dock
+start_selection:
+  default_location: Typesetters Hall

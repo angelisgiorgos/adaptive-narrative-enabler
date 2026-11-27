@@ -25,6 +25,7 @@ and, by ``platform``, what runs it:
 """
 from __future__ import annotations
 
+import contextlib
 import datetime
 import io
 import json
@@ -544,6 +545,28 @@ http.request("http://127.0.0.1:8765/games/" + game_id + "/choose",
 """
 
 
+def _temporary_archive(name: str, suffix: str) -> Path:
+    """A new, empty temporary file for an archive. The descriptor ``mkstemp`` opens is closed
+    at once, before the archive writer reopens the path: on Windows an open handle would keep
+    the finished archive from being moved or removed later."""
+    handle, path = tempfile.mkstemp(prefix=f"{name}-", suffix=suffix)
+    os.close(handle)
+    return Path(path)
+
+
+@contextlib.contextmanager
+def _removed_on_failure(path: Path):
+    """Remove ``path`` if the block that writes it fails (a half-written archive is never left behind)."""
+    try:
+        yield
+    except BaseException:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            logging.getLogger(__name__).warning("Could not remove the unfinished archive %s: %s", path, exc)
+        raise
+
+
 def export_engine(source="run", run_id=None, generation=None, token=None, include_memory=True, name=None,
                   genome=None, score=None, learning=None, description=None, engine_id=None, checkpoint=None,
                   memory=None, platform="python", model=None) -> dict:
@@ -673,14 +696,15 @@ def export_engine(source="run", run_id=None, generation=None, token=None, includ
         elif runtime is not None:
             (root / "README.md").write_text(_standalone_guide(name, platform, runtime["executable"]), encoding="utf-8")
         if platform == "unity":
-            archive = Path(tempfile.mkstemp(prefix=f"{name}-", suffix=".unitypackage")[1])
-            write_unitypackage(_unity_assets(root, manifest, unity_runtimes), archive)
+            archive = _temporary_archive(name, ".unitypackage")
+            with _removed_on_failure(archive):
+                write_unitypackage(_unity_assets(root, manifest, unity_runtimes), archive)
             manifest["unity_platforms"] = [info["target"] for info in unity_runtimes]
             records.record_artifact("offline_engine", archive, run_id=run_id if source == "run" else None,
                                     engine_id=engine_id, keep_copy=True)
             return {"path": str(archive), "manifest": manifest}
-        archive = Path(tempfile.mkstemp(prefix=f"{name}-", suffix=".zip")[1])
-        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
+        archive = _temporary_archive(name, ".zip")
+        with _removed_on_failure(archive), zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
             for path in sorted(root.rglob("*")):
                 if path.is_file() and "__pycache__" not in path.parts:
                     zipped.write(path, path.relative_to(staging))

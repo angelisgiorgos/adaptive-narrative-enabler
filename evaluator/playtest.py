@@ -471,7 +471,23 @@ def _metrics(run, checks):
             "transition_loss": round(((run.fitness or {}).get("objective_losses") or {}).get("transition_quality", 0.0), 3)
             if run.fitness else None,
         },
+        "clues": _clue_metrics(state),
     }
+
+
+def _clue_metrics(state):
+    """Clues planted and paid off: ``paid`` as the engine matches them (story_rules.clue_matching), and
+    ``paid_strict`` with each payoff_N closing only its own setup_N. With ``any`` matching a payoff can
+    close an unrelated clue; ``mismatched`` counts those, so a payoff rate is never read as coherence."""
+    from core_engine import rules
+
+    with state.context.bind():
+        matching = rules.settings()["clue_matching"]
+    setups, payoffs = dict(state.setup_indices), dict(state.payoff_indices)
+    paid = len(rules.clue_pairs(setups, payoffs, matching)[0])
+    strict = len(rules.clue_pairs(setups, payoffs, "numbered")[0])
+    return {"matching": matching, "planted": len(setups), "paid": paid, "paid_strict": strict,
+            "mismatched": max(0, paid - strict)}
 
 
 def _options_at(decisions, turn):

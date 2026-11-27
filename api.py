@@ -6,8 +6,10 @@ configuration overrides and play sessions are intentionally held in process.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
+import shutil
 import tempfile
 import uuid
 from pathlib import Path
@@ -28,6 +30,8 @@ from backend.errors import ActionUnavailableError, ConflictError, SessionUnrecov
 from core_engine import Mission
 from core_engine.actions import REPEAT_RULES
 from utils.config_loader import config
+
+LOG = logging.getLogger(__name__)
 
 
 class Entity(BaseModel):
@@ -344,6 +348,17 @@ class SimulationResponse(PlayState):
         "override or default), `resolved` (as POST /v1/simulations/resolve gives them) and `executed` (read back "
         "from the evolution that ran): population, generations, stories_per_storyteller, requested_steps, "
         "story_turns, full_length_stories, story_length, deterministic, seed, warm_start, warm_start_mode.")
+    engine: dict[str, Any] | None = Field(
+        default=None, description="A game with a saved engine: the engine it runs {engine_id, name, source}.")
+    world: dict[str, Any] | None = Field(
+        default=None, description="A game with a saved engine: its world {source, engine_id, digest, id, summary, "
+        "current (whether it is also the studio's active world)}.")
+    world_revision: str | None = Field(
+        default=None, description="A game with a saved engine: the revision of the frozen configuration (world and "
+        "tuning) the game runs with, its own whatever the studio's defaults become.")
+    activated: bool | None = Field(
+        default=None, description="A game with a saved engine: whether starting it also made the engine the "
+        "studio's defaults (only when asked, `activate`).")
 
 
 ARTIFACTS: dict[str, Path] = {}
@@ -533,28 +548,47 @@ def _register_artifact(path: str) -> str:
     source = Path(path)
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     destination = ARTIFACT_DIR / f"{artifact_id}{source.suffix}"
-    destination.write_bytes(source.read_bytes())
-    source.unlink(missing_ok=True)
+    shutil.copyfile(source, destination)
     ARTIFACTS[artifact_id] = destination
+    _discard(source)  # the artifact is registered: a temporary file left behind is not a failure
     return f"/v1/artifacts/{artifact_id}"
 
 
+def _discard(path: Path | str | None) -> str | None:
+    """Remove a temporary file, best effort. Never raises: a cleanup problem must not turn a
+    request that succeeded into a failure, nor hide the error of one that failed. Returns None
+    when the file is gone, else what went wrong (logged)."""
+    if path is None:
+        return None
+    try:
+        Path(path).unlink(missing_ok=True)
+        return None
+    except OSError as exc:
+        LOG.warning("Could not remove the temporary file %s: %s", path, exc)
+        return f"A temporary file could not be removed ({type(exc).__name__}); it is left for the system to clean up."
+
+
 def _save_upload(upload: UploadFile, suffixes: set[str], max_bytes: int) -> Path:
+    """Stage an upload in a temporary file and return its path (the caller removes it, with
+    ``_discard``). The file is written through the descriptor ``mkstemp`` opened, and that
+    descriptor is closed before the path is returned: on Windows an open handle would keep the
+    file from being removed or reopened."""
     suffix = Path(upload.filename or "").suffix.lower()
     if suffix not in suffixes:
         raise HTTPException(status_code=400, detail=f"Allowed file types: {', '.join(sorted(suffixes))}.")
-    target = Path(tempfile.mkstemp(prefix="ane-upload-", suffix=suffix)[1])
+    handle, name = tempfile.mkstemp(prefix="ane-upload-", suffix=suffix)
+    target = Path(name)
     size = 0
     try:
-        with target.open("wb") as stream:
+        with os.fdopen(handle, "wb") as stream:  # owns the descriptor: closed on leaving, even on error
             while chunk := upload.file.read(1024 * 1024):
                 size += len(chunk)
                 if size > max_bytes:
                     raise HTTPException(status_code=413, detail="Uploaded file is too large.")
                 stream.write(chunk)
         return target
-    except Exception:
-        target.unlink(missing_ok=True)
+    except BaseException:
+        _discard(target)
         raise
 
 
@@ -565,39 +599,60 @@ def root():
 
 @api.get("/healthz", tags=["Operations"])
 def health():
+    """Liveness check: {status: ok, sessions (play sessions held in memory)}. No authentication, no side
+    effects."""
     return {"status": "ok", "sessions": len(sessions.SESSIONS)}
 
 
 @api.get("/v1/config", tags=["Configuration"])
 def get_config():
+    """The complete active configuration (world and tuning): {using_override (an upload or an engine's world is
+    active), config}."""
     return {"using_override": config.using_override, "config": config.as_dict()}
 
 
 @api.post("/v1/config/upload", tags=["Configuration"])
 def upload_config(file: UploadFile = File(...)):
-    path = _save_upload(file, {".yaml", ".yml"}, store.MAX_CONFIG_UPLOAD_BYTES)
+    """Validate a configuration YAML and make it the active one. In three steps: the file is staged
+    (400/413 for a wrong type or size), validated and committed (400 with the problems found, and the
+    active configuration and its revision unchanged), then the staged file is removed. The answer
+    carries the accepted ``revision`` (as GET /v1/world/revision gives it). A cleanup problem after
+    the commit does not fail the upload: it is reported as ``cleanup_warning``. The same file
+    uploaded again is accepted again with the same revision."""
+    staged = _save_upload(file, {".yaml", ".yml"}, store.MAX_CONFIG_UPLOAD_BYTES)
     try:
-        message = store.upload_config(str(path))[-1]
-        return {"message": message.lstrip("✅ ").strip(), "settings": _settings()}
+        message = store.upload_config(str(staged))[-1]  # validates, then commits (nothing changes before)
     except Exception as exc:
+        _discard(staged)  # never hides the validation error
         _fail(exc)
-    finally:
-        path.unlink(missing_ok=True)
+    # Committed: from here the upload has succeeded, whatever the cleanup does.
+    response = {"message": message.lstrip("✅ ").strip(), "settings": _settings(),
+                "revision": content.world_revision()["revision"], "accepted": True}
+    problem = _discard(staged)
+    if problem:
+        response["cleanup_warning"] = problem
+    return response
 
 
 @api.post("/v1/config/reset", tags=["Configuration"])
 def reset_config():
+    """Set an uploaded configuration (or an activated engine's) aside: the files in config/ are active again
+    for what starts next. {message, settings}."""
     message = store.use_builtin_config()[-1]
     return {"message": message, "settings": _settings()}
 
 
 @api.get("/v1/settings", response_model=Settings, tags=["Configuration"])
 def get_settings():
+    """The basic simulation settings (population, generations, stories, steps, health, coins, action limit,
+    determinism, seed, max health)."""
     return _settings()
 
 
 @api.put("/v1/settings", tags=["Configuration"])
 def put_settings(body: Settings):
+    """Save the basic simulation settings (every field; `seed` and `max_health` may be null). 422 for a value
+    out of range, 400 for an inconsistent one. {message, settings}."""
     try:
         message = store.save_settings(
             body.pop_size, body.generations, body.episodes_per_genome, body.max_steps,
@@ -617,6 +672,8 @@ def get_variables():
 
 @api.put("/v1/variables", tags=["Persistent variables"])
 def put_variables(body: VariableDefinitions):
+    """Replace the persistent-variable definitions ({name: {type, default, ...}}). 400 with every problem;
+    nothing is written then. {message, stored}."""
     try:
         return {"message": content.save_variable_definitions(body.variables), "stored": content.stored_variables()}
     except Exception as exc:
@@ -625,11 +682,14 @@ def put_variables(body: VariableDefinitions):
 
 @api.get("/v1/variables/profiles", tags=["Persistent variables"])
 def get_profiles():
+    """The player profiles that have saved values, and the default profile: {profiles, default}."""
     return {"profiles": content.player_profiles(), "default": config.get("persistence.profile", "default")}
 
 
 @api.get("/v1/variables/values", tags=["Persistent variables"])
 def get_variable_values(profile: str | None = None):
+    """A profile's stored values (defaults filled in) and playthroughs: {profile, values, playthroughs,
+    updated, path}. ``profile``: default the configured one."""
     try:
         return content.stored_variables(profile)
     except Exception as exc:
@@ -668,6 +728,8 @@ def get_messages():
 
 @api.put("/v1/messages", tags=["World authoring"])
 def put_messages(body: Messages):
+    """Replace the engine's narration messages ({key: text}); a key left out keeps the built-in text. {message,
+    messages (the effective set)}."""
     try:
         message = content.save_messages(body.messages)
         return {"message": message, "messages": content.effective_messages()}
@@ -677,11 +739,14 @@ def put_messages(body: Messages):
 
 @api.get("/v1/hyperparameters", tags=["Configuration"])
 def get_hyperparameters():
+    """The complete hyperparameter YAML as stored ({yaml}), comments included."""
     return {"yaml": store.load_hyperparameters_yaml()}
 
 
 @api.put("/v1/hyperparameters", tags=["Configuration"])
 def put_hyperparameters(body: YAMLDocument):
+    """Validate and save the complete hyperparameter YAML ({yaml}). 400 with structure and type errors; nothing
+    is written then. {message, yaml (normalised), settings}."""
     try:
         result = store.save_all_hyperparameters(body.yaml)
         return {"message": result[-1], "yaml": result[-2], "settings": _settings()}
@@ -757,6 +822,7 @@ def list_entities(kind: Literal["Locations", "NPCs", "Items", "Events"],
 
 @api.get("/v1/entities/{kind}/{name}", response_model=Entity, tags=["World authoring"])
 def get_entity(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str):
+    """One world entry (a location, NPC, item or event) as the entry form shows it. 404 for an unknown name."""
     names, _ = content._entity_name_values(kind)
     if name not in names:
         raise HTTPException(status_code=404, detail="Entity not found.")
@@ -772,6 +838,8 @@ def get_entity(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str)
 
 @api.put("/v1/entities/{kind}/{name}", response_model=Entity, tags=["World authoring"])
 def put_entity(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str, body: Entity):
+    """Save one world entry's form fields; a different ``name`` in the body renames it (references follow). 400
+    with every problem, nothing written then. Answers the entry as saved."""
     try:
         content.save_entity(
             kind, name, body.name, body.tags,
@@ -979,6 +1047,8 @@ def get_logic_sections():
 
 @api.get("/v1/logic/{section}", response_model=LogicSection, tags=["Engine logic"])
 def get_logic_section(section: str):
+    """One engine-logic section's parameters ({parameters}). 404 for an unknown section (GET /v1/logic lists
+    them)."""
     try:
         return LogicSection(parameters=store.load_logic_section(section))
     except Exception as exc:
@@ -1132,6 +1202,8 @@ def get_stats():
 
 @api.put("/v1/stats", tags=["Character stats"])
 def put_stats(body: CharacterStatsSettings):
+    """Save the character-stat rules (`character_stats`: stats, allocation, mode, defined points, tag checks).
+    400 with every problem. {message, character_stats}."""
     try:
         return {"message": content.save_stats_settings(body.character_stats), "character_stats": content.stats_config()}
     except Exception as exc:
@@ -1146,6 +1218,7 @@ def allocate_stats(body: StatAllocation):
 
 @api.get("/v1/missions", response_model=Missions, tags=["World authoring"])
 def get_missions():
+    """Every mission of the world ({missions: {key: mission}})."""
     return Missions(missions=content.load_missions())
 
 
@@ -1185,6 +1258,8 @@ def get_failure_lint():
 
 @api.put("/v1/missions", response_model=Missions, tags=["World authoring"])
 def put_missions(body: Missions):
+    """Replace every mission ({missions}); checked against the world first (400 with every problem, nothing
+    written then). Answers the missions as saved."""
     try:
         content.save_missions(body.missions)
         return get_missions()
@@ -1210,6 +1285,9 @@ def put_rules(body: StoryRules):
 
 @api.post("/v1/simulations", response_model=SimulationResponse, tags=["Evolution and play"])
 def simulate(body: SimulationRequest, origin: str = Depends(_origin), user_id: str = Depends(_run_user)):
+    """Train storytellers and (unless ``start_game`` is false) start a game with the best one. Blocks until the
+    training ends: for progress, cancellation and long runs use POST /v1/jobs/simulations. Needs X-ANE-User
+    (400 without it); 400 when the work exceeds the limit (POST /v1/simulations/resolve says why first)."""
     try:
         game = sessions.run_simulation(
             body.candidate_count, body.generations, body.simulation_steps, body.deterministic,
@@ -1235,17 +1313,22 @@ def _game_response(game) -> "SimulationResponse":
         engine_id=game.get("engine_id"), training=game.get("training"),
         config_download_url=_register_artifact(game["config_path"]),
         engine_download_url=_register_artifact(game["engine_path"]),
+        engine=game.get("engine"), world=game.get("world"), world_revision=game.get("world_revision"),
+        activated=game.get("activated"),
     )
 
 
 @api.post("/v1/engines/load", response_model=SimulationResponse, tags=["Evolution and play"])
 def load_engine(file: UploadFile = File(...), parameters: UploadFile | None = File(default=None),
                 profile: str | None = None, stats_mode: Literal["defined", "random", "balanced"] | None = None,
-                stats: str | None = None, mission: str | None = None, origin: str = Depends(_origin)):
+                stats: str | None = None, mission: str | None = None, activate: bool = False,
+                origin: str = Depends(_origin)):
     """Start a game with a saved engine: an engine model file (.ane.zip), an older engine ZIP, or a
     configuration YAML. ``parameters``: a separate model-parameters YAML for a configuration without
     ``generated_run.genome``. ``stats``: the player's own points as a JSON object (overrides ``stats_mode``).
-    ``mission``: the mission to play (key or title); left out, the story draws one."""
+    ``mission``: the mission to play (key or title); left out, the story draws one. The game runs in the
+    engine's own context; the studio's defaults do not change unless ``activate=true`` (the earlier
+    behaviour, as POST /v1/engines/{id}/activate)."""
     path = _save_upload(file, {".yaml", ".yml", ".zip"}, store.MAX_ENGINE_UPLOAD_BYTES)
     parameters_path = None
     try:
@@ -1256,6 +1339,7 @@ def load_engine(file: UploadFile = File(...), parameters: UploadFile | None = Fi
             str(path), str(parameters_path) if parameters_path else None, profile=profile,
             stats_choice="defined" if points is not None else stats_mode,
             stats_points=yaml.safe_dump(points) if points is not None else None, origin=origin, mission=mission,
+            activate=activate,
         )
         return _game_response(game)
     except HTTPException:
@@ -1263,9 +1347,8 @@ def load_engine(file: UploadFile = File(...), parameters: UploadFile | None = Fi
     except Exception as exc:
         _fail(exc)
     finally:
-        path.unlink(missing_ok=True)
-        if parameters_path is not None:
-            parameters_path.unlink(missing_ok=True)
+        _discard(path)
+        _discard(parameters_path)
 
 
 def _json_object(text, name):
@@ -1284,6 +1367,8 @@ def _json_object(text, name):
 
 @api.get("/v1/sessions/{session_id}", response_model=PlayState, tags=["Evolution and play"])
 def get_session(session_id: str):
+    """A play session's current state: scene, offered actions (and `choices` with stable ids), player state,
+    quest. 404 for an unknown session; a saved session is restored first."""
     return _play_state(session_id)
 
 
@@ -1757,6 +1842,13 @@ class EnginePlayRequest(BaseModel):
                                 "/v1/missions/playable); left out, the story draws one.")
 
 
+class EngineStartRequest(EnginePlayRequest):
+    activate: bool = Field(default=False, description="Also make the engine the studio's defaults (what the editors "
+                           "show and what starts next without an engine of its own), as POST "
+                           "/v1/engines/{id}/activate. Default: the game runs in the engine's own context and "
+                           "nothing else changes.")
+
+
 class EngineContinueRequest(EnginePlayRequest, TrainingGame):
     generations: int = Field(default=1, ge=1, le=store.RUN_LIMITS["generation_limit"],
                              description="Further generations, continuing exactly where training stopped.")
@@ -1820,6 +1912,8 @@ def get_recorded_run(run_id: str):
 
 @api.get("/v1/records/worlds", tags=["Records"])
 def list_recorded_worlds(limit: int = 50, offset: int = 0):
+    """The recorded worlds, newest first ({worlds}); ``limit`` / ``offset`` page them. 503 when recording is
+    off."""
     return {"worlds": _records(records.list_worlds, limit, offset)}
 
 
@@ -1846,6 +1940,7 @@ def list_recorded_engines(run_id: str | None = None, source: str | None = None, 
 
 @api.get("/v1/records/engines/{engine_id}", tags=["Records"])
 def get_recorded_engine(engine_id: str):
+    """One recorded engine: its storyteller, score, world, run and source. 404 for an unknown engine."""
     return _records(records.get_engine, engine_id)
 
 
@@ -1859,14 +1954,36 @@ def download_engine_model(engine_id: str):
     return FileResponse(path, filename=f"engine-{engine_id}.ane.zip", media_type="application/zip")
 
 
+@api.post("/v1/engines/{engine_id}/activate", tags=["Evolution and play"])
+def activate_engine(engine_id: str):
+    """Make a saved engine's world and tuning (and its tag vectors) the studio's defaults: what the
+    editors show and what starts next without an engine of its own (a training run, a default game).
+    The explicit way to do so: starting a game with an engine never does it unless asked
+    (``activate``). Games and jobs already going keep their own contexts. Answers {engine_id,
+    activated, revision (the editor's world revision now, as GET /v1/world/revision)}. ``latest``: the
+    newest finished run; 404 for an unknown engine."""
+    if engine_id != "latest" and not export.known_engine(engine_id):
+        raise HTTPException(status_code=404, detail=f"Unknown engine `{engine_id}`.")
+    try:
+        result = sessions.activate_engine(engine_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _fail(exc)
+    return {**result, "revision": content.world_revision()["revision"]}
+
+
 @api.post("/v1/engines/{engine_id}/play", response_model=SimulationResponse, tags=["Evolution and play"])
-def play_finished_run(engine_id: str, body: EnginePlayRequest | None = None, origin: str = Depends(_origin)):
+def play_finished_run(engine_id: str, body: EngineStartRequest | None = None, origin: str = Depends(_origin)):
     """Play the world a finished run was trained on, with its storyteller (``latest``: the newest
     finished run; GET /v1/exports/engines lists them). Works without the records: finished runs
-    are kept with the saves. Its world and tuning become the active ones, as when an engine is
-    loaded. 409 before any run has finished."""
+    are kept with the saves. The game runs in the engine's own context (world, tuning, tag vectors,
+    profile defaults); the studio's defaults do not change unless ``activate``. 409 before any run
+    has finished."""
+    body = body or EngineStartRequest()
     try:
-        return _game_response(sessions.play_finished_run(engine_id, origin=origin, **_player(body or EnginePlayRequest())))
+        return _game_response(sessions.play_finished_run(engine_id, origin=origin, activate=body.activate,
+                                                         **_player(body)))
     except HTTPException:
         raise
     except Exception as exc:
@@ -1889,11 +2006,13 @@ def get_session_transcript(session_id: str):
 
 
 @api.post("/v1/records/engines/{engine_id}/play", response_model=SimulationResponse, tags=["Records"])
-def play_recorded_engine(engine_id: str, body: EnginePlayRequest | None = None, origin: str = Depends(_origin)):
-    """Start a game with a recorded engine (its own world, tuning and storyteller)."""
+def play_recorded_engine(engine_id: str, body: EngineStartRequest | None = None, origin: str = Depends(_origin)):
+    """Start a game with a recorded engine, in its own context (its world, tuning and storyteller); the
+    studio's defaults do not change unless ``activate``."""
     _known_engine(engine_id)
+    body = body or EngineStartRequest()
     try:
-        return _game_response(sessions.play_engine(engine_id, origin=origin, **_player(body or EnginePlayRequest())))
+        return _game_response(sessions.play_engine(engine_id, origin=origin, activate=body.activate, **_player(body)))
     except HTTPException:
         raise
     except Exception as exc:
@@ -2135,6 +2254,7 @@ DOCUMENTS = {
 
 @api.get("/v1/documents", tags=["Studio"])
 def list_documents():
+    """The editable documents (GET|PUT /v1/documents/{name}): {documents: [{name, description}]}."""
     return {"documents": [{"name": name, "description": description} for name, (description, _, _) in DOCUMENTS.items()]}
 
 
@@ -2173,6 +2293,7 @@ def reset_variable_values_yaml(profile: str | None = None):
 
 @api.get("/v1/entities/{kind}/{name}/actions/yaml", tags=["World authoring"])
 def get_entity_actions_yaml(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str):
+    """An entry's actions as YAML ({yaml}), as PUT .../actions/yaml takes them. 404 for an unknown entry."""
     _known_entity(kind, name)
     return {"yaml": content.load_entity_actions_yaml(kind, name)}
 
@@ -2211,12 +2332,15 @@ def put_entity_yaml(kind: Literal["Locations", "NPCs", "Items", "Events"], name:
 
 @api.get("/v1/entities/{kind}/{name}/policy/yaml", tags=["World authoring"])
 def get_entity_policy_yaml(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str):
+    """An event's start rules or an item's uniqueness as YAML ({yaml}). 404 for an unknown entry."""
     _known_entity(kind, name)
     return {"yaml": content.load_entity_policy_yaml(kind, name)}
 
 
 @api.put("/v1/entities/{kind}/{name}/policy/yaml", tags=["World authoring"])
 def put_entity_policy_yaml(kind: Literal["Events", "Items"], name: str, body: YAMLDocument):
+    """Save an event's start rules or an item's uniqueness from YAML ({yaml}). 400 with every problem. {yaml,
+    message}."""
     _known_entity(kind, name)
     try:
         text, message = content.save_entity_policy_ui(kind, name, body.yaml)
@@ -2245,6 +2369,8 @@ def get_action_repetition(kind: Literal["Locations", "NPCs", "Items", "Events"],
 @api.put("/v1/entities/{kind}/{name}/actions/{index}/repetition", tags=["World authoring"])
 def put_action_repetition(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str, index: int,
                           body: ActionRepetition):
+    """Set how often one action may be taken (``repeat``: once, per_visit, always; ``retry_on_failure``).
+    ``index`` counts from 0. {message, yaml, repeat, retry_on_failure, ...}."""
     _known_entity(kind, name)
     try:
         message = content.save_action_repetition(kind, name, index, body.repeat, body.retry_on_failure)
@@ -2315,6 +2441,8 @@ def get_entity_details(kind: Literal["Locations", "NPCs", "Items", "Events"], na
 
 @api.put("/v1/entities/{kind}/{name}/details", tags=["World authoring"])
 def put_entity_details(kind: Literal["Locations", "NPCs", "Items", "Events"], name: str, body: EntityDetails):
+    """Save an entry's detail fields (the fields beyond the form, e.g. an NPC's relationship or reactions). 400
+    with every problem. {details, message}."""
     _known_entity(kind, name)
     try:
         return {"details": content.save_entity_details(kind, name, body.details), "message": f"Saved `{name}`."}
@@ -2330,6 +2458,7 @@ class OneMission(BaseModel):
 
 @api.get("/v1/missions/{key}", tags=["World authoring"])
 def get_one_mission(key: str):
+    """One mission by key: {key, mission}. 404 for an unknown key."""
     missions = content.load_missions()
     if key not in missions:
         raise HTTPException(status_code=404, detail=f"No mission `{key}`.")
@@ -2390,6 +2519,8 @@ def get_map():
 
 @api.put("/v1/map", tags=["World authoring"])
 def put_map(body: MapRoutes):
+    """Replace the whole map (`routes`: {place: [places it borders]}; a route holds both ways). 400 names each
+    unknown place. {routes, places, message}."""
     try:
         found, message = content.save_map(body.routes)
         return {**found, "message": message}
@@ -2789,6 +2920,8 @@ def cancel_job(job_id: str):
 
 @api.get("/v1/artifacts/{artifact_id}", tags=["Artifacts"])
 def download_artifact(artifact_id: str):
+    """Download a file the API generated (a config, an engine model, an export) by the id in a
+    `*_download_url`. Links last until the API restarts; 404 after that."""
     path = ARTIFACTS.get(artifact_id)
     if path is None or not path.is_file():
         raise HTTPException(status_code=404, detail="Artifact not found.")

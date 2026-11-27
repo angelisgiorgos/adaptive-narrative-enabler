@@ -134,5 +134,73 @@ class ShippedDungeonTests(unittest.TestCase):
         self.assertNotIn("Palace", state.world.locations["Dungeon"].connected)
 
 
+
+class PrisonReleaseTests(unittest.TestCase):
+    """A prison never ends the story as a stall when the director lets the player out (LIMITATIONS #4):
+    the release also happens on a turn that ends in a plain failure, and once an event in the cell is
+    over. Without a director or an encounter's captive_release, a stall still ends the story."""
+
+    def setUp(self):
+        constraints = {"Cell": {"requires_escape": True, "lock_when": "sent", "escape_tags": ["escape"]}}
+        for patcher in (
+            patch.dict(config._config, {"location_constraints": constraints}),
+            patch.dict(config._config["game_state"], {"arrest_location": "Cell"}),
+            patch.dict(config._config["narrative_end"], {"max_consecutive_steps_in_location": 5}),
+            patch.dict(config._config, {"director": {**(config._config.get("director") or {}), "enabled": True,
+                                                     "release_after": 5}}),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        world = _world()
+        world.locations["Cell"].actions = [  # the lock never gives: every turn is a plain failure
+            Action("Pick the lock", [Outcome("Click.", tags=["escape"], success_prob=0.0)], repeat="always",
+                   source="location", owner="Cell"),
+        ]
+        self.state = GameState(world, _genome(), start="Road", rng=random.Random(0))
+        self.state._move_to("Cell", one_way=True)
+
+    def test_failing_every_escape_is_released_not_stalled(self):
+        for _ in range(8):
+            if self.state.ended or self.state.confined_in is None:
+                break
+            _choose(self.state, "Pick the lock")
+        self.assertFalse(self.state.ended, self.state.end_reason)
+        self.assertIsNone(self.state.confined_in)
+        self.assertNotEqual(self.state.end_kind, "stalled")
+
+    def test_an_event_in_the_cell_defers_the_release(self):
+        self.state.consecutive_steps_in_location = 5
+        self.state.active_event = object()           # the guards come running
+        self.assertFalse(self.state._check_end_conditions())
+        self.assertEqual(self.state.confined_in, "Cell")  # held while the event lasts, never ended as a stall
+        self.state.active_event = None
+        self.assertFalse(self.state._check_end_conditions())
+        self.assertIsNone(self.state.confined_in)          # let out once it is over
+
+    def test_without_a_director_a_stall_still_ends_the_story(self):
+        config._config["director"]["enabled"] = False
+        self.state.consecutive_steps_in_location = 5
+        self.assertTrue(self.state._check_end_conditions())
+        self.assertEqual(self.state.end_kind, "stalled")
+
+
+class SmallTalkTests(unittest.TestCase):
+    """Small talk (no authored line) would be told word for word again: once per visit (LIMITATIONS #8).
+    Authored dialogue can change from one turn to the next and stays on offer."""
+
+    def _talk(self, state, name):
+        return next(a for a in state.ranked_available_actions() if a.name == f"({name}) Talk with {name}")
+
+    def test_small_talk_is_once_per_visit_and_dialogue_stays(self):
+        from core_engine.world import DialogueLine
+
+        world = _world()
+        world.add_character(Character("Herald", ["road"], known_locations=["Road"], descriptions=["A herald."],
+                                      dialogue=[DialogueLine("Hear ye!")]))
+        state = GameState(world, _genome(), start="Road", rng=random.Random(0))
+        self.assertEqual(self._talk(state, "Warden").repeat, "per_visit")
+        self.assertEqual(self._talk(state, "Herald").repeat, "always")
+
+
 if __name__ == "__main__":
     unittest.main()

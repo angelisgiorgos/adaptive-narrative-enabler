@@ -1799,6 +1799,13 @@ class GameState(StoryBeats, SessionScope):
         max_consecutive = end_cfg.get("max_consecutive_steps_in_location", 5)
         # A player directs their own way: lingering is their choice (the action limit still ends the story).
         if self.consecutive_steps_in_location >= max_consecutive and not self.__dict__.get("player_directed", False):
+            if self._held_for_release():
+                # A prison never ends the story when the director (or captive_release) lets the player out:
+                # let out now, whichever way the turn went (a plain failure finalizes before the usual
+                # release), or once the event in the cell is over. The action limit still ends the story.
+                if not self.active_event:
+                    self._release_if_held_too_long()
+                return False
             return self._end("stalled", self.narrate("end_stalled", location=self.current.name))
 
         if self.current.name == "Dungeon" and end_cfg.get("end_on_dungeon", False):
@@ -3057,6 +3064,10 @@ class GameState(StoryBeats, SessionScope):
                     if char.goals:
                         conversation_detail += self.narrate("talk_goal", stable=char.name, npc=char.name, goal=char.goals[0])
                     line_effects = None
+                # Small talk (no authored line: a description and the goal) changes nothing and would be told
+                # word for word again: once per visit. Authored dialogue and hostile talk can change from
+                # one turn to the next, so they stay on offer.
+                small_talk = line is None and not relationships.hostile_talk(self, char)
                 raw_actions.append(
                     Action(
                         name=f"({char.name}) " + self.narrate("talk_action", stable=char.name, npc=char.name),
@@ -3066,7 +3077,7 @@ class GameState(StoryBeats, SessionScope):
                             tags=["social", "conversation"],
                             effects=line_effects,
                         )],
-                        repeat="always",
+                        repeat="per_visit" if small_talk else "always",
                         source="conversation",
                         owner=char.name,
                     )
@@ -3595,6 +3606,13 @@ class GameState(StoryBeats, SessionScope):
         self.history.append(self.narrate("released", origin=prison, destination=prison))
         self.consecutive_steps_in_location = 0
         return True
+
+    def _held_for_release(self):
+        """Whether the player is locked in a place that the director (director.release_after) or an
+        encounter's captive_release lets them out of: such a prison never ends the story as a stall."""
+        if not self._location_is_locked():
+            return False
+        return self._director() is not None or encounter_rules.captive_release(self) is not None
 
     def _move_on_if_stalled(self):
         """story_rules.on_stall: move: after narrative_end.max_consecutive_steps_in_location

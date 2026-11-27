@@ -11,8 +11,10 @@ Two kinds of settings:
   changes: every game, training run and evaluation runs with its own frozen copy of the configuration
   (core_engine/context.py, an EngineContext taken when it started), so a game in progress or a running
   job keeps the configuration it started with until it ends. A game with a trained engine runs with that
-  engine's own saved world, tuning and tag vectors; starting one also makes them the process-wide
-  configuration (what the editors show and what starts next), which never reaches another session.
+  engine's own saved world, tuning and tag vectors, in its own context from the start; starting one
+  changes nothing process-wide. Making an engine's world the studio's defaults (what the editors show and
+  what starts next) is a separate, explicit operation (POST /v1/engines/{id}/activate, or ``activate`` on
+  a play request), which never reaches a session already going either.
 - **The app parameters** (config/ui_settings.yml). The API reads its own when it starts, the studio its
   own when it starts (its launch settings also from ANE_UI_HOST, ANE_UI_PORT and ANE_UI_SHARE, which
   take precedence over the saved values): a save changes nothing that is running, and the saved value
