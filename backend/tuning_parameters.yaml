@@ -334,7 +334,7 @@ world_definition.similarity_threshold:
   type: float
   default: 0.2
   source:
-  - core_engine/builder.py:202
+  - core_engine/builder.py:203
 climax.ally_choice.bonus:
   label: Showdown bonus for calling an ally
   explanation: In the climax, the 'Call on <ally>' choice (offered only if the player has an ally) gets this added
@@ -1301,7 +1301,7 @@ action_selection.stay_penalty_power:
   default: 2.0
   source:
   - core_engine/game_state.py:2584
-  - core_engine/builder.py:617
+  - core_engine/builder.py:618
   minimum: 0
 action_selection.consistency_penalty_weight:
   label: Strength of place-specific action penalties
@@ -1940,7 +1940,7 @@ fitness.objective_losses.scenario_duplication.power:
   default: 2.0
   source:
   - core_engine/fitness.py:598
-  - core_engine/builder.py:617
+  - core_engine/builder.py:618
   minimum: 0
 fitness.objective_losses.world_extension.discovery_weight:
   label: Loss for discovering too little of the world

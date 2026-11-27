@@ -186,9 +186,10 @@ def route_errors(config_wd):
         if not isinstance(neighbours, list):
             errors.append(f"routes.{name} must be a list of locations.")
             continue
-        unknown = [str(other) for other in neighbours if other not in places]
-        if unknown:
-            errors.append(f"routes.{name}: not locations of this world: {', '.join(unknown)}.")
+        for other in neighbours:
+            if other not in places:  # names both ends: the place the route is written on, and where it leads
+                errors.append(f"routes.{name}: the route from '{name}' to '{other}' leads to '{other}', "
+                              f"which is not a location of this world.")
     return errors
 
 
