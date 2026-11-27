@@ -582,8 +582,12 @@ class CoherenceTests(_Rules):
             self.assertIn("Search for an exit", _names(prisoner))             # failed: try again
 
     def test_a_repeated_conversation_counts_toward_stalling(self):
+        from core_engine.world import DialogueLine
+
         world = _gate_world()
-        world.add_character(Character("Guard", ["gate"], descriptions=["The guard yawns."], unique=True))
+        # Authored dialogue stays on offer (it can change from turn to turn); said again, it is nothing new.
+        world.add_character(Character("Guard", ["gate"], descriptions=["The guard yawns."], unique=True,
+                                      dialogue=[DialogueLine("The guard yawns.")]))
         state = GameState(world, _genome(), start="Gate", rng=random.Random(0))
         state.npc_homes["Guard"] = "Gate"
         state._refresh_scene()
@@ -594,6 +598,17 @@ class CoherenceTests(_Rules):
         with patch.dict(config._config["director"], {"enabled": False}), follow_process_config(state):  # the loop filter would hide it
             _choose(state, talk)
         self.assertEqual(state.consecutive_steps_in_location, first + 1)  # nothing new was said
+
+    def test_small_talk_is_not_offered_again_in_the_same_visit(self):
+        world = _gate_world()
+        world.add_character(Character("Guard", ["gate"], descriptions=["The guard yawns."], unique=True))
+        state = GameState(world, _genome(), start="Gate", rng=random.Random(0))
+        state.npc_homes["Guard"] = "Gate"
+        state._refresh_scene()
+        talk = "(Guard) Talk with Guard"
+        _choose(state, talk)
+        with patch.dict(config._config["director"], {"enabled": False}), follow_process_config(state):
+            self.assertNotIn(talk, _names(state))  # the same words again would be nothing new: once per visit
 
     def test_routes_written_into_actions_count_for_planning(self):
         door = Action("Knock at the side door", [Outcome("A servant lets you into the cell block.", tags=["neutral"], move_to="Cell")],

@@ -7,6 +7,28 @@ that introduces them.
 
 ## [Unreleased]
 
+### Engine re-check of the 6–9 November findings (LIMITATIONS.md section 1)
+
+#### Fixed
+- A prisoner's story could still end "stalled": a turn that ended in a plain failure finalized before
+  the director's release, and an event in the cell blocked the release while the stall ended the story.
+  A player the director (or an encounter's `captive_release`) would let out is now never ended as a
+  stall; they are let out then, or once the event is over (`GameState._held_for_release`). Without a
+  director, a stall still ends the story. Tests: `tests/test_one_way.py` (`PrisonReleaseTests`).
+- A held player could be told the same small talk turn after turn, word for word. Small talk (no
+  authored dialogue line) is now offered once per visit; authored dialogue and hostile talk stay on
+  offer. Tests: `tests/test_one_way.py` (`SmallTalkTests`), `tests/test_playtest.py`, and
+  `tests/test_story_rules.py` (the stall-counting test now uses authored dialogue).
+
+#### Added
+- Playtest metrics report `clues`: `planted`, `paid` (as `story_rules.clue_matching` matches),
+  `paid_strict` (each `payoff_N` closing only `setup_N`) and `mismatched`
+  (`evaluator/playtest.py::_clue_metrics`).
+
+#### Changed
+- `backend/tuning_parameters.yaml`: the source lines it cites in `core_engine/game_state.py` follow the
+  edits above.
+
 ### A saved engine's game starts in its own context
 
 #### Changed

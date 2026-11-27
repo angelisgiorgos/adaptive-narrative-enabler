@@ -129,6 +129,27 @@ class ScenarioTests(_Sandbox):
         other = playtest.run_scenario(_scenario(seed=4))
         self.assertNotEqual(first.texts, other.texts)
 
+    def test_a_held_player_is_not_told_the_same_turn_again(self):
+        """LIMITATIONS #8: in the Ice Cell this story told the Warden's small talk four turns in a row, word
+        for word; small talk is now once per visit, so no turn repeats the one before."""
+        run = playtest.run_scenario(playtest.Scenario(name="monastery-held", world="examples/frozen_monastery.yaml",
+                                                      player="fighter", seed=7, max_turns=100))
+        self.assertTrue(any(entry.get("where") == "Ice Cell" for entry in run.journal))  # it was held
+        repeated = [i for i in range(1, len(run.texts)) if run.texts[i] and run.texts[i] == run.texts[i - 1]]
+        self.assertEqual(repeated, [])
+
+    def test_clue_payoffs_are_reported_as_matched_and_strictly(self):
+        """LIMITATIONS #1: a payoff rate is reported both ways, so `any` matching (a payoff closing an
+        unrelated clue) is never read as coherence."""
+        run = playtest.run_scenario(_scenario())
+        clues = run.metrics["clues"]
+        self.assertEqual(set(clues), {"matching", "planted", "paid", "paid_strict", "mismatched"})
+        self.assertEqual(clues["mismatched"], max(0, clues["paid"] - clues["paid_strict"]))
+        from core_engine import rules
+
+        self.assertEqual(rules.clue_pairs({"setup_1": 1}, {"payoff_2": 3}, "any")[0][0][:3:2], ("setup_1", "payoff_2"))
+        self.assertEqual(rules.clue_pairs({"setup_1": 1}, {"payoff_2": 3}, "numbered")[0], [])  # not its own clue
+
     def test_the_scenario_fixes_start_quest_and_length(self):
         run = playtest.run_scenario(_scenario(max_turns=6))
         self.assertEqual(run.state.start_location, "Mountain Gate")

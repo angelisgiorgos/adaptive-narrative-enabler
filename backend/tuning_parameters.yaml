@@ -14,7 +14,7 @@ story_rules.repetition_power:
   minimum: 1
   default: 1.5
   source:
-  - core_engine/game_state.py:2516
+  - core_engine/game_state.py:2523
   - core_engine/rules.py:44
   - core_engine/rules.py:71
 story_rules.backtrack_penalty:
@@ -28,7 +28,7 @@ story_rules.backtrack_penalty:
   minimum: 0
   default: 1.5
   source:
-  - core_engine/game_state.py:2524
+  - core_engine/game_state.py:2531
   - core_engine/rules.py:45
   - core_engine/rules.py:55
 story_rules.collect_weight:
@@ -42,7 +42,7 @@ story_rules.collect_weight:
   minimum: 0
   default: 1.0
   source:
-  - core_engine/game_state.py:2497
+  - core_engine/game_state.py:2504
   - core_engine/rules.py:47
   - core_engine/rules.py:47
 story_rules.payoff_weight:
@@ -56,7 +56,7 @@ story_rules.payoff_weight:
   minimum: 0
   default: 2.0
   source:
-  - core_engine/game_state.py:2494
+  - core_engine/game_state.py:2501
   - core_engine/rules.py:48
   - core_engine/rules.py:48
 story_rules.payoff_route_weight:
@@ -69,8 +69,8 @@ story_rules.payoff_route_weight:
   minimum: 0
   default: 1.5
   source:
-  - core_engine/game_state.py:2571
-  - core_engine/game_state.py:2209
+  - core_engine/game_state.py:2578
+  - core_engine/game_state.py:2216
   - core_engine/rules.py:49
   - core_engine/rules.py:49
 game_state.low_health_threshold:
@@ -93,7 +93,7 @@ game_state.auto_travel_on_spawn_threshold:
   type: float
   default: 1.5
   source:
-  - core_engine/game_state.py:4706
+  - core_engine/game_state.py:4724
 game_state.auto_travel_commit_threshold:
   label: Threshold to follow an NPC's lead
   explanation: When an NPC's hint opens a path, the storyteller moves the player along it at once if the path's
@@ -102,7 +102,7 @@ game_state.auto_travel_commit_threshold:
   type: float
   default: 1.2
   source:
-  - core_engine/game_state.py:2162
+  - core_engine/game_state.py:2169
 game_state.commit_discovery_weight:
   label: Curiosity boost for following new paths
   explanation: Adds this x the storyteller's discovery bias to the commitment score of a newly opened path, so raising
@@ -111,7 +111,7 @@ game_state.commit_discovery_weight:
   type: float
   default: 0.4
   source:
-  - core_engine/game_state.py:2147
+  - core_engine/game_state.py:2154
 game_state.commit_revisit_penalty:
   label: Reluctance to follow a path to a visited place
   explanation: Subtracts this per earlier visit to the destination from a new path's commitment score, so raising
@@ -120,7 +120,7 @@ game_state.commit_revisit_penalty:
   type: float
   default: 0.6
   source:
-  - core_engine/game_state.py:2148
+  - core_engine/game_state.py:2155
 mission_settings.route_weight:
   label: Pull toward the mission's route
   explanation: Places and discoveries closer to where the mission can advance (route score 1/(1+distance)) gain
@@ -132,7 +132,7 @@ mission_settings.route_weight:
   default: 6.0
   source:
   - core_engine/game_state.py:1602
-  - core_engine/game_state.py:2298
+  - core_engine/game_state.py:2305
 discovery_nodes.location_voyage_weight:
   label: Hints favour places (travel-minded storyteller)
   explanation: 'When an NPC gives a lead, the engine picks what it reveals by the highest score: place = location_base
@@ -142,7 +142,7 @@ discovery_nodes.location_voyage_weight:
   type: float
   default: 0.4
   source:
-  - core_engine/game_state.py:4456
+  - core_engine/game_state.py:4474
 discovery_nodes.npc_social_weight:
   label: Hints favour people (social storyteller)
   explanation: In the same lead choice, a person's score is npc_base + the storyteller's social bias x this; raising
@@ -151,7 +151,7 @@ discovery_nodes.npc_social_weight:
   type: float
   default: 0.3
   source:
-  - core_engine/game_state.py:4457
+  - core_engine/game_state.py:4475
 discovery_nodes.item_discovery_weight:
   label: Hints favour items (curious storyteller)
   explanation: In the same lead choice, an item's score is item_base + the storyteller's discovery bias x this;
@@ -160,7 +160,7 @@ discovery_nodes.item_discovery_weight:
   type: float
   default: 0.3
   source:
-  - core_engine/game_state.py:4458
+  - core_engine/game_state.py:4476
 npc_leads.shared_tag_weight:
   label: Guide prefers places matching the NPC
   explanation: When an NPC leads the player somewhere they know (an outcome with lead_to_known), each candidate
@@ -170,7 +170,7 @@ npc_leads.shared_tag_weight:
   type: float
   default: 0.5
   source:
-  - core_engine/game_state.py:4812
+  - core_engine/game_state.py:4830
 npc_leads.quest_weight:
   label: Guide prefers places on the way to the quest
   explanation: Adds this / (1 + steps from the place to where the quest can advance) to a guide's choice of destination,
@@ -180,7 +180,7 @@ npc_leads.quest_weight:
   type: float
   default: 3.0
   source:
-  - core_engine/game_state.py:4918
+  - core_engine/game_state.py:4936
 skill_check_resolution.difficulty_penalty:
   label: Base check difficulty
   explanation: Subtracted from every skill check's target (the highest passing roll), so raising it makes all checks
@@ -306,7 +306,7 @@ power_model.check_weight:
   type: float
   default: 6
   source:
-  - core_engine/game_state.py:4949
+  - core_engine/game_state.py:4967
 npc_goals.ally_check_bonus:
   label: Check bonus with allies
   explanation: Checks on actions with an NPC who became an ally (by being helped with their goal) get this added
@@ -315,7 +315,7 @@ npc_goals.ally_check_bonus:
   type: integer
   default: 15
   source:
-  - core_engine/game_state.py:4951
+  - core_engine/game_state.py:4969
 npc_goals.action_weight:
   label: Appeal of helping NPCs with their goals
   explanation: Options that would advance an NPC's goal gain this x (0.5 + the storyteller's social bias), so raising
@@ -325,7 +325,7 @@ npc_goals.action_weight:
   type: float
   default: 0.5
   source:
-  - core_engine/game_state.py:2525
+  - core_engine/game_state.py:2532
 world_definition.similarity_threshold:
   label: Place similarity needed for a path
   explanation: 'With spawn_strategy: similarity, two places can open onto each other when their tag similarity is
@@ -420,7 +420,7 @@ outcome_objective.success_threshold:
   type: float
   default: 0.5
   source:
-  - core_engine/game_state.py:2378
+  - core_engine/game_state.py:2385
 outcome_objective.health_weight:
   label: Preference for health gain
   explanation: Each point of health an outcome would really change (after clamping to max health) adds this much
@@ -430,7 +430,7 @@ outcome_objective.health_weight:
   type: float
   default: 1.5
   source:
-  - core_engine/game_state.py:2261
+  - core_engine/game_state.py:2268
 outcome_objective.repetition_penalty:
   label: Penalty for repeating an outcome
   explanation: Each earlier showing of the same outcome text lowers its preference score by this much times the
@@ -440,7 +440,7 @@ outcome_objective.repetition_penalty:
   type: float
   default: 1.5
   source:
-  - core_engine/game_state.py:2266
+  - core_engine/game_state.py:2273
 outcome_objective.coin_weight:
   label: Preference for coin gain
   explanation: Each coin an outcome gives adds this much to its preference score (each coin lost subtracts it),
@@ -449,7 +449,7 @@ outcome_objective.coin_weight:
   type: float
   default: 0.15
   source:
-  - core_engine/game_state.py:2268
+  - core_engine/game_state.py:2275
 outcome_objective.success_probability_weight:
   label: Preference for likely success
   explanation: The outcome's chance of success (its skill-check pass chance, or its success probability if unchecked)
@@ -458,7 +458,7 @@ outcome_objective.success_probability_weight:
   type: float
   default: 2.0
   source:
-  - core_engine/game_state.py:2270
+  - core_engine/game_state.py:2277
 outcome_objective.discovery_weight:
   label: Preference for discoveries
   explanation: Outcomes that reveal or spawn a place, person or item gain this times the storyteller's discovery
@@ -467,7 +467,7 @@ outcome_objective.discovery_weight:
   type: float
   default: 2.0
   source:
-  - core_engine/game_state.py:2273
+  - core_engine/game_state.py:2280
 outcome_objective.movement_weight:
   label: Preference for travel outcomes
   explanation: Outcomes that move or send the player elsewhere (or lead to a known place) gain this times the storyteller's
@@ -476,7 +476,7 @@ outcome_objective.movement_weight:
   type: float
   default: 2.5
   source:
-  - core_engine/game_state.py:2275
+  - core_engine/game_state.py:2282
 outcome_objective.threat_interest_weight:
   label: Preference for danger
   explanation: Outcomes tagged threat or combat gain this times the storyteller's threat trait (0–1) in preference
@@ -485,7 +485,7 @@ outcome_objective.threat_interest_weight:
   type: float
   default: 1.0
   source:
-  - core_engine/game_state.py:2277
+  - core_engine/game_state.py:2284
 outcome_objective.low_health_risk_penalty:
   label: Avoid danger at low health
   explanation: When the player's health is low, outcomes tagged threat or combat lose this much preference score,
@@ -494,7 +494,7 @@ outcome_objective.low_health_risk_penalty:
   type: float
   default: 3.0
   source:
-  - core_engine/game_state.py:2279
+  - core_engine/game_state.py:2286
 outcome_objective.success_tag_bonus:
   label: Preference for success-tagged outcomes
   explanation: Outcomes tagged 'success' gain this flat amount of preference score.
@@ -502,7 +502,7 @@ outcome_objective.success_tag_bonus:
   type: float
   default: 1.0
   source:
-  - core_engine/game_state.py:2281
+  - core_engine/game_state.py:2288
 outcome_objective.setup_weight:
   label: Preference for planting clues early
   explanation: In the first 5 turns, while fewer than the maximum clues are open, outcomes that plant a clue (setup_
@@ -511,7 +511,7 @@ outcome_objective.setup_weight:
   type: float
   default: 1.5
   source:
-  - core_engine/game_state.py:2285
+  - core_engine/game_state.py:2292
 outcome_objective.payoff_weight:
   label: Preference for paying off clues
   explanation: From turn 4 on, while any clue is open, outcomes that pay off a clue (payoff_ tags) gain this flat
@@ -520,7 +520,7 @@ outcome_objective.payoff_weight:
   type: float
   default: 2.0
   source:
-  - core_engine/game_state.py:2287
+  - core_engine/game_state.py:2294
 unexpected_events.objective.low_health_healing_weight:
   label: Event healing preference at low health
   explanation: While the player's health is low, each point of health a candidate event effect would really change
@@ -529,7 +529,7 @@ unexpected_events.objective.low_health_healing_weight:
   type: float
   default: 2.0
   source:
-  - core_engine/game_state.py:3695
+  - core_engine/game_state.py:3713
   requires: unexpected_events.enabled
 unexpected_events.objective.healing_weight:
   label: Event healing preference
@@ -539,7 +539,7 @@ unexpected_events.objective.healing_weight:
   type: float
   default: 0.5
   source:
-  - core_engine/game_state.py:3695
+  - core_engine/game_state.py:3713
   requires: unexpected_events.enabled
 unexpected_events.objective.coin_weight:
   label: Event coin preference
@@ -549,7 +549,7 @@ unexpected_events.objective.coin_weight:
   type: float
   default: 0.1
   source:
-  - core_engine/game_state.py:3698
+  - core_engine/game_state.py:3716
   requires: unexpected_events.enabled
 unexpected_events.objective.low_health_threat_penalty:
   label: Avoid threatening events at low health
@@ -559,7 +559,7 @@ unexpected_events.objective.low_health_threat_penalty:
   type: float
   default: 2.0
   source:
-  - core_engine/game_state.py:3704
+  - core_engine/game_state.py:3722
   requires: unexpected_events.enabled
 unexpected_events.base_chance:
   label: Base unexpected-event pressure
@@ -570,7 +570,7 @@ unexpected_events.base_chance:
   type: float
   default: 0.12
   source:
-  - core_engine/game_state.py:3653
+  - core_engine/game_state.py:3671
   requires: unexpected_events.enabled
 unexpected_events.genome_weight:
   label: Event pressure from the storyteller's event trait
@@ -580,7 +580,7 @@ unexpected_events.genome_weight:
   type: float
   default: 0.35
   source:
-  - core_engine/game_state.py:3655
+  - core_engine/game_state.py:3673
   requires: unexpected_events.enabled
 unexpected_events.chaos_weight:
   label: Event pressure from the storyteller's chaos trait
@@ -590,7 +590,7 @@ unexpected_events.chaos_weight:
   type: float
   default: 0.2
   source:
-  - core_engine/game_state.py:3657
+  - core_engine/game_state.py:3675
   requires: unexpected_events.enabled
 unexpected_events.objective_threshold:
   label: Unexpected-event trigger threshold
@@ -600,7 +600,7 @@ unexpected_events.objective_threshold:
   type: float
   default: 0.24
   source:
-  - core_engine/game_state.py:3666
+  - core_engine/game_state.py:3684
   requires: unexpected_events.enabled
 unexpected_events.effect_repeat_penalty:
   label: Penalty for repeating an event effect
@@ -610,7 +610,7 @@ unexpected_events.effect_repeat_penalty:
   type: float
   default: 1.0
   source:
-  - core_engine/game_state.py:3712
+  - core_engine/game_state.py:3730
   requires: unexpected_events.enabled
 unexpected_events.cooldown_steps:
   label: Turns between unexpected events
@@ -620,7 +620,7 @@ unexpected_events.cooldown_steps:
   type: integer
   default: 2
   source:
-  - core_engine/game_state.py:3644
+  - core_engine/game_state.py:3662
   requires: unexpected_events.enabled
 unexpected_events.max_per_story:
   label: Most unexpected events per story
@@ -630,7 +630,7 @@ unexpected_events.max_per_story:
   type: integer
   default: 4
   source:
-  - core_engine/game_state.py:3650
+  - core_engine/game_state.py:3668
   requires: unexpected_events.enabled
 outcome_resolution.probability_floor:
   label: Lowest success chance of unchecked outcomes
@@ -847,7 +847,7 @@ director.threat_weight:
   type: float
   default: 0.0
   source:
-  - core_engine/game_state.py:2484
+  - core_engine/game_state.py:2491
   requires: director.enabled
 director.escape_bonus:
   label: Escape check bonus per failed escape
@@ -857,7 +857,7 @@ director.escape_bonus:
   type: integer
   default: 15
   source:
-  - core_engine/game_state.py:2344
+  - core_engine/game_state.py:2351
   requires: director.enabled
 director.boredom_weight:
   label: Pull toward novelty when the story is dull
@@ -867,7 +867,7 @@ director.boredom_weight:
   type: float
   default: 0.0
   source:
-  - core_engine/game_state.py:2554
+  - core_engine/game_state.py:2561
   requires: director.enabled
 director.payoff_due_weight:
   label: Pull toward overdue clue payoffs
@@ -877,7 +877,7 @@ director.payoff_due_weight:
   type: float
   default: 0.0
   source:
-  - core_engine/game_state.py:2557
+  - core_engine/game_state.py:2564
   requires: director.enabled
 director.explore_weight:
   label: Pull toward unvisited places
@@ -887,7 +887,7 @@ director.explore_weight:
   type: float
   default: 0.0
   source:
-  - core_engine/game_state.py:2564
+  - core_engine/game_state.py:2571
   requires: director.enabled
 director.dead_end_penalty:
   label: Penalty for revisiting exhausted places
@@ -897,7 +897,7 @@ director.dead_end_penalty:
   type: float
   default: 0.0
   source:
-  - core_engine/game_state.py:2561
+  - core_engine/game_state.py:2568
   requires: director.enabled
 director.retry_bonus:
   label: Check bonus per failed retry
@@ -907,7 +907,7 @@ director.retry_bonus:
   type: integer
   default: 15
   source:
-  - core_engine/game_state.py:2347
+  - core_engine/game_state.py:2354
   requires: director.enabled
 director.retry_cooldown_penalty:
   label: Penalty for retrying a just-failed action
@@ -917,7 +917,7 @@ director.retry_cooldown_penalty:
   type: float
   default: 3.0
   source:
-  - core_engine/game_state.py:2544
+  - core_engine/game_state.py:2551
   requires: director.enabled
 director.ping_pong_penalty:
   label: Penalty for going straight back
@@ -927,7 +927,7 @@ director.ping_pong_penalty:
   type: float
   default: 2.5
   source:
-  - core_engine/game_state.py:2548
+  - core_engine/game_state.py:2555
   requires: director.enabled
 transition_objective.intent_similarity_weight:
   label: Pull of destinations matching the move's purpose
@@ -939,8 +939,8 @@ transition_objective.intent_similarity_weight:
   type: float
   default: 4.0
   source:
-  - core_engine/game_state.py:2172-2174
-  - core_engine/game_state.py:2174
+  - core_engine/game_state.py:2179-2181
+  - core_engine/game_state.py:2181
 transition_objective.exact_intent_weight:
   label: Bonus per destination tag matching the move's purpose
   explanation: Adds this many points for every tag a candidate destination shares exactly with the move's intent
@@ -949,7 +949,7 @@ transition_objective.exact_intent_weight:
   type: float
   default: 2.0
   source:
-  - core_engine/game_state.py:2179
+  - core_engine/game_state.py:2186
 transition_objective.novelty_weight:
   label: Preference for destinations unlike the current place
   explanation: Adds (1 − tag similarity between the current place and the candidate) × this to each destination,
@@ -959,8 +959,8 @@ transition_objective.novelty_weight:
   type: float
   default: 2.0
   source:
-  - core_engine/game_state.py:2175-2177
-  - core_engine/game_state.py:2177
+  - core_engine/game_state.py:2182-2184
+  - core_engine/game_state.py:2184
 transition_objective.available_action_weight:
   label: Preference for destinations with more to do
   explanation: Adds this many points per action the candidate place itself offers. Raising it steers moves toward
@@ -969,7 +969,7 @@ transition_objective.available_action_weight:
   type: float
   default: 0.2
   source:
-  - core_engine/game_state.py:2180
+  - core_engine/game_state.py:2187
 transition_objective.revisit_penalty:
   label: Penalty per earlier visit to a destination
   explanation: Subtracts this many points for each time the player has already been at the candidate place. Raising
@@ -978,8 +978,8 @@ transition_objective.revisit_penalty:
   type: float
   default: 2.5
   source:
-  - core_engine/game_state.py:2152-2154
-  - core_engine/game_state.py:2182
+  - core_engine/game_state.py:2159-2161
+  - core_engine/game_state.py:2189
 transition_objective.story_phase_weight:
   label: Pull of destinations suiting the story phase
   explanation: 'Adds this many points per destination tag that is in the current phase''s tag list (transition_objective.story_phases:
@@ -989,8 +989,8 @@ transition_objective.story_phase_weight:
   type: float
   default: 0.8
   source:
-  - core_engine/game_state.py:2185-2194
-  - core_engine/game_state.py:2194
+  - core_engine/game_state.py:2192-2201
+  - core_engine/game_state.py:2201
 transition_objective.voyage_weight:
   label: Travel-minded storyteller's pull toward outcomes that go somewhere
   explanation: Adds the storyteller's travel trait (genome voyage_bias) × this to every destination's score. Because
@@ -1000,7 +1000,7 @@ transition_objective.voyage_weight:
   type: float
   default: 1.0
   source:
-  - core_engine/game_state.py:2205
+  - core_engine/game_state.py:2212
 transition_objective.discovery_weight:
   label: Discovery-minded storyteller's pull toward outcomes that go somewhere
   explanation: Adds the storyteller's discovery trait (genome discovery_bias) × this to every destination's score.
@@ -1010,7 +1010,7 @@ transition_objective.discovery_weight:
   type: float
   default: 0.8
   source:
-  - core_engine/game_state.py:2206
+  - core_engine/game_state.py:2213
 scene.visibility.npc_social_bias_weight:
   label: Prominence of social NPCs
   explanation: NPCs tagged 'social' get the storyteller's social trait (genome bias_social) × this added to their
@@ -1020,8 +1020,8 @@ scene.visibility.npc_social_bias_weight:
   type: float
   default: 1.0
   source:
-  - core_engine/game_state.py:1856-1857
-  - core_engine/game_state.py:1856-1865
+  - core_engine/game_state.py:1863-1864
+  - core_engine/game_state.py:1863-1872
 scene.visibility.npc_threat_bias_weight:
   label: Prominence of threatening NPCs
   explanation: NPCs tagged 'threat' get the storyteller's threat trait (genome bias_threat) × this added to their
@@ -1030,8 +1030,8 @@ scene.visibility.npc_threat_bias_weight:
   type: float
   default: 0.5
   source:
-  - core_engine/game_state.py:1858-1859
-  - core_engine/game_state.py:1858-1867
+  - core_engine/game_state.py:1865-1866
+  - core_engine/game_state.py:1865-1874
 scene.visibility.npc_urban_bias_weight:
   label: Prominence of city NPCs
   explanation: NPCs tagged 'urban' get the storyteller's urban trait (genome bias_urban) × this added to their visibility
@@ -1040,8 +1040,8 @@ scene.visibility.npc_urban_bias_weight:
   type: float
   default: 0.25
   source:
-  - core_engine/game_state.py:1860-1861
-  - core_engine/game_state.py:1856-1865
+  - core_engine/game_state.py:1867-1868
+  - core_engine/game_state.py:1863-1872
 scene.visibility.item_similarity_weight:
   label: Prominence of items that fit the place
   explanation: An item's visibility score starts at tag similarity between the item and the place (0–1) × this.
@@ -1051,8 +1051,8 @@ scene.visibility.item_similarity_weight:
   type: float
   default: 2.0
   source:
-  - core_engine/game_state.py:2133
-  - core_engine/game_state.py:2123-2133
+  - core_engine/game_state.py:2140
+  - core_engine/game_state.py:2130-2140
 scene.visibility.item_urban_bias_weight:
   label: Prominence of city items
   explanation: Items tagged 'urban' get the storyteller's urban trait (genome bias_urban) × this added to their
@@ -1061,8 +1061,8 @@ scene.visibility.item_urban_bias_weight:
   type: float
   default: 0.4
   source:
-  - core_engine/game_state.py:2134-2135
-  - core_engine/game_state.py:2125-2135
+  - core_engine/game_state.py:2141-2142
+  - core_engine/game_state.py:2132-2142
 scene.visibility.item_maritime_bias_weight:
   label: Prominence of seafaring items
   explanation: Items tagged 'maritime' get the storyteller's maritime trait (genome bias_maritime) × this added
@@ -1071,8 +1071,8 @@ scene.visibility.item_maritime_bias_weight:
   type: float
   default: 0.4
   source:
-  - core_engine/game_state.py:2136-2137
-  - core_engine/game_state.py:2127-2137
+  - core_engine/game_state.py:2143-2144
+  - core_engine/game_state.py:2134-2144
 scene.visibility.item_combat_bias_weight:
   label: Prominence of combat items
   explanation: Items tagged 'combat' get the storyteller's threat trait (genome bias_threat) × this added to their
@@ -1081,8 +1081,8 @@ scene.visibility.item_combat_bias_weight:
   type: float
   default: 0.2
   source:
-  - core_engine/game_state.py:2138-2139
-  - core_engine/game_state.py:2129-2139
+  - core_engine/game_state.py:2145-2146
+  - core_engine/game_state.py:2136-2146
 scene.npc_similarity_threshold:
   label: How closely an NPC must fit a place to appear there
   explanation: For places without a configured NPC tag list, an NPC that shares no distinctive tag with the place
@@ -1093,7 +1093,7 @@ scene.npc_similarity_threshold:
   type: float
   default: 0.68
   source:
-  - core_engine/game_state.py:1928
+  - core_engine/game_state.py:1935
 scene.npc_exact_tag_weight:
   label: Bonus per distinctive tag an NPC shares with a place
   explanation: Adds this many points per non-generic tag shared by an NPC and a place, raising that NPC's ranking
@@ -1103,7 +1103,7 @@ scene.npc_exact_tag_weight:
   type: float
   default: 1.25
   source:
-  - core_engine/game_state.py:1878
+  - core_engine/game_state.py:1885
 scene.npc_semantic_weight:
   label: Weight of NPC–place tag similarity
   explanation: Adds similarity between the NPC's and the place's distinctive tags (0–1) × this to the NPC's fit
@@ -1112,8 +1112,8 @@ scene.npc_semantic_weight:
   type: float
   default: 1.0
   source:
-  - core_engine/game_state.py:1879-1882
-  - core_engine/game_state.py:1882
+  - core_engine/game_state.py:1886-1889
+  - core_engine/game_state.py:1889
 scene.npc_known_location_bonus:
   label: Bonus for an NPC at a place they know
   explanation: Adds this flat bonus when the place is one of the NPC's known_locations, so they rank higher in that
@@ -1123,8 +1123,8 @@ scene.npc_known_location_bonus:
   type: float
   default: 3.0
   source:
-  - core_engine/game_state.py:1887-1888
-  - core_engine/game_state.py:1887
+  - core_engine/game_state.py:1894-1895
+  - core_engine/game_state.py:1894
 scene.npc_generic_tag_weight:
   label: Bonus per generic tag an NPC shares with a place
   explanation: Adds this many points per generic tag (scene.generic_npc_tags, e.g. urban, social) shared by an NPC
@@ -1133,8 +1133,8 @@ scene.npc_generic_tag_weight:
   type: float
   default: 0.05
   source:
-  - core_engine/game_state.py:1882-1884
-  - core_engine/game_state.py:1884
+  - core_engine/game_state.py:1889-1891
+  - core_engine/game_state.py:1891
 scene.location_tag_match_bonus:
   label: Bonus per tag matching the place's NPC list
   explanation: Adds this many points per NPC tag that appears in the place's configured NPC tag list (scene.location_npc_tags).
@@ -1143,8 +1143,8 @@ scene.location_tag_match_bonus:
   type: float
   default: 4.0
   source:
-  - core_engine/game_state.py:1888-1892
-  - core_engine/game_state.py:1892
+  - core_engine/game_state.py:1895-1899
+  - core_engine/game_state.py:1899
 spawn_selection.target_tag_weight:
   label: Weight of the asked-for tags in a tag-led discovery
   explanation: When a discovery asks for particular tags, each candidate place gets (tag similarity 0–1 + number
@@ -1233,7 +1233,7 @@ action_selection.base_weight:
   type: float
   default: 0.1
   source:
-  - core_engine/game_state.py:2482
+  - core_engine/game_state.py:2489
 action_selection.threat_weight:
   label: Pull of dangerous actions
   explanation: Actions with an outcome tagged 'threat' or 'guards' (including outcomes of the event they trigger)
@@ -1243,7 +1243,7 @@ action_selection.threat_weight:
   type: float
   default: 1.0
   source:
-  - core_engine/game_state.py:2484
+  - core_engine/game_state.py:2491
 action_selection.spawn_weight:
   label: Pull of actions tagged as opening new places
   explanation: Actions with an outcome tagged 'spawn' gain the storyteller's spawn trait (genome spawn_prob) × this.
@@ -1252,7 +1252,7 @@ action_selection.spawn_weight:
   type: float
   default: 1.2
   source:
-  - core_engine/game_state.py:2487
+  - core_engine/game_state.py:2494
 action_selection.setup_weight:
   label: Pull of actions that plant clues
   explanation: Actions with an outcome tagged setup_* gain the storyteller's setup trait (genome setup_prob) × this,
@@ -1262,7 +1262,7 @@ action_selection.setup_weight:
   type: float
   default: 1.0
   source:
-  - core_engine/game_state.py:2491
+  - core_engine/game_state.py:2498
 action_selection.discovery_weight:
   label: Pull of actions that reveal things
   explanation: Each outcome that opens a path or reveals a place, person or item adds the storyteller's discovery
@@ -1272,7 +1272,7 @@ action_selection.discovery_weight:
   type: float
   default: 1.2
   source:
-  - core_engine/game_state.py:2500
+  - core_engine/game_state.py:2507
 action_selection.movement_weight:
   label: Pull of actions that move the player
   explanation: Each outcome that moves, sends or leads the player somewhere adds the storyteller's travel trait
@@ -1281,7 +1281,7 @@ action_selection.movement_weight:
   type: float
   default: 1.4
   source:
-  - core_engine/game_state.py:2502
+  - core_engine/game_state.py:2509
 action_selection.recovery_weight:
   label: Pull of healing or paying actions when hurt
   explanation: Only while the player's health is low, each outcome that restores health or gives coins adds the
@@ -1290,7 +1290,7 @@ action_selection.recovery_weight:
   type: float
   default: 1.2
   source:
-  - core_engine/game_state.py:2504
+  - core_engine/game_state.py:2511
 action_selection.stay_penalty_power:
   label: How sharply lingering boosts moving on
   explanation: Actions that move the player or open a path have their score multiplied by 1 + (travel trait × turns
@@ -1300,7 +1300,7 @@ action_selection.stay_penalty_power:
   type: float
   default: 2.0
   source:
-  - core_engine/game_state.py:2584
+  - core_engine/game_state.py:2591
   - core_engine/builder.py:618
   minimum: 0
 action_selection.consistency_penalty_weight:
@@ -1312,7 +1312,7 @@ action_selection.consistency_penalty_weight:
   type: float
   default: 1.0
   source:
-  - core_engine/game_state.py:2602
+  - core_engine/game_state.py:2609
 action_selection.event_trigger_weight:
   label: Pull of actions that start events
   explanation: Actions that trigger an event gain the storyteller's event trait (genome event_prob) × this. Raising
@@ -1321,7 +1321,7 @@ action_selection.event_trigger_weight:
   type: float
   default: 1.5
   source:
-  - core_engine/game_state.py:2506
+  - core_engine/game_state.py:2513
 action_selection.mission_goal_weight:
   label: Pull of actions that advance the mission
   explanation: An action's mission progress (goal conditions it advances plus progress along the route to the goal)
@@ -1332,8 +1332,8 @@ action_selection.mission_goal_weight:
   type: float
   default: 6.0
   source:
-  - core_engine/game_state.py:2578
-  - core_engine/game_state.py:2294
+  - core_engine/game_state.py:2585
+  - core_engine/game_state.py:2301
 action_selection.repetition_penalty:
   label: Penalty for repeating a choice
   explanation: Subtracts (times this choice was already taken) ^ story_rules.repetition_power × the storyteller's
@@ -1343,7 +1343,7 @@ action_selection.repetition_penalty:
   type: float
   default: 1.0
   source:
-  - core_engine/game_state.py:2520
+  - core_engine/game_state.py:2527
 action_selection.skill_fit_weight:
   label: Preference for skill checks the character is likely to pass
   explanation: For actions with a skill check, adds (pass chance − 0.5) × this, where pass chance is a fraction
@@ -1353,7 +1353,7 @@ action_selection.skill_fit_weight:
   type: float
   default: 2.0
   source:
-  - core_engine/game_state.py:2513
+  - core_engine/game_state.py:2520
 action_selection.heading_weight:
   label: Pull toward the next step on the way to a set destination
   explanation: When the story has set out for a far place, the travel action to the next place on the way gets this
@@ -1363,7 +1363,7 @@ action_selection.heading_weight:
   type: float
   default: 1.5
   source:
-  - core_engine/game_state.py:2568
+  - core_engine/game_state.py:2575
 action_selection.location_penalties.Dungeon.action_terms.royal halls:
   label: Penalty in the Dungeon for actions mentioning the royal halls
   explanation: While the player is in the Dungeon, any action whose name contains 'royal halls' has this value ×
@@ -1372,7 +1372,7 @@ action_selection.location_penalties.Dungeon.action_terms.royal halls:
   unit: score points subtracted (× penalty strength)
   type: float
   source:
-  - core_engine/game_state.py:2591
+  - core_engine/game_state.py:2598
 action_selection.location_penalties.Dungeon.destination_tags.palace:
   label: Penalty in the Dungeon for travel to palace places
   explanation: While the player is in the Dungeon, any action that moves the player to a place tagged 'palace' has
@@ -1381,7 +1381,7 @@ action_selection.location_penalties.Dungeon.destination_tags.palace:
   unit: score points subtracted (× penalty strength)
   type: float
   source:
-  - core_engine/game_state.py:2598
+  - core_engine/game_state.py:2605
 action_selection.location_penalties.Dungeon.destination_tags.luxury:
   label: Penalty in the Dungeon for travel to luxury places
   explanation: While the player is in the Dungeon, any action that moves the player to a place tagged 'luxury' has
@@ -1390,7 +1390,7 @@ action_selection.location_penalties.Dungeon.destination_tags.luxury:
   unit: score points subtracted (× penalty strength)
   type: float
   source:
-  - core_engine/game_state.py:2598
+  - core_engine/game_state.py:2605
 action_selection.location_penalties.Dungeon.destination_tags.grand:
   label: Penalty in the Dungeon for travel to grand places
   explanation: While the player is in the Dungeon, any action that moves the player to a place tagged 'grand' has
@@ -1399,7 +1399,7 @@ action_selection.location_penalties.Dungeon.destination_tags.grand:
   unit: score points subtracted (× penalty strength)
   type: float
   source:
-  - core_engine/game_state.py:2598
+  - core_engine/game_state.py:2605
 evolution.mutation_rate:
   label: Mutation probability per trait
   explanation: 'When a child storyteller is bred, each of its traits is nudged by a random amount (up to the current
@@ -2478,7 +2478,7 @@ action_selection.location_penalties.*.action_terms.*:
   unit: score points subtracted (× penalty strength)
   type: float
   source:
-  - core_engine/game_state.py:2591
+  - core_engine/game_state.py:2598
 action_selection.location_penalties.*.destination_tags.*:
   label: Penalty for travel to places with this tag from this place
   explanation: While the player is at this place, any action with an outcome that moves the player to a place carrying
@@ -2487,7 +2487,7 @@ action_selection.location_penalties.*.destination_tags.*:
   unit: score points subtracted (× penalty strength)
   type: float
   source:
-  - core_engine/game_state.py:2598
+  - core_engine/game_state.py:2605
 relationships.friendly_at:
   label: Attitude for a friendly NPC
   explanation: An NPC whose attitude (trust - hostility + relationships.faction_weight x their faction's standing) is at

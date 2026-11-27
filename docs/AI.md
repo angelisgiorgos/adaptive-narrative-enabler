@@ -311,8 +311,11 @@ quests (offered, accepted, completed, failed, declined, completion rate), attack
 turns, the most repeated, the shortest gap), choices (shown, meaningful: a turn with two or more
 choices that brought something new; forced: one choice shown), movement (backtracks, A→B→A), people
 (met, talked to, allies, hostile, gone, faction standing), repeated actions, filler (turns that brought
-nothing new, by the director's own definition: `GameState._update_rhythm`) and coherence
-(contradictions found, the fitness's transition loss), with the fitness total and terms.
+nothing new, by the director's own definition: `GameState._update_rhythm`), coherence
+(contradictions found, the fitness's transition loss) and clues (`clues`: planted; `paid` as the engine
+matches them, `story_rules.clue_matching`; `paid_strict`, each `payoff_N` closing only its own
+`setup_N`; `mismatched`, the payoffs `any` matching paid against an unrelated clue), with the fitness
+total and terms.
 
 **Checks** (`issues`, thresholds in the file's `checks`):
 
@@ -970,7 +973,7 @@ evaluation method above:
 | An NPC said "hidden in the Vault" but a path to the Harbor opened | `follow_outcome_text`: a `spawn` or an NPC lead opens the place the outcome's text names; an outcome that routes by itself adds no extra lead | | text and route agree |
 | Every procedural event paid "coins +8" (about 37 free coins a story) | `unexpected_events`: effects rotate (`effect_repeat_penalty`), coins come from `coin_budget` (10), at most `max_per_story` (3), `cooldown_steps` (4) apart; parts are not repeated and the text names the place | 4.7 per story, 1 effect | 3 per story, effects rotate, ≤ 10 coins |
 | Missions won within a few steps | `early_goal_avoidance`: before `mission_settings.pursuit_start_step` the storyteller holds back from the mission; fitness `pacing` loss | 28.5% of wins before step 12 | 10% |
-| Stories ended "stalled" | `on_stall: move`: after `max_consecutive_steps_in_location` the traveler moves on (`[MOVE ON] ...`) | 9.5% stalled | 0% (only an unescaped prisoner can still stall) |
+| Stories ended "stalled" | `on_stall: move`: after `max_consecutive_steps_in_location` the traveler moves on (`[MOVE ON] ...`) | 9.5% stalled | 0% (a prisoner the director, or an encounter's `captive_release`, lets out is never ended as a stall, also when the turn failed or an event was going on in the cell; without a director a prison can still stall) |
 | Clues were rarely paid off, and never scored | Clues are recorded; `payoff_weight` and `payoff_route_weight` pull toward a payoff while a clue is open; `max_open_clues` stops planting more; `clue_matching: any` | 4.5% (and 0 in the fitness) | 53% of stories |
 | Items were rarely picked up | `collect_weight` (useful items × 1.5) | 243 item turns | 357 |
 | The same action again and again; back-and-forth travel | `repetition_power` (each use costs more), `backtrack_penalty`; fitness `repetition` loss; one-shot content as `repeat: once` + `retry_on_failure` | 69 stories repeat an action 3+ times; 2.7 A→B→A loops | 32; 1.3 |

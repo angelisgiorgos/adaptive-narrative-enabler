@@ -1,14 +1,19 @@
 # Limitations review
 
-Every limitation, caveat and open point reported in this chat, from 6 to 20 November 2026, checked
-one by one against the code as it stands on 21 November 2026.
+Every limitation, caveat and open point reported in this chat, from 6 to 27 November 2026, checked
+one by one against the code. Sections 1–8 were first checked on 21 November; section 1 was re-checked,
+and section 9 added, on 27 November 2026.
 
-- **Code state:** the latest commit is `5491381` (it includes the job reattach and cancellation
-  work). The 21 November fixes are in the working tree, not committed.
+- **Code state:** the latest commit is `3eaa322`. The 27 November engine changes (items #1, #4 and
+  #8) are in the working tree, not committed.
 - **How each item was checked:** by reading the code and tests (file and line given), plus the full test
-  suite (29 modules, 629 tests after the 21 November fixes, all passing) and the browser checks.
-- **What was not re-checked:** the engine experiment figures (marked 🔍). Re-measuring them means
-  training engines again, which CLAUDE.md rules out for validation.
+  suite (41 modules, 930 tests, all passing on 27 November) and, for 21 November, the browser checks.
+- **How the engine figures were re-measured (27 November):** 180 stories without any training: random
+  storytellers, the six simulated player strategies (`evaluator/playtest.py`, core_engine/players.py),
+  10 seeds each, up to 100 turns, on the city, the Frozen Monastery and the Orbital Station. The 6–9
+  November figures came from evolved storytellers and other protocols, so the two are comparable only
+  roughly; what each figure measures is said with it.
+- **What was not re-checked:** #9 still needs a training run, which CLAUDE.md rules out for validation.
 
 **Status key**
 
@@ -24,38 +29,45 @@ one by one against the code as it stands on 21 November 2026.
 
 | Status | Count |
 |---|---|
-| ✅ Solved | 42 |
-| 🟡 Partly solved | 4 |
-| ⏳ Open | 7 |
-| 📌 Accepted | 20 |
-| 🔍 Not re-checked | 7 |
-| **Total** | **80** |
+| ✅ Solved | 51 |
+| 🟡 Partly solved | 5 |
+| ⏳ Open | 17 |
+| 📌 Accepted | 23 |
+| 🔍 Not re-checked | 1 |
+| **Total** | **97** |
 
-Ten of the open items were fixed on 21 November (#15, #21, #22, #23, #45, #58, #61, #62, #63 and
-#65). What is still open needs you, or another session, or more testing:
-- rebuilding the containers (#18) and committing the 21 November fixes (#80);
+On 27 November the engine items were re-measured (section 1): two engine faults found there were
+fixed (#4, a prisoner's story still ending as a stall; #8, the same small talk told turn after turn),
+the clue measurement now reports strict pairs (#1), and CI was checked (#13). Section 9 lists what the
+26–27 November work on uploads, routes and engine play left open. What is still open needs you, or
+another session, or more testing:
+- decisions on the engine and the example worlds: strict clue matching by default (#1), the example
+  worlds' quests that are won in a few turns (#2, #10);
+- committing the 27 November engine changes (#1, #4, #8), and rebuilding the containers (#18);
+- section 9: the Windows run and validation gaps (#85–#88), the Salt Press original and "publish" (#89–#90), engine-play
+  follow-ups (#92–#94), and the production smoke game (#96);
 - the other session's FRONTEND.md view texts (#59);
 - jobs lost on an API restart, as no persistence was added (#69);
 - untested: a 390 px phone width (#19) and a real judge job in the browser (#71);
 - Gradio's internal `.tab-wrapper` class (#20).
 
-## 1. Engine and experiments (6–9 and 18 November)
+## 1. Engine and experiments (6–9 and 18 November; re-checked 27 November)
 
 | # | Limitation | Status | Evidence / what is left |
 |---|---|---|---|
-| 1 | Clue gain partly came from matching any payoff to any open clue (40% under strict matching) | 🔍 | A measurement caveat of that experiment; not re-measured |
-| 2 | 10% of wins came before step 12 | 🔍 | No later change targeted it; not re-measured |
-| 3 | Ambushes averaged 2.25 per story | 🔍 | Not re-measured |
-| 4 | 7 stalls among random storytellers: prisoners who never escaped the Dungeon | 🔍 | Since 9 Nov a prisoner's escape is listed first among the choices, which should help; not re-measured |
-| 5 | Studio limits rose (100 steps, 60,000 turns of work) and the suite took 2.3 min | 📌 | Superseded: the work limit is now 1,000,000 (`backend/store.py:193`). The suite is larger (625 tests) |
-| 6 | Evaluation caveats: automated players as proxies, 10 games per player type (±15 points), one training run per variant | 📌 | Inherent to that experiment's design |
-| 7 | Station traders still said "the reactor runs too hot" after the reboot | ✅ | The rumour stops once the reactor is fixed: `until: reactor_fixed: true` (`examples/orbital_station.yaml:70-76`) |
-| 8 | One coherence finding left: a repeated turn in the Monastery (1 in 14,326 turns) | 🔍 | Not re-measured |
+| 1 | Clue gain partly came from matching any payoff to any open clue (40% under strict matching) | 🟡 | Re-measured: a clue is paid off in 52/60 city, 38/43 monastery and 47/49 station stories as the engine matches (`clue_matching: any`), and in 49, 31 and 40 strictly (`payoff_N` closing only `setup_N`). A payoff closes an unrelated clue in 17, 20 and 7 stories. **Changed:** playtests now report `clues` {`paid`, `paid_strict`, `mismatched`} (`evaluator/playtest.py:478`, tested at `tests/test_playtest.py:141`), so a payoff rate is never read as coherence. **Left (your decision):** with `clue_matching: numbered` the same stories pay off 49, 36 and 45 times, every pair coherent, but the default changes the training objective, and the city's `payoff_1`/`payoff_2` have no `setup_1`/`setup_2`, so they would need re-tagging |
+| 2 | 10% of wins came before step 12 | ⏳ | Re-measured with simulated players: 1 of 33 city wins, 8 of 44 monastery and 15 of 51 station wins come before turn 12 (some in 2–5 turns, by every strategy). They are short authored quests: *Restore the reactor* is one action, *Earn the brothers' trust* needs `trust ≥ 2`. `early_goal_avoidance` holds back only the storyteller, and players go straight for the goal. Not an engine fault. **Left (your decision):** lengthen those quests in `examples/`, or a rule that a quest needs `mission_settings` turns before it can end the story |
+| 3 | Ambushes averaged 2.25 per story | ✅ | Re-measured: 0.00 (city), 0.23 (monastery) and 0.10 (station) attacks per story, within the encounter limits (`encounters`, checked by the playtests' `encounter_*` issues) |
+| 4 | 7 stalls among random storytellers: prisoners who never escaped the Dungeon | ✅ | Re-measured: 2 of 60 city stories still ended "stalled in Dungeon". Two causes: a turn ending in a plain failure finalized before the director's release, and an event in the cell blocked the release while the stall ended the story. **Fixed 27 Nov:** a player the director (or an encounter's `captive_release`) would let out is never ended as a stall: let out then, or once the event is over (`core_engine/game_state.py:1802`, `_held_for_release` at `:3610`; `tests/test_one_way.py:138`). After: 0 stalled endings in 180 stories. Without a director, a stall still ends the story (tested) |
+| 5 | Studio limits rose (100 steps, 60,000 turns of work) and the suite took 2.3 min | 📌 | Superseded: the work limit is now 1,000,000 (`backend/store.py:300`). The suite is larger (930 tests) |
+| 6 | Evaluation caveats: automated players as proxies, 10 games per player type (±15 points), one training run per variant | 📌 | Inherent to that experiment's design; the 27 Nov re-measurement has the same caveats (10 seeds per strategy) |
+| 7 | Station traders still said "the reactor runs too hot" after the reboot | ✅ | The rumour stops once the reactor is fixed: `until: reactor_fixed: true` (`examples/orbital_station.yaml:70-76`, re-checked) |
+| 8 | One coherence finding left: a repeated turn in the Monastery (1 in 14,326 turns) | ✅ | Re-measured: 2 identical consecutive turns in 2,877 monastery turns, both in one story: a held player told the Warden's small talk four times, word for word. **Fixed 27 Nov:** small talk (no authored line) is offered once per visit; authored dialogue stays on offer (`core_engine/game_state.py:3070-3080`; `tests/test_one_way.py:187`, `tests/test_playtest.py:132`; `tests/test_story_rules.py` updated). After: 0 in 8,690 turns |
 | 9 | In the small Monastery world, short training did not beat random storytellers | 🔍 | Needs training to re-check |
-| 10 | Stories of 24–32 turns, short of the score's 35-turn target | 🔍 | Not re-measured |
+| 10 | Stories of 24–32 turns, short of the score's 35-turn target | 🟡 | Re-measured (mean, median): city 65.7, 68; monastery 47.8, 36; station 31.3, 23 turns. City and monastery are no longer short; the station is, because of its quick quests (#2). New: 21 of 60 city stories (and 16 monastery, 7 station) reach the 100-turn limit without the quest done |
 | 11 | The Station's win rate dropped from 28 to 25 of 30 (longer routes) | 📌 | A consequence of the corrected map, not a defect |
 | 12 | Engines, records and learning memory from before 18 Nov were scored with the storyteller playing, so their fitness is not comparable | 📌 | Still true of old artifacts. Use *Forget what the AI learned* before clean comparisons |
-| 13 | CI: the C# (Unity) test had never run, and the retired `macos-14` runner cancelled a job | 🟡 | The runtime workflow now uses `macos-15` (`.github/workflows/runtime.yml:24`). CI results can't be seen from here (`gh` is not signed in) |
+| 13 | CI: the C# (Unity) test had never run, and the retired `macos-14` runner cancelled a job | ✅ | Checked with `gh` (now signed in): the *Unity library (C#)* job runs and passed on `main` (run 45826053505, 26 Nov), as did the `macos-15` and `macos-15-intel` runtime jobs. Its failure in a 26 Nov pull-request run was fixed by the next commit |
 
 ## 2. Studio and API: navigation, training and Train (19 November)
 
@@ -96,7 +108,7 @@ Ten of the open items were fixed on 21 November (#15, #21, #22, #23, #45, #58, #
 | 41 | Saving a weight rewrote `hyperparameters.yaml` without its comments | ✅ | Only the changed values are replaced, comments kept (`backend/store.py:339`) |
 | 42 | Unused parameters (never read, or needing a character no caller passes) | ✅ | Removed, as you chose; tested (`tests/test_studio_api.py:3975-3980`) |
 | 43 | The repeat penalty never applied; `crossover_probability` overrode `evolution.crossover_rate`; gated parameters looked active while off | ✅ | Fixed as you chose; gated ones are marked inactive (tested) |
-| 44 | A negative exponent would crash a story mid-run (ZeroDivisionError) | ✅ | Minimum 0, and the world is refused at build (`core_engine/builder.py:552-554`) |
+| 44 | A negative exponent would crash a story mid-run (ZeroDivisionError) | ✅ | Minimum 0, and the world is refused at build (`exponent_errors`, `core_engine/builder.py:623-631`; the earlier lines were out of date) |
 | 45 | Old pyflakes warnings | ✅ | Fixed 21 Nov: the three files are clean. Other files still have a few unused imports, not part of this item |
 
 ## 4. Tuning views, engine names and cards (20 November)
@@ -157,4 +169,26 @@ Ten of the open items were fixed on 21 November (#15, #21, #22, #23, #45, #58, #
 | 77 | Work left uncommitted at the end of each request (up to 20 Nov) | ✅ | All committed, up to `1e71a9f` |
 | 78 | The other session's in-progress edits broke two tests (20 Nov) | ✅ | It updated them; the full suite passes |
 | 79 | `docs/FRONTEND.md` endpoint rows were added by this session in the other session's file | ✅ | The coverage test passes; the other session has the details |
-| 80 | Work left uncommitted | ⏳ | The reattach and cancellation work is committed (`5491381`). The 21 November fixes are not committed yet |
+| 80 | Work left uncommitted | ✅ | The 21 November fixes and the 26 November work are committed (up to `3eaa322`). The 27 November engine changes are not yet (see the summary) |
+
+## 9. Uploads, routes and saved-engine play (26–27 November)
+
+| # | Limitation | Status | Evidence / what is left |
+|---|---|---|---|
+| 81 | A valid upload on Windows changed the active world, then reported failure; a rejected one could lose its message | ✅ | Fixed (`f2a70c3`): the `mkstemp` descriptor is written through and closed, cleanup never fails or hides a result, and the answer carries the accepted `revision` (`tests/test_upload_export_contract.py`) |
+| 82 | A world with its own map (`routes`) was refused, compared with the city's | ✅ | Fixed (`f1187e5`): checked against its own places, both ends named in the error (`tests/test_route_validation.py`) |
+| 83 | Playing a saved engine made its world the studio's defaults | ✅ | Fixed (`f1187e5`, `3eaa322`): the game runs in the engine's own context; `POST /v1/engines/{id}/activate` is the explicit step (`tests/test_engine_play_isolation.py`, over HTTP, concurrent) |
+| 84 | An engine game's save game continued in the studio's defaults | ✅ | Fixed with #83: save games carry `engine.context_key` and continue in their own configuration (same test) |
+| 85 | The Windows upload and export behaviour was simulated, not run on Windows | ⏳ | The tests make deleting a file fail as Windows does. CI runs the API tests on `ubuntu-latest` only (`.github/workflows/ci.yml:24`); its Windows job builds the runtime |
+| 86 | An upload's `revision` fingerprints the world only | ⏳ | Verified 27 Nov: the same world with `initial_coins` 5 → 99 gives the same revision (`backend/content.py::world_revision`) |
+| 87 | Unknown rooms in outcome links are accepted: `reveal_location`, `move_to`, `send_to`, `linked_location` | ⏳ | Verified 27 Nov: each uploads (200). In play, a `move_to` to an unknown room does nothing and says nothing (Salt Press with `move_to: Attic`: the player stays) |
+| 88 | An author's own `character_stats.stats` get the city's four stats merged in | ⏳ | Verified 27 Nov: a world with only `wit` ends up with `attack`, `defence`, `persuasion`, `stealth` too (`backend/store.py::complete_config`) |
+| 89 | The Salt Press tests use a reconstruction | ⏳ | The original map is not in the repository (`tests/fixtures/salt_press.yaml`). Needs the original file |
+| 90 | "Publish" in the Salt Press acceptance was taken as naming the engine, then exporting it | ⏳ | The repository has no publish step. Needs your confirmation |
+| 91 | No rollback if a step after an upload's commit fails | 📌 | Investigated: the steps after the commit are a tag-vector reset and plain assignments with defaults (`backend/store.py:725-727`); no realistic failure |
+| 92 | Continuing or retraining an engine's training still makes its world the studio's defaults | ⏳ | `backend/sessions.py:1083`, `:1119`; could be isolated as play was |
+| 93 | The studio has no control for `POST /v1/engines/{id}/activate` | ⏳ | Client-only for now (`tests/test_studio_coverage.py`); the studio sets defaults with a configuration upload |
+| 94 | Profiles are shared across engines: goals by mission key, variables by name | ⏳ | Verified 27 Nov (`core_engine/variables.py:249-263`): a quest achieved in one engine is achieved for the same key in another, for that profile. Engine play side by side makes it more likely |
+| 95 | Save games made before 26 Nov carry no `engine.context_key` | 📌 | They continue in the engine's own context when it is known here, else in the studio's defaults (rebuilt from parameters) |
+| 96 | A production smoke game of isolated engine play was not run | ⏳ | The concurrency test ran against a live server in the test process only. Needs you |
+| 97 | Callers that relied on playing an engine to change the editors' world must now ask for it | 📌 | By design; `activate: true` or the activate endpoint, documented in docs/API.md (Migration) |
