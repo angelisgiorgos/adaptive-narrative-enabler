@@ -1,5 +1,4 @@
 # Building a frontend on the API
-# Building a frontend on the API
 
 This guide is for frontend developers who are building a new client for the Adaptive Narrative
 Studio, for example in React. It also works as input to a code generator. It describes every screen
@@ -9,15 +8,17 @@ OpenAPI schema you can rebuild the whole studio without reading `app.py`.
 - **What the studio does** is in [Views](#views): each screen's components, the requests it
   makes, what it shows from each response, and the logic the studio runs in the browser, which you
   have to reimplement.
-- **What the API accepts** is in the OpenAPI schema: `GET /openapi.json`, browsable at `/docs`.
-  It has every request body, every query and path parameter, and the constraints on each. Many
+- **What the API accepts** is in [ENDPOINTS.md](ENDPOINTS.md): every endpoint with its parameters,
+  body fields (type, required or default), response and a `curl` line, generated from `api.py`. The
+  same is in the OpenAPI schema (`GET /openapi.json`, browsable at `/docs`), with the constraints on each. Many
   responses are untyped (`object`) in the schema. Their fields are given here, in
   [Shared shapes](#shared-shapes) and in the view that uses them.
 - **Which view calls which endpoint** is in the [Endpoint index](#endpoint-index). It lists every
   route of `api.py`. `tests/test_studio_coverage.py` checks that the index matches the API
   exactly, so this guide fails the test suite when the two drift apart.
 
-[API.md](API.md) describes the endpoints one by one, [STUDIO.md](STUDIO.md) describes the studio
+[API.md](API.md) describes how the API behaves, with worked flows (upload, train, play, save, export),
+[ENDPOINTS.md](ENDPOINTS.md) every endpoint one by one, [STUDIO.md](STUDIO.md) describes the studio
 for its users, and [WORLD.md](WORLD.md) describes the world format (conditions, effects, actions).
 
 ## The contract
@@ -2549,7 +2550,8 @@ too.
 Every `/v1` route of `api.py`, in the order the API declares them. **Views** are the views that
 call the route. "studio: …" names the endpoint the studio uses instead, and the route itself is
 for other clients. `tests/test_studio_coverage.py` (`FrontendGuideTests`) fails when this table and
-the API disagree, or when this guide names a request the API does not have.
+the API disagree, or when this guide names a request the API does not have. Each route's
+parameters, body and response are in [ENDPOINTS.md](ENDPOINTS.md) under the same `METHOD /path` heading.
 
 | Method | Path | Views | What it does |
 | --- | --- | --- | --- |

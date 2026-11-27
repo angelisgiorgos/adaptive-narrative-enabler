@@ -60,7 +60,9 @@ a menu of every section.
 | [docs/AI.md](docs/AI.md) | The evolutionary AI, the storyteller's decisions, the director, sessions, story rules |
 | [docs/ENGINES.md](docs/ENGINES.md) | Engine exports, engine model files, the records database, run outputs |
 | [docs/UNP.md](docs/UNP.md) | The ANE AI for a game: download, launch, protocol, save and load, stop, Unity |
-| [docs/API.md](docs/API.md) | The REST API: how it behaves, every endpoint, examples |
+| [docs/API.md](docs/API.md) | The REST API: how it behaves, worked flows (upload, train, play, save, export) |
+| [docs/ENDPOINTS.md](docs/ENDPOINTS.md) | Every endpoint: parameters, body, response, `curl` (generated from `api.py`) |
+| [docs/FRONTEND.md](docs/FRONTEND.md) | Building a frontend: every studio view as requests and JSON fields |
 | [docs/LLM.md](docs/LLM.md) | Gemma 4 on vLLM, and the judge |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Repository layout, tests, CI, building the ANE AI runtimes |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Every change |

@@ -17,9 +17,16 @@ clients can do too. It finds the API at `ANE_API_URL` (Compose:
 when that is unset, at `http://127.0.0.1:8005`. It never serves the API itself,
 so the API must be running before the studio starts.
 
-**Building another frontend?** [FRONTEND.md](FRONTEND.md) describes every studio view as
-requests and JSON fields: what each screen loads, its components, its actions, the client-side logic
-to reimplement, and an index of which view uses which endpoint.
+**Three documents, one API:**
+
+| Document | Read it for |
+|---|---|
+| This file | How the API behaves (state, writes, status codes, limits, sessions) and worked flows |
+| [ENDPOINTS.md](ENDPOINTS.md) | Every endpoint: what it does, parameters, body fields, response, `curl`. Generated from `api.py` (`python -m utils.api_reference`), so it is always current |
+| [FRONTEND.md](FRONTEND.md) | Building a UI: every studio view as requests and JSON fields, the client-side logic, and which view uses which endpoint |
+
+**Contents:** [Run with Docker](#run-with-docker) · [Using the API](#using-the-api) ·
+[How the API behaves](#how-the-api-behaves) · [Behaviour by area](#behaviour-by-area)
 
 | URL | Purpose |
 |---|---|
@@ -54,6 +61,89 @@ docker run --rm -p 8003:8003 \
 
 Without `ANE_API_URL` the studio looks for the API at `http://127.0.0.1:8005`;
 `-e ANE_API_URL=http://ane.hamlet.iti.gr` runs a studio on the public API.
+
+## Using the API
+
+### Conventions
+
+| What | How |
+|---|---|
+| Base URL | `http://localhost:8005` (Compose), or the public deployment |
+| Bodies | JSON (`Content-Type: application/json`); files as multipart (`-F file=@...`) |
+| Who starts a run | `X-ANE-User: <opaque id>` on every training or evaluation request (a UUID or account number, never a name or e-mail). Without it: `400` |
+| Studio requests | `X-ANE-Client: studio` records them with origin `studio`; anything else is `api` |
+| Errors | `{"detail": "..."}`, or `{"detail": [{loc, msg}]}` for `422`. A `409` on an action carries `{code, message, state_version, offered}` |
+| Long work | Submit a job (`POST /v1/jobs/...`), poll `GET /v1/jobs/{id}` until `status` is `finished`, `failed` or `cancelled`; its `result` is what the synchronous endpoint returns |
+| Choosing in a game | Send a choice's stable `id` with the `state_version` you saw: a stale view is refused (`409`) and nothing happens, so a retry is safe |
+| Files | A `*_download_url` (`/v1/artifacts/{id}`) downloads it; links last until the API restarts |
+
+### Flow 1: bring a world, train, play
+
+```bash
+API=http://localhost:8005; U='X-ANE-User: user-123'
+
+# 1. Make a world active (a world-only file is enough: the tuning it lacks is built in).
+curl -F file=@my_world.yaml $API/v1/config/upload          # -> {accepted, revision, message, settings}
+
+# 2. Check the run before starting it (the work, each value and where it comes from).
+curl -H "$U" -H 'Content-Type: application/json' -X POST $API/v1/simulations/resolve \
+     -d '{"candidate_count":8,"generations":5,"simulation_steps":16,"deterministic":true,"seed":7}'
+
+# 3. Train in the background, then poll.
+curl -H "$U" -H 'Content-Type: application/json' -X POST $API/v1/jobs/simulations \
+     -d '{"candidate_count":8,"generations":5,"simulation_steps":16,"deterministic":true,"seed":7}'   # -> {id, status, ...}
+curl $API/v1/jobs/JOB_ID                                     # until status = finished; result = the game
+
+# 4. Play: send a choice id from result.choices[] with result.state_version.
+curl -H 'Content-Type: application/json' -X POST $API/v1/sessions/SESSION_ID/actions \
+     -d '{"action_id":"CHOICE_ID","state_version":0}'        # -> the new state (location, choices, state_version, ...)
+```
+
+`POST /v1/simulations` does step 3 in one blocking call (no progress, no cancel): fine for tiny runs.
+`start_game: false` trains without starting a game.
+
+### Flow 2: save and continue a game
+
+```bash
+curl $API/v1/sessions/SESSION_ID/savegame > save.json        # ane.savegame/1; the session goes on
+curl -H 'Content-Type: application/json' -X POST $API/v1/sessions/load -d "{\"savegame\": $(cat save.json)}"
+#  -> a new session; restored: exact (or parameters, with a note)
+```
+
+Every session is also autosaved: `GET /v1/sessions` lists them, `POST /v1/sessions/{id}/continue` brings one back, and `POST /v1/sessions/{id}/saves` keeps a named save slot (`GET /v1/saves`, `POST /v1/saves/{id}/restore`).
+
+### Flow 3: play a saved engine without changing anything else
+
+```bash
+curl -H 'Content-Type: application/json' -X POST $API/v1/engines/latest/play -d '{"profile":"ink"}'
+curl -F file=@engine.ane.zip "$API/v1/engines/load?profile=ink"
+#  -> engine {engine_id, name}, world, world_revision, activated: false
+curl -X POST $API/v1/engines/ENGINE_ID/activate              # only when the editors should show its world
+```
+
+### Flow 4: export an engine and download it
+
+```bash
+curl -H 'Content-Type: application/json' -X POST $API/v1/exports -d '{"source":"run","run_id":"RUN_ID"}'
+#  -> {download_url, name, world, platform, ...}
+curl -o engine.zip "$API/DOWNLOAD_URL"
+```
+
+`GET /v1/exports/platforms` lists what each platform needs (`python`, standalone runtimes, `unity`).
+
+### Flow 5: edit the world
+
+```bash
+curl $API/v1/entities/Locations                               # the entries
+curl $API/v1/entities/Locations/Harbor                        # one entry's form
+curl -X POST -H 'Content-Type: application/json' $API/v1/entities/Locations/Harbor/preview -d '{}'   # unsaved preview
+curl -X PUT  -H 'Content-Type: application/json' $API/v1/entities/Locations/Harbor -d @harbor.json  # save (400: every problem, nothing written)
+curl $API/v1/world/revision                                   # changes whenever the world changes (poll to refresh lists)
+```
+
+### Flow 6: what each endpoint takes
+
+Every request and response field is in [ENDPOINTS.md](ENDPOINTS.md); the same, live, at `/docs`.
 
 ## How the API behaves
 
@@ -416,7 +506,10 @@ curl -X POST http://localhost:8005/v1/simulations -H 'Content-Type: application/
   separated). It then allows `GET`, `PUT`, `PATCH`, `POST`, `DELETE` and the headers
   `Content-Type`, `Authorization`, `X-ANE-Client`, and `X-ANE-User`.
 
-## Endpoint coverage
+## Behaviour by area
+
+What each area does and how its endpoints work together. Each endpoint's parameters, body fields and
+response are in [ENDPOINTS.md](ENDPOINTS.md).
 
 Every write is validated before anything is saved. Invalid requests return
 `400` with the list of problems, and nothing is written.
@@ -993,31 +1086,8 @@ The schemas and validation constraints are available in `/docs`.
 
 ## Examples
 
-List authored locations:
-
-```bash
-curl http://localhost:8005/v1/entities/Locations
-```
-
-Run a short evolution:
-
-```bash
-curl -X POST http://localhost:8005/v1/simulations \
-  -H 'content-type: application/json' \
-  -d '{"candidate_count":8,"generations":5,"simulation_steps":16,"deterministic":true}'
-```
-
-Use the returned `session_id`, one of its `choices[].id` and its `state_version`:
-
-```bash
-curl -X POST http://localhost:8005/v1/sessions/SESSION_ID/actions \
-  -H 'content-type: application/json' \
-  -d '{"action_id":"CHOICE_ID_FROM_THE_RESPONSE","state_version":STATE_VERSION}'
-```
-
-(Older clients send `{"action":"ACTION_FROM_THE_RESPONSE"}`, one of its exact `actions` values.)
-
-Upload a complete configuration or saved engine:
+The worked flows are in [Using the API](#using-the-api). Upload a complete configuration or a saved
+engine:
 
 ```bash
 curl -F file=@config.yaml http://localhost:8005/v1/config/upload

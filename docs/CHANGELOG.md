@@ -7,6 +7,23 @@ that introduces them.
 
 ## [Unreleased]
 
+### API documentation: an endpoint reference, worked flows
+
+#### Added
+- `docs/ENDPOINTS.md`: every endpoint (148) by area, with what it does, its parameters, its body fields
+  (type, required or default, description), its response and a `curl` line. It is generated from
+  `api.py` by `python -m utils.api_reference` (`--check` reports whether it is current);
+  `tests/test_api_reference.py` fails when it is out of date or an endpoint has no description.
+- `docs/API.md`: a *Using the API* section (conventions, and worked flows: bring a world, train in the
+  background and play; save and continue; play a saved engine; export and download; edit the world),
+  checked against a running API. The section that listed the endpoints is now *Behaviour by area*.
+- Descriptions for the 30 endpoints that had none (`/healthz`, `/v1/config`, `/v1/settings`,
+  `/v1/simulations`, the entity and mission editors, `/v1/artifacts/{id}`, ...), shown in `/docs` too.
+
+#### Fixed
+- `docs/API.md`'s example training request had no `X-ANE-User` and was refused (`400`). The flows send it.
+- `docs/FRONTEND.md`'s title was written twice. It and the README link the new reference.
+
 ### Engine re-check of the 6–9 November findings (LIMITATIONS.md section 1)
 
 #### Fixed
