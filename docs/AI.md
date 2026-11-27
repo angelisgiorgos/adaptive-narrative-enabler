@@ -772,8 +772,12 @@ a training run or a continued training gives exactly the stories and scores it g
 (checked in `tests/test_engine_context.py`, and against stories recorded before contexts existed).
 
 **Compatibility.** `config.get`, `config.use_override`, `EngineModel.activate()` and
-`load_tag_vectors` keep working: they set the process-wide configuration (the studio still makes a
-loaded engine's world the active one, so its editors show it). A save game keeps the configuration
+`load_tag_vectors` keep working: they set the process-wide configuration. Starting a game with a
+saved engine no longer calls `activate()`: the game, its tag space and its profile defaults are
+built in the engine's own context (`backend/sessions.py::_engine_game`), and the studio's defaults
+change only by the explicit operation (`activate_engine`, `POST /v1/engines/{id}/activate`, or
+`activate` on a play request). Continuing or retraining an engine's training still makes its world
+the studio's defaults, as before. A save game keeps the configuration
 hash of its session's context: one saved by a session started before an editor save loads exactly
 only while that configuration is in use, else it is rebuilt from its parameters; a UNP runtime
 knows every world revision it served since its last persisted patch and restores such a save game

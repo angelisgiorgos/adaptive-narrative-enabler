@@ -1149,7 +1149,7 @@ def engine_card_markdown(card, heading=True):
     counts = " · ".join(f"{summary[key]} {label}" for key, label in (
         ("locations", "places"), ("npcs", "people"), ("items", "items"), ("events", "events"), ("missions", "quests"))
         if key in summary)
-    where = {True: "✓ the active world", False: "⚠ not the active world (playing it makes its world active)"}.get(
+    where = {True: "✓ the active world", False: "not the active world (a game plays it in its own context)"}.get(
         world.get("current"), "")
     world_id = f"world `{world['id'][:12]}`" if world.get("id") else ""
     lines.append("- **World:** " + (" · ".join(part for part in (counts, world_id, where) if part) or "not recorded"))
@@ -2171,7 +2171,8 @@ def quest_world_markdown(world, label=None):
         ("locations", "places"), ("npcs", "people"), ("items", "items"), ("events", "events"), ("missions", "quests"))
         if key in summary)
     same = ("✓ the same world as the active configuration" if world.get("current") else
-            "⚠ not the active world: a new game with this engine makes it active")
+            "not the active world: a game with this engine plays it in its own context, and the studio's "
+            "defaults stay as they are")
     if world.get("source") == "engine":
         return (f"**Quests from the saved world of** {label or ''} (engine `{world['engine_id'][:8]}`): {counts} · world "
                 f"`{world['digest'][:12]}` · {same}.")

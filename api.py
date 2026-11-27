@@ -348,6 +348,17 @@ class SimulationResponse(PlayState):
         "override or default), `resolved` (as POST /v1/simulations/resolve gives them) and `executed` (read back "
         "from the evolution that ran): population, generations, stories_per_storyteller, requested_steps, "
         "story_turns, full_length_stories, story_length, deterministic, seed, warm_start, warm_start_mode.")
+    engine: dict[str, Any] | None = Field(
+        default=None, description="A game with a saved engine: the engine it runs {engine_id, name, source}.")
+    world: dict[str, Any] | None = Field(
+        default=None, description="A game with a saved engine: its world {source, engine_id, digest, id, summary, "
+        "current (whether it is also the studio's active world)}.")
+    world_revision: str | None = Field(
+        default=None, description="A game with a saved engine: the revision of the frozen configuration (world and "
+        "tuning) the game runs with, its own whatever the studio's defaults become.")
+    activated: bool | None = Field(
+        default=None, description="A game with a saved engine: whether starting it also made the engine the "
+        "studio's defaults (only when asked, `activate`).")
 
 
 ARTIFACTS: dict[str, Path] = {}
@@ -1269,17 +1280,22 @@ def _game_response(game) -> "SimulationResponse":
         engine_id=game.get("engine_id"), training=game.get("training"),
         config_download_url=_register_artifact(game["config_path"]),
         engine_download_url=_register_artifact(game["engine_path"]),
+        engine=game.get("engine"), world=game.get("world"), world_revision=game.get("world_revision"),
+        activated=game.get("activated"),
     )
 
 
 @api.post("/v1/engines/load", response_model=SimulationResponse, tags=["Evolution and play"])
 def load_engine(file: UploadFile = File(...), parameters: UploadFile | None = File(default=None),
                 profile: str | None = None, stats_mode: Literal["defined", "random", "balanced"] | None = None,
-                stats: str | None = None, mission: str | None = None, origin: str = Depends(_origin)):
+                stats: str | None = None, mission: str | None = None, activate: bool = False,
+                origin: str = Depends(_origin)):
     """Start a game with a saved engine: an engine model file (.ane.zip), an older engine ZIP, or a
     configuration YAML. ``parameters``: a separate model-parameters YAML for a configuration without
     ``generated_run.genome``. ``stats``: the player's own points as a JSON object (overrides ``stats_mode``).
-    ``mission``: the mission to play (key or title); left out, the story draws one."""
+    ``mission``: the mission to play (key or title); left out, the story draws one. The game runs in the
+    engine's own context; the studio's defaults do not change unless ``activate=true`` (the earlier
+    behaviour, as POST /v1/engines/{id}/activate)."""
     path = _save_upload(file, {".yaml", ".yml", ".zip"}, store.MAX_ENGINE_UPLOAD_BYTES)
     parameters_path = None
     try:
@@ -1290,6 +1306,7 @@ def load_engine(file: UploadFile = File(...), parameters: UploadFile | None = Fi
             str(path), str(parameters_path) if parameters_path else None, profile=profile,
             stats_choice="defined" if points is not None else stats_mode,
             stats_points=yaml.safe_dump(points) if points is not None else None, origin=origin, mission=mission,
+            activate=activate,
         )
         return _game_response(game)
     except HTTPException:
@@ -1790,6 +1807,13 @@ class EnginePlayRequest(BaseModel):
                                 "/v1/missions/playable); left out, the story draws one.")
 
 
+class EngineStartRequest(EnginePlayRequest):
+    activate: bool = Field(default=False, description="Also make the engine the studio's defaults (what the editors "
+                           "show and what starts next without an engine of its own), as POST "
+                           "/v1/engines/{id}/activate. Default: the game runs in the engine's own context and "
+                           "nothing else changes.")
+
+
 class EngineContinueRequest(EnginePlayRequest, TrainingGame):
     generations: int = Field(default=1, ge=1, le=store.RUN_LIMITS["generation_limit"],
                              description="Further generations, continuing exactly where training stopped.")
@@ -1892,14 +1916,36 @@ def download_engine_model(engine_id: str):
     return FileResponse(path, filename=f"engine-{engine_id}.ane.zip", media_type="application/zip")
 
 
+@api.post("/v1/engines/{engine_id}/activate", tags=["Evolution and play"])
+def activate_engine(engine_id: str):
+    """Make a saved engine's world and tuning (and its tag vectors) the studio's defaults: what the
+    editors show and what starts next without an engine of its own (a training run, a default game).
+    The explicit way to do so: starting a game with an engine never does it unless asked
+    (``activate``). Games and jobs already going keep their own contexts. Answers {engine_id,
+    activated, revision (the editor's world revision now, as GET /v1/world/revision)}. ``latest``: the
+    newest finished run; 404 for an unknown engine."""
+    if engine_id != "latest" and not export.known_engine(engine_id):
+        raise HTTPException(status_code=404, detail=f"Unknown engine `{engine_id}`.")
+    try:
+        result = sessions.activate_engine(engine_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _fail(exc)
+    return {**result, "revision": content.world_revision()["revision"]}
+
+
 @api.post("/v1/engines/{engine_id}/play", response_model=SimulationResponse, tags=["Evolution and play"])
-def play_finished_run(engine_id: str, body: EnginePlayRequest | None = None, origin: str = Depends(_origin)):
+def play_finished_run(engine_id: str, body: EngineStartRequest | None = None, origin: str = Depends(_origin)):
     """Play the world a finished run was trained on, with its storyteller (``latest``: the newest
     finished run; GET /v1/exports/engines lists them). Works without the records: finished runs
-    are kept with the saves. Its world and tuning become the active ones, as when an engine is
-    loaded. 409 before any run has finished."""
+    are kept with the saves. The game runs in the engine's own context (world, tuning, tag vectors,
+    profile defaults); the studio's defaults do not change unless ``activate``. 409 before any run
+    has finished."""
+    body = body or EngineStartRequest()
     try:
-        return _game_response(sessions.play_finished_run(engine_id, origin=origin, **_player(body or EnginePlayRequest())))
+        return _game_response(sessions.play_finished_run(engine_id, origin=origin, activate=body.activate,
+                                                         **_player(body)))
     except HTTPException:
         raise
     except Exception as exc:
@@ -1922,11 +1968,13 @@ def get_session_transcript(session_id: str):
 
 
 @api.post("/v1/records/engines/{engine_id}/play", response_model=SimulationResponse, tags=["Records"])
-def play_recorded_engine(engine_id: str, body: EnginePlayRequest | None = None, origin: str = Depends(_origin)):
-    """Start a game with a recorded engine (its own world, tuning and storyteller)."""
+def play_recorded_engine(engine_id: str, body: EngineStartRequest | None = None, origin: str = Depends(_origin)):
+    """Start a game with a recorded engine, in its own context (its world, tuning and storyteller); the
+    studio's defaults do not change unless ``activate``."""
     _known_engine(engine_id)
+    body = body or EngineStartRequest()
     try:
-        return _game_response(sessions.play_engine(engine_id, origin=origin, **_player(body or EnginePlayRequest())))
+        return _game_response(sessions.play_engine(engine_id, origin=origin, activate=body.activate, **_player(body)))
     except HTTPException:
         raise
     except Exception as exc:

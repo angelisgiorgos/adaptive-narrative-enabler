@@ -280,8 +280,8 @@ paths (where the records, saves and models are): only a file's name, when it mat
   sends a kept report again.
 - `POST /v1/engines/{id}/play` (`{"profile", "mission", "stats_mode", "stats"}`) starts a game in
   the world a finished run was trained on, with its storyteller (`latest`: the newest; the
-  finished runs are `GET /v1/exports/engines`, kept also without the records); its world and
-  tuning become the active ones, as when an engine is loaded; `409` before any run has
+  finished runs are `GET /v1/exports/engines`, kept also without the records). The game runs in
+  the engine's own context (see *Games with a saved engine* below); `409` before any run has
   finished. `GET /v1/sessions/{id}/transcript` is the story so far, and
   `GET /v1/sessions/{id}/journal` the game turn by turn as a player follows it: each turn's choice
   (`action`, `with` whom, `where`), its check (`stat`, `roll`, `needed`, `passed`), what came of it
@@ -304,6 +304,10 @@ paths (where the records, saves and models are): only a file's name, when it mat
   `POST /v1/sessions/load` (`{"savegame", "profile", "session_id"}`: a new session that goes
   on exactly, `restored: exact`, or is rebuilt from the parameters, `restored: parameters`
   with a `note`; a save game without a snapshot takes the storyteller of `session_id`). A save
+  game made here names its engine and the configuration its session ran with (`engine.engine_id`,
+  `engine.context_key`), and continues in that configuration, not in the studio's defaults. If
+  this server does not keep that configuration, the save game continues in the engine's own, then
+  in the configuration of the `session_id` session, and only then in the studio's defaults. A save
   game of the ANE AI loads here, and one from here in the ANE AI. Fields that do not fit the
   world answer `400`. `GET /v1/world/catalogue` is the world as the ANE AI sends it
   (`ane.world/1`: locations, NPCs with their `npc_roles`, items, events, missions,
@@ -561,7 +565,9 @@ one); `tests/test_studio_coverage.py` checks it.
   now returns). Uploading the same file again is accepted again with the same
   `revision`, so a retry is safe. A rejected upload (`400` with the problems
   found, for example a `start_selection.default_location` that is not one of
-  the world's places; `400` for a wrong file type; `413` for a file that is too
+  the world's places, or a route in `world_definition.routes` to a place the world does
+  not have, named by both ends; the map is checked against the uploaded world's
+  own places, never the built-in city's; `400` for a wrong file type; `413` for a file that is too
   large) leaves the active configuration and its revision unchanged. A
   temporary file that cannot be removed after the commit (for example while
   another process holds it open on Windows) does not fail the upload. The
@@ -910,12 +916,31 @@ one); `tests/test_studio_coverage.py` checks it.
     restart. An older bare `{engine_id: name}` file is read and rewritten in this format.
 - `GET /v1/learning` returns the storytellers the AI remembers from earlier
   runs; `DELETE /v1/learning` forgets them.
-- `POST /v1/engines/load?profile=&stats_mode=&stats=&mission=` loads an engine model
+- `POST /v1/engines/load?profile=&stats_mode=&stats=&mission=&activate=` loads an engine model
   (`.ane.zip`), an older engine ZIP, or a configuration YAML (form field
   `file`) and begins a session without evolving again. `parameters` (optional
   form field) is a model-parameters YAML for a configuration without
   `generated_run.genome`; `stats` is the player's own points as a JSON object
   (overrides `stats_mode`).
+- **Games with a saved engine.** `POST /v1/engines/load`, `POST /v1/engines/{id}/play` and
+  `POST /v1/records/engines/{id}/play` start the game in the engine's own context: its world,
+  tuning, tag vectors, default profile and stat rules, frozen when the game starts. Nothing
+  process-wide changes. The editors' world (`GET /v1/world/revision`), `GET /v1/config`, other
+  sessions and the next default game or training are unaffected. The answer says what the game
+  runs with: `engine` (`{engine_id, name, source}`), `world` (`{source, engine_id, digest, id,
+  summary, current}`), `world_revision` (the revision of the frozen configuration) and
+  `activated`.
+- `POST /v1/engines/{id}/activate` (`latest`: the newest finished run) is the explicit operation
+  that makes an engine's world and tuning, with its tag vectors, the studio's defaults. Those are
+  what the editors show and what starts next without an engine of its own. Games and jobs already
+  going keep their own contexts. It answers `{engine_id, activated: true, revision}` (the editors'
+  revision now), or `404` for an unknown engine.
+- **Migration.** Until this change, starting a game with an engine also made its world the active
+  one. Callers that relied on that (an editor expected to show the engine's world after playing it)
+  either call `POST /v1/engines/{id}/activate`, or pass `activate: true` (a body field of the
+  `/play` requests, a query parameter of `/v1/engines/load`), which gives the earlier behaviour.
+  Requests without it start isolated games; their request shapes are unchanged, and the response
+  only gains fields.
 - `GET /v1/sessions/{id}` and `POST /v1/sessions/{id}/actions` return the
   scene (Markdown), the available `actions`, and the last turn. They also give
   a structured state: `location`, `start_location`, `health`, `max_health`, `coins`, `power`,
