@@ -7,6 +7,52 @@ that introduces them.
 
 ## [Unreleased]
 
+### A saved engine's game starts in its own context
+
+#### Changed
+- Starting a game with a saved engine (`POST /v1/engines/load`, `POST /v1/engines/{id}/play`,
+  `POST /v1/records/engines/{id}/play`) no longer makes the engine's world and tuning the
+  process-wide configuration (`EngineModel.activate()`). The game is built in the engine's own context,
+  with its world, tuning, tag vectors, default profile and stat rules (`backend/sessions.py::_engine_game`).
+  The editors' world, `GET /v1/config`, other sessions and the next default game or training no longer
+  change when someone plays an engine. An older bundle (a configuration YAML with
+  `generated_run.genome`) is also played in its own context and no longer installs an upload override.
+- The studio no longer warns that playing an engine makes its world active (engine card and quest
+  note). It says the game plays the world in its own context.
+
+#### Added
+- `POST /v1/engines/{id}/activate`: the explicit operation that makes an engine the studio's defaults
+  (`{engine_id, activated, revision}`).
+- `activate` (body field of the `/play` requests, query parameter of `/v1/engines/load`, default
+  false): the earlier behaviour, for callers that relied on it. **Migration:** pass it, or call the
+  activate endpoint, where an editor should show the played engine's world.
+- The start response carries `engine` (`{engine_id, name, source}`), `world` (its identity, and whether
+  it is the studio's world now), `world_revision` (the revision of the frozen configuration the game
+  runs with) and `activated`.
+
+#### Fixed
+- A player's own stat points for an engine game were checked against the stat rules active before
+  the game started, not the engine's. They are now checked in the engine's context.
+- `POST /v1/sessions/load` built the continued game in the studio's defaults, so an engine game's save
+  game continued exactly only while that engine happened to be active. Save games made here now
+  carry `engine.engine_id` and `engine.context_key` and continue in their session's own
+  configuration. Tests: `tests/test_engine_play_isolation.py`, over HTTP to a live server with
+  concurrent requests.
+
+### Story routes validated against the submitted world
+
+#### Fixed
+- A world with its own map (`world_definition.routes`) was refused on upload, and as an engine
+  (`POST /v1/engines/load`). The upload's map was compared key by key with the built-in city's, which
+  produced errors such as "Missing `world_definition.routes.Harbor`". Those errors also hid the real route
+  problems. `backend/store.py::_validate_complete_config` now treats the map as the author's and checks it
+  with `core_engine.builder.route_errors` against the submitted world's own places, as the runtime does.
+  Routes still hold both ways, and `send_to` stays the one-way jump. An omitted or null map and an explicit
+  `routes: {}` are kept as written and never filled from the city's map.
+- A route to an unknown place names both its source and the missing destination
+  (`routes.<source>: the route from '<source>' to '<destination>' leads to '<destination>', which is not a
+  location of this world.`). Tests: `tests/test_route_validation.py`, fixture `tests/fixtures/salt_press.yaml`.
+
 ### Upload and export result contract
 
 #### Fixed
